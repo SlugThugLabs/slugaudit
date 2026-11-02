@@ -14,16 +14,20 @@
 
 mod common;
 
+use common::failure::{FirstFailure, exit_code};
+
 /// Small fixture size: 40 files (the cheap contrast to `common::LARGE`).
 const SMALL: usize = 40;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use slugaudit_mcp_rust::progress::NoopProgressSink;
 use slugaudit_mcp_rust::project::{ProjectRoot, database_path};
 use slugaudit_mcp_rust::store;
 use slugaudit_mcp_rust::sync::SourceSyncManager;
+use slugaudit_test_check::{Check, TestResult};
 use std::hint::black_box;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 /// A synced fixture whose temp dir is kept alive for the whole group.
 struct SyncedDb {
@@ -31,26 +35,34 @@ struct SyncedDb {
     path: PathBuf,
 }
 
-fn build_synced(file_count: usize) -> SyncedDb {
-    let dir = tempfile::tempdir().expect("temp dir");
-    common::generate_fixture(dir.path(), file_count).log("search");
-    let root = dir.path().to_str().expect("utf-8 fixture path").to_owned();
+fn build_synced(file_count: usize) -> TestResult<SyncedDb> {
+    let dir = tempfile::tempdir().check("create fixture dir")?;
+    common::generate_fixture(dir.path(), file_count)?.log("search");
+    let root = dir
+        .path()
+        .to_str()
+        .check("fixture path is utf-8")?
+        .to_owned();
     SourceSyncManager::new()
         .ensure_current(&root, &NoopProgressSink)
-        .expect("initial sync");
-    let root = ProjectRoot::resolve(dir.path()).expect("valid project root");
-    SyncedDb {
-        _dir: dir,
+        .check("initial sync")?;
+    let root = ProjectRoot::resolve(dir.path()).check("resolve project root")?;
+    Ok(SyncedDb {
         path: database_path(&root),
-    }
+        _dir: dir,
+    })
 }
 
 /// Runs `sql` and returns the first column of the first row as a count.
-fn run_count(connection: &rusqlite::Connection, sql: &str) -> i64 {
-    let mut statement = connection.prepare(sql).expect("prepare search SQL");
-    let mut rows = statement.query([]).expect("execute search SQL");
-    let row = rows.next().expect("one result row").expect("read row");
-    black_box(row.get(0).expect("count column"))
+fn run_count(connection: &rusqlite::Connection, sql: &str) -> TestResult<i64> {
+    let mut statement = connection.prepare(sql).check("prepare search SQL")?;
+    let mut rows = statement.query([]).check("execute search SQL")?;
+    let row = rows
+        .next()
+        .check("read the result row")?
+        .check("query returned one row")?;
+    let count: i64 = row.get(0).check("read count column")?;
+    Ok(black_box(count))
 }
 
 /// Substring search over full file content (the common search workload).
@@ -67,30 +79,36 @@ const TRAVERSAL_SQL: &str = "WITH RECURSIVE reach(from_id) AS ( \
        WHERE e.to_file_id IS NOT NULL \
      ) SELECT COUNT(*) FROM reach";
 
-fn bench_search(c: &mut Criterion) {
-    let small = build_synced(SMALL);
-    let large = build_synced(common::LARGE);
-    let small_connection = store::open_existing(&small.path).expect("open read-only");
-    let large_connection = store::open_existing(&large.path).expect("open read-only");
+fn bench_search(c: &mut Criterion) -> TestResult {
+    let small = build_synced(SMALL)?;
+    let large = build_synced(common::LARGE)?;
+    let small_connection = store::open_existing(&small.path).check("open small database")?;
+    let large_connection = store::open_existing(&large.path).check("open large database")?;
+    let failure = FirstFailure::new();
 
     let mut group = c.benchmark_group("search");
     group.sample_size(15);
 
     group.bench_function("substring_like_small", |b| {
-        b.iter(|| run_count(&small_connection, SUBSTRING_SQL));
+        b.iter(|| failure.record(run_count(&small_connection, SUBSTRING_SQL)));
     });
     group.bench_function("substring_like_large", |b| {
-        b.iter(|| run_count(&large_connection, SUBSTRING_SQL));
+        b.iter(|| failure.record(run_count(&large_connection, SUBSTRING_SQL)));
     });
     group.bench_function("symbol_lookup_large", |b| {
-        b.iter(|| run_count(&large_connection, SYMBOL_SQL));
+        b.iter(|| failure.record(run_count(&large_connection, SYMBOL_SQL)));
     });
     group.bench_function("dependency_traversal_large", |b| {
-        b.iter(|| run_count(&large_connection, TRAVERSAL_SQL));
+        b.iter(|| failure.record(run_count(&large_connection, TRAVERSAL_SQL)));
     });
 
     group.finish();
+    failure.finish()
 }
 
-criterion_group!(benches, bench_search);
-criterion_main!(benches);
+fn main() -> ExitCode {
+    let mut criterion = Criterion::default().configure_from_args();
+    let result = bench_search(&mut criterion);
+    criterion.final_summary();
+    exit_code(result)
+}

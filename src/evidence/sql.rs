@@ -123,9 +123,10 @@ fn span_availability_text(span: &SpanAvailability) -> &'static str {
 mod tests {
     use super::*;
     use crate::model::{Position, Span};
+    use slugaudit_test_check::{Check, TestResult};
 
     #[test]
-    fn a_present_span_carries_all_six_coordinates() {
+    fn a_present_span_carries_all_six_coordinates() -> TestResult {
         let item = EvidenceItem {
             key: "symbol:0".into(),
             kind: EvidenceKind::Symbol,
@@ -137,7 +138,7 @@ mod tests {
                     Position { line: 0, column: 0 },
                     Position { line: 0, column: 3 },
                 )
-                .expect("valid span"),
+                .check("build a valid span")?,
             ),
             payload: serde_json::json!({"name": "x"}),
         };
@@ -146,10 +147,11 @@ mod tests {
         assert_eq!(row.span_availability, "Present");
         assert_eq!(row.start_byte, Some(0));
         assert_eq!(row.end_byte, Some(3));
+        Ok(())
     }
 
     #[test]
-    fn a_span_past_i64_max_is_stored_unavailable_not_clamped() {
+    fn a_span_past_i64_max_is_stored_unavailable_not_clamped() -> TestResult {
         let item = EvidenceItem {
             key: "symbol:1".into(),
             kind: EvidenceKind::Symbol,
@@ -161,7 +163,7 @@ mod tests {
                     Position { line: 0, column: 0 },
                     Position { line: 0, column: 3 },
                 )
-                .expect("valid span"),
+                .check("build a valid span")?,
             ),
             payload: serde_json::json!({"name": "x"}),
         };
@@ -171,6 +173,7 @@ mod tests {
         assert_eq!(row.span_availability, "NormalizerUnavailable");
         assert_eq!(row.start_byte, None);
         assert_eq!(row.end_byte, None);
+        Ok(())
     }
 
     #[test]

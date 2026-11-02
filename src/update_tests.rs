@@ -3,6 +3,7 @@
 //! against a real `sha256sum` invocation.
 
 use super::*;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 /// The checksum tests drive a real `sha256sum`; a machine without it must fail
 /// them, not report green for tests that ran nothing. They resolve and execute
@@ -19,27 +20,33 @@ fn require_sha256sum() {
 /// Runs `f` with `PATH` pointing at exactly `bin_dir`: the inherited entries
 /// are dropped, so `curl` and `sha256sum` resolve only to the fakes planted
 /// there and no real network request or coreutils process can run.
-fn with_replaced_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) -> T {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-    temp_env::with_var("PATH", Some(bin_dir.as_os_str()), f)
+fn with_replaced_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) -> TestResult<T> {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    Ok(temp_env::with_var("PATH", Some(bin_dir.as_os_str()), f))
 }
 
-fn make_executable(path: &std::path::Path) {
+fn make_executable(path: &std::path::Path) -> TestResult {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mut permissions = std::fs::metadata(path)
-            .expect("stat fake CLI")
+            .check("stat fake CLI")?
             .permissions();
         permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions).expect("chmod fake CLI");
+        std::fs::set_permissions(path, permissions).check("chmod fake CLI")?;
     }
+    Ok(())
 }
 
 /// Plants a fake `curl` that answers the `SHA256SUMS` URL with `sums` and
 /// every other URL with `binary`, writing the body to the `-o` destination and
 /// appending each invocation's argv to `log`.
-fn plant_fake_curl(bin_dir: &std::path::Path, log: &std::path::Path, binary: &str, sums: &str) {
+fn plant_fake_curl(
+    bin_dir: &std::path::Path,
+    log: &std::path::Path,
+    binary: &str,
+    sums: &str,
+) -> TestResult {
     let script = bin_dir.join("curl");
     let body = format!(
         "#!/bin/sh\n\
@@ -57,32 +64,34 @@ fn plant_fake_curl(bin_dir: &std::path::Path, log: &std::path::Path, binary: &st
         binary = binary,
         sums = sums,
     );
-    std::fs::write(&script, body).expect("write fake curl");
-    make_executable(&script);
+    std::fs::write(&script, body).check("write fake curl")?;
+    make_executable(&script)?;
+    Ok(())
 }
 
 /// Plants a fake `sha256sum` that reports `digest` for whatever path it is
 /// given; `verify_checksum` compares digests, never filenames.
-fn plant_fake_sha256sum(bin_dir: &std::path::Path, digest: &str) {
+fn plant_fake_sha256sum(bin_dir: &std::path::Path, digest: &str) -> TestResult {
     let script = bin_dir.join("sha256sum");
     std::fs::write(
         &script,
         format!("#!/bin/sh\nprintf '%s  %s\\n' '{digest}' \"$1\"\n"),
     )
-    .expect("write fake sha256sum");
-    make_executable(&script);
+    .check("write fake sha256sum")?;
+    make_executable(&script)?;
+    Ok(())
 }
 
 /// Verifies a real (mock) binary against a SHA256SUMS file by invoking
 /// `sha256sum`.
 #[test]
-fn verify_checksum_accepts_a_matching_file() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+fn verify_checksum_accepts_a_matching_file() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     require_sha256sum();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().check("temp dir")?;
     let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     let contents = b"#!/bin/sh\necho fake binary\n";
-    std::fs::write(&binary, contents).expect("write fake binary");
+    std::fs::write(&binary, contents).check("write fake binary")?;
 
     // Compute the expected hash and write a SHA256SUMS line for it.
     let expected = {
@@ -90,11 +99,11 @@ fn verify_checksum_accepts_a_matching_file() {
             .current_dir(dir.path())
             .arg("slugaudit-x86_64-unknown-linux-gnu")
             .output()
-            .expect("run sha256sum");
+            .check("run sha256sum")?;
         String::from_utf8_lossy(&output.stdout)
             .split_whitespace()
             .next()
-            .expect("sha256sum stdout format has digest as first token")
+            .check("sha256sum stdout format has digest as first token")?
             .to_string()
     };
     let sums_file = dir.path().join("SHA256SUMS");
@@ -102,9 +111,10 @@ fn verify_checksum_accepts_a_matching_file() {
         &sums_file,
         format!("{expected}  slugaudit-x86_64-unknown-linux-gnu\n"),
     )
-    .expect("write sha256sums");
+    .check("write sha256sums")?;
 
-    verify_checksum(&binary, &sums_file).expect("matching checksum must verify");
+    verify_checksum(&binary, &sums_file).check("matching checksum must verify")?;
+    Ok(())
 }
 
 /// The temp binary need not be named exactly the asset filename:
@@ -112,25 +122,25 @@ fn verify_checksum_accepts_a_matching_file() {
 /// `apply_update` uses) must verify fine. This guards against a temp name
 /// that has to equal the asset filename.
 #[test]
-fn verify_checksum_accepts_a_unique_temporary_file_path() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+fn verify_checksum_accepts_a_unique_temporary_file_path() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     require_sha256sum();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().check("temp dir")?;
     // Deliberately NOT named the asset — a unique `.update-<pid>` name.
     let binary = dir
         .path()
         .join(".slugaudit-update-12345-slugaudit-x86_64-unknown-linux-gnu");
-    std::fs::write(&binary, b"#!/bin/sh\necho fake binary\n").expect("write fake binary");
+    std::fs::write(&binary, b"#!/bin/sh\necho fake binary\n").check("write fake binary")?;
 
     let expected = {
         let output = std::process::Command::new("sha256sum")
             .arg(&binary)
             .output()
-            .expect("run sha256sum");
+            .check("run sha256sum")?;
         String::from_utf8_lossy(&output.stdout)
             .split_whitespace()
             .next()
-            .expect("sha256sum stdout format has digest as first token")
+            .check("sha256sum stdout format has digest as first token")?
             .to_string()
     };
     let sums_file = dir.path().join("SHA256SUMS");
@@ -138,29 +148,30 @@ fn verify_checksum_accepts_a_unique_temporary_file_path() {
         &sums_file,
         format!("{expected}  slugaudit-x86_64-unknown-linux-gnu\n"),
     )
-    .expect("write sha256sums");
+    .check("write sha256sums")?;
 
-    verify_checksum(&binary, &sums_file).expect("unique temp name must verify");
+    verify_checksum(&binary, &sums_file).check("unique temp name must verify")?;
+    Ok(())
 }
 
 /// A SHA256SUMS entry that doesn't match must be rejected so the old binary
 /// is never replaced with a corrupt download.
 #[test]
-fn verify_checksum_rejects_a_mismatching_file() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+fn verify_checksum_rejects_a_mismatching_file() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     require_sha256sum();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().check("temp dir")?;
     let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
-    std::fs::write(&binary, b"different bytes\n").expect("write fake binary");
+    std::fs::write(&binary, b"different bytes\n").check("write fake binary")?;
 
     let sums_file = dir.path().join("SHA256SUMS");
     std::fs::write(
         &sums_file,
         format!("{}  slugaudit-x86_64-unknown-linux-gnu\n", "0".repeat(64)),
     )
-    .expect("write sha256sums");
+    .check("write sha256sums")?;
 
-    let err = verify_checksum(&binary, &sums_file).expect_err("a mismatch must be rejected");
+    let err = verify_checksum(&binary, &sums_file).check_err("a mismatch must be rejected")?;
     match err {
         UpdateError::Checksum(msg) => {
             assert!(
@@ -168,56 +179,69 @@ fn verify_checksum_rejects_a_mismatching_file() {
                 "unexpected error message: {msg}"
             );
         }
-        other => panic!("expected Checksum error, got: {other:?}"),
+        other => {
+            return Err(format!("expected Checksum error, got: {other:?}"))
+                .check("unexpected outcome");
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn target_binary_prefers_the_installed_stable_path() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-    let temp = tempfile::tempdir().expect("temp dir");
+fn target_binary_prefers_the_installed_stable_path() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
     let slugthug = temp.path().join("slugaudit");
-    std::fs::create_dir_all(&slugthug).expect("create dir");
+    std::fs::create_dir_all(&slugthug).check("create dir")?;
     let stable = slugthug.join("slugaudit");
-    std::fs::write(&stable, b"fake installed binary").expect("write fake install");
+    std::fs::write(&stable, b"fake installed binary").check("write fake install")?;
 
-    temp_env::with_var("SLUGTHUG_HOME", Some(temp.path().as_os_str()), || {
-        let target = target_binary().expect("target binary resolves");
-        assert_eq!(target, stable);
-    });
+    temp_env::with_var(
+        "SLUGTHUG_HOME",
+        Some(temp.path().as_os_str()),
+        || -> TestResult {
+            let target = target_binary().check("target binary resolves")?;
+            assert_eq!(target, stable);
+            Ok(())
+        },
+    )?;
+    Ok(())
 }
 
 #[test]
-fn verify_checksum_fails_on_missing_sums_file() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn verify_checksum_fails_on_missing_sums_file() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
     let binary = dir.path().join("fake_bin");
-    std::fs::write(&binary, b"content").expect("write binary");
+    std::fs::write(&binary, b"content").check("write binary")?;
     let missing_sums = dir.path().join("nonexistent_SHA256SUMS");
-    let err = verify_checksum(&binary, &missing_sums).unwrap_err();
+    let err = verify_checksum(&binary, &missing_sums).check_err("the call must fail")?;
     assert!(err.to_string().contains("reading checksums"));
+    Ok(())
 }
 
 #[test]
-fn verify_checksum_fails_when_asset_entry_missing() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn verify_checksum_fails_when_asset_entry_missing() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
     let binary = dir.path().join("fake_bin");
-    std::fs::write(&binary, b"content").expect("write binary");
+    std::fs::write(&binary, b"content").check("write binary")?;
     let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(&sums_file, "1234567890abcdef  other-asset.tar.gz\n").expect("write sums");
-    let err = verify_checksum(&binary, &sums_file).unwrap_err();
+    std::fs::write(&sums_file, "1234567890abcdef  other-asset.tar.gz\n").check("write sums")?;
+    let err = verify_checksum(&binary, &sums_file).check_err("the call must fail")?;
     assert!(err.to_string().contains("has no entry for"));
+    Ok(())
 }
 
 #[test]
-fn verify_checksum_fails_when_binary_file_missing() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+fn verify_checksum_fails_when_binary_file_missing() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     require_sha256sum();
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().check("temp dir")?;
     let missing_binary = dir.path().join("missing_bin");
     let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(&sums_file, format!("abc  {ASSET}\n")).expect("write sums");
-    let err = verify_checksum(&missing_binary, &sums_file).unwrap_err();
+    std::fs::write(&sums_file, format!("abc  {ASSET}\n")).check("write sums")?;
+    let err = verify_checksum(&missing_binary, &sums_file).check_err("the call must fail")?;
     assert!(err.to_string().contains("checksum verification failed"));
+    Ok(())
 }
 
 #[test]
@@ -297,20 +321,23 @@ fn only_the_published_platform_may_self_update() {
 /// The refusal `run_update` takes on an unsupported machine is reachable on
 /// this one through the same pure check, with the actual platform kept.
 #[test]
-fn an_unsupported_platform_is_the_exact_unsupported_variant() {
+fn an_unsupported_platform_is_the_exact_unsupported_variant() -> TestResult {
     let error = ensure_platform_supported("macos", "aarch64")
-        .expect_err("a platform with no published asset must be refused");
+        .check_err("a platform with no published asset must be refused")?;
 
     let UpdateError::UnsupportedPlatform { os, arch } = error else {
-        panic!("expected UnsupportedPlatform, got {error:?}");
+        return Err(format!("expected UnsupportedPlatform, got {error:?}"))
+            .check("unexpected outcome");
     };
     assert_eq!(os, "macos");
     assert_eq!(arch, "aarch64");
+    Ok(())
 }
 
 #[test]
-fn the_published_platform_is_accepted() {
-    ensure_platform_supported("linux", "x86_64").expect("the published asset must be accepted");
+fn the_published_platform_is_accepted() -> TestResult {
+    ensure_platform_supported("linux", "x86_64").check("the published asset must be accepted")?;
+    Ok(())
 }
 
 #[test]
@@ -346,25 +373,27 @@ fn update_fetches_only_a_newer_or_incomparable_release() {
 /// A `sha256sum` that exits 0 but prints nothing must be named as a parse
 /// failure, not surface as a mismatch against an empty digest.
 #[test]
-fn an_empty_sha256sum_output_is_a_named_parse_failure() {
-    let error = parse_digest("  \n").expect_err("no token is no digest");
+fn an_empty_sha256sum_output_is_a_named_parse_failure() -> TestResult {
+    let error = parse_digest("  \n").check_err("no token is no digest")?;
 
     assert!(error.to_string().contains("printed no digest"), "{error}");
+    Ok(())
 }
 
 #[test]
-fn the_first_sha256sum_token_is_the_lowercase_digest() {
-    assert_eq!(parse_digest("ABCDEF  file\n").expect("digest"), "abcdef");
+fn the_first_sha256sum_token_is_the_lowercase_digest() -> TestResult {
+    assert_eq!(parse_digest("ABCDEF  file\n").check("digest")?, "abcdef");
+    Ok(())
 }
 
 /// A stat failure on the installed path is reported rather than read as "not
 /// installed", which would make the update replace a temporary running path.
 #[test]
-fn target_binary_reports_a_failing_stat_of_the_installed_path() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-    let directory = tempfile::tempdir().expect("temp dir");
+fn target_binary_reports_a_failing_stat_of_the_installed_path() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let directory = tempfile::tempdir().check("temp dir")?;
     let home_is_a_file = directory.path().join("not-a-directory");
-    std::fs::write(&home_is_a_file, b"a file where the home belongs").expect("plant file");
+    std::fs::write(&home_is_a_file, b"a file where the home belongs").check("plant file")?;
 
     let result = temp_env::with_var(
         "SLUGTHUG_HOME",
@@ -373,16 +402,17 @@ fn target_binary_reports_a_failing_stat_of_the_installed_path() {
     );
 
     let Err(UpdateError::Target(source)) = result else {
-        panic!("expected Target, got {result:?}");
+        return Err(format!("expected Target, got {result:?}")).check("unexpected outcome");
     };
     assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+    Ok(())
 }
 
 /// A target with no parent cannot host the temp files the update stages, so
 /// the failure is named as the prepare stage rather than passed to the
 /// filesystem.
 #[test]
-fn apply_update_with_a_target_that_has_no_parent_reports_the_prepare_stage() {
+fn apply_update_with_a_target_that_has_no_parent_reports_the_prepare_stage() -> TestResult {
     let latest = LatestRelease::from_tag("v1.0.3");
 
     let result = apply_update(&latest, Path::new("/"));
@@ -393,36 +423,37 @@ fn apply_update_with_a_target_that_has_no_parent_reports_the_prepare_stage() {
         source,
     }) = result
     else {
-        panic!("expected Stage, got {result:?}");
+        return Err(format!("expected Stage, got {result:?}")).check("unexpected outcome");
     };
     assert_eq!(action, "prepare");
     assert_eq!(path, PathBuf::from("/"));
     assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
+    Ok(())
 }
 
 /// A placement failure after a verified download keeps the failing step and
 /// path under `Stage`, so the operator sees which move failed.
 #[test]
-fn apply_update_maps_a_placement_failure_to_the_stage_variant() {
+fn apply_update_maps_a_placement_failure_to_the_stage_variant() -> TestResult {
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    let directory = tempfile::tempdir().expect("temp dir");
-    let bin = tempfile::tempdir().expect("fake bin dir");
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let bin = tempfile::tempdir().check("fake bin dir")?;
     let argv_log = bin.path().join("curl-argv.log");
     plant_fake_curl(
         bin.path(),
         &argv_log,
         "fake binary",
         &format!("{DIGEST}  {ASSET}"),
-    );
-    plant_fake_sha256sum(bin.path(), DIGEST);
+    )?;
+    plant_fake_sha256sum(bin.path(), DIGEST)?;
 
     let install_dir = directory.path().join("install");
     let target = install_dir.join("slugaudit");
-    std::fs::create_dir_all(&target).expect("plant a directory at the update target");
-    std::fs::write(target.join("keep"), b"kept").expect("make the target non-empty");
+    std::fs::create_dir_all(&target).check("plant a directory at the update target")?;
+    std::fs::write(target.join("keep"), b"kept").check("make the target non-empty")?;
     let latest = LatestRelease::from_tag("v1.0.3");
 
-    let result = with_replaced_path(bin.path(), || apply_update(&latest, &target));
+    let result = with_replaced_path(bin.path(), || apply_update(&latest, &target))?;
 
     let Err(UpdateError::Stage {
         action,
@@ -430,7 +461,7 @@ fn apply_update_maps_a_placement_failure_to_the_stage_variant() {
         source,
     }) = result
     else {
-        panic!("expected Stage, got {result:?}");
+        return Err(format!("expected Stage, got {result:?}")).check("unexpected outcome");
     };
     assert_eq!(action, "retain the previous binary at");
     assert_eq!(path, install_dir.join("slugaudit.prev"));
@@ -438,33 +469,35 @@ fn apply_update_maps_a_placement_failure_to_the_stage_variant() {
     // bytes; the target directory is what made the retain step fail.
     assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
     assert!(target.is_dir(), "the target must be left in place");
-    let argv = std::fs::read_to_string(&argv_log).expect("the fake curl ran");
+    let argv = std::fs::read_to_string(&argv_log).check("the fake curl ran")?;
     assert!(
         argv.contains(
             "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-linux-gnu"
         ),
         "the fake curl must have served the asset download: {argv}"
     );
+    Ok(())
 }
 
 /// Without `sha256sum` on `PATH` the checksum step reports the missing tool
 /// rather than comparing against an empty digest.
 #[test]
-fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let binary = directory.path().join("fake_bin");
-    std::fs::write(&binary, b"content").expect("write binary");
+    std::fs::write(&binary, b"content").check("write binary")?;
     let sums = directory.path().join("SHA256SUMS");
-    std::fs::write(&sums, format!("{}  {ASSET}\n", "0".repeat(64))).expect("write sums");
-    let empty = tempfile::tempdir().expect("empty bin dir");
+    std::fs::write(&sums, format!("{}  {ASSET}\n", "0".repeat(64))).check("write sums")?;
+    let empty = tempfile::tempdir().check("empty bin dir")?;
 
-    let result = with_replaced_path(empty.path(), || verify_checksum(&binary, &sums));
+    let result = with_replaced_path(empty.path(), || verify_checksum(&binary, &sums))?;
 
     let Err(UpdateError::ToolSpawn { tool, source }) = result else {
-        panic!("expected ToolSpawn, got {result:?}");
+        return Err(format!("expected ToolSpawn, got {result:?}")).check("unexpected outcome");
     };
     assert_eq!(tool, "sha256sum");
     assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+    Ok(())
 }
 
 /// On a platform with no published asset `run_update` must refuse before any

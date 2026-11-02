@@ -131,26 +131,27 @@ fn kill_and_reap(cli: &str, child: &mut std::process::Child) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
     use std::os::unix::fs::PermissionsExt as _;
 
     /// Writes an executable script. Callers hold `TEST_ENV_LOCK` so no other
     /// test has swapped `PATH` away while the script runs.
-    fn script(dir: &std::path::Path, body: &str) -> String {
+    fn script(dir: &std::path::Path, body: &str) -> TestResult<String> {
         let path = dir.join("fake-client");
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write script");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        path.display().to_string()
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).check("write script")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).check("chmod")?;
+        Ok(path.display().to_string())
     }
 
     #[test]
-    fn a_blocking_client_times_out_and_the_child_is_killed_and_reaped() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        let dir = tempfile::tempdir().expect("dir");
+    fn a_blocking_client_times_out_and_the_child_is_killed_and_reaped() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let dir = tempfile::tempdir().check("dir")?;
         let pid_file = dir.path().join("pid");
         let cli = script(
             dir.path(),
             &format!("echo $$ > '{}'\nexec /bin/sleep 30", pid_file.display()),
-        );
+        )?;
 
         let started = Instant::now();
         let result = run_bounded(&cli, &[], Duration::from_millis(400));
@@ -160,12 +161,13 @@ mod tests {
             timeout_secs,
         }) = result
         else {
-            panic!("expected AgentTimeout, got {result:?}");
+            return Err(format!("expected AgentTimeout, got {result:?}"))
+                .check("unexpected outcome");
         };
         assert_eq!(named, cli);
         assert!((timeout_secs - 0.4).abs() < 0.01, "{timeout_secs}");
         assert!(started.elapsed() < Duration::from_secs(10));
-        let pid = std::fs::read_to_string(&pid_file).expect("pid file");
+        let pid = std::fs::read_to_string(&pid_file).check("pid file")?;
         // A reaped child has no /proc entry; a killed-but-unreaped one would
         // linger as a zombie.
         assert!(
@@ -173,30 +175,33 @@ mod tests {
             "child {} must be gone",
             pid.trim()
         );
+        Ok(())
     }
 
     #[test]
-    fn a_client_that_finishes_returns_its_status_and_output() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        let dir = tempfile::tempdir().expect("dir");
-        let cli = script(dir.path(), "echo out; echo err >&2; exit 3");
+    fn a_client_that_finishes_returns_its_status_and_output() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let dir = tempfile::tempdir().check("dir")?;
+        let cli = script(dir.path(), "echo out; echo err >&2; exit 3")?;
 
-        let output = run_bounded(&cli, &[], CLIENT_CLI_TIMEOUT).expect("runs");
+        let output = run_bounded(&cli, &[], CLIENT_CLI_TIMEOUT).check("runs")?;
 
         assert_eq!(output.status.code(), Some(3));
         assert_eq!(output.stdout, b"out\n");
         assert_eq!(output.stderr, b"err\n");
+        Ok(())
     }
 
     #[test]
-    fn output_beyond_the_cap_is_drained_without_blocking_the_client() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        let dir = tempfile::tempdir().expect("dir");
-        let cli = script(dir.path(), "/usr/bin/head -c 3000000 /dev/zero");
+    fn output_beyond_the_cap_is_drained_without_blocking_the_client() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let dir = tempfile::tempdir().check("dir")?;
+        let cli = script(dir.path(), "/usr/bin/head -c 3000000 /dev/zero")?;
 
-        let output = run_bounded(&cli, &[], CLIENT_CLI_TIMEOUT).expect("runs");
+        let output = run_bounded(&cli, &[], CLIENT_CLI_TIMEOUT).check("runs")?;
 
         assert!(output.status.success());
         assert_eq!(output.stdout.len() as u64, MAX_CAPTURED_BYTES);
+        Ok(())
     }
 }

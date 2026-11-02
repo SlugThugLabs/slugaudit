@@ -381,7 +381,7 @@ pub fn report(
     })?;
     let root = super::project_root(&request.0.path)?;
     let session = manager.session_mechanics();
-    let catalog = mechanic_catalog::load(session, &super::limits_for_root(&root)?);
+    let catalog = mechanic_catalog::load(session, &super::limits_for_root(&root)?)?;
     response.database_discard = discard;
     response.mechanics_invalid = catalog.invalid.len();
     response.mechanics = ReportMechanics {
@@ -400,6 +400,10 @@ pub fn report(
 #[cfg(test)]
 #[path = "report_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "report_envelope_tests.rs"]
+mod envelope_tests;
 
 #[cfg(test)]
 #[path = "report_prose_tests.rs"]

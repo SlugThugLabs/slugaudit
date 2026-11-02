@@ -173,7 +173,11 @@ pub fn project_control(
     manager: Option<&sync::SourceSyncManager>,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
     let inner = &request.0;
-    let path_str = inner.path.as_deref().unwrap_or(".").to_string();
+    // The default project path is the current directory, resolved once here.
+    let path_str = match inner.path.as_deref() {
+        Some(path) => path.to_string(),
+        None => ".".to_string(),
+    };
     if crate::util::exceeds_input_bytes(&path_str, MAX_PATH_BYTES) {
         return Err(ErrorData::invalid_params("path exceeds 32768 bytes", None));
     }
@@ -252,14 +256,14 @@ fn enable(
     if let Some(profile) = profile_override {
         // A session setting: held in memory for this project until the
         // process exits, and applied by every limit derivation below.
-        project::set_session_profile(root.as_path(), profile);
+        project::set_session_profile(root.as_path(), profile)?;
     }
     let db_path = project::database_path(root);
     // A previous `off` removed `results/` under any store this process still
     // holds for the directory; drop it so the next result recreates it. Not
     // done on `off`: a result opened before it must stay readable.
     if let (Some(m), Some(runtime_dir)) = (manager, db_path.parent()) {
-        m.result_stores().release_dir(runtime_dir);
+        m.result_stores().release_dir(runtime_dir)?;
     }
     let mut discard = None;
     let mut connection = match store::open_read_write(&db_path) {

@@ -13,12 +13,17 @@
 //! warm-cache parse+extract, which is the cost a running server pays per
 //! changed file during sync.
 
+#[path = "common/failure.rs"]
+mod failure;
 #[path = "common/samples.rs"]
 mod samples;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
+use failure::{FirstFailure, exit_code};
 use slugaudit_mcp_rust::evidence::extract;
+use slugaudit_test_check::{Check, TestResult};
 use std::hint::black_box;
+use std::process::ExitCode;
 use std::time::Instant;
 use tree_sitter_language_pack::get_parser;
 
@@ -27,17 +32,20 @@ fn bench_extract<'a>(
     name: &str,
     language: &'a str,
     sample: &'a str,
+    failure: &FirstFailure,
 ) {
     group.bench_function(name, |b| {
         b.iter(|| {
-            let (items, _depth_capped) =
-                extract(black_box(language), black_box(sample)).expect("extract");
-            black_box(items.len());
+            failure.record(
+                extract(black_box(language), black_box(sample))
+                    .check("extract evidence from the sample")
+                    .map(|(items, _depth_capped)| black_box(items.len())),
+            );
         });
     });
 }
 
-fn bench_parsing(c: &mut Criterion) {
+fn bench_parsing(c: &mut Criterion) -> TestResult {
     let cold_start = Instant::now();
     let parser = match get_parser("rust") {
         Ok(parser) => parser,
@@ -48,7 +56,7 @@ fn bench_parsing(c: &mut Criterion) {
             eprintln!(
                 "parser unavailable (offline or missing grammar): {error}; skipping parsing benches"
             );
-            return;
+            return Ok(());
         }
     };
     eprintln!("parser_cold_load_rust: {:?}", cold_start.elapsed());
@@ -62,35 +70,48 @@ fn bench_parsing(c: &mut Criterion) {
     for language in ["python", "javascript", "typescript"] {
         // A missing grammar would make its extract bench meaningless, so a
         // load failure aborts the run and carries the grammar error.
-        match get_parser(language) {
-            Ok(parser) => drop(parser),
-            Err(error) => panic!("{language} parser failed to load: {error}"),
-        }
+        let parser = get_parser(language).check("load a grammar for the extract benches")?;
+        drop(parser);
     }
+    let failure = FirstFailure::new();
 
     let mut group = c.benchmark_group("parsing");
     group.sample_size(15);
-    bench_extract(&mut group, "extract_rust", "rust", samples::RUST_SAMPLE);
+    bench_extract(
+        &mut group,
+        "extract_rust",
+        "rust",
+        samples::RUST_SAMPLE,
+        &failure,
+    );
     bench_extract(
         &mut group,
         "extract_python",
         "python",
         samples::PYTHON_SAMPLE,
+        &failure,
     );
     bench_extract(
         &mut group,
         "extract_javascript",
         "javascript",
         samples::JS_SAMPLE,
+        &failure,
     );
     bench_extract(
         &mut group,
         "extract_typescript",
         "typescript",
         samples::TS_SAMPLE,
+        &failure,
     );
     group.finish();
+    failure.finish()
 }
 
-criterion_group!(benches, bench_parsing);
-criterion_main!(benches);
+fn main() -> ExitCode {
+    let mut criterion = Criterion::default().configure_from_args();
+    let result = bench_parsing(&mut criterion);
+    criterion.final_summary();
+    exit_code(result)
+}

@@ -291,7 +291,7 @@ where
     E: DeserializeOwned,
     A: FnMut(&StoredRow) -> Take,
 {
-    let Some(store) = manager.result_stores().current() else {
+    let Some(store) = manager.result_stores().current()? else {
         tracing::info!("cursor refused: no result was ever stored");
         return Err(store_error(&ResultStoreError::Unknown));
     };

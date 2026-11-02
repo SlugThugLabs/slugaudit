@@ -22,7 +22,7 @@ use super::revision_skipped::{SKIP_REASON_NOT_UTF8, SKIP_REASON_OVERSIZE};
 use super::sample::{Sample, SampleError, sample_file};
 use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
-use crate::util::{Deadline, lock_or_recover};
+use crate::util::{Deadline, lock};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
@@ -334,7 +334,7 @@ impl Batch<'_> {
                 }
             }
         }
-        if let Some(err) = lock_or_recover(&self.error_slot, "sample_batch_error_slot").take() {
+        if let Some(err) = lock(&self.error_slot, "sample_batch_error_slot")?.take() {
             return Err(err);
         }
         // A skipped (oversized) file leaves its slot empty; when no error
@@ -353,16 +353,22 @@ impl Batch<'_> {
 /// Records the first error from a parallel sampling run. Concurrent
 /// workers race to call this; only the first winner's error reaches
 /// callers because subsequent callers short-circuit on
-/// `Option::is_some()`. Locks through `lock_or_recover` (the project-
-/// wide helper) so a poisoned mutex is recovered with an `error!` log
-/// instead of silently unwrapped.
+/// `Option::is_some()`. A poisoned slot cannot hold the error: it is logged
+/// here, and the batch still fails because `collect` locks the same slot and
+/// returns the poisoned-lock error.
 ///
 /// A later worker's distinct failure is still logged once at `warn` — with
 /// a static operation, the error's category, the real path and the error's
 /// `Display` — so it is not silently discarded just because the first
 /// failure wins the return value.
 fn record_error(slot: &Mutex<Option<PublishError>>, error: PublishError) {
-    let mut guard = lock_or_recover(slot, "sample_batch_error_slot");
+    let mut guard = match lock(slot, "sample_batch_error_slot") {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            error.warn_unrecorded(&poisoned);
+            return;
+        }
+    };
     if guard.is_none() {
         *guard = Some(error);
         return;

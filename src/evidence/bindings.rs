@@ -8,7 +8,7 @@
 //! tree with generic node-type patterns that are consistent across
 //! tree-sitter grammars, so no per-language query code is needed.
 
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex};
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, PositionOverflow};
 use serde_json::json;
 use tree_sitter_language_pack::SymbolKind;
 
@@ -60,13 +60,15 @@ fn is_field_declaration(kind: &str) -> bool {
 /// [`crate::evidence::push_children`]) emitting one symbol per named binding
 /// or field. Children are visited regardless of a match — a function body
 /// contains let bindings, a struct body contains field declarations, etc.
+/// Returns whether the walk was cut short; a position past `u32::MAX` is an
+/// error that fails the file's extraction.
 pub(super) fn walk_bindings(
     root: &tree_sitter_language_pack::Node,
     source: &str,
     lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) -> bool {
+) -> Result<bool, PositionOverflow> {
     let mut capped = false;
     let mut pending = vec![(root.clone(), 0)];
     while let Some((node, depth)) = pending.pop() {
@@ -75,7 +77,7 @@ pub(super) fn walk_bindings(
             continue;
         }
         match identifier_name(&node, source) {
-            Ok(Some(name)) => push_binding(&node, &name, lines, items, counter),
+            Ok(Some(name)) => push_binding(&node, &name, lines, items, counter)?,
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!(%error, "binding name skipped; extraction is partial");
@@ -84,7 +86,7 @@ pub(super) fn walk_bindings(
         }
         super::push_children(&mut pending, &node, |child| (child, depth + 1));
     }
-    capped
+    Ok(capped)
 }
 
 /// Emits the symbol row for `node` when its kind is a field or a variable
@@ -95,7 +97,7 @@ fn push_binding(
     lines: &LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) {
+) -> Result<(), PositionOverflow> {
     let kind = node.kind();
     let (sym_kind, origin_kind) = if is_field_declaration(&kind) {
         (SymbolKind::Other("Field".to_owned()), "field")
@@ -106,7 +108,7 @@ fn push_binding(
             (SymbolKind::Variable, "variable")
         }
     } else {
-        return;
+        return Ok(());
     };
     let key = format!("{origin_kind}:{counter}");
     *counter += 1;
@@ -114,7 +116,7 @@ fn push_binding(
         key,
         kind: EvidenceKind::Symbol,
         origin: EvidenceOrigin::PackSymbol,
-        span: node_span(node, lines, "binding"),
+        span: node_span(node, lines, "binding")?,
         payload: json!({
             "name": name,
             "kind": format!("{sym_kind:?}"),
@@ -122,6 +124,7 @@ fn push_binding(
             "doc": null,
         }),
     });
+    Ok(())
 }
 
 /// Returns the text of the first identifier-flavored named child of `node`,

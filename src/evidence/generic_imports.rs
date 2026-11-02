@@ -75,18 +75,23 @@ fn is_import_statement_kind(kind: &str) -> bool {
 /// without going through the full evidence pipeline, so it is compiled
 /// only under `cfg(test)` — production never links it.
 #[cfg(test)]
-pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<EvidenceItem> {
+pub(super) fn extract_generic_imports(
+    language: &str,
+    source: &str,
+) -> slugaudit_test_check::TestResult<Vec<EvidenceItem>> {
+    use slugaudit_test_check::Check;
     let Ok(mut parser) = get_parser(language) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(tree) = parser.parse(source) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let mut items = Vec::new();
     let mut counter = 0usize;
     let lines = crate::model::LineIndex::new(source);
-    walk_imports(&tree.root_node(), source, &lines, &mut items, &mut counter);
-    items
+    walk_imports(&tree.root_node(), source, &lines, &mut items, &mut counter)
+        .check("walk the imports")?;
+    Ok(items)
 }
 
 /// Walk emitting one `Import` evidence item per import-shaped
@@ -110,13 +115,16 @@ pub(super) fn extract_generic_imports(language: &str, source: &str) -> Vec<Evide
 /// [`super::push_children`]): each entry carries whether it is *suppressed*
 /// — an import-shaped node directly under another import-shaped node, which
 /// is walked past without emitting.
+///
+/// Returns whether the walk was cut short; a position past `u32::MAX` is an
+/// error that fails the file's extraction.
 pub(super) fn walk_imports(
     root: &Node,
     source: &str,
     lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) -> bool {
+) -> Result<bool, crate::model::PositionOverflow> {
     let mut capped = false;
     let mut pending = vec![(root.clone(), 0, false)];
     while let Some((node, depth, suppressed)) = pending.pop() {
@@ -129,7 +137,7 @@ pub(super) fn walk_imports(
             // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
             // trailing newline in the statement node's byte range.
             match super::node_text(source, node.start_byte(), node.end_byte()) {
-                Ok(text) => push_import(text.trim(), &node, lines, items, counter),
+                Ok(text) => push_import(text.trim(), &node, lines, items, counter)?,
                 Err(error) => {
                     tracing::warn!(%error, "import statement skipped; extraction is partial");
                     capped = true;
@@ -146,7 +154,7 @@ pub(super) fn walk_imports(
             (child, depth + 1, nested)
         });
     }
-    capped
+    Ok(capped)
 }
 
 fn push_import(
@@ -155,14 +163,14 @@ fn push_import(
     lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     counter: &mut usize,
-) {
+) -> Result<(), crate::model::PositionOverflow> {
     let key = format!("generic_import:{counter}");
     *counter += 1;
     items.push(EvidenceItem {
         key,
         kind: EvidenceKind::Import,
         origin: EvidenceOrigin::GenericWalker,
-        span: super::node_span(node, lines, "generic import"),
+        span: super::node_span(node, lines, "generic import")?,
         payload: json!({
             "source": text,
             "items": [],
@@ -170,6 +178,7 @@ fn push_import(
             "is_wildcard": text.contains('*'),
         }),
     });
+    Ok(())
 }
 
 #[cfg(test)]

@@ -162,7 +162,10 @@ fn report_failure(
     detail: Option<String>,
     source: ConnectError,
 ) -> ConnectError {
-    let why = detail.unwrap_or_else(|| source.to_string());
+    let why = match detail {
+        Some(detail) => detail,
+        None => source.to_string(),
+    };
     guidance::keep_source_error(
         source,
         guidance::print_lines(&guidance::failure_lines(
@@ -218,39 +221,5 @@ pub fn disconnect_agent(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::connect_agents::find_agent;
-
-    #[test]
-    fn an_atomic_write_for_a_path_without_a_parent_reports_the_home_unavailable() {
-        let error = write_atomic(Path::new("/"), b"{}").expect_err("root has no parent");
-
-        assert!(
-            matches!(error, ConnectError::HomeUnavailable),
-            "expected HomeUnavailable, got {error:?}"
-        );
-    }
-
-    #[test]
-    fn disconnecting_without_a_config_home_reports_nothing_to_do() {
-        let goose = find_agent("goose").expect("goose is registered");
-
-        let outcome = disconnect_agent(&goose, None).expect("a missing home is not a failure");
-
-        assert_eq!(outcome, DisconnectOutcome::NothingToDo);
-    }
-
-    #[test]
-    fn disconnecting_an_entry_with_no_writable_section_or_cli_reports_nothing_to_do() {
-        let temp = tempfile::tempdir().expect("temp dir");
-
-        for id in ["goose", "crush"] {
-            let agent = find_agent(id).expect(id);
-            let outcome =
-                disconnect_agent(&agent, Some(temp.path())).expect("the no-op must not fail");
-
-            assert_eq!(outcome, DisconnectOutcome::NothingToDo, "{id}");
-        }
-    }
-}
+#[path = "connect_exec_tests.rs"]
+mod tests;

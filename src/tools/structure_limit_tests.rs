@@ -7,6 +7,7 @@ use super::*;
 use crate::tools::PageLimit;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 fn ask(
     project: &tempfile::TempDir,
@@ -30,38 +31,40 @@ fn ask(
 }
 
 #[test]
-fn an_empty_query_is_a_typed_error_not_a_silent_noop() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_empty_query_is_a_typed_error_not_a_silent_noop() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let result = ask(&project, "lib.rs", "   \n  ");
-    let error = result.expect_err("a whitespace-only query must be rejected");
+    let error = result.check_err("a whitespace-only query must be rejected")?;
     assert!(error.message.contains("must not be empty"));
+    Ok(())
 }
 
 #[test]
-fn a_file_without_indexed_content_is_a_typed_error() {
-    let project = activated_project("logo.bin", b"\x89PNG\x00\x01\x02\x00\x00");
+fn a_file_without_indexed_content_is_a_typed_error() -> TestResult {
+    let project = activated_project("logo.bin", b"\x89PNG\x00\x01\x02\x00\x00")?;
     let result = ask(&project, "logo.bin", "(identifier) @x");
     let error =
-        result.expect_err("a binary file with no indexed source content must not be queried");
+        result.check_err("a binary file with no indexed source content must not be queried")?;
     assert!(
         error.message.contains("no indexed source content") || error.message.contains("logo.bin"),
         "unexpected error message: {}",
         error.message
     );
+    Ok(())
 }
 
 /// Match text longer than `MAX_TEXT_BYTES` must be truncated at a UTF-8
 /// boundary and flagged with `text_truncated`, never emitted in full and
 /// never panicking on the boundary slice.
 #[test]
-fn long_match_text_is_truncated_and_flagged() {
+fn long_match_text_is_truncated_and_flagged() -> TestResult {
     let mut content = String::with_capacity(1_100_000);
     content.push_str("let long = \"");
     content.push_str(&"abcdefghij".repeat(105_000));
     content.push_str("\";\n");
-    let project = activated_project("lib.rs", content.as_bytes());
+    let project = activated_project("lib.rs", content.as_bytes())?;
 
-    let response = ask(&project, "lib.rs", "(string_literal) @s").expect("query succeeds");
+    let response = ask(&project, "lib.rs", "(string_literal) @s").check("query succeeds")?;
     let first = &response.matches[0];
     assert!(
         first.text_truncated,
@@ -75,6 +78,7 @@ fn long_match_text_is_truncated_and_flagged() {
         first.text.is_char_boundary(first.text.len()),
         "truncation must land on a UTF-8 boundary"
     );
+    Ok(())
 }
 
 pub(super) fn many_functions(count: usize) -> String {
@@ -103,7 +107,7 @@ pub(super) fn run_with(
     request: &Parameters<StructureRequest>,
     limits: &ResourceLimits,
     window_bytes: usize,
-) -> StructureResponse {
+) -> TestResult<StructureResponse> {
     run_with_manager(
         request,
         limits,
@@ -118,7 +122,7 @@ pub(super) fn run_with_manager(
     limits: &ResourceLimits,
     window_bytes: usize,
     manager: &crate::sync::SourceSyncManager,
-) -> StructureResponse {
+) -> TestResult<StructureResponse> {
     structure_with_limits(
         request,
         limits,
@@ -127,12 +131,12 @@ pub(super) fn run_with_manager(
         manager,
     )
     .map(|Json(response)| response)
-    .expect("structure call succeeds")
+    .check("structure call succeeds")
 }
 
 #[test]
-fn a_zero_page_bytes_is_refused_rather_than_substituted() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_zero_page_bytes_is_refused_rather_than_substituted() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
 
     let result = structure(
         &page_request(&project, None, Some(0)),
@@ -141,11 +145,12 @@ fn a_zero_page_bytes_is_refused_rather_than_substituted() {
     );
 
     assert!(result.is_err());
+    Ok(())
 }
 
 #[test]
-fn start_after_file_with_a_single_file_query_is_refused() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn start_after_file_with_a_single_file_query_is_refused() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let mut request = page_request(&project, None, None);
     request.0.start_after_file = Some("a.rs".to_owned());
 
@@ -155,22 +160,23 @@ fn start_after_file_with_a_single_file_query_is_refused() {
         &crate::sync::SourceSyncManager::default(),
     );
 
-    let error = result.err().expect("start_after_file needs multi-file");
+    let error = result.err().check("start_after_file needs multi-file")?;
     assert!(
         error.message.contains("start_after_file"),
         "{}",
         error.message
     );
+    Ok(())
 }
 
 #[test]
-fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() {
-    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
+fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() -> TestResult {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n")?;
     for (name, body) in [
         ("b.rs", "pub fn beta() {}\n"),
         ("c.rs", "pub fn gamma() {}\n"),
     ] {
-        std::fs::write(project.path().join(name), body).expect("write fixture");
+        std::fs::write(project.path().join(name), body).check("write fixture")?;
     }
     let limits = ResourceLimits::default();
     let mut names = Vec::new();
@@ -188,7 +194,7 @@ fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() {
         });
         // Each fixture file is 17 or 18 bytes, so an 18-byte window holds
         // exactly one of them.
-        let response = run_with(&request, &limits, 18);
+        let response = run_with(&request, &limits, 18)?;
         windows += 1;
         names.extend(response.matches.iter().map(|m| m.text.clone()));
         if let Some(next) = response.next_start_after_file {
@@ -207,11 +213,12 @@ fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() {
 
     assert_eq!(names, ["alpha", "beta", "gamma"]);
     assert_eq!(windows, 3);
+    Ok(())
 }
 
 #[test]
-fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() {
-    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
+fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() -> TestResult {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n")?;
     let request = Parameters(StructureRequest {
         path: project.path().to_string_lossy().into_owned(),
         language: Some("rust".to_owned()),
@@ -220,11 +227,12 @@ fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() {
     });
 
     // "pub fn alpha() {}\n" is 18 bytes: the window ends exactly at it.
-    let response = run_with(&request, &ResourceLimits::default(), 18);
+    let response = run_with(&request, &ResourceLimits::default(), 18)?;
 
     assert_eq!(response.files_not_scanned, 0);
     assert_eq!(response.next_start_after_file, None);
     assert_eq!(response.matches.len(), 1);
+    Ok(())
 }
 
 fn multi_file_request(
@@ -246,9 +254,10 @@ fn multi_file_request(
 /// counts files the memory window left unloaded — and the next page continues
 /// into the later file.
 #[test]
-fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not_scanned() {
-    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
-    std::fs::write(project.path().join("b.rs"), b"pub fn beta() {}\n").expect("write b.rs");
+fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not_scanned()
+-> TestResult {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n")?;
+    std::fs::write(project.path().join("b.rs"), b"pub fn beta() {}\n").check("write b.rs")?;
     let limits = ResourceLimits {
         max_structure_matches: 1,
         ..ResourceLimits::default()
@@ -260,7 +269,7 @@ fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not
         &limits,
         usize::MAX,
         &manager,
-    );
+    )?;
 
     assert_eq!(
         first.page.limited_by,
@@ -278,12 +287,13 @@ fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not
         &limits,
         usize::MAX,
         &manager,
-    );
+    )?;
 
     assert!(second.page.complete);
     assert_eq!(second.matches.len(), 1);
     assert_eq!(second.matches[0].file, "b.rs");
     assert_eq!(second.matches[0].text, "beta");
+    Ok(())
 }
 
 fn single_file_request(project: &tempfile::TempDir) -> StructureRequest {
@@ -295,19 +305,19 @@ fn single_file_request(project: &tempfile::TempDir) -> StructureRequest {
     }
 }
 
-fn refusal(request: StructureRequest) -> ErrorData {
+fn refusal(request: StructureRequest) -> TestResult<ErrorData> {
     structure(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
     .err()
-    .expect("the request must be refused")
+    .check("the request must be refused")
 }
 
 #[test]
-fn a_path_over_the_cap_is_refused_before_any_sync() {
-    let mut request = single_file_request(&activated_project("lib.rs", b"pub fn a() {}\n"));
+fn a_path_over_the_cap_is_refused_before_any_sync() -> TestResult {
+    let mut request = single_file_request(&activated_project("lib.rs", b"pub fn a() {}\n")?);
     request.path = "x".repeat(32 * 1024 + 1);
 
     let error = structure_with_limits(
@@ -318,88 +328,94 @@ fn a_path_over_the_cap_is_refused_before_any_sync() {
         &crate::sync::SourceSyncManager::default(),
     )
     .err()
-    .expect("an oversized path must be refused");
+    .check("an oversized path must be refused")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
+    Ok(())
 }
 
 #[test]
-fn an_oversized_start_after_file_is_refused_with_its_cap() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_oversized_start_after_file_is_refused_with_its_cap() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let mut request = single_file_request(&project);
     request.file = None;
     request.language = Some("rust".to_owned());
     request.start_after_file = Some("x".repeat(32 * 1024 + 1));
 
-    let error = refusal(request);
+    let error = refusal(request)?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(
         error.message.as_ref(),
         "start_after_file exceeds 32768 bytes"
     );
+    Ok(())
 }
 
 #[test]
-fn an_oversized_file_filter_is_refused_by_name() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_oversized_file_filter_is_refused_by_name() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let mut request = single_file_request(&project);
     request.file = Some("x".repeat(8 * 1024 + 1));
 
-    let error = refusal(request);
+    let error = refusal(request)?;
 
     assert_eq!(error.message.as_ref(), "file exceeds 8192 bytes");
+    Ok(())
 }
 
 #[test]
-fn an_oversized_language_filter_is_refused_by_name() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_oversized_language_filter_is_refused_by_name() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let mut request = single_file_request(&project);
     request.file = None;
     request.language = Some("x".repeat(8 * 1024 + 1));
 
-    let error = refusal(request);
+    let error = refusal(request)?;
 
     assert_eq!(error.message.as_ref(), "language exceeds 8192 bytes");
+    Ok(())
 }
 
 #[test]
-fn an_oversized_pattern_filter_is_refused_by_name() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_oversized_pattern_filter_is_refused_by_name() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let mut request = single_file_request(&project);
     request.pattern = Some("x".repeat(8 * 1024 + 1));
 
-    let error = refusal(request);
+    let error = refusal(request)?;
 
     assert_eq!(error.message.as_ref(), "pattern exceeds 8192 bytes");
+    Ok(())
 }
 
 #[test]
-fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let limits = ResourceLimits {
         max_structure_execution_time: std::time::Duration::MAX,
         ..ResourceLimits::default()
     };
 
-    let response = run_with(&page_request(&project, None, None), &limits, usize::MAX);
+    let response = run_with(&page_request(&project, None, None), &limits, usize::MAX)?;
 
     assert_eq!(response.matches.len(), 1);
+    Ok(())
 }
 
-fn rust_root(source: &str) -> tree_sitter::Tree {
+fn rust_root(source: &str) -> TestResult<tree_sitter::Tree> {
     let mut parser = tree_sitter::Parser::new();
     parser
-        .set_language(&tree_sitter_language_pack::get_language("rust").expect("rust grammar"))
-        .expect("set language");
-    parser.parse(source, None).expect("parse")
+        .set_language(&tree_sitter_language_pack::get_language("rust").check("rust grammar")?)
+        .check("set language")?;
+    parser.parse(source, None).check("parse")
 }
 
 #[test]
-fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() {
+fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() -> TestResult {
     let source = "fn a() {}";
-    let tree = rust_root(source);
+    let tree = rust_root(source)?;
     let lines = crate::model::LineIndex::new(source);
 
     let (found, logs) = crate::store::test_capture::capture_warns(|| {
@@ -412,14 +428,16 @@ fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() {
             false,
         )
     });
+    let found = found.check("map the capture")?;
 
     assert!(found.extraction_failed);
     assert!(logs.contains("capture has no name"), "logs: {logs}");
+    Ok(())
 }
 
 #[test]
-fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() {
-    let tree = rust_root("abc");
+fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() -> TestResult {
+    let tree = rust_root("abc")?;
     // Three bytes of a four-byte string end inside the second character.
     let content = "\u{e9}\u{e9}";
     let lines = crate::model::LineIndex::new(content);
@@ -434,11 +452,13 @@ fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() {
             false,
         )
     });
+    let found = found.check("map the capture")?;
 
     assert!(found.extraction_failed);
     assert!(found.text.is_empty());
     assert!(logs.contains("not valid UTF-8"), "logs: {logs}");
     assert!(logs.contains("utf-8"), "source error kept: {logs}");
+    Ok(())
 }
 
 fn query_limit(bytes: usize) -> ResourceLimits {
@@ -449,7 +469,7 @@ fn query_limit(bytes: usize) -> ResourceLimits {
 }
 
 #[test]
-fn a_query_one_byte_over_the_limit_is_refused_by_size_before_anything_else_runs() {
+fn a_query_one_byte_over_the_limit_is_refused_by_size_before_anything_else_runs() -> TestResult {
     let request = Parameters(StructureRequest {
         // Not a project: a size refusal happens before the sync, so the path
         // is never opened.
@@ -467,18 +487,19 @@ fn a_query_one_byte_over_the_limit_is_refused_by_size_before_anything_else_runs(
         &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
-    .expect_err("33 bytes is over a 32-byte limit");
+    .check_err("33 bytes is over a 32-byte limit")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(
         error.message,
         "structure query is 33 bytes; the limit is 32 (max_structure_query_bytes)"
     );
+    Ok(())
 }
 
 #[test]
-fn a_query_of_exactly_the_limit_is_not_refused_for_size() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_query_of_exactly_the_limit_is_not_refused_for_size() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let query = format!("(identifier) @name{}", " ".repeat(14));
     assert_eq!(query.len(), 32);
 
@@ -495,27 +516,29 @@ fn a_query_of_exactly_the_limit_is_not_refused_for_size() {
         &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
-    .expect("a query at the limit compiles and runs");
+    .check("a query at the limit compiles and runs")?;
 
     assert_eq!(response.matches.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn a_global_config_query_limit_is_honoured_by_the_tool() {
-    let _lock = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_global_config_query_limit_is_honoured_by_the_tool() -> TestResult {
+    let _lock = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let _config =
-        crate::tools::test_support::use_global_config(r#"{"max_structure_query_bytes": 20}"#);
+        crate::tools::test_support::use_global_config(r#"{"max_structure_query_bytes": 20}"#)?;
 
     let error = ask(
         &project,
         "lib.rs",
         "(function_item name: (identifier) @name)",
     )
-    .expect_err("the 40-byte query is over the configured 20");
+    .check_err("the 40-byte query is over the configured 20")?;
 
     assert_eq!(
         error.message,
         "structure query is 40 bytes; the limit is 20 (max_structure_query_bytes)"
     );
+    Ok(())
 }

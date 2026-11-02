@@ -2,7 +2,6 @@
 #![allow(clippy::print_stdout)]
 // Same production panic ban as the library root; see `lib.rs` for why
 // `expect` is denied alongside `unwrap`.
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //! Line coverage gate.
@@ -41,7 +40,10 @@ fn main() -> ExitCode {
     // --quiet --bin check_coverage -- <threshold>` to override for a
     // single run (e.g. CI flavor that wants a harder floor); record any
     // raise with the change that makes it so the gate stays honest.
-    let threshold_str: String = args.next().unwrap_or_else(|| "83".to_string());
+    let threshold_str: String = match args.next() {
+        Some(arg) => arg,
+        None => "83".to_string(),
+    };
     let threshold = match parse_threshold(&threshold_str) {
         Ok(n) => n,
         Err(message) => {
@@ -192,86 +194,5 @@ fn merge_line_totals(cov: &serde_json::Value) -> Option<(u64, u64)> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn a_non_finite_or_out_of_range_threshold_is_rejected() {
-        for raw in ["NaN", "nan", "inf", "-inf", "-1", "100.5", "abc"] {
-            assert!(parse_threshold(raw).is_err(), "{raw} must be rejected");
-        }
-    }
-
-    #[test]
-    fn a_percentage_threshold_is_accepted() {
-        assert_eq!(parse_threshold("83"), Ok(83.0));
-        assert_eq!(parse_threshold("0"), Ok(0.0));
-        assert_eq!(parse_threshold("100"), Ok(100.0));
-    }
-
-    #[test]
-    fn removing_a_missing_report_succeeds_and_an_unremovable_one_fails() {
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        remove_report(&dir.path().join("absent.json")).expect("missing file is fine");
-        // A directory cannot be removed with remove_file.
-        assert!(remove_report(dir.path()).is_err());
-    }
-
-    #[test]
-    fn merges_lines_across_data_entries() {
-        let cov = json!({
-            "data": [
-                {"totals": {"lines": {"covered": 100, "count": 200}}},
-                {"totals": {"lines": {"covered": 50, "count": 100}}},
-            ]
-        });
-        let (covered, count) = merge_line_totals(&cov).expect("merge");
-        assert_eq!((covered, count), (150, 300));
-    }
-
-    #[test]
-    fn returns_none_when_data_missing() {
-        let cov = json!({"totals": {"lines": {"covered": 1, "count": 2}}});
-        assert_eq!(merge_line_totals(&cov), None);
-    }
-
-    #[test]
-    fn returns_none_when_totals_missing() {
-        let cov = json!({"data": [{"files": []}]});
-        assert_eq!(merge_line_totals(&cov), None);
-    }
-
-    #[test]
-    fn gate_passes_at_or_above_the_threshold() {
-        assert_eq!(gate(83, 100, 83.0), Ok((83.0, true)));
-        assert_eq!(gate(90, 100, 83.0), Ok((90.0, true)));
-    }
-
-    #[test]
-    fn gate_fails_below_the_threshold() {
-        assert_eq!(gate(82, 100, 83.0), Ok((82.0, false)));
-    }
-
-    #[test]
-    fn gate_with_no_counted_lines_is_zero_percent() {
-        assert_eq!(gate(0, 0, 83.0), Ok((0.0, false)));
-        assert_eq!(gate(0, 0, 0.0), Ok((0.0, true)));
-    }
-
-    #[test]
-    fn gate_rejects_a_total_too_large_for_an_exact_percentage() {
-        let too_big = u64::from(u32::MAX) + 1;
-        let message = gate(1, too_big, 83.0).expect_err("count exceeds u32");
-        assert!(message.starts_with("FAIL: counted line total 4294967296 is too large"));
-        let message = gate(too_big, too_big, 83.0).expect_err("covered exceeds u32");
-        assert!(message.starts_with("FAIL: covered line total 4294967296 is too large"));
-    }
-
-    #[test]
-    fn single_entry_passes_through() {
-        let cov = json!({"data": [{"totals": {"lines": {"covered": 7, "count": 10}}}]});
-        assert_eq!(merge_line_totals(&cov), Some((7, 10)));
-    }
-}
+#[path = "check_coverage/tests.rs"]
+mod tests;

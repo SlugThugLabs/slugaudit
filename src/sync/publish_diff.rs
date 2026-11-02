@@ -98,7 +98,7 @@ pub(super) fn diff_against_stored(
         .collect();
     let current_refs = current_hashes(identities, skipped);
     let mut changes = manifest::compare(stored_refs, current_refs.clone());
-    if crate::parse::fetch_gate::load_failed_retry_due() {
+    if crate::parse::fetch_gate::load_failed_retry_due()? {
         add_load_failed_retries(&mut changes, &current_refs, &load_failed_paths(connection)?);
     }
     let manifest_hash = aggregate_manifest_hash(current_refs);
@@ -234,7 +234,7 @@ pub(super) fn build_upserts_and_deletions(
                     elapsed_ms: elapsed.as_millis(),
                 });
             }
-            upserts.push(to_file_record(sample, limits, deadline));
+            upserts.push(to_file_record(sample, limits, deadline)?);
         }
     }
     Ok((upserts, deletions))

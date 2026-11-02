@@ -16,9 +16,12 @@
 //! comparison is unambiguous.
 mod common;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use common::failure::{FirstFailure, exit_code};
+use criterion::Criterion;
+use slugaudit_test_check::{Check, TestResult};
 #[cfg(target_os = "linux")]
 use std::io::BufRead;
+use std::process::ExitCode;
 
 /// Linux-only: peak resident-set size in kibibytes, read from
 /// `/proc/self/status`'s `VmHWM` field. `Err` carries the real cause when
@@ -51,9 +54,37 @@ fn peak_rss_kib() -> Result<Option<u64>, String> {
     Ok(None)
 }
 
-fn bench_memory(c: &mut Criterion) {
-    let project = tempfile::tempdir().expect("project dir");
-    common::generate_fixture(project.path(), common::LARGE).log("memory");
+/// One timed iteration: a fresh database, project activation, then a full
+/// sync. Returns the sync's wall-clock time.
+fn timed_full_sync(project: &std::path::Path) -> TestResult<std::time::Duration> {
+    // Fresh database each iteration so the WAL doesn't grow
+    // between samples (which would inflate RSS).
+    let db_dir = tempfile::tempdir().check("create database dir")?;
+    let database_path = db_dir.path().join("project.db");
+    let connection =
+        slugaudit_mcp_rust::store::open_read_write(&database_path).check("open database")?;
+
+    let project_root =
+        slugaudit_mcp_rust::project::ProjectRoot::resolve(project).check("resolve project root")?;
+    slugaudit_mcp_rust::project::enable(&project_root).check("activate project")?;
+
+    let start = std::time::Instant::now();
+    let synced = slugaudit_mcp_rust::sync::SourceSyncManager::new()
+        .ensure_current(
+            &project.to_string_lossy(),
+            &slugaudit_mcp_rust::progress::NoopProgressSink,
+        )
+        .check("sync the fixture")?;
+    let elapsed = start.elapsed();
+    drop(synced);
+    drop(connection);
+    Ok(elapsed)
+}
+
+fn bench_memory(c: &mut Criterion) -> TestResult {
+    let project = tempfile::tempdir().check("create project dir")?;
+    common::generate_fixture(project.path(), common::LARGE)?.log("memory");
+    let failure = FirstFailure::new();
 
     // Open the just-built database, do one full publish, sample peak RSS
     // *during* the publish (criterion's bench_function sleeps between
@@ -63,28 +94,15 @@ fn bench_memory(c: &mut Criterion) {
         b.iter_custom(|iters| {
             let mut total = std::time::Duration::ZERO;
             for _ in 0..iters {
-                // Fresh database each iteration so the WAL doesn't grow
-                // between samples (which would inflate RSS).
-                let db_dir = tempfile::tempdir().expect("db dir");
-                let database_path = db_dir.path().join("project.db");
-                let connection =
-                    slugaudit_mcp_rust::store::open_read_write(&database_path).expect("open db");
-
-                let project_root =
-                    slugaudit_mcp_rust::project::ProjectRoot::resolve(project.path())
-                        .expect("resolve project root");
-                slugaudit_mcp_rust::project::enable(&project_root).expect("activate project");
-
-                let start = std::time::Instant::now();
-                let synced = slugaudit_mcp_rust::sync::SourceSyncManager::new()
-                    .ensure_current(
-                        &project.path().to_string_lossy(),
-                        &slugaudit_mcp_rust::progress::NoopProgressSink,
-                    )
-                    .expect("sync");
-                total += start.elapsed();
-                drop(synced);
-                drop(connection);
+                match timed_full_sync(project.path()) {
+                    Ok(elapsed) => total += elapsed,
+                    Err(error) => {
+                        // Stop this sample; the error is reported once at
+                        // the bench entry point.
+                        failure.record::<()>(Err(error));
+                        break;
+                    }
+                }
             }
             total
         });
@@ -93,17 +111,22 @@ fn bench_memory(c: &mut Criterion) {
     // Final measurement of peak RSS after a single sync — criterion's
     // bench loop already ran many, so this reports the steady-state
     // peak as a side-channel.
-    match peak_rss_kib() {
-        Ok(Some(peak_kib)) => {
+    failure.finish()?;
+    match peak_rss_kib().check("measure peak RSS for peak_memory_after_full_sync_200")? {
+        Some(peak_kib) => {
             eprintln!("peak_memory_after_full_sync_200: {peak_kib} KiB peak RSS");
         }
-        Ok(None) => eprintln!(
+        None => eprintln!(
             "peak_memory_after_full_sync_200: VmHWM unavailable on this OS (not linux); \
              bench ran but the memory figure is not recorded."
         ),
-        Err(error) => panic!("peak_memory_after_full_sync_200: cannot measure peak RSS: {error}"),
     }
+    Ok(())
 }
 
-criterion_group!(benches, bench_memory);
-criterion_main!(benches);
+fn main() -> ExitCode {
+    let mut criterion = Criterion::default().configure_from_args();
+    let result = bench_memory(&mut criterion);
+    criterion.final_summary();
+    exit_code(result)
+}

@@ -45,7 +45,9 @@ fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_SQL_BYTES {
         return;
     }
-    let fixture = &*support::FIXTURE;
+    let Some(fixture) = support::fixture() else {
+        return;
+    };
     let request = Parameters(QueryRequest {
         path: Some(fixture.path()),
         sql: String::from_utf8_lossy(data).into_owned(),

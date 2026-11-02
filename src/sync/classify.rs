@@ -107,7 +107,11 @@ fn names_generated_code(segment: &str) -> bool {
 pub(super) fn classify(relative_path: &str) -> FileClass {
     let lower = relative_path.to_ascii_lowercase();
     let mut segments: Vec<&str> = lower.split(['/', '\\']).collect();
-    let file_name = segments.pop().unwrap_or("");
+    // `split` always yields at least one segment, so the file name is always
+    // present; an empty path is classified like any other unmarked path.
+    let Some(file_name) = segments.pop() else {
+        return FileClass::Authored;
+    };
     let is_vendored = segments
         .iter()
         .any(|segment| VENDORED_SEGMENTS.contains(segment));
@@ -133,6 +137,11 @@ fn file_name_or_dirs_are_generated(dirs: &[&str], file_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_path_is_authored() {
+        assert_eq!(classify(""), FileClass::Authored);
+    }
 
     #[test]
     fn an_ordinary_source_path_is_authored() {

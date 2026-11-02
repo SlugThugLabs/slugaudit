@@ -207,7 +207,7 @@ fn clip_value(
         }
         SqlValue::Blob(bytes) => {
             // A budget past the blob keeps the whole blob.
-            let kept = bytes.get(..(budget / 2).max(1)).unwrap_or(bytes);
+            let kept = bytes.split_at((budget / 2).max(1).min(bytes.len())).0;
             Some((hex_encode(kept), kept.len(), "blob", "bytes"))
         }
         _ => None,

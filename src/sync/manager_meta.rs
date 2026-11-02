@@ -121,7 +121,8 @@ pub(crate) fn ensure_project_row(
     const SCHEMA_VERSION: i64 = 1;
 
     let root_path = root.to_string_lossy();
-    let created_at = crate::util::now_unix();
+    let created_at =
+        crate::util::now_unix().map_err(|error| ProjectMetaError::Other(error.into()))?;
 
     connection
         .execute(

@@ -13,7 +13,7 @@
 //! `(f)()` or `f()()`, whose whole call text becomes the callee — which a
 //! single-capture query would drop.
 
-use crate::model::{EvidenceOrigin, LineIndex};
+use crate::model::{EvidenceOrigin, LineIndex, PositionOverflow};
 use std::collections::HashSet;
 
 mod call_queries;
@@ -48,13 +48,14 @@ pub(crate) fn call_languages() -> impl Iterator<Item = &'static str> {
 /// Extracts call-site evidence for one already indexed file in `language`:
 /// the Rust walker for Rust, the embedded call query for a language that has
 /// one, and nothing (complete, empty) for any other language. Every parse
-/// runs within what is left of `deadline`.
+/// runs within what is left of `deadline`. A position past `u32::MAX` is an
+/// error that fails the file's extraction.
 pub(crate) fn extract(
     language: &str,
     source: &str,
     lines: &LineIndex<'_>,
     deadline: Option<&Deadline>,
-) -> Extraction {
+) -> Result<Extraction, PositionOverflow> {
     if language == "rust" {
         extract_rust(source, lines, deadline)
     } else {
@@ -75,10 +76,14 @@ struct Input<'a> {
 /// was hit, the parser could not produce a tree, or a node range did not
 /// slice the source, which the caller must report as partial; it is timed
 /// out when the file's parse or a macro body's re-parse hit `deadline`.
-fn extract_rust(source: &str, lines: &LineIndex<'_>, deadline: Option<&Deadline>) -> Extraction {
+fn extract_rust(
+    source: &str,
+    lines: &LineIndex<'_>,
+    deadline: Option<&Deadline>,
+) -> Result<Extraction, PositionOverflow> {
     let tree = match super::parse_tree("rust", source, deadline) {
         Ok(tree) => tree,
-        Err(why) => return Extraction::without_tree(why),
+        Err(why) => return Ok(Extraction::without_tree(why)),
     };
     let input = Input {
         source,
@@ -88,8 +93,8 @@ fn extract_rust(source: &str, lines: &LineIndex<'_>, deadline: Option<&Deadline>
     let mut out = Extraction::default();
     let mut counter = 0usize;
     let mut seen = HashSet::new();
-    walk(tree.root_node(), &input, &mut out, &mut counter, &mut seen);
-    out
+    walk(tree.root_node(), &input, &mut out, &mut counter, &mut seen)?;
+    Ok(out)
 }
 
 /// The text-derived fields of one call node.
@@ -111,11 +116,14 @@ fn call_parts(node: &Node, source: &str, macro_call: bool) -> Result<CallParts, 
         Some(child) => qualified_callee(child, source)?,
         None => is_qualified(&callee_text),
     };
-    let callee_name = match callee {
+    let simple = match callee {
         Some(child) => simple_name(child, source)?,
         None => None,
-    }
-    .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
+    };
+    let callee_name = match simple {
+        Some(name) => name,
+        None => callee_text.trim_end_matches('!').to_owned(),
+    };
     Ok(CallParts {
         callee_text,
         callee_name,
@@ -159,7 +167,7 @@ fn walk(
     out: &mut Extraction,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
-) {
+) -> Result<(), PositionOverflow> {
     let mut pending = vec![(root, 0)];
     while let Some((node, depth)) = pending.pop() {
         if depth >= crate::evidence::MAX_WALK_DEPTH {
@@ -169,7 +177,7 @@ fn walk(
         if RUST_CALL_KINDS.contains(&node.kind().as_str()) {
             let macro_call = node.kind() == "macro_invocation";
             match call_parts(&node, input.source, macro_call) {
-                Ok(parts) => emit_call(&node, parts, input, out, counter, seen),
+                Ok(parts) => emit_call(&node, parts, input, out, counter, seen)?,
                 Err(error) => {
                     tracing::warn!(%error, "Rust call node skipped; extraction is partial");
                     out.truncated = true;
@@ -178,6 +186,7 @@ fn walk(
         }
         crate::evidence::push_children(&mut pending, &node, |child| (child, depth + 1));
     }
+    Ok(())
 }
 
 /// Pushes the call row for `node` (and, for a macro, the calls recovered from
@@ -190,7 +199,7 @@ fn emit_call(
     out: &mut Extraction,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
-) {
+) -> Result<(), PositionOverflow> {
     let macro_call = node.kind() == "macro_invocation";
     let key = format!("call:{counter}");
     *counter += 1;
@@ -203,14 +212,14 @@ fn emit_call(
             caller: parts.caller,
             macro_call,
             qualified: parts.qualified,
-            span: super::node_span(node, input.lines, "Rust call"),
+            span: super::node_span(node, input.lines, "Rust call")?,
         };
         out.items.push(call_item(key, site));
     }
     if !macro_call {
-        return;
+        return Ok(());
     }
-    let recovered = macro_calls::extract(node, input);
+    let recovered = macro_calls::extract(node, input)?;
     for (start, end, mut item) in recovered.rows {
         if seen.insert((start, end)) {
             item.key = format!("call:{counter}");
@@ -220,6 +229,7 @@ fn emit_call(
     }
     out.truncated |= recovered.capped;
     out.timed_out |= recovered.timed_out;
+    Ok(())
 }
 
 fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {

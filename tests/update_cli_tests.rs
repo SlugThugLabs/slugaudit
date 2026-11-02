@@ -19,6 +19,7 @@
 //! (`linux/x86_64`). On any other platform `run_update` refuses before these
 //! branches; that refusal is the compile-gated test in `src/update_tests.rs`.
 
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -47,30 +48,30 @@ struct UpdateSandbox {
 }
 
 impl UpdateSandbox {
-    fn new() -> Self {
-        let temp = tempfile::tempdir().expect("temp dir");
+    fn new() -> TestResult<Self> {
+        let temp = tempfile::tempdir().check("create temp dir")?;
         let home = temp.path().join("home");
         let install_dir = home.join(".slugthug").join("slugaudit");
         let bin_dir = temp.path().join("bin");
-        fs::create_dir_all(&install_dir).expect("create install dir");
-        fs::create_dir_all(&bin_dir).expect("create bin dir");
+        fs::create_dir_all(&install_dir).check("create install dir")?;
+        fs::create_dir_all(&bin_dir).check("create bin dir")?;
         let target = install_dir.join("slugaudit");
-        fs::write(&target, OLD_BINARY).expect("plant the installed binary");
+        fs::write(&target, OLD_BINARY).check("plant the installed binary")?;
 
-        UpdateSandbox {
+        Ok(UpdateSandbox {
             curl_log: temp.path().join("curl-argv.log"),
             sha_log: temp.path().join("sha256sum-argv.log"),
             _temp: temp,
             home,
             bin_dir,
             target,
-        }
+        })
     }
 
     /// Plants a fake `curl` that answers the releases API with `tag`, the
     /// `SHA256SUMS` URL with a manifest carrying `digest`, and every other URL
     /// with [`NEW_BINARY`], appending each invocation's argv to a log.
-    fn plant_curl(&self, tag: &str, digest: &str) {
+    fn plant_curl(&self, tag: &str, digest: &str) -> TestResult {
         let json = format!(r#"{{"tag_name":"{tag}"}}"#);
         let sums = format!("{digest}  {ASSET}");
         let script = format!(
@@ -89,22 +90,22 @@ impl UpdateSandbox {
              esac\n",
             log = self.curl_log.display(),
         );
-        write_executable(&self.bin_dir.join("curl"), &script);
+        write_executable(&self.bin_dir.join("curl"), &script)
     }
 
     /// Plants a fake `sha256sum` that reports `digest` for whatever path it is
     /// given and records its argv.
-    fn plant_sha256sum(&self, digest: &str) {
+    fn plant_sha256sum(&self, digest: &str) -> TestResult {
         let script = format!(
             "#!/bin/sh\n\
              printf '%s\\n' \"$@\" >> '{log}'\n\
              printf '%s  %s\\n' '{digest}' \"$1\"\n",
             log = self.sha_log.display(),
         );
-        write_executable(&self.bin_dir.join("sha256sum"), &script);
+        write_executable(&self.bin_dir.join("sha256sum"), &script)
     }
 
-    fn run(&self) -> Output {
+    fn run(&self) -> TestResult<Output> {
         Command::new(env!("CARGO_BIN_EXE_slugaudit"))
             .arg("update")
             .env("HOME", &self.home)
@@ -113,7 +114,7 @@ impl UpdateSandbox {
             .env("PATH", &self.bin_dir)
             .env_remove("SLUGAUDIT_LOG_FORMAT")
             .output()
-            .expect("spawn slugaudit update")
+            .check("spawn slugaudit update")
     }
 
     fn previous(&self) -> PathBuf {
@@ -121,12 +122,12 @@ impl UpdateSandbox {
     }
 }
 
-fn write_executable(path: &Path, script: &str) {
+fn write_executable(path: &Path, script: &str) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
-    fs::write(path, script).expect("write fake tool");
-    let mut permissions = fs::metadata(path).expect("stat fake tool").permissions();
+    fs::write(path, script).check("write fake tool")?;
+    let mut permissions = fs::metadata(path).check("stat fake tool")?.permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).expect("chmod fake tool");
+    fs::set_permissions(path, permissions).check("chmod fake tool")
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -136,12 +137,12 @@ fn text(bytes: &[u8]) -> String {
 /// The up-to-date branch must print the exact message, fetch nothing beyond
 /// the release metadata, and leave the installed binary untouched.
 #[test]
-fn run_update_reports_the_exact_up_to_date_message_without_fetching() {
-    let sandbox = UpdateSandbox::new();
-    sandbox.plant_curl(&format!("v{CURRENT_VERSION}"), MATCHING_DIGEST);
-    sandbox.plant_sha256sum(MATCHING_DIGEST);
+fn run_update_reports_the_exact_up_to_date_message_without_fetching() -> TestResult {
+    let sandbox = UpdateSandbox::new()?;
+    sandbox.plant_curl(&format!("v{CURRENT_VERSION}"), MATCHING_DIGEST)?;
+    sandbox.plant_sha256sum(MATCHING_DIGEST)?;
 
-    let output = sandbox.run();
+    let output = sandbox.run()?;
 
     assert!(
         output.status.success(),
@@ -153,7 +154,7 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() {
         format!("slugaudit is already up to date (v{CURRENT_VERSION}).\n")
     );
     assert_eq!(
-        fs::read(&sandbox.target).expect("read the installed binary"),
+        fs::read(&sandbox.target).check("read the installed binary")?,
         OLD_BINARY.as_bytes(),
         "the up-to-date branch must not replace the binary"
     );
@@ -161,7 +162,7 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() {
         !sandbox.previous().exists(),
         "nothing may be retained when nothing is replaced"
     );
-    let curl = fs::read_to_string(&sandbox.curl_log).expect("the fake curl ran");
+    let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
     assert!(
         curl.contains(API_URL),
         "the release metadata must be fetched: {curl}"
@@ -174,17 +175,18 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() {
         !sandbox.sha_log.exists(),
         "the up-to-date branch must not verify a download"
     );
+    Ok(())
 }
 
 /// The newer-release branch must print the exact messages, download and verify
 /// the asset, place it at the target, and retain the displaced binary.
 #[test]
-fn run_update_replaces_the_target_with_the_newer_release_asset() {
-    let sandbox = UpdateSandbox::new();
-    sandbox.plant_curl("v1.2.0", MATCHING_DIGEST);
-    sandbox.plant_sha256sum(MATCHING_DIGEST);
+fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
+    let sandbox = UpdateSandbox::new()?;
+    sandbox.plant_curl("v1.2.0", MATCHING_DIGEST)?;
+    sandbox.plant_sha256sum(MATCHING_DIGEST)?;
 
-    let output = sandbox.run();
+    let output = sandbox.run()?;
 
     assert!(
         output.status.success(),
@@ -201,22 +203,23 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() {
         )
     );
     assert_eq!(
-        fs::read(&sandbox.target).expect("read the updated binary"),
+        fs::read(&sandbox.target).check("read the updated binary")?,
         NEW_BINARY.as_bytes(),
         "the verified release asset must be placed at the target"
     );
     assert_eq!(
-        fs::read(sandbox.previous()).expect("read the retained binary"),
+        fs::read(sandbox.previous()).check("read the retained binary")?,
         OLD_BINARY.as_bytes(),
         "the displaced binary must be retained for a revert"
     );
-    let curl = fs::read_to_string(&sandbox.curl_log).expect("the fake curl ran");
+    let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
     let asset_url =
         format!("https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0/{ASSET}");
     let sums_url = "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0/SHA256SUMS";
     assert!(curl.contains(API_URL), "metadata fetch: {curl}");
     assert!(curl.contains(&asset_url), "asset download: {curl}");
     assert!(curl.contains(sums_url), "checksum download: {curl}");
+    Ok(())
 }
 
 /// The incomparable branch must say the comparison could not be made — never
@@ -225,12 +228,12 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() {
 /// fetch (the message says so); the mismatching digest is what makes this test
 /// assert "no replacement", without claiming the branch itself skips it.
 #[test]
-fn run_update_reports_the_exact_incomparable_message_without_replacing() {
-    let sandbox = UpdateSandbox::new();
-    sandbox.plant_curl("v1.2.0-rc1", MATCHING_DIGEST);
-    sandbox.plant_sha256sum(MISMATCHING_DIGEST);
+fn run_update_reports_the_exact_incomparable_message_without_replacing() -> TestResult {
+    let sandbox = UpdateSandbox::new()?;
+    sandbox.plant_curl("v1.2.0-rc1", MATCHING_DIGEST)?;
+    sandbox.plant_sha256sum(MISMATCHING_DIGEST)?;
 
-    let output = sandbox.run();
+    let output = sandbox.run()?;
 
     assert_eq!(
         output.status.code(),
@@ -257,7 +260,7 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() {
         "the checksum failure must be reported: {stderr}"
     );
     assert_eq!(
-        fs::read(&sandbox.target).expect("read the installed binary"),
+        fs::read(&sandbox.target).check("read the installed binary")?,
         OLD_BINARY.as_bytes(),
         "a failed verification must leave the target untouched"
     );
@@ -265,11 +268,12 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() {
         !sandbox.previous().exists(),
         "nothing may be retained when nothing is replaced"
     );
-    let curl = fs::read_to_string(&sandbox.curl_log).expect("the fake curl ran");
+    let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
     assert!(
         curl.contains(&format!(
             "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0-rc1/{ASSET}"
         )),
         "the incomparable branch must still fetch the release: {curl}"
     );
+    Ok(())
 }

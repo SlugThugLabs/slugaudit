@@ -23,24 +23,26 @@ pub const PACK_VERSION: &str = "1.18.0";
 #[cfg(test)]
 mod tests {
     use super::PACK_VERSION;
+    use slugaudit_test_check::{Check, TestResult};
 
     const PIN_PREFIX: &str = "tree-sitter-language-pack = \"=";
 
     #[test]
-    fn pack_version_matches_the_manifest_pin() {
+    fn pack_version_matches_the_manifest_pin() -> TestResult {
         let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
         let pin = manifest
             .lines()
             .find(|line| line.starts_with(PIN_PREFIX))
-            .expect("Cargo.toml must pin tree-sitter-language-pack exactly as `=x.y.z`");
+            .check("Cargo.toml must pin tree-sitter-language-pack exactly as `=x.y.z`")?;
         let version = pin
             .strip_prefix(PIN_PREFIX)
             .and_then(|rest| rest.split('"').next())
-            .expect("the tree-sitter-language-pack pin must close its quoted version");
+            .check("the tree-sitter-language-pack pin must close its quoted version")?;
 
         assert_eq!(
             PACK_VERSION, version,
             "PACK_VERSION and the tree-sitter-language-pack pin in Cargo.toml must move together"
         );
+        Ok(())
     }
 }

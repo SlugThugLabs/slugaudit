@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::menu_render::{MENU, section_label};
+use slugaudit_test_check::{Check, TestResult};
 use std::path::Path;
 
 #[test]
@@ -22,7 +23,7 @@ fn each_listed_number_selects_its_step_and_end_of_input_exits() {
 }
 
 #[test]
-fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() {
+fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() -> TestResult {
     let mut answers = vec![
         Some("x".to_owned()),
         Some("9".to_owned()),
@@ -32,10 +33,10 @@ fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() {
     let mut out = Vec::new();
 
     let choice = next_choice(&mut || Ok(answers.next().flatten()), &mut out)
-        .expect("reads and writes succeed");
+        .check("reads and writes succeed")?;
 
     assert_eq!(choice, MenuChoice::Exit);
-    let text = String::from_utf8(out).expect("utf8 output");
+    let text = String::from_utf8(out).check("utf8 output")?;
     assert_eq!(text.matches("Invalid choice;").count(), 2, "{text}");
     assert_eq!(
         text.matches("Choose an option [1-6]: ").count(),
@@ -51,6 +52,7 @@ fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() {
             .count(),
         1
     );
+    Ok(())
 }
 
 #[test]

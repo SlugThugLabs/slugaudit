@@ -131,6 +131,7 @@ pub(super) fn stat_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     #[test]
     fn hash_chunk_bytes_is_64_kib() {
@@ -159,18 +160,19 @@ mod tests {
     }
 
     #[test]
-    fn hash_reader_retries_on_interrupted() {
+    fn hash_reader_retries_on_interrupted() -> TestResult {
         let mut reader = MockInterruptedReader {
             interrupted_once: false,
             data: b"hello world",
         };
         let dummy_path = std::path::Path::new("dummy.rs");
         let result = hash_reader(&mut reader, "dummy.rs", dummy_path, 1024)
-            .expect("interrupted read must be retried");
+            .check("interrupted read must be retried")?;
         assert_eq!(
             result.content_hash,
             crate::sync::hash::hash_bytes("dummy.rs", b"hello world").content_hash
         );
+        Ok(())
     }
 
     struct MockNonInterruptedErrorReader {
@@ -206,11 +208,12 @@ mod tests {
     }
 
     #[test]
-    fn hash_reader_rejects_a_read_count_past_the_buffer() {
+    fn hash_reader_rejects_a_read_count_past_the_buffer() -> TestResult {
         let dummy_path = std::path::Path::new("dummy.rs");
         let result = hash_reader(OverreportingReader, "dummy.rs", dummy_path, u64::MAX);
         let Err(HashError::Read { path, source }) = result else {
-            panic!("an over-reported read must fail with HashError::Read");
+            return Err("an over-reported read must fail with HashError::Read".to_owned())
+                .check("unexpected outcome");
         };
         assert_eq!(path, dummy_path);
         assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
@@ -222,5 +225,6 @@ mod tests {
                 HASH_CHUNK_BYTES
             )
         );
+        Ok(())
     }
 }

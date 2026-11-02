@@ -173,12 +173,20 @@ pub(super) fn compile(entry: &MechanicEntry, limits: &ResourceLimits) -> Result<
 
 /// Loads the catalogue: compiles every session entry and reports what fails
 /// instead of dropping it.
-pub(super) fn load(session: &SessionMechanics, limits: &ResourceLimits) -> Catalog {
+///
+/// # Errors
+///
+/// Returns [`crate::util::LockPoisoned`] when the session entries were
+/// poisoned.
+pub(super) fn load(
+    session: &SessionMechanics,
+    limits: &ResourceLimits,
+) -> Result<Catalog, crate::util::LockPoisoned> {
     let mut catalog = Catalog {
         custom: Vec::new(),
         invalid: Vec::new(),
     };
-    for (index, entry) in session.entries().into_iter().enumerate() {
+    for (index, entry) in session.entries()?.into_iter().enumerate() {
         let checked = collision(&catalog, &entry.id).and_then(|()| compile(&entry, limits));
         match checked {
             Ok(query) => catalog.custom.push(Registered {
@@ -194,7 +202,7 @@ pub(super) fn load(session: &SessionMechanics, limits: &ResourceLimits) -> Catal
             }),
         }
     }
-    catalog
+    Ok(catalog)
 }
 
 /// Why `id` cannot join the catalogue, if it cannot.

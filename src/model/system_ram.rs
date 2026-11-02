@@ -139,21 +139,24 @@ fn parse_kb(line: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     #[test]
-    fn parse_proc_meminfo_reads_valid_data() {
+    fn parse_proc_meminfo_reads_valid_data() -> TestResult {
         let sample = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\nMemAvailable:   12288000 kB\n";
-        let info = parse_proc_meminfo(sample).expect("parse succeeds");
+        let info = parse_proc_meminfo(sample).check("parse succeeds")?;
         assert_eq!(info.total_bytes, 16_384_000 * 1024);
         assert_eq!(info.available_bytes, 12_288_000 * 1024);
+        Ok(())
     }
 
     #[test]
-    fn parse_proc_meminfo_handles_missing_memavailable() {
+    fn parse_proc_meminfo_handles_missing_memavailable() -> TestResult {
         let sample = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\n";
-        let info = parse_proc_meminfo(sample).expect("parse succeeds");
+        let info = parse_proc_meminfo(sample).check("parse succeeds")?;
         assert_eq!(info.total_bytes, 16_384_000 * 1024);
         assert_eq!(info.available_bytes, 8_192_000 * 1024);
+        Ok(())
     }
 
     #[test]
@@ -164,19 +167,21 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_memtotal_line_names_the_line_in_its_error() {
-        let error = parse_proc_meminfo("MemTotal:  lots kB\n").expect_err("malformed value");
+    fn a_malformed_memtotal_line_names_the_line_in_its_error() -> TestResult {
+        let error = parse_proc_meminfo("MemTotal:  lots kB\n").check_err("malformed value")?;
 
         assert!(error.contains("malformed value 'lots'"), "{error}");
+        Ok(())
     }
 
     #[test]
-    fn a_memtotal_that_overflows_bytes_is_an_error_not_a_panic() {
+    fn a_memtotal_that_overflows_bytes_is_an_error_not_a_panic() -> TestResult {
         let sample = format!("MemTotal: {} kB\n", u64::MAX);
 
-        let error = parse_proc_meminfo(&sample).expect_err("overflow");
+        let error = parse_proc_meminfo(&sample).check_err("overflow")?;
 
         assert!(error.contains("overflows"), "{error}");
+        Ok(())
     }
 
     #[test]
@@ -187,23 +192,25 @@ mod tests {
     }
 
     #[test]
-    fn detect_returns_positive_memory() {
-        let info = detect_system_memory().expect("this host reports its memory");
+    fn detect_returns_positive_memory() -> TestResult {
+        let info = detect_system_memory().check("this host reports its memory")?;
         assert!(info.total_bytes > 0);
         assert!(info.available_bytes > 0);
         assert!(info.available_bytes <= info.total_bytes);
+        Ok(())
     }
 
     #[cfg(not(target_os = "macos"))]
     #[test]
-    fn fail_closed_undetectable_memory_is_an_error_naming_the_cause() {
+    fn fail_closed_undetectable_memory_is_an_error_naming_the_cause() -> TestResult {
         let unreadable = std::io::Error::new(std::io::ErrorKind::NotFound, "no meminfo here");
 
-        let error = detect_from(Err(unreadable)).expect_err("no source yields a value");
+        let error = detect_from(Err(unreadable)).check_err("no source yields a value")?;
 
         assert_eq!(
             error.to_string(),
             "system memory could not be detected: /proc/meminfo: no meminfo here"
         );
+        Ok(())
     }
 }

@@ -4,6 +4,7 @@
 //! invariants; wired from `connect_agents.rs` the same way.
 
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn registry_entries_cite_a_reference_and_a_docs_page() {
@@ -49,7 +50,7 @@ fn refusal_text(agent: &crate::connect_agents::AgentDef) -> String {
 }
 
 #[test]
-fn every_refusal_carries_a_remedy_and_the_source_it_came_from() {
+fn every_refusal_carries_a_remedy_and_the_source_it_came_from() -> TestResult {
     for a in AGENTS {
         let text = refusal_text(a);
         assert!(
@@ -71,13 +72,14 @@ fn every_refusal_carries_a_remedy_and_the_source_it_came_from() {
     // The clients we refuse outright must also carry the paste-ready snippet.
     for a in AGENTS.iter().filter(|a| a.manual_steps) {
         let text = refusal_text(a);
-        let remedy = a.guidance(Path::new("/bin/slugaudit")).expect("remedy");
+        let remedy = a.guidance(Path::new("/bin/slugaudit")).check("remedy")?;
         assert!(
             text.contains(&remedy),
             "{}: refusal must carry the paste-ready remedy: {text}",
             a.id
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -127,10 +129,10 @@ fn success_and_failure_reports_always_name_their_source() {
 }
 
 #[test]
-fn a_malformed_client_config_is_not_registered_and_says_why() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn a_malformed_client_config_is_not_registered_and_says_why() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let config = directory.path().join("mcp.json");
-    std::fs::write(&config, "{ not json").expect("write config");
+    std::fs::write(&config, "{ not json").check("write config")?;
 
     let (registered, logs) = crate::store::test_capture::capture_warns(|| {
         crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
@@ -138,13 +140,14 @@ fn a_malformed_client_config_is_not_registered_and_says_why() {
 
     assert!(!registered);
     assert!(logs.contains("not valid JSON"), "{logs}");
+    Ok(())
 }
 
 #[test]
-fn a_well_formed_client_config_with_the_entry_is_registered_silently() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn a_well_formed_client_config_with_the_entry_is_registered_silently() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let config = directory.path().join("mcp.json");
-    std::fs::write(&config, r#"{"mcpServers":{"slugaudit":{}}}"#).expect("write config");
+    std::fs::write(&config, r#"{"mcpServers":{"slugaudit":{}}}"#).check("write config")?;
 
     let (registered, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-probe-has-slugaudit");
@@ -154,10 +157,11 @@ fn a_well_formed_client_config_with_the_entry_is_registered_silently() {
     assert!(registered);
     assert!(logs.contains("control-line-probe-has-slugaudit"));
     assert!(!logs.contains("not valid JSON"), "{logs}");
+    Ok(())
 }
 
 #[test]
-fn non_json_client_configs_are_detected_without_a_format_warning() {
+fn non_json_client_configs_are_detected_without_a_format_warning() -> TestResult {
     for (id, body) in [
         (
             "codex",
@@ -176,11 +180,11 @@ fn non_json_client_configs_are_detected_without_a_format_warning() {
             "extensions:\n  slugaudit:\n    cmd: /bin/slugaudit\n",
         ),
     ] {
-        let home = tempfile::tempdir().expect("temp dir");
-        let agent = find_agent(id).expect("agent is registered");
-        let config = agent.config.resolve(home.path()).expect("config path");
-        std::fs::create_dir_all(config.parent().expect("config parent")).expect("mkdir");
-        std::fs::write(&config, body).expect("write config");
+        let home = tempfile::tempdir().check("temp dir")?;
+        let agent = find_agent(id).check("agent is registered")?;
+        let config = agent.config.resolve(home.path()).check("config path")?;
+        std::fs::create_dir_all(config.parent().check("config parent")?).check("mkdir")?;
+        std::fs::write(&config, body).check("write config")?;
 
         let (connected, logs) = crate::store::test_capture::capture_warns(|| {
             tracing::warn!("control-line-probe-non-json");
@@ -191,72 +195,78 @@ fn non_json_client_configs_are_detected_without_a_format_warning() {
         assert!(logs.contains("control-line-probe-non-json"), "{id}: {logs}");
         assert!(!logs.contains("not valid JSON"), "{id}: {logs}");
     }
+    Ok(())
 }
 
 #[test]
-fn a_malformed_json_config_for_a_json_client_is_not_connected_and_warns() {
-    let home = tempfile::tempdir().expect("temp dir");
-    let cursor = find_agent("cursor").expect("cursor is registered");
-    let config = cursor.config.resolve(home.path()).expect("config path");
-    std::fs::create_dir_all(config.parent().expect("config parent")).expect("mkdir");
-    std::fs::write(&config, "{ not json").expect("write config");
+fn a_malformed_json_config_for_a_json_client_is_not_connected_and_warns() -> TestResult {
+    let home = tempfile::tempdir().check("temp dir")?;
+    let cursor = find_agent("cursor").check("cursor is registered")?;
+    let config = cursor.config.resolve(home.path()).check("config path")?;
+    std::fs::create_dir_all(config.parent().check("config parent")?).check("mkdir")?;
+    std::fs::write(&config, "{ not json").check("write config")?;
 
     let (connected, logs) =
         crate::store::test_capture::capture_warns(|| cursor.config_has_slugaudit(home.path()));
 
     assert!(!connected);
     assert!(logs.contains("not valid JSON"), "{logs}");
+    Ok(())
 }
 
 #[test]
-fn an_unreadable_goose_config_is_not_connected_and_says_why() {
-    let home = tempfile::tempdir().expect("temp dir");
-    let goose = find_agent("goose").expect("goose is registered");
+fn an_unreadable_goose_config_is_not_connected_and_says_why() -> TestResult {
+    let home = tempfile::tempdir().check("temp dir")?;
+    let goose = find_agent("goose").check("goose is registered")?;
     let config = goose
         .config
         .resolve(home.path())
-        .expect("goose config path");
-    std::fs::create_dir_all(config.parent().expect("config parent")).expect("mkdir");
-    let over_cap = usize::try_from(crate::util::MAX_FOREIGN_TEXT_BYTES).expect("cap fits") + 1;
-    std::fs::write(&config, vec![b' '; over_cap]).expect("write oversized config");
+        .check("goose config path")?;
+    std::fs::create_dir_all(config.parent().check("config parent")?).check("mkdir")?;
+    let over_cap = usize::try_from(crate::util::MAX_FOREIGN_TEXT_BYTES).check("cap fits")? + 1;
+    std::fs::write(&config, vec![b' '; over_cap]).check("write oversized config")?;
 
     let (connected, logs) =
         crate::store::test_capture::capture_warns(|| goose.config_has_slugaudit(home.path()));
 
     assert!(!connected);
     assert!(logs.contains("could not read client config"), "{logs}");
+    Ok(())
 }
 
 #[test]
-fn disconnect_fails_when_the_client_config_cannot_be_stat_ed() {
-    let home = tempfile::tempdir().expect("temp dir");
+fn disconnect_fails_when_the_client_config_cannot_be_stat_ed() -> TestResult {
+    let home = tempfile::tempdir().check("temp dir")?;
     // `.cursor` is a file, so `.cursor/mcp.json` fails to stat with "not a
     // directory" instead of reporting "absent".
-    std::fs::write(home.path().join(".cursor"), b"x").expect("write file");
-    let cursor = find_agent("cursor").expect("cursor is registered");
+    std::fs::write(home.path().join(".cursor"), b"x").check("write file")?;
+    let cursor = find_agent("cursor").check("cursor is registered")?;
 
     let result = crate::connect_exec::disconnect_agent(&cursor, Some(home.path()));
 
     let Err(crate::cli::ConnectError::Io(error)) = result else {
-        panic!("expected Io, got {result:?}");
+        return Err(format!("expected Io, got {result:?}")).check("unexpected outcome");
     };
     assert_eq!(
         error.kind(),
         std::io::ErrorKind::NotADirectory,
         "the stat failure's cause must reach the caller: {error}"
     );
+    Ok(())
 }
 
 #[test]
-fn the_installed_binary_check_fails_on_a_stat_error_instead_of_using_the_current_path() {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-    let temp = tempfile::tempdir().expect("temp dir");
+fn the_installed_binary_check_fails_on_a_stat_error_instead_of_using_the_current_path() -> TestResult
+{
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
     let file = temp.path().join("file");
-    std::fs::write(&file, b"x").expect("write file");
+    std::fs::write(&file, b"x").check("write file")?;
 
     let result = temp_env::with_var("SLUGTHUG_HOME", Some(file.as_os_str()), || {
         crate::connect::prefer_slugthug_binary(std::path::Path::new("/build/artifacts/slugaudit"))
     });
 
     assert!(result.is_err(), "{result:?}");
+    Ok(())
 }

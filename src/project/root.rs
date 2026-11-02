@@ -42,50 +42,56 @@ impl ProjectRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     #[test]
-    fn resolves_an_existing_directory() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+    fn resolves_an_existing_directory() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
+        let root = ProjectRoot::resolve(directory.path()).check("valid root")?;
         assert_eq!(
             root.as_path(),
             directory
                 .path()
                 .canonicalize()
-                .expect("tempdir canonicalizes")
+                .check("tempdir canonicalizes")?
         );
+        Ok(())
     }
 
     #[test]
-    fn rejects_a_file_as_root() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn rejects_a_file_as_root() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
         let file_path = directory.path().join("not-a-directory");
-        std::fs::write(&file_path, b"content").expect("write fixture file");
+        std::fs::write(&file_path, b"content").check("write fixture file")?;
         assert!(matches!(
             ProjectRoot::resolve(&file_path),
             Err(RootError::NotADirectory)
         ));
+        Ok(())
     }
 
     #[test]
-    fn rejects_a_path_that_does_not_exist() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn rejects_a_path_that_does_not_exist() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
         let missing = directory.path().join("does-not-exist");
         assert!(matches!(
             ProjectRoot::resolve(&missing),
             Err(RootError::Unresolvable(_))
         ));
+        Ok(())
     }
 
     #[test]
-    fn an_unresolvable_root_keeps_the_io_error_kind() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn an_unresolvable_root_keeps_the_io_error_kind() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
         let missing = directory.path().join("does-not-exist");
 
         let Err(RootError::Unresolvable(source)) = ProjectRoot::resolve(&missing) else {
-            panic!("a missing path must be unresolvable");
+            return Err("a missing path must be unresolvable".to_owned())
+                .check("unexpected outcome");
         };
 
         assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        Ok(())
     }
 }

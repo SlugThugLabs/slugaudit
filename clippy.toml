@@ -2,3 +2,16 @@
 # backticks, as if they were code identifiers rather than product/format
 # names.
 doc-valid-idents = ["SlugAudit", "SQLite", "CocoaPods", "OpenHands", "AsciiDoc", ".."]
+
+# Owner rule: a missing value or a failed step is handled where it happens,
+# never papered over with a fallback. An `Option` default is an explicit
+# `match`/`let ... else`; an error is returned or, where continuing is
+# correct, recorded and returned beside the result.
+disallowed-methods = [
+    { path = "core::option::Option::unwrap_or", reason = "handle the absent case with an explicit match or let-else" },
+    { path = "core::option::Option::unwrap_or_else", reason = "handle the absent case with an explicit match or let-else" },
+    { path = "core::option::Option::unwrap_or_default", reason = "handle the absent case with an explicit match or let-else" },
+    { path = "core::result::Result::unwrap_or", reason = "return the error, or record and return it beside the result" },
+    { path = "core::result::Result::unwrap_or_else", reason = "return the error, or record and return it beside the result" },
+    { path = "core::result::Result::unwrap_or_default", reason = "return the error, or record and return it beside the result" },
+]

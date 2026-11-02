@@ -62,7 +62,9 @@ fuzz_target!(|data: &[u8]| {
     if body.len() > MAX_QUERY_BYTES {
         return;
     }
-    let fixture = &*support::FIXTURE;
+    let Some(fixture) = support::fixture() else {
+        return;
+    };
     let (file, _) = support::FILES[*selector as usize % support::FILES.len()];
 
     // `language` mode has no `file`, so the grammar has to be named; reuse the
@@ -71,7 +73,11 @@ fuzz_target!(|data: &[u8]| {
     let (file_field, language_field) = if selector & MULTI_FILE == 0 {
         (Some(file.to_owned()), None)
     } else {
-        let language = detect_language(file).unwrap_or_else(|| "rust".to_owned());
+        // Every fixture path has a detectable language; an absent one ends
+        // this input cleanly rather than guessing a grammar.
+        let Some(language) = detect_language(file) else {
+            return;
+        };
         (None, Some(language))
     };
 

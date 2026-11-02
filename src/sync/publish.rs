@@ -42,6 +42,10 @@ pub enum PublishError {
     /// invalid.
     #[error(transparent)]
     Limits(#[from] crate::project::ProjectLimitsError),
+    /// Process state the sync reads (the grammar fetch gate, a worker's
+    /// error slot) was poisoned by a panic.
+    #[error(transparent)]
+    Lock(#[from] crate::util::LockPoisoned),
     /// Writing the revision failed, including the CAS stale-baseline verdict.
     #[error(transparent)]
     Revision(#[from] revision::RevisionError),
@@ -146,6 +150,7 @@ impl PublishError {
             PublishError::Discovery(_) => "discovery",
             PublishError::Sample(_) => "sample",
             PublishError::Limits(_) => "project_limits",
+            PublishError::Lock(_) => "lock_poisoned",
             PublishError::Revision(_) => "revision",
             PublishError::Database(_) => "database",
             PublishError::ImportTooLarge { .. } => "import_too_large",
@@ -167,6 +172,20 @@ impl PublishError {
             path = ?self.path_for_log(),
             error = %self,
             "a later sampling failure was discarded after the first error was recorded",
+        );
+    }
+
+    /// Logs this worker failure when the batch's error slot is poisoned and
+    /// cannot hold it. The batch still fails: its collector locks the same
+    /// slot and returns the poisoned-lock error.
+    pub(super) fn warn_unrecorded(&self, poisoned: &crate::util::LockPoisoned) {
+        tracing::warn!(
+            operation = "sample_batch",
+            category = self.category(),
+            path = ?self.path_for_log(),
+            error = %self,
+            slot_error = %poisoned,
+            "a sampling failure could not be recorded; the batch fails with the poisoned slot",
         );
     }
 

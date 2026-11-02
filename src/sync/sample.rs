@@ -177,11 +177,16 @@ pub(super) fn skipped_record(
 /// Runs pack analysis on a sampled file and folds the result into a
 /// storable `FileRecord`, capping evidence to `limits.evidence`. The file's
 /// parses run within what is left of the sync `deadline`.
+///
+/// # Errors
+///
+/// Returns [`crate::util::LockPoisoned`] when the grammar fetch gate's state
+/// was poisoned.
 pub(super) fn to_file_record(
     sample: Sample,
     limits: &ResourceLimits,
     deadline: &Deadline,
-) -> FileRecord {
+) -> Result<FileRecord, crate::util::LockPoisoned> {
     let content = sample.content.as_deref();
     let mut parsed = analyze(
         &sample.relative_path,
@@ -189,7 +194,7 @@ pub(super) fn to_file_record(
         limits.max_parse_bytes,
         Duration::from_millis(limits.max_parse_wall_clock_ms),
         deadline,
-    );
+    )?;
     // `analyze` decides completeness from the pack's own diagnostics, before
     // the evidence caps run. A run it called `Full` whose items are then
     // discarded by the caps must not be stored as `Full` beside the "records
@@ -201,7 +206,7 @@ pub(super) fn to_file_record(
     if discarded && parsed.run.completeness == ExtractionCompleteness::Full {
         parsed.run.completeness = ExtractionCompleteness::Partial;
     }
-    FileRecord {
+    Ok(FileRecord {
         relative_path: sample.relative_path,
         is_binary: sample.is_binary,
         content: sample.content,
@@ -212,7 +217,7 @@ pub(super) fn to_file_record(
         language_detected: parsed.language_detected,
         run: parsed.run,
         evidence: parsed.evidence,
-    }
+    })
 }
 
 pub(super) fn truncation_evidence(

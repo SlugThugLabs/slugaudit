@@ -5,6 +5,7 @@
 //! actual protocol. This spawns the real binary as a subprocess.
 
 use serde_json::json;
+use slugaudit_test_check::{Check, TestResult};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -21,20 +22,20 @@ struct ServerProcess {
 }
 
 impl ServerProcess {
-    fn spawn() -> Self {
+    fn spawn() -> TestResult<Self> {
         let binary = env!("CARGO_BIN_EXE_slugaudit");
-        let home = tempfile::tempdir().expect("server home dir");
+        let home = tempfile::tempdir().check("server home dir")?;
         let mut child = Command::new(binary)
             .env("SLUGTHUG_HOME", home.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn slugaudit");
+            .check("spawn slugaudit")?;
 
-        let stdin = child.stdin.take().expect("stdin");
-        let stdout = child.stdout.take().expect("stdout");
-        let stderr = child.stderr.take().expect("stderr");
+        let stdin = child.stdin.take().check("stdin")?;
+        let stdout = child.stdout.take().check("stdout")?;
+        let stderr = child.stderr.take().check("stderr")?;
 
         let (stdout_tx, stdout_lines) = mpsc::channel();
         std::thread::spawn(move || {
@@ -67,25 +68,26 @@ impl ServerProcess {
             }
         });
 
-        Self {
+        Ok(Self {
             _home: home,
             child,
             stdin: Some(stdin),
             stdout_lines,
             stderr_lines,
-        }
+        })
     }
 
-    fn send(&mut self, json: &str) {
-        let stdin = self.stdin.as_mut().expect("stdin still open");
-        writeln!(stdin, "{json}").expect("write request line");
-        stdin.flush().expect("flush request");
+    fn send(&mut self, json: &str) -> TestResult {
+        let stdin = self.stdin.as_mut().check("stdin still open")?;
+        writeln!(stdin, "{json}").check("write request line")?;
+        stdin.flush().check("flush request")?;
+        Ok(())
     }
 
-    fn recv_stdout_line(&self) -> String {
+    fn recv_stdout_line(&self) -> TestResult<String> {
         self.stdout_lines
             .recv_timeout(Duration::from_secs(10))
-            .expect("a stdout line within timeout")
+            .check("a stdout line within timeout")
     }
 
     /// Reads stdout lines until a JSON-RPC response with the given `id`
@@ -94,14 +96,17 @@ impl ServerProcess {
     /// so they cannot be the requested response, and this function drains
     /// them instead of silently dropping them between `recv_stdout_line`
     /// calls.
-    fn recv_response(&self, expected_id: u64) -> (serde_json::Value, Vec<serde_json::Value>) {
+    fn recv_response(
+        &self,
+        expected_id: u64,
+    ) -> TestResult<(serde_json::Value, Vec<serde_json::Value>)> {
         let mut notifications = Vec::new();
         loop {
-            let line = self.recv_stdout_line();
+            let line = self.recv_stdout_line()?;
             let parsed: serde_json::Value =
-                serde_json::from_str(&line).expect("stdout line is valid JSON");
+                serde_json::from_str(&line).check("stdout line is valid JSON")?;
             if parsed["id"] == expected_id {
-                return (parsed, notifications);
+                return Ok((parsed, notifications));
             }
             // A line without an `id` matching the expected one is a
             // notification — keep it and wait for the real response.
@@ -115,18 +120,18 @@ impl ServerProcess {
         id: u64,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> serde_json::Value {
+    ) -> TestResult<serde_json::Value> {
         let request = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "tools/call",
             "params": { "name": name, "arguments": arguments },
         });
-        self.send(&request.to_string());
-        let response: serde_json::Value = serde_json::from_str(&self.recv_stdout_line())
-            .unwrap_or_else(|err| panic!("{name} response is valid JSON: {err}"));
+        self.send(&request.to_string())?;
+        let response: serde_json::Value = serde_json::from_str(&self.recv_stdout_line()?)
+            .check(&format!("{name} response is valid JSON"))?;
         assert_eq!(response["id"], id, "{name} response carries its request id");
-        response
+        Ok(response)
     }
 
     /// Sends a `tools/call` and returns the tool result's JSON text, parsed.
@@ -135,13 +140,12 @@ impl ServerProcess {
         id: u64,
         name: &str,
         arguments: &serde_json::Value,
-    ) -> serde_json::Value {
-        let response = self.tool_response(id, name, arguments);
+    ) -> TestResult<serde_json::Value> {
+        let response = self.tool_response(id, name, arguments)?;
         let content = response["result"]["content"][0]["text"]
             .as_str()
-            .unwrap_or_else(|| panic!("{name} result has text content: {response}"));
-        serde_json::from_str(content)
-            .unwrap_or_else(|err| panic!("{name} result text is JSON: {err}"))
+            .check(&format!("{name} result has text content: {response}"))?;
+        serde_json::from_str(content).check(&format!("{name} result text is JSON"))
     }
 
     /// Drains whatever stderr lines have arrived so far (short grace
@@ -158,24 +162,24 @@ impl ServerProcess {
     /// Initialize the server and return a project path string suitable
     /// for embedding in tool-call JSON.  Writes a single `lib.rs` fixture
     /// and handles the init/initialized handshake.
-    fn init_project() -> (tempfile::TempDir, String) {
-        let project = tempfile::tempdir().expect("project dir");
+    fn init_project() -> TestResult<(tempfile::TempDir, String)> {
+        let project = tempfile::tempdir().check("project dir")?;
         std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-            .expect("activate project");
-        write_database_marker(&project.path().join(".planning").join("slugaudit"));
+            .check("activate project")?;
+        write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
         std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n")
-            .expect("write fixture file");
+            .check("write fixture file")?;
         let path = project.path().to_string_lossy().replace('\\', "/");
-        (project, path)
+        Ok((project, path))
     }
 
-    fn handshake(&mut self) {
+    fn handshake(&mut self) -> TestResult {
         self.send(
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test-client","version":"0.0.1"}}}"#,
-        );
+        )?;
         let _: serde_json::Value =
-            serde_json::from_str(&self.recv_stdout_line()).expect("init response");
-        self.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+            serde_json::from_str(&self.recv_stdout_line()?).check("init response")?;
+        self.send(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
     }
 }
 
@@ -191,8 +195,14 @@ impl Drop for ServerProcess {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        // Drop cannot return an error; a failed kill or reap is reported on
+        // stderr, once each, so a leaked server process is visible.
+        if let Err(error) = self.child.kill() {
+            eprintln!("could not kill the test server: {error}");
+        }
+        if let Err(error) = self.child.wait() {
+            eprintln!("could not reap the test server: {error}");
+        }
     }
 }
 
@@ -202,22 +212,22 @@ impl Drop for ServerProcess {
 // the "state carries correctly across a real session" property this test
 // exists to prove.
 #[test]
-fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
-    let (project, project_path) = ServerProcess::init_project();
+fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
+    let (project, project_path) = ServerProcess::init_project()?;
 
-    let mut server = ServerProcess::spawn();
-    server.handshake();
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
 
-    let report = server.tool_json(2, "report", &json!({ "path": project_path }));
+    let report = server.tool_json(2, "report", &json!({ "path": project_path }))?;
     assert_eq!(report["file_count"], 1);
-    let languages = report["languages"].as_array().expect("languages array");
+    let languages = report["languages"].as_array().check("languages array")?;
     assert!(languages.iter().any(|entry| entry["language"] == "rust"));
 
     let query_result = server.tool_json(
         3,
         "query",
         &json!({ "path": project_path, "sql": "SELECT path, language FROM files" }),
-    );
+    )?;
     assert_eq!(query_result["rows"][0]["path"], "lib.rs");
     assert_eq!(query_result["rows"][0]["language"], "rust");
 
@@ -225,7 +235,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         4,
         "query",
         &json!({ "path": project_path, "sql": "DELETE FROM files" }),
-    );
+    )?;
     assert!(
         write_response["error"]["code"].is_number(),
         "a write attempt through query must come back as a typed protocol error, not succeed: {write_response}"
@@ -239,7 +249,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
             "file": "lib.rs",
             "query": "(function_item name: (identifier) @name)",
         }),
-    );
+    )?;
     assert_eq!(structure_result["matches"][0]["text"], "a");
     assert_eq!(structure_result["matches"][0]["capture_name"], "name");
 
@@ -256,7 +266,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
             "title": "t",
             "description": "d",
         }),
-    );
+    )?;
     assert_eq!(finding_result["status"], "current");
     assert!(finding_result["id"].as_i64().is_some_and(|id| id > 0));
 
@@ -266,7 +276,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
-    .expect("modify source");
+    .check("modify source")?;
     // The next tool call hashes the tree, sees the change, and publishes
     // revision 2 (the finding reads stale). Poll the revision count
     // instead of sleeping a fixed amount, so a slow CI machine can't turn
@@ -277,10 +287,10 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
             7,
             "query",
             &json!({ "path": project_path, "sql": "SELECT count(*) AS n FROM revisions" }),
-        );
+        )?;
         revision_count = sync_result["rows"][0]["n"]
             .as_i64()
-            .expect("revision count is a number");
+            .check("revision count is a number")?;
         if revision_count == 2 {
             break;
         }
@@ -291,7 +301,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         "the modification must publish a second revision"
     );
 
-    let stale_result = server.tool_json(8, "finding_read", &json!({ "path": project_path }));
+    let stale_result = server.tool_json(8, "finding_read", &json!({ "path": project_path }))?;
     assert_eq!(
         stale_result["findings"][0]["status"], "stale",
         "the finding must read stale once its source changed"
@@ -321,6 +331,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
         !stderr.contains("\"jsonrpc\""),
         "stderr must never carry JSON-RPC protocol content: {stderr}"
     );
+    Ok(())
 }
 
 /// Restart behavior (release-gate item): after the server process exits, a
@@ -329,45 +340,46 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() {
 /// freshness re-verification still converges on the same revision for an
 /// unchanged project.
 #[test]
-fn restart_serves_the_same_revision_from_disk() {
-    let (_project, project_path) = ServerProcess::init_project();
+fn restart_serves_the_same_revision_from_disk() -> TestResult {
+    let (_project, project_path) = ServerProcess::init_project()?;
 
-    let report_revision = |server: &mut ServerProcess| -> String {
-        server.handshake();
+    let report_revision = |server: &mut ServerProcess| -> TestResult<String> {
+        server.handshake()?;
         let call = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
         );
-        server.send(&call);
+        server.send(&call)?;
         let response: serde_json::Value =
-            serde_json::from_str(&server.recv_stdout_line()).expect("report response");
+            serde_json::from_str(&server.recv_stdout_line()?).check("report response")?;
         let content = response["result"]["content"][0]["text"]
             .as_str()
-            .expect("report text");
-        let report: serde_json::Value = serde_json::from_str(content).expect("report JSON");
-        report["revision_id"]
+            .check("report text")?;
+        let report: serde_json::Value = serde_json::from_str(content).check("report JSON")?;
+        Ok(report["revision_id"]
             .as_str()
-            .expect("revision id")
-            .to_owned()
+            .check("revision id")?
+            .to_owned())
     };
 
-    let mut first = ServerProcess::spawn();
-    let first_revision = report_revision(&mut first);
+    let mut first = ServerProcess::spawn()?;
+    let first_revision = report_revision(&mut first)?;
     drop(first); // close stdin → graceful shutdown
 
-    let mut second = ServerProcess::spawn();
-    let second_revision = report_revision(&mut second);
+    let mut second = ServerProcess::spawn()?;
+    let second_revision = report_revision(&mut second)?;
     assert_eq!(
         second_revision, first_revision,
         "a fresh server must serve the same revision from the persisted database"
     );
+    Ok(())
 }
 
 /// Session findings live in `findings-<id>.db` for one server process: a restarted
 /// server begins with none, and `finding_clear` empties a live one and says how
 /// many it removed.
 #[test]
-fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() {
-    let (_project, project_path) = ServerProcess::init_project();
+fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() -> TestResult {
+    let (_project, project_path) = ServerProcess::init_project()?;
     let finding = json!({
         "path": project_path,
         "file": "lib.rs",
@@ -379,32 +391,33 @@ fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() {
         "description": "d",
     });
 
-    let mut first = ServerProcess::spawn();
-    first.handshake();
-    first.tool_json(2, "finding", &finding);
-    let read = first.tool_json(3, "finding_read", &json!({ "path": project_path }));
+    let mut first = ServerProcess::spawn()?;
+    first.handshake()?;
+    first.tool_json(2, "finding", &finding)?;
+    let read = first.tool_json(3, "finding_read", &json!({ "path": project_path }))?;
     assert_eq!(read["findings"].as_array().map(Vec::len), Some(1));
-    let cleared = first.tool_json(4, "finding_clear", &json!({ "path": project_path }));
+    let cleared = first.tool_json(4, "finding_clear", &json!({ "path": project_path }))?;
     assert_eq!(cleared["removed"], 1);
-    first.tool_json(5, "finding", &finding);
+    first.tool_json(5, "finding", &finding)?;
     drop(first);
 
-    let mut second = ServerProcess::spawn();
-    second.handshake();
-    let read = second.tool_json(2, "finding_read", &json!({ "path": project_path }));
+    let mut second = ServerProcess::spawn()?;
+    second.handshake()?;
+    let read = second.tool_json(2, "finding_read", &json!({ "path": project_path }))?;
     assert_eq!(
         read["findings"].as_array().map(Vec::len),
         Some(0),
         "a new server process starts with no findings: {read}"
     );
+    Ok(())
 }
 
 /// Two live servers on one repo each keep their own findings: the second
 /// server's first call does not wipe the first server's, and `finding_clear`
 /// in one leaves the other's alone.
 #[test]
-fn two_live_servers_on_one_repo_keep_their_own_findings() {
-    let (_project, project_path) = ServerProcess::init_project();
+fn two_live_servers_on_one_repo_keep_their_own_findings() -> TestResult {
+    let (_project, project_path) = ServerProcess::init_project()?;
     let finding = |title: &str| {
         json!({
             "path": project_path,
@@ -417,53 +430,55 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() {
             "description": "d",
         })
     };
-    let titles = |server: &mut ServerProcess, id: u64| -> Vec<String> {
-        let read = server.tool_json(id, "finding_read", &json!({ "path": project_path }));
+    let titles = |server: &mut ServerProcess, id: u64| -> TestResult<Vec<String>> {
+        let read = server.tool_json(id, "finding_read", &json!({ "path": project_path }))?;
         read["findings"]
             .as_array()
-            .expect("findings array")
+            .check("findings array")?
             .iter()
-            .map(|entry| entry["title"].as_str().expect("title").to_owned())
-            .collect()
+            .map(|entry| Ok(entry["title"].as_str().check("title")?.to_owned()))
+            .collect::<TestResult<Vec<String>>>()
     };
 
-    let mut first = ServerProcess::spawn();
-    first.handshake();
-    first.tool_json(2, "finding", &finding("from first"));
+    let mut first = ServerProcess::spawn()?;
+    first.handshake()?;
+    first.tool_json(2, "finding", &finding("from first"))?;
 
-    let mut second = ServerProcess::spawn();
-    second.handshake();
+    let mut second = ServerProcess::spawn()?;
+    second.handshake()?;
     assert!(
-        titles(&mut second, 2).is_empty(),
+        titles(&mut second, 2)?.is_empty(),
         "the second server starts with none of its own"
     );
-    second.tool_json(3, "finding", &finding("from second"));
+    second.tool_json(3, "finding", &finding("from second"))?;
 
-    assert_eq!(titles(&mut first, 3), ["from first"]);
-    assert_eq!(titles(&mut second, 4), ["from second"]);
-    let cleared = second.tool_json(5, "finding_clear", &json!({ "path": project_path }));
+    assert_eq!(titles(&mut first, 3)?, ["from first"]);
+    assert_eq!(titles(&mut second, 4)?, ["from second"]);
+    let cleared = second.tool_json(5, "finding_clear", &json!({ "path": project_path }))?;
     assert_eq!(cleared["removed"], 1);
-    assert_eq!(titles(&mut first, 4), ["from first"]);
+    assert_eq!(titles(&mut first, 4)?, ["from first"]);
+    Ok(())
 }
 
 /// The advertised tool list has `finding_clear` and not `finding_sessions`.
 #[test]
-fn the_tool_list_has_finding_clear_and_no_finding_sessions() {
-    let mut server = ServerProcess::spawn();
-    server.handshake();
-    server.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#);
-    let (response, _) = server.recv_response(2);
+fn the_tool_list_has_finding_clear_and_no_finding_sessions() -> TestResult {
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+    server.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)?;
+    let (response, _) = server.recv_response(2)?;
 
-    let names: Vec<&str> = response["result"]["tools"]
+    let names = response["result"]["tools"]
         .as_array()
-        .expect("tools array")
+        .check("tools array")?
         .iter()
-        .map(|tool| tool["name"].as_str().expect("tool name"))
-        .collect();
+        .map(|tool| tool["name"].as_str().check("tool name"))
+        .collect::<TestResult<Vec<&str>>>()?;
 
     assert_eq!(names.len(), 10, "{names:?}");
     assert!(names.contains(&"finding_clear"), "{names:?}");
     assert!(!names.contains(&"finding_sessions"), "{names:?}");
+    Ok(())
 }
 
 /// When the caller requests progress notifications (by passing
@@ -477,17 +492,17 @@ fn the_tool_list_has_finding_clear_and_no_finding_sessions() {
 /// query is a fast, no-publish call — the progress pipeline still fires
 /// regardless.
 #[test]
-fn progress_notifications_flow_over_stdio() {
-    let (_project, project_path) = ServerProcess::init_project();
-    let mut server = ServerProcess::spawn();
-    server.handshake();
+fn progress_notifications_flow_over_stdio() -> TestResult {
+    let (_project, project_path) = ServerProcess::init_project()?;
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
 
     // Phase 1 — sync without progress: drain any stdout, verify success.
     let sync_call = format!(
         r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
     );
-    server.send(&sync_call);
-    let (sync_response, _) = server.recv_response(2);
+    server.send(&sync_call)?;
+    let (sync_response, _) = server.recv_response(2)?;
     assert!(
         sync_response["result"].is_object(),
         "initial sync must succeed: {sync_response}"
@@ -500,8 +515,8 @@ fn progress_notifications_flow_over_stdio() {
     let query_call = format!(
         r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"query","arguments":{{"path":"{project_path}","sql":"SELECT 1"}},"_meta":{{"progressToken":"pt-q"}}}}}}"#
     );
-    server.send(&query_call);
-    let (response, notifications) = server.recv_response(3);
+    server.send(&query_call)?;
+    let (response, notifications) = server.recv_response(3)?;
 
     assert!(
         response["result"].is_object(),
@@ -535,11 +550,12 @@ fn progress_notifications_flow_over_stdio() {
     // The last notification must signal completion at 1.0.
     let last = notifications
         .last()
-        .expect("at least one progress notification");
+        .check("at least one progress notification")?;
     assert_eq!(
         last["params"]["progress"], 1.0,
         "final progress notification must report completion at 1.0: {last}"
     );
+    Ok(())
 }
 
 /// The auditor-owned mechanics flow over real stdio, in one live server:
@@ -547,21 +563,21 @@ fn progress_notifications_flow_over_stdio() {
 /// new entry's first count, `leads` lists it first as a session entry, and a
 /// second `report` no longer carries the note.
 #[test]
-fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
-    let project = tempfile::tempdir().expect("project dir");
+fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
     std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    write_database_marker(&project.path().join(".planning").join("slugaudit"));
+        .check("activate project")?;
+    write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     std::fs::write(
         project.path().join("app.py"),
         b"def run(code):\n    eval(code)  # eval(comment)\n    return \"eval(text)\"\n",
     )
-    .expect("write fixture file");
+    .check("write fixture file")?;
     let project_path = project.path().to_string_lossy().replace('\\', "/");
-    let mut server = ServerProcess::spawn();
-    server.handshake();
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
 
-    let first_report = server.tool_json(2, "report", &json!({ "path": project_path }));
+    let first_report = server.tool_json(2, "report", &json!({ "path": project_path }))?;
     let added = server.tool_json(
         3,
         "mechanic",
@@ -573,9 +589,9 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
             "query": "(call function: (identifier) @callee (#eq? @callee \"eval\"))",
             "note": "dynamic code execution",
         }),
-    );
-    let leads = server.tool_json(4, "leads", &json!({ "path": project_path }));
-    let second_report = server.tool_json(5, "report", &json!({ "path": project_path }));
+    )?;
+    let leads = server.tool_json(4, "leads", &json!({ "path": project_path }))?;
+    let second_report = server.tool_json(5, "report", &json!({ "path": project_path }))?;
 
     assert!(
         first_report["mechanics"]["note"]
@@ -597,10 +613,11 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() {
         second_report["mechanics"]["note"].is_null(),
         "only the first report carries the note: {second_report}"
     );
+    Ok(())
 }
 
 /// Creates the empty owner-only `project.db` that marks a project as active.
-fn write_database_marker(activation: &std::path::Path) {
+fn write_database_marker(activation: &std::path::Path) -> TestResult {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .write(true)
@@ -608,5 +625,6 @@ fn write_database_marker(activation: &std::path::Path) {
         .truncate(true)
         .mode(0o600)
         .open(activation.join("project.db"))
-        .expect("create database marker");
+        .check("create database marker")?;
+    Ok(())
 }

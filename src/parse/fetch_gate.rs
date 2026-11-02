@@ -10,6 +10,7 @@
 //! grammar that is already cached still loads normally. The state is per
 //! process, so a server restart retries immediately.
 
+use crate::util::LockPoisoned;
 use std::time::Duration;
 
 /// How long the gate stays closed after a fetch failure. Long enough that an
@@ -20,6 +21,7 @@ pub(crate) const GRAMMAR_FETCH_COOLDOWN: Duration = Duration::from_mins(10);
 
 #[cfg(not(test))]
 mod state {
+    use crate::util::LockPoisoned;
     use std::sync::Mutex;
     use std::time::Instant;
 
@@ -29,12 +31,14 @@ mod state {
         Instant::now()
     }
 
-    pub(super) fn last_failure() -> Option<Instant> {
-        *crate::util::lock_or_recover(&LAST_FAILURE, "grammar_fetch_gate")
-    }
-
-    pub(super) fn set_last_failure(at: Instant) {
-        *crate::util::lock_or_recover(&LAST_FAILURE, "grammar_fetch_gate") = Some(at);
+    /// Runs `change` on the time of the last fetch failure.
+    pub(super) fn with_last_failure<T>(
+        change: impl FnOnce(&mut Option<Instant>) -> T,
+    ) -> Result<T, LockPoisoned> {
+        Ok(change(&mut *crate::util::lock(
+            &LAST_FAILURE,
+            "grammar_fetch_gate",
+        )?))
     }
 
     pub(super) fn grammar_cached(language: &str) -> bool {
@@ -47,11 +51,13 @@ mod state {
 /// the host's grammar cache.
 #[cfg(test)]
 mod state {
+    use crate::util::LockPoisoned;
     use std::cell::Cell;
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     thread_local! {
-        static LAST_FAILURE: Cell<Option<Instant>> = const { Cell::new(None) };
+        static LAST_FAILURE: Mutex<Option<Instant>> = const { Mutex::new(None) };
         static SKEW: Cell<Duration> = const { Cell::new(Duration::ZERO) };
         static CACHED: Cell<bool> = const { Cell::new(false) };
     }
@@ -60,12 +66,11 @@ mod state {
         Instant::now() + SKEW.with(Cell::get)
     }
 
-    pub(super) fn last_failure() -> Option<Instant> {
-        LAST_FAILURE.with(Cell::get)
-    }
-
-    pub(super) fn set_last_failure(at: Instant) {
-        LAST_FAILURE.with(|last| last.set(Some(at)));
+    /// Runs `change` on this thread's time of the last fetch failure.
+    pub(super) fn with_last_failure<T>(
+        change: impl FnOnce(&mut Option<Instant>) -> T,
+    ) -> Result<T, LockPoisoned> {
+        LAST_FAILURE.with(|last| Ok(change(&mut *crate::util::lock(last, "grammar_fetch_gate")?)))
     }
 
     pub(super) fn grammar_cached(_language: &str) -> bool {
@@ -82,28 +87,43 @@ mod state {
 }
 
 /// Records that a grammar fetch just failed, closing the gate.
-pub(crate) fn record_fetch_failure() {
-    state::set_last_failure(state::now());
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate's state was poisoned.
+pub(crate) fn record_fetch_failure() -> Result<(), LockPoisoned> {
+    let now = state::now();
+    state::with_last_failure(|last| *last = Some(now))
 }
 
-fn cooling_down() -> bool {
-    state::last_failure()
-        .is_some_and(|at| state::now().saturating_duration_since(at) < GRAMMAR_FETCH_COOLDOWN)
+fn cooling_down() -> Result<bool, LockPoisoned> {
+    let now = state::now();
+    state::with_last_failure(|last| {
+        last.is_some_and(|at| now.saturating_duration_since(at) < GRAMMAR_FETCH_COOLDOWN)
+    })
 }
 
 /// True when a stored `LoadFailed` row should be re-parsed now: no fetch has
 /// failed in this process, or the cool-down has elapsed. Every sync asks
 /// this, so during the cool-down an unchanged
 /// `LoadFailed` file is skipped like any other and no revision is published.
-pub(crate) fn load_failed_retry_due() -> bool {
-    !cooling_down()
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate's state was poisoned.
+pub(crate) fn load_failed_retry_due() -> Result<bool, LockPoisoned> {
+    Ok(!cooling_down()?)
 }
 
 /// True when extraction for `language` must not call the pack: the gate is
 /// closed and the grammar is not already on this host (the pack's
 /// `has_parser`), so the call would attempt a download.
-pub(crate) fn blocks_fetch(language: &str) -> bool {
-    cooling_down() && !state::grammar_cached(language)
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate's state was poisoned.
+pub(crate) fn blocks_fetch(language: &str) -> Result<bool, LockPoisoned> {
+    Ok(cooling_down()? && !state::grammar_cached(language))
 }
 
 /// Test controls for the gate's clock and grammar cache.

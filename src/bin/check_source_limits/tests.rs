@@ -3,6 +3,7 @@
 use super::approval::{Exception, reason as exception_reason};
 use super::counter::{PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, verdict};
 use super::{FileOutcome, check_file};
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn empty_string_is_zero() {
@@ -194,8 +195,8 @@ const AGENT_ANNOTATION: &str =
     "// slugaudit-line-exception: approved-by=slugthug; reason=cohesive\n";
 
 #[test]
-fn a_dated_human_exception_passes_a_production_file_at_301_lines() {
-    let exception = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+fn a_dated_human_exception_passes_a_production_file_at_301_lines() -> TestResult {
+    let exception = exception_reason(HUMAN_ANNOTATION).check("human annotation parses")?;
 
     assert_eq!(
         verdict(301, Some(exception.clone()), false),
@@ -203,11 +204,12 @@ fn a_dated_human_exception_passes_a_production_file_at_301_lines() {
             reason: exception.reason
         }
     );
+    Ok(())
 }
 
 #[test]
-fn a_dated_human_exception_passes_a_production_file_at_350_lines() {
-    let exception = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+fn a_dated_human_exception_passes_a_production_file_at_350_lines() -> TestResult {
+    let exception = exception_reason(HUMAN_ANNOTATION).check("human annotation parses")?;
 
     assert_eq!(
         verdict(350, Some(exception.clone()), false),
@@ -215,27 +217,29 @@ fn a_dated_human_exception_passes_a_production_file_at_350_lines() {
             reason: exception.reason
         }
     );
+    Ok(())
 }
 
 #[test]
-fn an_agent_exception_fails_hard_at_301_and_350_lines() {
-    let exception = exception_reason(AGENT_ANNOTATION).expect("agent annotation parses");
+fn an_agent_exception_fails_hard_at_301_and_350_lines() -> TestResult {
+    let exception = exception_reason(AGENT_ANNOTATION).check("agent annotation parses")?;
     let expected = Verdict::FailHard {
         ceiling: PRODUCTION_CEILING,
     };
 
     assert_eq!(verdict(301, Some(exception.clone()), false), expected);
     assert_eq!(verdict(350, Some(exception), false), expected);
+    Ok(())
 }
 
 #[test]
-fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() {
+fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() -> TestResult {
     // Admission must key on the parsed approver, not the *reason text*: an
     // agent could otherwise write the reserved display prefix itself and buy
     // the 301–350 band.
     let annotation = "// slugaudit-line-exception: approved-by=slugthug; \
                       reason=[human-approved 2026-10-19] pretend\n";
-    let exception = exception_reason(annotation).expect("agent annotation parses");
+    let exception = exception_reason(annotation).check("agent annotation parses")?;
 
     assert_eq!(
         verdict(301, Some(exception.clone()), false),
@@ -249,11 +253,12 @@ fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() {
             ceiling: PRODUCTION_CEILING
         }
     );
+    Ok(())
 }
 
 #[test]
-fn a_dated_human_exception_does_not_rescue_351_lines() {
-    let exception = exception_reason(HUMAN_ANNOTATION).expect("human annotation parses");
+fn a_dated_human_exception_does_not_rescue_351_lines() -> TestResult {
+    let exception = exception_reason(HUMAN_ANNOTATION).check("human annotation parses")?;
 
     assert_eq!(
         verdict(351, Some(exception), false),
@@ -261,26 +266,28 @@ fn a_dated_human_exception_does_not_rescue_351_lines() {
             ceiling: PRODUCTION_CEILING
         }
     );
+    Ok(())
 }
 
 #[test]
-fn check_file_reports_a_pass_line_with_a_root_relative_path() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn check_file_reports_a_pass_line_with_a_root_relative_path() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let path = dir.path().join("src").join("ok.rs");
-    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
-    std::fs::write(&path, "fn a() {}\n").expect("write");
+    std::fs::create_dir_all(path.parent().check("parent")?).check("mkdir")?;
+    std::fs::write(&path, "fn a() {}\n").check("write")?;
     assert_eq!(
         check_file(dir.path(), &path),
         FileOutcome::Line("source-limit: src/ok.rs: 1 code lines; pass".to_string())
     );
+    Ok(())
 }
 
 #[test]
-fn check_file_fails_a_file_over_the_hard_ceiling() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn check_file_fails_a_file_over_the_hard_ceiling() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let path = dir.path().join("big.rs");
     let source = "fn a() {}\n".repeat(PRODUCTION_CEILING + 1);
-    std::fs::write(&path, source).expect("write");
+    std::fs::write(&path, source).check("write")?;
     assert_eq!(
         check_file(dir.path(), &path),
         FileOutcome::Failure(format!(
@@ -288,27 +295,29 @@ fn check_file_fails_a_file_over_the_hard_ceiling() {
             PRODUCTION_CEILING + 1
         ))
     );
+    Ok(())
 }
 
 #[test]
-fn check_file_reports_a_read_error() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn check_file_reports_a_read_error() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let path = dir.path().join("missing.rs");
     let FileOutcome::Failure(message) = check_file(dir.path(), &path) else {
-        panic!("a missing file must fail");
+        return Err("a missing file must fail".to_owned()).check("unexpected outcome");
     };
     assert!(
         message.starts_with("missing.rs: read error: "),
         "unexpected message: {message}"
     );
+    Ok(())
 }
 
 #[test]
-fn check_file_fails_loudly_when_the_path_is_outside_the_root() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let other = tempfile::tempdir().expect("tempdir");
+fn check_file_fails_loudly_when_the_path_is_outside_the_root() -> TestResult {
+    let root = tempfile::tempdir().check("tempdir")?;
+    let other = tempfile::tempdir().check("tempdir")?;
     let path = other.path().join("x.rs");
-    std::fs::write(&path, "fn a() {}\n").expect("write");
+    std::fs::write(&path, "fn a() {}\n").check("write")?;
     assert_eq!(
         check_file(root.path(), &path),
         FileOutcome::Failure(format!(
@@ -317,4 +326,5 @@ fn check_file_fails_loudly_when_the_path_is_outside_the_root() {
             root.path().display()
         ))
     );
+    Ok(())
 }

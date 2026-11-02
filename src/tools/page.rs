@@ -163,42 +163,46 @@ pub struct Page {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     #[test]
-    fn legacy_paging_refuses_an_offset_with_the_cursor_remedy() {
+    fn legacy_paging_refuses_an_offset_with_the_cursor_remedy() -> TestResult {
         let legacy: LegacyPaging =
-            serde_json::from_value(serde_json::json!({ "offset": 5 })).expect("parses");
+            serde_json::from_value(serde_json::json!({ "offset": 5 })).check("parses")?;
 
-        let error = legacy.refuse().expect_err("offset is removed");
+        let error = legacy.refuse().check_err("offset is removed")?;
 
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        let data = error.data.expect("a payload");
+        let data = error.data.check("a payload")?;
         assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().expect("remedy").contains("cursor"));
+        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        Ok(())
     }
 
     #[test]
-    fn legacy_paging_refuses_an_expected_revision_with_the_cursor_remedy() {
+    fn legacy_paging_refuses_an_expected_revision_with_the_cursor_remedy() -> TestResult {
         let legacy: LegacyPaging =
             serde_json::from_value(serde_json::json!({ "expected_revision": "r1" }))
-                .expect("parses");
+                .check("parses")?;
 
-        let error = legacy.refuse().expect_err("expected_revision is removed");
+        let error = legacy.refuse().check_err("expected_revision is removed")?;
 
-        let data = error.data.expect("a payload");
+        let data = error.data.check("a payload")?;
         assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().expect("remedy").contains("cursor"));
+        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        Ok(())
     }
 
     #[test]
-    fn legacy_paging_accepts_a_request_with_neither_field() {
-        let legacy: LegacyPaging = serde_json::from_value(serde_json::json!({})).expect("parses");
+    fn legacy_paging_accepts_a_request_with_neither_field() -> TestResult {
+        let legacy: LegacyPaging = serde_json::from_value(serde_json::json!({})).check("parses")?;
 
-        legacy.refuse().expect("nothing to refuse");
+        legacy.refuse().check("nothing to refuse")?;
+        Ok(())
     }
 
     #[test]
-    fn legacy_paging_flattened_into_a_request_is_read_but_not_in_its_schema() {
+    fn legacy_paging_flattened_into_a_request_is_read_but_not_in_its_schema() -> TestResult {
         #[derive(Deserialize, JsonSchema)]
         struct Probe {
             #[serde(default)]
@@ -209,18 +213,19 @@ mod tests {
         }
 
         let probe: Probe = serde_json::from_value(serde_json::json!({ "path": "p", "offset": 1 }))
-            .expect("parses");
-        let schema = serde_json::to_string(&schemars::schema_for!(Probe)).expect("schema");
+            .check("parses")?;
+        let schema = serde_json::to_string(&schemars::schema_for!(Probe)).check("schema")?;
 
         assert_eq!(probe.path.as_deref(), Some("p"));
-        probe.legacy_paging.refuse().expect_err("offset was sent");
+        probe.legacy_paging.refuse().check_err("offset was sent")?;
         assert!(!schema.contains("offset"), "{schema}");
         assert!(!schema.contains("expected_revision"), "{schema}");
         assert!(!schema.contains("legacy_paging"), "{schema}");
+        Ok(())
     }
 
     #[test]
-    fn a_page_serializes_exactly_the_seven_shared_field_names() {
+    fn a_page_serializes_exactly_the_seven_shared_field_names() -> TestResult {
         let page = Page {
             database_discard: None,
             returned: 2,
@@ -234,7 +239,7 @@ mod tests {
             revision_id: "rev-1".to_owned(),
         };
 
-        let value = serde_json::to_value(&page).expect("a page serializes");
+        let value = serde_json::to_value(&page).check("a page serializes")?;
 
         assert_eq!(
             value,
@@ -248,10 +253,11 @@ mod tests {
                 "revision_id": "rev-1",
             })
         );
+        Ok(())
     }
 
     #[test]
-    fn a_last_page_serializes_unknown_total_as_json_null_and_has_no_next_offset() {
+    fn a_last_page_serializes_unknown_total_as_json_null_and_has_no_next_offset() -> TestResult {
         let page = Page {
             database_discard: None,
             returned: 1,
@@ -265,20 +271,21 @@ mod tests {
             revision_id: "rev-1".to_owned(),
         };
 
-        let value = serde_json::to_value(&page).expect("a page serializes");
+        let value = serde_json::to_value(&page).check("a page serializes")?;
 
         assert_eq!(value["total"], serde_json::Value::Null);
         assert!(
             !value
                 .as_object()
-                .expect("an object")
+                .check("an object")?
                 .contains_key("next_offset"),
             "the pre-cursor field is gone from the wire"
         );
+        Ok(())
     }
 
     #[test]
-    fn every_page_limit_serializes_as_its_snake_case_name() {
+    fn every_page_limit_serializes_as_its_snake_case_name() -> TestResult {
         let names = [
             PageLimit::None,
             PageLimit::Limit,
@@ -288,7 +295,9 @@ mod tests {
             PageLimit::ScanWindow,
             PageLimit::TimeBudget,
         ]
-        .map(|limit| serde_json::to_value(limit).expect("a limit serializes"));
+        .into_iter()
+        .map(|limit| serde_json::to_value(limit).check("a limit serializes"))
+        .collect::<TestResult<Vec<_>>>()?;
 
         assert_eq!(
             names,
@@ -303,5 +312,6 @@ mod tests {
             ]
             .map(serde_json::Value::from)
         );
+        Ok(())
     }
 }

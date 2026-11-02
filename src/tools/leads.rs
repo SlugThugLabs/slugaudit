@@ -339,7 +339,7 @@ fn leads_with_limits(
             custom: Vec::new(),
             invalid: Vec::new(),
         },
-        (None, Some(_)) => mechanic_catalog::load(manager.session_mechanics(), limits),
+        (None, Some(_)) => mechanic_catalog::load(manager.session_mechanics(), limits)?,
         (None, None) => return Err(missing_path()),
     };
     leads_with_catalog(&request.0, limits, &catalog, sink, manager).map(Json)

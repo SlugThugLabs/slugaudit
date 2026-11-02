@@ -13,6 +13,7 @@ mod time;
 
 use std::sync::Mutex;
 
+pub use crate::clock::ClockError;
 pub(crate) use crate::clock::mtime_unix_seconds;
 pub(crate) use capped_read::{
     CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped, read_file_capped_bytes,
@@ -40,72 +41,69 @@ pub(crate) fn redacted_path(path: &std::path::Path) -> String {
     redacted_log_id(path.to_string_lossy().as_bytes())
 }
 
-/// Canonicalizes `path` for use as a stable identity key, falling back to
-/// the path as given when canonicalization fails.
-///
-/// Path identity comparisons depend on the canonical form. The fallback is
-/// deliberate — the caller keeps working — but it must not be silent: a
-/// path that resolves differently can make two spellings look distinct, and
-/// only this warning says so.
-#[must_use]
-pub(crate) fn canonical_or_self(path: &std::path::Path) -> std::path::PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|error| {
-        tracing::warn!(
-            path = %path.display(),
-            error = %error,
-            "could not canonicalize; continuing with the path as given",
-        );
-        path.to_path_buf()
-    })
-}
-
 /// Serializes tests that mutate process-global environment variables
 /// (`SLUGTHUG_HOME`, `HOME`) so parallel test threads can't observe each
 /// other's mutations. Test-only; production code never touches it.
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-static SESSION_ID: Mutex<Option<uuid::Uuid>> = Mutex::new(None);
-
-/// Returns the current session UUID, allocating a fresh v4 on first
-/// call. After the first call the inner `Option` is `Some`, so every
-/// subsequent call is a single lock + clone and never regenerates.
-#[must_use]
-pub(crate) fn session_id() -> uuid::Uuid {
-    let mut guard = lock_or_recover(&SESSION_ID, "session_id");
-    *guard.get_or_insert_with(uuid::Uuid::new_v4)
+/// Joins a test thread. A panic in the thread comes back as its message, so a
+/// test can report it with `.check(..)` instead of unwrapping the join error.
+/// Test-only.
+#[cfg(test)]
+pub(crate) fn join_thread<T>(handle: std::thread::JoinHandle<T>) -> Result<T, String> {
+    handle.join().map_err(|payload| {
+        if let Some(message) = payload.downcast_ref::<&str>() {
+            (*message).to_owned()
+        } else if let Some(message) = payload.downcast_ref::<String>() {
+            message.clone()
+        } else {
+            "the thread panicked with a non-string payload".to_owned()
+        }
+    })
 }
 
-/// Acquires a mutex guard, recovering the inner value if the mutex was
-/// poisoned by a previous holder panicking. Without this recovery, a
-/// single panic inside any critical section guarded by a `Mutex` would
-/// crash the entire process on the next event: `Mutex::lock()` returns a
-/// `PoisonError`, and unwrapping it propagates the original panic out of
-/// the calling thread.
+static SESSION_ID: std::sync::OnceLock<uuid::Uuid> = std::sync::OnceLock::new();
+
+/// Returns the current session UUID, allocating a fresh v4 on first
+/// call; every later call returns the same value and never regenerates.
+#[must_use]
+pub(crate) fn session_id() -> uuid::Uuid {
+    *SESSION_ID.get_or_init(uuid::Uuid::new_v4)
+}
+
+/// A mutex whose earlier holder panicked inside its critical section, so the
+/// data it guards may be half-updated.
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[error("mutex {mutex} was poisoned by a panic in an earlier holder")]
+pub struct LockPoisoned {
+    /// The static label of the poisoned mutex.
+    mutex: &'static str,
+}
+
+/// A poisoned mutex stays poisoned for the life of the process, so the tool
+/// error says the server must be restarted.
+impl From<LockPoisoned> for rmcp::ErrorData {
+    fn from(error: LockPoisoned) -> Self {
+        Self::internal_error(format!("{error}; restart the SlugAudit server"), None)
+    }
+}
+
+/// Acquires a mutex guard. A mutex poisoned by a panicking holder is an
+/// error the operation returns: the data it guards may be half-updated, so
+/// it is never read. `mutex_name` is the static label the error carries, so
+/// the failure names which state was lost.
 ///
-/// Recovery is logged at `error` (poisoning is an unexpected, recoverable
-/// condition we want visible) but never escalated — the inner data is
-/// already maintained across panic boundaries inside the `MutexGuard`,
-/// so a successor lock just continues the work. The trade-off: the
-/// recovered data may be in a logically inconsistent state (a partially-
-/// applied mutation that panicked mid-step), so callers that mutate
-/// multiple fields atomically document and test that invariant.
+/// # Errors
 ///
-/// `mutex_name` is the static label emitted with the recovery line. Without
-/// it the operator sees that *a* mutex was poisoned but not which state was
-/// recovered, which is the only actionable part of the message.
-pub(crate) fn lock_or_recover<'a, T>(
+/// Returns [`LockPoisoned`] when an earlier holder panicked.
+pub(crate) fn lock<'a, T>(
     mutex: &'a Mutex<T>,
     mutex_name: &'static str,
-) -> std::sync::MutexGuard<'a, T> {
-    mutex.lock().unwrap_or_else(|poisoned| {
-        tracing::error!(
-            operation = "lock_or_recover",
-            mutex = mutex_name,
-            "mutex was poisoned; recovering inner value",
-        );
-        poisoned.into_inner()
-    })
+) -> Result<std::sync::MutexGuard<'a, T>, LockPoisoned> {
+    mutex
+        .lock()
+        .map_err(|_poisoned| LockPoisoned { mutex: mutex_name })
 }
 
 /// Hex-encodes a byte slice as a lowercase hex string. Used by both the

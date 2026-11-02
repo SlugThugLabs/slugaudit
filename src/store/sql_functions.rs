@@ -167,7 +167,10 @@ fn slice_lines(text: &str, start: i64, end: i64) -> &str {
     // char boundaries.
     let slice = &text[begin..stop];
     if let Some(line) = slice.strip_suffix('\n') {
-        line.strip_suffix('\r').unwrap_or(line)
+        match line.strip_suffix('\r') {
+            Some(without_return) => without_return,
+            None => line,
+        }
     } else {
         slice
     }

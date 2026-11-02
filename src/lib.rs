@@ -29,7 +29,6 @@
 // the less informative form. Nothing in this crate needs either - fallible
 // work returns `Result`, and the only genuinely fatal conditions (failed
 // process startup) report the error and choose an exit code.
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 pub mod cli;
@@ -56,6 +55,7 @@ pub mod project;
 pub(crate) mod prompt;
 pub mod resources;
 pub mod server;
+mod server_progress;
 mod server_runner;
 pub mod store;
 pub mod sync;

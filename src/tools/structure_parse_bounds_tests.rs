@@ -5,6 +5,7 @@ use super::*;
 use crate::tools::PageLimit;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::time::Duration;
 
 const QUERY: &str = "(function_item name: (identifier) @name)";
@@ -52,32 +53,33 @@ fn many_functions(count: usize) -> String {
 }
 
 #[test]
-fn a_multi_file_scan_skips_a_file_over_max_parse_bytes_and_counts_it() {
-    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
-    std::fs::write(project.path().join("big.rs"), many_functions(10)).expect("write big.rs");
+fn a_multi_file_scan_skips_a_file_over_max_parse_bytes_and_counts_it() -> TestResult {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n")?;
+    std::fs::write(project.path().join("big.rs"), many_functions(10)).check("write big.rs")?;
     let limits = ResourceLimits {
         max_parse_bytes: 100,
         ..ResourceLimits::default()
     };
 
-    let response = call(&multi_file(&project), &limits).expect("structure succeeds");
+    let response = call(&multi_file(&project), &limits).check("structure succeeds")?;
 
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, ["alpha"]);
     assert_eq!(response.files_over_parse_limit, 1);
     assert_eq!(response.files_not_scanned, 0);
+    Ok(())
 }
 
 #[test]
-fn a_single_file_over_max_parse_bytes_is_refused_by_name() {
-    let project = activated_project("big.rs", many_functions(10).as_bytes());
+fn a_single_file_over_max_parse_bytes_is_refused_by_name() -> TestResult {
+    let project = activated_project("big.rs", many_functions(10).as_bytes())?;
     let limits = ResourceLimits {
         max_parse_bytes: 100,
         ..ResourceLimits::default()
     };
 
     let error = call(&single_file(&project, "big.rs"), &limits)
-        .expect_err("an oversize file must be refused");
+        .check_err("an oversize file must be refused")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert!(
@@ -85,20 +87,21 @@ fn a_single_file_over_max_parse_bytes_is_refused_by_name() {
         "{}",
         error.message
     );
+    Ok(())
 }
 
 #[test]
-fn the_window_refuses_a_file_larger_than_itself_before_loading_it() {
-    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
-    std::fs::write(project.path().join("b.rs"), many_functions(2)).expect("write b.rs");
-    std::fs::write(project.path().join("c.rs"), b"pub fn gamma() {}\n").expect("write c.rs");
+fn the_window_refuses_a_file_larger_than_itself_before_loading_it() -> TestResult {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n")?;
+    std::fs::write(project.path().join("b.rs"), many_functions(2)).check("write b.rs")?;
+    std::fs::write(project.path().join("c.rs"), b"pub fn gamma() {}\n").check("write c.rs")?;
     let synced = crate::tools::context::ensure_synced(
         &project.path().to_string_lossy(),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("sync");
-    let connection = crate::store::open_read_write(&synced.database_path).expect("open database");
+    .check("sync")?;
+    let connection = crate::store::open_read_write(&synced.database_path).check("open database")?;
     let bounds = crate::tools::structure_source::WindowBounds {
         window_bytes: 30,
         max_parse_bytes: u64::MAX,
@@ -111,7 +114,7 @@ fn the_window_refuses_a_file_larger_than_itself_before_loading_it() {
         None,
         bounds,
     )
-    .expect("the window loads");
+    .check("the window loads")?;
 
     let loaded: Vec<&str> = window.files.iter().map(|(path, _)| path.as_str()).collect();
     assert_eq!(
@@ -124,19 +127,20 @@ fn the_window_refuses_a_file_larger_than_itself_before_loading_it() {
     assert_eq!(window.files_over_parse_limit, 1);
     assert_eq!(window.files_not_scanned, 1);
     assert_eq!(window.next_start_after_file.as_deref(), Some("b.rs"));
+    Ok(())
 }
 
 #[test]
-fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial() {
-    let project = activated_project("a.rs", b"pub fn alpha() {}\n");
-    std::fs::write(project.path().join("big.rs"), many_functions(150_000)).expect("write big.rs");
+fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial() -> TestResult {
+    let project = activated_project("a.rs", b"pub fn alpha() {}\n")?;
+    std::fs::write(project.path().join("big.rs"), many_functions(150_000)).check("write big.rs")?;
     let limits = ResourceLimits {
         max_parse_bytes: 64 * 1024 * 1024,
         max_structure_execution_time: Duration::from_millis(100),
         ..ResourceLimits::default()
     };
 
-    let response = call(&multi_file(&project), &limits).expect("a partial result, not an error");
+    let response = call(&multi_file(&project), &limits).check("a partial result, not an error")?;
 
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, ["alpha"]);
@@ -144,11 +148,12 @@ fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial(
     assert_eq!(response.next_start_after_file.as_deref(), Some("big.rs"));
     assert_eq!(response.page.limited_by, PageLimit::TimeBudget);
     assert!(!response.page.complete, "the timed-out file remains");
+    Ok(())
 }
 
 #[test]
-fn a_single_file_parse_cancelled_at_the_deadline_is_the_budget_error() {
-    let project = activated_project("big.rs", many_functions(150_000).as_bytes());
+fn a_single_file_parse_cancelled_at_the_deadline_is_the_budget_error() -> TestResult {
+    let project = activated_project("big.rs", many_functions(150_000).as_bytes())?;
     let limits = ResourceLimits {
         max_parse_bytes: 64 * 1024 * 1024,
         max_structure_execution_time: Duration::from_millis(100),
@@ -156,10 +161,11 @@ fn a_single_file_parse_cancelled_at_the_deadline_is_the_budget_error() {
     };
 
     let error = call(&single_file(&project, "big.rs"), &limits)
-        .expect_err("nothing parsed, so nothing to return");
+        .check_err("nothing parsed, so nothing to return")?;
 
     assert_eq!(
         error.message.as_ref(),
         "structure query exceeded its execution time budget"
     );
+    Ok(())
 }

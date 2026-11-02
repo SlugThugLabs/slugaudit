@@ -207,8 +207,7 @@ impl ResultWriter<'_> {
         self.before_batch()?;
         let bytes = result_file::measure_bytes(&self.conn)?;
         if bytes > self.store.limits().max_bytes {
-            self.store.refuse_too_large(self.id, bytes);
-            return Err(ResultStoreError::TooLarge);
+            return Err(self.store.refuse_too_large(self.id, bytes));
         }
         Ok(())
     }
@@ -224,7 +223,7 @@ impl ResultWriter<'_> {
         completeness: &serde_json::Value,
     ) -> Result<ResultHandle, ResultStoreError> {
         self.guard()?;
-        let created_unix = self.store.now();
+        let created_unix = self.store.now()?;
         let meta = ResultMeta {
             tool: self.spec.tool.clone(),
             project: self.spec.project.clone(),

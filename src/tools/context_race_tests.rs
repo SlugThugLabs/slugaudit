@@ -9,16 +9,17 @@
 //! new test-only hook.
 use super::*;
 use crate::{parse, store, sync};
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::sync::mpsc;
 
-fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
+fn activated_project(relative: &str, content: &[u8]) -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
-    fs::write(project.path().join(relative), content).expect("write fixture file");
-    project
+        .check("activate project")?;
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
+    fs::write(project.path().join(relative), content).check("write fixture file")?;
+    Ok(project)
 }
 
 fn clone_synced(synced: &SyncedProject) -> SyncedProject {
@@ -33,13 +34,13 @@ fn clone_synced(synced: &SyncedProject) -> SyncedProject {
 /// the exact same pre-publish content on every query it issues for the rest
 /// of its lifetime — never a torn mix of pre- and post-publish rows.
 #[test]
-fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_read_in_progress_never_observes_a_concurrent_publishs_change() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let synced = ensure_synced_no_progress(
         &project.path().to_string_lossy(),
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("initial sync");
+    .check("initial sync")?;
     let reader_synced = clone_synced(&synced);
 
     let (tx_paused, rx_paused) = mpsc::channel::<()>();
@@ -61,8 +62,12 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
                 .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
 
-            tx_paused.send(()).expect("signal reader parked");
-            rx_resume.recv().expect("wait for the publish to land");
+            tx_paused.send(()).map_err(|error| {
+                ErrorData::internal_error(format!("signal reader parked: {error}"), None)
+            })?;
+            rx_resume.recv().map_err(|error| {
+                ErrorData::internal_error(format!("wait for the publish to land: {error}"), None)
+            })?;
 
             // Issued after the concurrent publish committed a new revision
             // with different content and an extra file.
@@ -83,7 +88,7 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
 
     rx_paused
         .recv()
-        .expect("reader reached its parked midpoint");
+        .check("reader reached its parked midpoint")?;
 
     // A real concurrent publish, on its own connection, that both modifies
     // the already-read file and adds a brand new one.
@@ -91,27 +96,31 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
         project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
-    .expect("modify file");
-    fs::write(project.path().join("new.rs"), b"pub fn b() {}\n").expect("add file");
-    let mut connection = store::open_read_write(&synced.database_path).expect("open db (writer)");
+    .check("modify file")?;
+    fs::write(project.path().join("new.rs"), b"pub fn b() {}\n").check("add file")?;
+    let mut connection = store::open_read_write(&synced.database_path).check("open db (writer)")?;
     let report = sync::publish(
         &mut connection,
         project.path(),
         parse::PACK_VERSION,
         &crate::progress::NoopProgressSink,
     )
-    .expect("concurrent publish succeeds");
+    .check("concurrent publish succeeds")?;
     assert_ne!(
         report.revision_id, synced.revision_id,
         "the concurrent publish must actually have moved the revision"
     );
     drop(connection);
 
-    tx_resume.send(()).expect("release the parked reader");
+    tx_resume.send(()).check("release the parked reader")?;
     let (before, before_count, after, after_count) = reader
         .join()
-        .expect("reader thread joins")
-        .expect("the paused read still succeeds despite the concurrent publish");
+        .map_err(|payload| match payload.downcast_ref::<&str>() {
+            Some(message) => (*message).to_owned(),
+            None => "the reader thread panicked with a non-string payload".to_owned(),
+        })
+        .check("reader thread joins")?
+        .check("the paused read still succeeds despite the concurrent publish")?;
 
     assert_eq!(before, "pub fn a() {}\n");
     assert_eq!(before_count, 1);
@@ -131,11 +140,12 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() {
         &project.path().to_string_lossy(),
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("re-sync");
+    .check("re-sync")?;
     let fresh_count: i64 = with_verified_read(&fresh, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     })
-    .expect("fresh read succeeds");
+    .check("fresh read succeeds")?;
     assert_eq!(fresh_count, 2_i64);
+    Ok(())
 }

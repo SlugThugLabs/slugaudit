@@ -1,4 +1,5 @@
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn lists_every_served_resource_with_a_distinct_uri() {
@@ -27,12 +28,15 @@ fn lists_every_served_resource_with_a_distinct_uri() {
 }
 
 #[test]
-fn serves_the_payload_key_reference_with_every_evidence_kind() {
+fn serves_the_payload_key_reference_with_every_evidence_kind() -> TestResult {
     let contents = read("slugaudit://queries/evidence_payload_keys.md")
-        .expect("the payload-key reference is served");
+        .check("the payload-key reference is served")?;
     let text = match contents {
         ResourceContents::TextResourceContents { text, .. } => text,
-        other => panic!("expected text contents, got {other:?}"),
+        other => {
+            return Err(format!("expected text contents, got {other:?}"))
+                .check("unexpected outcome");
+        }
     };
 
     // The reference carries the payload-key prose (it is not in
@@ -52,14 +56,15 @@ fn serves_the_payload_key_reference_with_every_evidence_kind() {
             "the reference has no section for the `{kind}` kind"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn every_sql_recipe_compiles_and_runs_against_the_schema() {
-    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+fn every_sql_recipe_compiles_and_runs_against_the_schema() -> TestResult {
+    let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
     connection
         .execute_batch(include_str!("store/schema.sql"))
-        .expect("the canonical schema applies");
+        .check("the canonical schema applies")?;
 
     let mut executed = 0;
     for resource in list() {
@@ -72,20 +77,21 @@ fn every_sql_recipe_compiles_and_runs_against_the_schema() {
             continue;
         }
         let Some(ResourceContents::TextResourceContents { text, .. }) = read(uri) else {
-            panic!("{uri} is not served as text");
+            return Err(format!("{uri} is not served as text")).check("unexpected outcome");
         };
         for statement in statements(&text) {
             let mut prepared = connection
                 .prepare(&statement)
-                .unwrap_or_else(|error| panic!("{uri} does not compile: {error}\n{statement}"));
+                .check(&format!("{uri} compiles: {statement}"))?;
             let mut rows = prepared
                 .query([])
-                .unwrap_or_else(|error| panic!("{uri} does not run: {error}\n{statement}"));
-            while rows.next().expect("stepping a recipe row").is_some() {}
+                .check(&format!("{uri} runs: {statement}"))?;
+            while rows.next().check("stepping a recipe row")?.is_some() {}
             executed += 1;
         }
     }
     assert!(executed >= 5, "the cookbook ships SQL recipes to run");
+    Ok(())
 }
 
 /// Splits a recipe file into statements on lines that end with `;`. A
@@ -108,11 +114,12 @@ fn statements(text: &str) -> Vec<String> {
 }
 
 #[test]
-fn read_contents_carry_the_mime_type_the_catalogue_declares() {
+fn read_contents_carry_the_mime_type_the_catalogue_declares() -> TestResult {
     for resource in list() {
-        let contents = read(resource.uri.as_str()).expect("a listed resource is readable");
+        let contents = read(resource.uri.as_str()).check("a listed resource is readable")?;
         let ResourceContents::TextResourceContents { mime_type, .. } = contents else {
-            panic!("{} is not served as text", resource.uri);
+            return Err(format!("{} is not served as text", resource.uri))
+                .check("unexpected outcome");
         };
         assert_eq!(
             mime_type.as_deref(),
@@ -121,19 +128,24 @@ fn read_contents_carry_the_mime_type_the_catalogue_declares() {
             resource.uri
         );
     }
+    Ok(())
 }
 
 #[test]
-fn reads_the_schema_resource() {
-    let contents = read("slugaudit://schema.sql").expect("schema is served");
+fn reads_the_schema_resource() -> TestResult {
+    let contents = read("slugaudit://schema.sql").check("schema is served")?;
     let text = match contents {
         ResourceContents::TextResourceContents { text, .. } => text,
-        other => panic!("expected text contents, got {other:?}"),
+        other => {
+            return Err(format!("expected text contents, got {other:?}"))
+                .check("unexpected outcome");
+        }
     };
     assert!(
         text.starts_with("-- SlugAudit per-project schema"),
         "schema resource serves the canonical schema, not an empty stub"
     );
+    Ok(())
 }
 
 #[test]
@@ -147,11 +159,11 @@ fn unknown_uris_are_not_served() {
 /// not an expect call site. `start_line` is each fixture row's identity in
 /// the recipe's output.
 #[test]
-fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
-    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() -> TestResult {
+    let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
     connection
         .execute_batch(include_str!("store/schema.sql"))
-        .expect("the canonical schema applies");
+        .check("the canonical schema applies")?;
     connection
         .execute(
             "INSERT INTO revisions \
@@ -159,7 +171,7 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
              VALUES ('r1', 'h', '1.0.0', 0, 1)",
             [],
         )
-        .expect("insert revision");
+        .check("insert revision")?;
     connection
         .execute(
             "INSERT INTO files \
@@ -170,12 +182,12 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
                      'rust', 1, 'Available', 'Succeeded', 'Full', 1)",
             [],
         )
-        .expect("insert file");
+        .check("insert file")?;
     let file_id: i64 = connection
         .query_row("SELECT id FROM files WHERE path = 'lib.rs'", [], |row| {
             row.get(0)
         })
-        .expect("lib.rs id");
+        .check("lib.rs id")?;
 
     for (key, start_line, callee_name, caller) in [
         ("call:0", 1_i64, "unwrap", Some("handle_unexpected")),
@@ -199,30 +211,31 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
                  VALUES (?1, ?2, 'Call', 'RustCallWalker', 'Present', ?3, ?4)",
                 rusqlite::params![file_id, key, start_line, payload.to_string()],
             )
-            .expect("insert call evidence");
+            .check("insert call evidence")?;
     }
 
     let Some(ResourceContents::TextResourceContents { text, .. }) =
         read("slugaudit://queries/find_unhandled_panics.sql")
     else {
-        panic!("the recipe is served as text");
+        return Err("the recipe is served as text".to_owned()).check("unexpected outcome");
     };
     let statement = statements(&text)
         .into_iter()
         .next()
-        .expect("the recipe holds one statement");
-    let mut prepared = connection.prepare(&statement).expect("recipe compiles");
+        .check("the recipe holds one statement")?;
+    let mut prepared = connection.prepare(&statement).check("recipe compiles")?;
     let matched: Vec<i64> = prepared
         .query_map([], |row| row.get(1))
-        .expect("recipe runs")
+        .check("recipe runs")?
         .collect::<rusqlite::Result<_>>()
-        .expect("recipe rows");
+        .check("recipe rows")?;
 
     assert_eq!(
         matched,
         vec![1, 2, 3],
         "the recipe must match the three callee rows and not the caller-only `handle_expect` row"
     );
+    Ok(())
 }
 
 /// Every `examples/queries/*.sql` recipe is served and runs as-is through the
@@ -230,30 +243,32 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() {
 /// tool runs one statement per call, so a recipe that holds two fails here
 /// the way it would fail for an agent.
 #[test]
-fn every_sql_recipe_runs_unedited_through_the_query_tool() {
+fn every_sql_recipe_runs_unedited_through_the_query_tool() -> TestResult {
     let project = crate::tools::test_support::activated_project(
         "Cargo.toml",
         b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
-    );
-    std::fs::create_dir_all(project.path().join("src")).expect("create src");
+    )?;
+    std::fs::create_dir_all(project.path().join("src")).check("create src")?;
     std::fs::write(
         project.path().join("src/main.rs"),
         b"mod auth;\nuse crate::auth::session_token;\nfn main() {\n    let token: Option<u8> = session_token();\n    token.unwrap();\n}\n",
     )
-    .expect("write main.rs");
+    .check("write main.rs")?;
     std::fs::write(
         project.path().join("src/auth.rs"),
         b"pub fn session_token() -> Option<u8> {\n    None\n}\n",
     )
-    .expect("write auth.rs");
+    .check("write auth.rs")?;
     let manager = crate::sync::SourceSyncManager::default();
     let served: Vec<String> = list().into_iter().map(|resource| resource.uri).collect();
     let recipes_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/queries");
-    let mut recipes: Vec<std::path::PathBuf> = std::fs::read_dir(&recipes_dir)
-        .expect("read examples/queries")
-        .map(|entry| entry.expect("a directory entry").path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
-        .collect();
+    let mut recipes: Vec<std::path::PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&recipes_dir).check("read examples/queries")? {
+        let path = entry.check("a directory entry")?.path();
+        if path.extension().is_some_and(|extension| extension == "sql") {
+            recipes.push(path);
+        }
+    }
     recipes.sort();
 
     let mut rows_by_recipe = Vec::new();
@@ -261,8 +276,8 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() {
         let name = recipe
             .file_name()
             .and_then(|name| name.to_str())
-            .expect("a UTF-8 recipe name");
-        let sql = std::fs::read_to_string(recipe).expect("read the recipe");
+            .check("a UTF-8 recipe name")?;
+        let sql = std::fs::read_to_string(recipe).check("read the recipe")?;
         let response = crate::tools::query(
             &rmcp::handler::server::wrapper::Parameters(crate::tools::QueryRequest {
                 path: Some(project.path().to_string_lossy().into_owned()),
@@ -274,7 +289,7 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() {
             &crate::progress::NoopProgressSink,
             &manager,
         )
-        .unwrap_or_else(|error| panic!("{name} fails through query: {error:?}"));
+        .check(&format!("{name} runs through query"))?;
         assert!(
             served.contains(&format!("slugaudit://queries/{name}")),
             "{name} is a recipe but is not served as a resource"
@@ -291,4 +306,5 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() {
             assert!(*rows > 0, "{name} matched nothing: {rows_by_recipe:?}");
         }
     }
+    Ok(())
 }

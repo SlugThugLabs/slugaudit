@@ -2,19 +2,20 @@ use super::*;
 use crate::tools::PageLimit;
 use crate::tools::context::ensure_synced;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 
-fn activated_project(relative: &str, content: &[u8]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
+fn activated_project(relative: &str, content: &[u8]) -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
+        .check("activate project")?;
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     let target = project.path().join(relative);
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).expect("create parent");
+        fs::create_dir_all(parent).check("create parent")?;
     }
-    fs::write(target, content).expect("write fixture file");
-    project
+    fs::write(target, content).check("write fixture file")?;
+    Ok(project)
 }
 
 fn ask(
@@ -39,20 +40,21 @@ fn ask(
 }
 
 #[test]
-fn matches_a_real_structural_pattern() {
-    let project = activated_project("lib.rs", b"pub fn greet() {}\npub fn farewell() {}\n");
+fn matches_a_real_structural_pattern() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn greet() {}\npub fn farewell() {}\n")?;
     let response = ask(
         &project,
         "lib.rs",
         "(function_item name: (identifier) @name)",
     )
-    .expect("query succeeds");
+    .check("query succeeds")?;
 
     assert_eq!(response.language, "rust");
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, vec!["greet", "farewell"]);
     assert!(response.matches.iter().all(|m| m.capture_name == "name"));
     assert!(response.page.complete);
+    Ok(())
 }
 
 /// A bare node pattern with no `@capture` compiles and matches in
@@ -61,88 +63,93 @@ fn matches_a_real_structural_pattern() {
 /// being unable to parse the language. It must be rejected with an actionable message
 /// telling the agent to add a capture, not silently return `[]`.
 #[test]
-fn a_query_with_no_capture_is_rejected_with_guidance_not_empty() {
-    let project = activated_project("server.py", b"def a():\n    pass\ndef b():\n    pass\n");
+fn a_query_with_no_capture_is_rejected_with_guidance_not_empty() -> TestResult {
+    let project = activated_project("server.py", b"def a():\n    pass\ndef b():\n    pass\n")?;
     let result = ask(&project, "server.py", "(function_definition)");
-    let error = result.expect_err("a captureless query must error, not return empty");
+    let error = result.check_err("a captureless query must error, not return empty")?;
     assert!(
         error.message.contains("no @capture") && error.message.contains("@name"),
         "the error must guide the agent to add a capture, got: {}",
         error.message
     );
+    Ok(())
 }
 
 /// A Python function query with a `@name` capture
 /// returns the function definitions (proving Python parsing works once a
 /// capture is present).
 #[test]
-fn python_function_definition_with_a_capture_returns_the_functions() {
-    let project = activated_project("server.py", b"def a():\n    pass\ndef b():\n    pass\n");
+fn python_function_definition_with_a_capture_returns_the_functions() -> TestResult {
+    let project = activated_project("server.py", b"def a():\n    pass\ndef b():\n    pass\n")?;
     let response = ask(
         &project,
         "server.py",
         "(function_definition name: (identifier) @name)",
     )
-    .expect("query with a capture succeeds");
+    .check("query with a capture succeeds")?;
     assert_eq!(response.language, "python");
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, vec!["a", "b"]);
     assert!(response.matches.iter().all(|m| m.capture_name == "name"));
+    Ok(())
 }
 
 #[test]
-fn an_invalid_query_is_a_typed_error_not_a_panic() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_invalid_query_is_a_typed_error_not_a_panic() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let result = ask(
         &project,
         "lib.rs",
         "(this is not valid tree-sitter query syntax",
     );
-    let error = result.expect_err("invalid query must return ErrorData");
+    let error = result.check_err("invalid query must return ErrorData")?;
     assert!(
         error.message.to_lowercase().contains("syntax")
             || error.message.to_lowercase().contains("query"),
         "unexpected error message: {}",
         error.message
     );
+    Ok(())
 }
 
 /// A file absent from the index is the caller's input being wrong, and the
 /// error must say *which* condition with the machine-readable code — not
 /// merely echo the filename, which is true of every error on this path.
 #[test]
-fn a_missing_file_is_refused_with_the_file_not_indexed_code() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_missing_file_is_refused_with_the_file_not_indexed_code() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
 
     let error = ask(&project, "does_not_exist.rs", "(function_item) @f")
-        .expect_err("missing file must return ErrorData");
+        .check_err("missing file must return ErrorData")?;
 
     assert_eq!(
         error.code,
         rmcp::model::ErrorCode::INVALID_PARAMS,
         "{error:?}"
     );
-    let data = error.data.expect("a missing file carries a payload");
+    let data = error.data.check("a missing file carries a payload")?;
     assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
     assert_eq!(
         error.message.as_ref(),
         "does_not_exist.rs is not indexed in the current revision"
     );
+    Ok(())
 }
 
 #[test]
-fn matches_against_unicode_source_without_panicking() {
+fn matches_against_unicode_source_without_panicking() -> TestResult {
     let project = activated_project(
         "lib.rs",
         "pub fn caf\u{e9}() { let s = \"\u{2603}\u{2603}\u{2603}\"; }\n".as_bytes(),
-    );
+    )?;
     let response = ask(
         &project,
         "lib.rs",
         "(function_item name: (identifier) @name)",
     )
-    .expect("query succeeds");
+    .check("query succeeds")?;
     assert_eq!(response.matches[0].text, "caf\u{e9}");
+    Ok(())
 }
 
 /// `start_column`/`end_column` must count *characters* since the start of
@@ -151,26 +158,27 @@ fn matches_against_unicode_source_without_panicking() {
 /// everything after it — Tree-sitter's own `Point::column` is byte-based,
 /// so this pins the conversion rather than a raw pass-through.
 #[test]
-fn columns_count_characters_not_bytes_on_a_line_with_multibyte_utf8() {
-    let project = activated_project("lib.rs", "let x = \"caf\u{e9}\"; let bar = 1;\n".as_bytes());
-    let response = ask(&project, "lib.rs", "(identifier) @name").expect("query succeeds");
+fn columns_count_characters_not_bytes_on_a_line_with_multibyte_utf8() -> TestResult {
+    let project = activated_project("lib.rs", "let x = \"caf\u{e9}\"; let bar = 1;\n".as_bytes())?;
+    let response = ask(&project, "lib.rs", "(identifier) @name").check("query succeeds")?;
     let bar = response
         .matches
         .iter()
         .find(|m| m.text == "bar")
-        .expect("bar identifier is matched");
+        .check("bar identifier is matched")?;
     assert_eq!(
         bar.start_column, 20,
         "column must count the 1-character é, not its 2 UTF-8 bytes"
     );
+    Ok(())
 }
 
 #[test]
-fn an_oversized_query_is_a_typed_error() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn an_oversized_query_is_a_typed_error() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let huge_query = "x".repeat(ResourceLimits::default().max_structure_query_bytes + 1);
     let result = ask(&project, "lib.rs", &huge_query);
-    let error = result.expect_err("oversized query must return ErrorData");
+    let error = result.check_err("oversized query must return ErrorData")?;
     assert!(
         error.message.to_lowercase().contains("bytes")
             || error.message.to_lowercase().contains("large")
@@ -178,14 +186,15 @@ fn an_oversized_query_is_a_typed_error() {
         "unexpected error message: {}",
         error.message
     );
+    Ok(())
 }
 
 #[test]
-fn matches_are_capped_and_truncation_is_reported() {
+fn matches_are_capped_and_truncation_is_reported() -> TestResult {
     let project = activated_project(
         "lib.rs",
         b"pub fn a() {}\npub fn b() {}\npub fn c() {}\npub fn d() {}\n",
-    );
+    )?;
     let limits = ResourceLimits {
         max_structure_matches: 2,
         ..ResourceLimits::default()
@@ -206,20 +215,21 @@ fn matches_are_capped_and_truncation_is_reported() {
         &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response)
-    .expect("query succeeds even though it must truncate");
+    .check("query succeeds even though it must truncate")?;
     assert_eq!(response.matches.len(), 2);
     assert_eq!(response.page.limited_by, PageLimit::MatchCap);
     assert!(!response.page.complete);
+    Ok(())
 }
 
 #[test]
-fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
+fn a_pathological_query_is_aborted_by_the_execution_time_budget() -> TestResult {
     use std::fmt::Write as _;
     let mut content = String::new();
     for index in 0..200 {
-        writeln!(content, "pub fn f{index}() {{}}").expect("write to a String never fails");
+        writeln!(content, "pub fn f{index}() {{}}").check("write to a String never fails")?;
     }
-    let project = activated_project("lib.rs", content.as_bytes());
+    let project = activated_project("lib.rs", content.as_bytes())?;
     let limits = ResourceLimits {
         // Effectively zero: by the time the native progress callback first
         // fires (every ~100 internal query operations), any positive
@@ -244,19 +254,20 @@ fn a_pathological_query_is_aborted_by_the_execution_time_budget() {
         &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(response)| response);
-    let error = result.expect_err("runaway query is aborted, not run to completion");
+    let error = result.check_err("runaway query is aborted, not run to completion")?;
     assert!(
         error.message.contains("execution time budget"),
         "unexpected message: {}",
         error.message
     );
+    Ok(())
 }
 
 #[test]
-fn matches_across_multiple_files_with_language_and_lean_snippets() {
-    let project = activated_project("src/a.rs", b"pub fn alpha() {}\n");
-    fs::write(project.path().join("src/b.rs"), b"pub fn beta() {}\n").expect("write b.rs");
-    fs::write(project.path().join("src/c.py"), b"def gamma(): pass\n").expect("write c.py");
+fn matches_across_multiple_files_with_language_and_lean_snippets() -> TestResult {
+    let project = activated_project("src/a.rs", b"pub fn alpha() {}\n")?;
+    fs::write(project.path().join("src/b.rs"), b"pub fn beta() {}\n").check("write b.rs")?;
+    fs::write(project.path().join("src/c.py"), b"def gamma(): pass\n").check("write c.py")?;
 
     let response = structure(
         &Parameters(StructureRequest {
@@ -272,7 +283,7 @@ fn matches_across_multiple_files_with_language_and_lean_snippets() {
         &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(resp)| resp)
-    .expect("multi-file query succeeds");
+    .check("multi-file query succeeds")?;
 
     assert_eq!(response.language, "rust");
     assert_eq!(response.matches.len(), 2);
@@ -280,17 +291,18 @@ fn matches_across_multiple_files_with_language_and_lean_snippets() {
     assert_eq!(response.matches[0].text, "alpha");
     assert_eq!(response.matches[1].file, "src/b.rs");
     assert_eq!(response.matches[1].text, "beta");
+    Ok(())
 }
 
 #[test]
-fn pattern_filters_files_in_multi_file_query() {
-    let project = activated_project("src/auth/jwt.rs", b"pub fn verify() {}\n");
-    fs::create_dir_all(project.path().join("src/db")).expect("mkdir db");
+fn pattern_filters_files_in_multi_file_query() -> TestResult {
+    let project = activated_project("src/auth/jwt.rs", b"pub fn verify() {}\n")?;
+    fs::create_dir_all(project.path().join("src/db")).check("mkdir db")?;
     fs::write(
         project.path().join("src/db/pool.rs"),
         b"pub fn connect() {}\n",
     )
-    .expect("write pool.rs");
+    .check("write pool.rs")?;
 
     let response = structure(
         &Parameters(StructureRequest {
@@ -306,44 +318,47 @@ fn pattern_filters_files_in_multi_file_query() {
         &crate::sync::SourceSyncManager::default(),
     )
     .map(|Json(resp)| resp)
-    .expect("filtered query succeeds");
+    .check("filtered query succeeds")?;
 
     assert_eq!(response.matches.len(), 1);
     assert_eq!(response.matches[0].file, "src/auth/jwt.rs");
     assert_eq!(response.matches[0].text, "verify");
+    Ok(())
 }
 
 #[test]
-fn a_structure_query_against_a_binary_file_carries_the_file_not_indexed_code() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
-    fs::write(project.path().join("blob.dat"), b"\0\x01binary\n").expect("binary file");
+fn a_structure_query_against_a_binary_file_carries_the_file_not_indexed_code() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
+    fs::write(project.path().join("blob.dat"), b"\0\x01binary\n").check("binary file")?;
 
     let result = ask(&project, "blob.dat", "(function_item) @f");
 
-    let error = result.expect_err("a binary file has no indexed content");
-    let data = error.data.expect("a binary file carries a payload");
+    let error = result.check_err("a binary file has no indexed content")?;
+    let data = error.data.check("a binary file carries a payload")?;
     assert_eq!(data["code"], "file_not_indexed", "{}", error.message);
+    Ok(())
 }
 
 #[test]
-fn a_file_with_no_detected_language_is_refused_by_name() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_file_with_no_detected_language_is_refused_by_name() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let synced = ensure_synced(
         &project.path().to_string_lossy(),
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("sync");
-    let connection = crate::store::open_read_write(&synced.database_path).expect("open database");
+    .check("sync")?;
+    let connection = crate::store::open_read_write(&synced.database_path).check("open database")?;
     connection
         .execute("UPDATE files SET language = NULL WHERE path = 'lib.rs'", [])
-        .expect("clear the detected language");
+        .check("clear the detected language")?;
 
     let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
-        .expect_err("a file with no detected language must be refused");
+        .check_err("a file with no detected language must be refused")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(error.message.as_ref(), "lib.rs has no detected language");
+    Ok(())
 }
 
 /// A failure to read the index is operational, not the caller's input. An
@@ -352,11 +367,11 @@ fn a_file_with_no_detected_language_is_refused_by_name() {
 /// named and the source preserved), never `invalid_params` blaming the
 /// `file` argument.
 #[test]
-fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() {
-    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() -> TestResult {
+    let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
 
     let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
-        .expect_err("a missing files table must fail");
+        .check_err("a missing files table must fail")?;
 
     assert_eq!(
         error.code,
@@ -383,14 +398,15 @@ fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() {
         "an operational failure carries no caller-input code: {:?}",
         error.data
     );
+    Ok(())
 }
 
 /// The multi-file scan's database failures must also reach the caller as
 /// operational errors that name the operation and carry the retry hint,
 /// not as the caller's bad input.
 #[test]
-fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
-    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() -> TestResult {
+    let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
 
     let error = crate::tools::structure_source::fetch_sources_for_language(
         &connection,
@@ -402,7 +418,7 @@ fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
             max_parse_bytes: u64::MAX,
         },
     )
-    .expect_err("a missing files table must fail, not scan nothing");
+    .check_err("a missing files table must fail, not scan nothing")?;
 
     assert_eq!(
         error.code,
@@ -424,11 +440,12 @@ fn a_database_failure_loading_files_is_an_internal_error_not_an_empty_scan() {
         "the standard transient-failure hint must be present: {}",
         error.message
     );
+    Ok(())
 }
 
 #[test]
-fn a_multi_file_request_without_file_or_language_is_refused() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn a_multi_file_request_without_file_or_language_is_refused() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
 
     let result = structure(
         &Parameters(StructureRequest {
@@ -442,12 +459,13 @@ fn a_multi_file_request_without_file_or_language_is_refused() {
 
     let error = result
         .err()
-        .expect("neither file nor language cannot select any target");
+        .check("neither file nor language cannot select any target")?;
     assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     assert_eq!(
         error.message.as_ref(),
         "structure request without 'file' must specify 'language'"
     );
+    Ok(())
 }
 
 fn assert_prose_refusal(error: &ErrorData) {
@@ -476,22 +494,25 @@ fn ask_language(
 }
 
 #[test]
-fn structure_on_the_prose_language_is_refused_as_not_parsed() {
-    let project = activated_project("a.md", b"# title\n");
-    let error = ask_language(&project, "prose").expect_err("prose is not parsed");
+fn structure_on_the_prose_language_is_refused_as_not_parsed() -> TestResult {
+    let project = activated_project("a.md", b"# title\n")?;
+    let error = ask_language(&project, "prose").check_err("prose is not parsed")?;
     assert_prose_refusal(&error);
+    Ok(())
 }
 
 #[test]
-fn structure_on_a_language_shadowed_by_prose_is_refused_as_not_parsed() {
-    let project = activated_project("a.md", b"# title\n");
-    let error = ask_language(&project, "markdown").expect_err("markdown is stored as prose");
+fn structure_on_a_language_shadowed_by_prose_is_refused_as_not_parsed() -> TestResult {
+    let project = activated_project("a.md", b"# title\n")?;
+    let error = ask_language(&project, "markdown").check_err("markdown is stored as prose")?;
     assert_prose_refusal(&error);
+    Ok(())
 }
 
 #[test]
-fn structure_on_a_prose_file_is_refused_as_not_parsed() {
-    let project = activated_project("a.md", b"# title\n");
-    let error = ask(&project, "a.md", "(document) @d").expect_err("a.md is stored as prose");
+fn structure_on_a_prose_file_is_refused_as_not_parsed() -> TestResult {
+    let project = activated_project("a.md", b"# title\n")?;
+    let error = ask(&project, "a.md", "(document) @d").check_err("a.md is stored as prose")?;
     assert_prose_refusal(&error);
+    Ok(())
 }

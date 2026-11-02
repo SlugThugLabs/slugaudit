@@ -79,12 +79,13 @@ pub(super) fn span_unavailable(
 /// start/end positions, validates the range, and reports a failure through
 /// [`span_unavailable`] under `context`. Every walker that emits a node span
 /// (`normalize`, `generic_imports`, `calls`) shares it, so byte, row, and
-/// column behavior cannot drift between them.
+/// column behavior cannot drift between them. A row or column past
+/// `u32::MAX` is an error that fails the file's extraction.
 pub(super) fn node_span(
     node: &tree_sitter_language_pack::Node,
     lines: &crate::model::LineIndex<'_>,
     context: &'static str,
-) -> crate::model::SpanAvailability {
+) -> Result<crate::model::SpanAvailability, crate::model::PositionOverflow> {
     range_span(
         (node.start_byte(), node.end_byte()),
         (node.start_position().row, node.end_position().row),
@@ -101,19 +102,21 @@ pub(super) fn range_span(
     (start_row, end_row): (usize, usize),
     lines: &crate::model::LineIndex<'_>,
     context: &'static str,
-) -> crate::model::SpanAvailability {
+) -> Result<crate::model::SpanAvailability, crate::model::PositionOverflow> {
     let start = crate::model::Position {
-        line: crate::model::saturating_u32(start_row),
-        column: lines.column(start_byte),
+        line: crate::model::position_u32(start_row)?,
+        column: lines.column(start_byte)?,
     };
     let end = crate::model::Position {
-        line: crate::model::saturating_u32(end_row),
-        column: lines.column(end_byte),
+        line: crate::model::position_u32(end_row)?,
+        column: lines.column(end_byte)?,
     };
-    match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
-        Ok(span) => crate::model::SpanAvailability::Present(span),
-        Err(error) => span_unavailable(context, &error),
-    }
+    Ok(
+        match crate::model::Span::new(start_byte as u64, end_byte as u64, start, end) {
+            Ok(span) => crate::model::SpanAvailability::Present(span),
+            Err(error) => span_unavailable(context, &error),
+        },
+    )
 }
 
 /// A node byte range that does not slice the source: it is out of bounds or
@@ -125,6 +128,30 @@ pub(super) fn range_span(
 pub(super) struct TextRangeError {
     start: usize,
     end: usize,
+}
+
+/// Why one call node produced no row. A [`TextRangeError`] skips the node
+/// and marks the extraction partial; a [`crate::model::PositionOverflow`]
+/// fails the file's extraction.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum NodeError {
+    /// The node's byte range does not slice the source.
+    #[error(transparent)]
+    Text(#[from] TextRangeError),
+    /// A row or column of the node exceeds `u32::MAX`.
+    #[error(transparent)]
+    Position(#[from] crate::model::PositionOverflow),
+}
+
+/// Why a file's evidence extraction failed.
+#[derive(Debug, thiserror::Error)]
+pub enum ExtractError {
+    /// The language pack could not load the grammar or parse the file.
+    #[error(transparent)]
+    Pack(#[from] tree_sitter_language_pack::Error),
+    /// A row or column in the file exceeds `u32::MAX`.
+    #[error(transparent)]
+    Position(#[from] crate::model::PositionOverflow),
 }
 
 /// Slices `source[start..end]` without panicking.
@@ -222,63 +249,5 @@ pub(crate) use normalize::extract_within;
 pub use sql::{EvidenceRow, to_row};
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_unavailable_span_keeps_the_real_span_error_in_its_reason() {
-        let availability = span_unavailable("binding", &crate::model::SpanError::ReversedBytes);
-
-        let crate::model::SpanAvailability::NormalizerUnavailable { reason } = availability else {
-            panic!("expected NormalizerUnavailable, got {availability:?}");
-        };
-        assert!(reason.starts_with("binding span"), "{reason}");
-        assert!(
-            reason.contains("span end byte precedes start byte"),
-            "{reason}"
-        );
-    }
-
-    #[test]
-    fn a_node_range_inside_a_code_point_is_an_error_not_a_panic() {
-        let source = "a\u{e9}b";
-
-        assert!(node_text(source, 0, 2).is_err());
-        assert!(node_text(source, 0, 99).is_err());
-        assert_eq!(node_text(source, 1, 3).expect("whole code point"), "\u{e9}");
-    }
-
-    #[test]
-    fn a_parser_that_cannot_be_built_is_logged_and_reported_as_none() {
-        let (tree, logs) = crate::store::test_capture::capture_warns(|| {
-            parse_tree("no-such-language-for-evidence-test", "x", None)
-        });
-
-        assert_eq!(tree.err(), Some(NoTree::Failed));
-        assert!(logs.contains("could not build a parser"), "{logs}");
-    }
-
-    #[test]
-    fn a_parse_under_a_spent_deadline_is_a_timeout_and_never_starts() {
-        let deadline = crate::util::Deadline::after(std::time::Duration::ZERO);
-
-        let (tree, logs) = crate::store::test_capture::capture_warns(|| {
-            parse_tree("no-such-language-for-evidence-test", "x", Some(&deadline))
-        });
-
-        assert_eq!(tree.err(), Some(NoTree::TimedOut));
-        assert!(
-            !logs.contains("could not build a parser"),
-            "the parser is never built: {logs}"
-        );
-    }
-
-    #[test]
-    fn a_parse_with_time_left_returns_its_tree() {
-        let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
-
-        let tree = parse_tree("rust", "fn a() {}", Some(&deadline)).expect("a tree");
-
-        assert_eq!(tree.root_node().kind(), "source_file");
-    }
-}
+#[path = "mod_tests.rs"]
+mod tests;

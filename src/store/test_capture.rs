@@ -24,7 +24,7 @@ impl io::Write for SharedBuf {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.0
             .lock()
-            .expect("capture buffer poisoned")
+            .map_err(|error| io::Error::other(format!("capture buffer poisoned: {error}")))?
             .extend_from_slice(buf);
         Ok(buf.len())
     }
@@ -106,7 +106,12 @@ where
         .with_ansi(false)
         .finish();
     let result = tracing::subscriber::with_default(subscriber, f);
-    let logs = String::from_utf8_lossy(&buf.0.lock().expect("capture buffer poisoned")).to_string();
+    // A poisoned buffer means a log write panicked; the captured text is then
+    // the lock error, which no test's expected log line matches.
+    let logs = match crate::util::lock(&buf.0, "test capture buffer") {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+        Err(error) => error.to_string(),
+    };
     (result, logs)
 }
 

@@ -1,12 +1,14 @@
 use super::*;
 use crate::tools::PageLimit;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 use std::path::Path;
 
-fn activate(root: &Path) {
-    fs::create_dir_all(root.join(".planning").join("slugaudit")).expect("create activation dir");
-    crate::project::write_database_marker(&root.join(".planning").join("slugaudit"));
+fn activate(root: &Path) -> TestResult {
+    fs::create_dir_all(root.join(".planning").join("slugaudit")).check("create activation dir")?;
+    crate::project::write_database_marker(&root.join(".planning").join("slugaudit"))?;
+    Ok(())
 }
 
 /// A request with everything at its default: no mechanic, no filter, no
@@ -43,62 +45,65 @@ fn try_run_on(
     .map(|Json(response)| response)
 }
 
-fn run_on(manager: &crate::sync::SourceSyncManager, request: LeadsRequest) -> LeadsResponse {
-    try_run_on(manager, request).expect("leads succeeds")
+fn run_on(
+    manager: &crate::sync::SourceSyncManager,
+    request: LeadsRequest,
+) -> TestResult<LeadsResponse> {
+    try_run_on(manager, request).check("leads succeeds")
 }
 
 /// The request that continues a page: the cursor and the page size that
 /// applied, as a caller sends them (a continuation honours `page_bytes`).
-fn continuation(page: &LeadsResponse) -> LeadsRequest {
-    LeadsRequest {
+fn continuation(page: &LeadsResponse) -> TestResult<LeadsRequest> {
+    Ok(LeadsRequest {
         path: None,
         page_bytes: Some(page.page.page_bytes),
-        cursor: Some(page.page.cursor.clone().expect("a cursor to continue")),
+        cursor: Some(page.page.cursor.clone().check("a cursor to continue")?),
         ..request(Path::new("/unused"), None)
-    }
+    })
 }
 
-fn run(request: LeadsRequest) -> LeadsResponse {
-    try_run(request).expect("leads succeeds")
+fn run(request: LeadsRequest) -> TestResult<LeadsResponse> {
+    try_run(request).check("leads succeeds")
 }
 
-fn run_with_limits(request: LeadsRequest, limits: &ResourceLimits) -> LeadsResponse {
-    leads_with_limits(
+fn run_with_limits(request: LeadsRequest, limits: &ResourceLimits) -> TestResult<LeadsResponse> {
+    Ok(leads_with_limits(
         &Parameters(request),
         limits,
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("leads succeeds")
-    .0
+    .check("leads succeeds")?
+    .0)
 }
 
-fn entry<'a>(response: &'a LeadsResponse, mechanic: &str) -> &'a MechanicCount {
+fn entry<'a>(response: &'a LeadsResponse, mechanic: &str) -> TestResult<&'a MechanicCount> {
     response
         .mechanic_counts
         .iter()
         .find(|entry| entry.mechanic == mechanic)
-        .unwrap_or_else(|| panic!("mechanic {mechanic} missing from counts"))
+        .check(&format!("mechanic {mechanic} missing from counts"))
 }
 
-fn count_of(response: &LeadsResponse, mechanic: &str) -> i64 {
-    entry(response, mechanic).count
+fn count_of(response: &LeadsResponse, mechanic: &str) -> TestResult<i64> {
+    Ok(entry(response, mechanic)?.count)
 }
 
-/// The full-mode rows of a response; panics on a compact page, which is what
-/// a test asserting full rows should want.
-fn full_rows(response: &LeadsResponse) -> &[LeadRow] {
+/// The full-mode rows of a response; a compact page is an error, which is
+/// what a test asserting full rows should want.
+fn full_rows(response: &LeadsResponse) -> TestResult<&[LeadRow]> {
     match &response.rows {
-        LeadRows::Full(rows) => rows,
-        LeadRows::Compact(_) => panic!("expected full rows"),
+        LeadRows::Full(rows) => Ok(rows),
+        LeadRows::Compact(_) => Err("expected full rows".to_owned()).check("the rows are full"),
     }
 }
 
 /// The compact-mode rows of a response; the mirror of [`full_rows`].
-fn compact_rows(response: &LeadsResponse) -> &[CompactLeadRow] {
+fn compact_rows(response: &LeadsResponse) -> TestResult<&[CompactLeadRow]> {
     match &response.rows {
-        LeadRows::Compact(rows) => rows,
-        LeadRows::Full(_) => panic!("expected compact rows"),
+        LeadRows::Compact(rows) => Ok(rows),
+        LeadRows::Full(_) => Err("expected compact rows".to_owned()).check("the rows are compact"),
     }
 }
 
@@ -113,37 +118,37 @@ fn compact_request(path: &Path, mechanic: Option<&str>) -> LeadsRequest {
 
 /// A Rust project with one `unwrap`, one `expect`, one TODO comment, and one
 /// credential-shaped file.
-fn rust_fixture() -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
+fn rust_fixture() -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
     fs::write(
         project.path().join("lib.rs"),
         b"// TODO: revisit\npub fn a(x: Option<u8>) -> u8 {\n    let _ = x.unwrap();\n    x.expect(\"nope\")\n}\n",
     )
-    .expect("write rust source");
-    fs::write(project.path().join(".env"), b"API_KEY=secret\n").expect("write .env");
-    project
+    .check("write rust source")?;
+    fs::write(project.path().join(".env"), b"API_KEY=secret\n").check("write .env")?;
+    Ok(project)
 }
 
 /// A Rust project with `per_file` `unwrap` calls in each of `files` files —
 /// enough rows to page, with a distinct-file denominator above one.
-fn unwrap_fixture(files: usize, per_file: usize) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
+fn unwrap_fixture(files: usize, per_file: usize) -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
     for file in 0..files {
         let body = (0..per_file)
             .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
             .collect::<Vec<_>>()
             .concat();
-        fs::write(project.path().join(format!("mod{file}.rs")), body).expect("write rust source");
+        fs::write(project.path().join(format!("mod{file}.rs")), body).check("write rust source")?;
     }
-    project
+    Ok(project)
 }
 
 /// Two directories, so a `pattern` has something to exclude.
-fn two_dir_fixture() -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
+fn two_dir_fixture() -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
     for (relative, body) in [
         (
             "src/auth/login.rs",
@@ -159,16 +164,16 @@ fn two_dir_fixture() -> tempfile::TempDir {
         ),
     ] {
         let path = project.path().join(relative);
-        fs::create_dir_all(path.parent().expect("parent")).expect("create parent dirs");
-        fs::write(path, body).expect("write rust source");
+        fs::create_dir_all(path.parent().check("parent")?).check("create parent dirs")?;
+        fs::write(path, body).check("write rust source")?;
     }
-    project
+    Ok(project)
 }
 
 #[test]
-fn counts_every_mechanic_without_returning_rows() {
-    let project = rust_fixture();
-    let response = run(request(project.path(), None));
+fn counts_every_mechanic_without_returning_rows() -> TestResult {
+    let project = rust_fixture()?;
+    let response = run(request(project.path(), None))?;
 
     let ids: Vec<&str> = response
         .mechanic_counts
@@ -186,43 +191,45 @@ fn counts_every_mechanic_without_returning_rows() {
         "credential_files",
     ];
     assert_eq!(ids, expected);
-    assert_eq!(count_of(&response, "unwrap_calls"), 1);
-    assert_eq!(count_of(&response, "expect_calls"), 1);
-    assert!(count_of(&response, "comment_markers") >= 1);
-    assert_eq!(count_of(&response, "credential_files"), 1);
+    assert_eq!(count_of(&response, "unwrap_calls")?, 1);
+    assert_eq!(count_of(&response, "expect_calls")?, 1);
+    assert!(count_of(&response, "comment_markers")? >= 1);
+    assert_eq!(count_of(&response, "credential_files")?, 1);
     assert!(
-        full_rows(&response).is_empty(),
+        full_rows(&response)?.is_empty(),
         "no rows without a mechanic"
     );
     assert!(response.page.complete);
     assert_eq!(response.page.cursor, None);
     assert_eq!((response.page.total, response.files_total), (Some(0), 0));
+    Ok(())
 }
 
 #[test]
-fn returns_rows_for_the_requested_mechanic_only() {
-    let project = rust_fixture();
-    let response = run(request(project.path(), Some("unwrap_calls")));
+fn returns_rows_for_the_requested_mechanic_only() -> TestResult {
+    let project = rust_fixture()?;
+    let response = run(request(project.path(), Some("unwrap_calls")))?;
 
-    assert_eq!(full_rows(&response).len(), 1);
-    assert_eq!(full_rows(&response)[0].file, "lib.rs");
-    assert!(full_rows(&response)[0].line > 0);
-    assert_eq!(full_rows(&response)[0].detail, "x.unwrap");
-    assert_eq!(count_of(&response, "credential_files"), 1);
+    assert_eq!(full_rows(&response)?.len(), 1);
+    assert_eq!(full_rows(&response)?[0].file, "lib.rs");
+    assert!(full_rows(&response)?[0].line > 0);
+    assert_eq!(full_rows(&response)?[0].detail, "x.unwrap");
+    assert_eq!(count_of(&response, "credential_files")?, 1);
     assert!(response.page.complete);
     assert_eq!((response.page.returned, response.page.total), (1, Some(1)));
     assert_eq!((response.files_total, response.files_covered), (1, 1));
     let pages = &response.page_file_counts;
     assert_eq!((pages.len(), pages[0].file.as_str()), (1, "lib.rs"));
     assert_eq!(response.page.limited_by, PageLimit::None);
+    Ok(())
 }
 
 #[test]
-fn a_zero_limit_is_clamped_to_one_row() {
-    let project = rust_fixture();
+fn a_zero_limit_is_clamped_to_one_row() -> TestResult {
+    let project = rust_fixture()?;
     let mut request = request(project.path(), Some("unwrap_calls"));
     request.limit = Some(0);
-    let response = run(request);
+    let response = run(request)?;
 
     assert_eq!(
         response.page.returned, 1,
@@ -230,29 +237,31 @@ fn a_zero_limit_is_clamped_to_one_row() {
     );
     assert_eq!(response.page.cursor, None);
     assert!(response.page.complete);
+    Ok(())
 }
 
 #[test]
-fn rejects_an_unknown_mechanic_id() {
-    let project = rust_fixture();
+fn rejects_an_unknown_mechanic_id() -> TestResult {
+    let project = rust_fixture()?;
     let error = try_run(request(project.path(), Some("nonsense")))
-        .expect_err("unknown mechanic is rejected");
+        .check_err("unknown mechanic is rejected")?;
 
     let message = error.message.to_string();
     assert!(message.contains("unknown mechanic"), "{message}");
     assert!(message.contains("unwrap_calls"), "{message}");
+    Ok(())
 }
 
 /// The paging contract: a mechanic with more rows than a page reports
 /// `complete: false` with `returned`/`total`, and the denominator is
 /// distinct files — the number a sweep can actually exhaust — not rows.
 #[test]
-fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() {
-    let project = unwrap_fixture(3, 4); // 12 rows across 3 files
+fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() -> TestResult {
+    let project = unwrap_fixture(3, 4)?; // 12 rows across 3 files
     let manager = crate::sync::SourceSyncManager::default();
     let mut first = request(project.path(), Some("unwrap_calls"));
     first.limit = Some(5);
-    let first = run_on(&manager, first);
+    let first = run_on(&manager, first)?;
 
     assert_eq!((first.page.returned, first.page.total), (5, Some(12)));
     assert_eq!(first.files_total, 3, "the denominator is files, not rows");
@@ -262,127 +271,133 @@ fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() {
     let (spent, budget) = (first.page.bytes_used, first.page.page_bytes);
     assert!(spent > 0 && budget >= spent, "{spent} of {budget}");
 
-    let mut second = continuation(&first);
+    let mut second = continuation(&first)?;
     second.limit = Some(5);
-    let second = run_on(&manager, second);
-    let mut third = continuation(&second);
+    let second = run_on(&manager, second)?;
+    let mut third = continuation(&second)?;
     third.limit = Some(5);
-    let last = run_on(&manager, third);
+    let last = run_on(&manager, third)?;
     assert_eq!(last.page.returned, 2);
     assert!(last.page.complete);
     assert_eq!(last.page.cursor, None);
     assert_eq!(last.files_covered, last.files_total);
     assert_eq!(last.page.limited_by, PageLimit::None);
+    Ok(())
 }
 
 /// A file split across a page boundary is counted once, and the file count
 /// is cumulative for the sweep — the first page's `files_covered` plus the
 /// rows still to come equal `files_total`, not `files_total` per page.
 #[test]
-fn files_covered_counts_a_file_split_across_pages_once() {
-    let project = unwrap_fixture(2, 3); // 6 rows across 2 files
+fn files_covered_counts_a_file_split_across_pages_once() -> TestResult {
+    let project = unwrap_fixture(2, 3)?; // 6 rows across 2 files
     let manager = crate::sync::SourceSyncManager::default();
     let mut first = request(project.path(), Some("unwrap_calls"));
     first.limit = Some(4); // mod0's 3 rows, then mod1's first
-    let first = run_on(&manager, first);
+    let first = run_on(&manager, first)?;
 
     assert_eq!(first.page_file_counts.len(), 2);
     assert_eq!(first.page_file_counts[0].count, 3);
     assert_eq!(first.page_file_counts[1].count, 1, "mod1 split");
     assert_eq!((first.files_covered, first.files_total), (2, 2));
 
-    let rest = run_on(&manager, continuation(&first));
+    let rest = run_on(&manager, continuation(&first)?)?;
     assert_eq!((rest.page.returned, rest.files_covered), (2, 2));
     assert!(rest.page.complete);
+    Ok(())
 }
 
 #[test]
-fn a_pattern_narrows_counts_and_rows_to_matching_paths() {
-    let project = two_dir_fixture();
-    let unfiltered = run(request(project.path(), Some("unwrap_calls")));
+fn a_pattern_narrows_counts_and_rows_to_matching_paths() -> TestResult {
+    let project = two_dir_fixture()?;
+    let unfiltered = run(request(project.path(), Some("unwrap_calls")))?;
     assert_eq!(unfiltered.page.total, Some(4));
     assert_eq!(unfiltered.files_total, 3);
 
     let mut scoped = request(project.path(), Some("unwrap_calls"));
     scoped.pattern = Some("src/auth/*".to_owned());
-    let scoped = run(scoped);
+    let scoped = run(scoped)?;
     assert_eq!(scoped.page.total, Some(2), "only src/auth rows");
     assert_eq!(scoped.files_total, 2);
-    let scoped_rows = full_rows(&scoped);
+    let scoped_rows = full_rows(&scoped)?;
     let inside = scoped_rows.iter().all(|r| r.file.starts_with("src/auth/"));
     assert!(inside, "{scoped_rows:?}");
 
     // No `*`/`?` means a substring match, exactly as `structure` treats it.
     let mut substring = request(project.path(), Some("unwrap_calls"));
     substring.pattern = Some("token".to_owned());
-    let substring = run(substring);
+    let substring = run(substring)?;
     assert_eq!(substring.page.total, Some(1));
-    assert_eq!(full_rows(&substring)[0].file, "src/auth/token.rs");
+    assert_eq!(full_rows(&substring)?[0].file, "src/auth/token.rs");
 
     // A filter that matches nothing is a complete, empty enumeration — not
     // an error and not a silent fallback to the unfiltered set.
     let mut nothing = request(project.path(), None);
     nothing.pattern = Some("no/such/path".to_owned());
-    let nothing = run(nothing);
-    assert_eq!(count_of(&nothing, "unwrap_calls"), 0);
+    let nothing = run(nothing)?;
+    assert_eq!(count_of(&nothing, "unwrap_calls")?, 0);
     assert!(nothing.page.complete);
-    assert!(full_rows(&nothing).is_empty());
+    assert!(full_rows(&nothing)?.is_empty());
+    Ok(())
 }
 
 /// `credential_files`' predicate is an unparenthesized `OR` chain, so the
 /// glob has to be AND-ed against the whole thing: binding it to the last
 /// term alone would keep every non-matching credential path.
 #[test]
-fn a_pattern_filters_a_credential_predicate_that_is_an_or_chain() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(project.path().join(".env"), b"API_KEY=secret\n").expect("write .env");
-    fs::create_dir_all(project.path().join("sub")).expect("create dir");
-    fs::write(project.path().join("sub").join("client.pem"), b"key\n").expect("write pem");
+fn a_pattern_filters_a_credential_predicate_that_is_an_or_chain() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    fs::write(project.path().join(".env"), b"API_KEY=secret\n").check("write .env")?;
+    fs::create_dir_all(project.path().join("sub")).check("create dir")?;
+    fs::write(project.path().join("sub").join("client.pem"), b"key\n").check("write pem")?;
 
-    let unfiltered = run(request(project.path(), Some("credential_files")));
+    let unfiltered = run(request(project.path(), Some("credential_files")))?;
     assert_eq!(unfiltered.page.total, Some(2), "both absent a filter");
 
     let mut scoped = request(project.path(), Some("credential_files"));
     scoped.pattern = Some("sub".to_owned());
-    let scoped = run(scoped);
+    let scoped = run(scoped)?;
     assert_eq!(scoped.page.total, Some(1), "only the pem is under sub/");
-    assert_eq!(full_rows(&scoped)[0].file, "sub/client.pem");
+    assert_eq!(full_rows(&scoped)?[0].file, "sub/client.pem");
+    Ok(())
 }
 
 #[test]
-fn mechanic_counts_carry_the_file_denominator_and_what_each_mechanic_covers() {
-    let project = unwrap_fixture(3, 2); // 6 unwraps across 3 files
-    let response = run(request(project.path(), None));
+fn mechanic_counts_carry_the_file_denominator_and_what_each_mechanic_covers() -> TestResult {
+    let project = unwrap_fixture(3, 2)?; // 6 unwraps across 3 files
+    let response = run(request(project.path(), None))?;
 
-    let unwrap = entry(&response, "unwrap_calls");
+    let unwrap = entry(&response, "unwrap_calls")?;
     assert_eq!(unwrap.count, 6);
     assert_eq!(unwrap.files, 3);
     assert_eq!(unwrap.covers, ["rust"]);
-    assert_eq!(entry(&response, "comment_markers").covers, ["rust"]);
-    assert_eq!(entry(&response, "credential_files").covers, ["rust"]);
+    assert_eq!(entry(&response, "comment_markers")?.covers, ["rust"]);
+    assert_eq!(entry(&response, "credential_files")?.covers, ["rust"]);
+    Ok(())
 }
 
 #[test]
-fn comment_marker_detail_is_clipped_at_the_char_limit() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
+fn comment_marker_detail_is_clipped_at_the_char_limit() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
     // Multi-byte padding proves the cut lands on a char boundary, not a byte
     // offset: 300 two-byte chars, truncated to the cap.
     let short = "y".repeat(120);
     let long = format!("// TODO: {}\n", "é".repeat(300));
-    fs::write(project.path().join("long.rs"), long).expect("write long");
+    fs::write(project.path().join("long.rs"), long).check("write long")?;
     let body = format!("// TODO: {short}\n");
-    fs::write(project.path().join("short.rs"), body).expect("write short");
+    fs::write(project.path().join("short.rs"), body).check("write short")?;
 
-    let response = run(request(project.path(), Some("comment_markers")));
-    let rows = full_rows(&response);
+    let response = run(request(project.path(), Some("comment_markers")))?;
+    let rows = full_rows(&response)?;
 
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].detail.chars().count(), MAX_DETAIL_CHARS);
     assert!(rows[0].detail_clipped, "clipped on a char boundary");
     assert!(!rows[1].detail_clipped);
     assert!(rows[1].detail.ends_with(&short), "{}", rows[1].detail);
+    Ok(())
 }
 
 #[test]
@@ -410,31 +425,33 @@ fn clip_detail_flags_only_past_the_char_limit() {
 /// about: no content was retained, but the path is exactly the signal this
 /// mechanic exists to surface.
 #[test]
-fn credential_files_reports_a_skipped_credential_shaped_file() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 500}"#);
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
-    fs::write(project.path().join("big.pem"), vec![b'k'; 5_000]).expect("write big.pem");
+fn credential_files_reports_a_skipped_credential_shaped_file() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 500}"#)?;
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
+    fs::write(project.path().join("big.pem"), vec![b'k'; 5_000]).check("write big.pem")?;
 
-    let counts = run(request(project.path(), None));
-    let skipped = count_of(&counts, "credential_files");
+    let counts = run(request(project.path(), None))?;
+    let skipped = count_of(&counts, "credential_files")?;
     assert_eq!(skipped, 1, "skipped credentials are still counted");
 
-    let rows = run(request(project.path(), Some("credential_files")));
-    assert_eq!(full_rows(&rows).len(), 1);
-    assert_eq!(full_rows(&rows)[0].file, "big.pem");
+    let rows = run(request(project.path(), Some("credential_files")))?;
+    assert_eq!(full_rows(&rows)?.len(), 1);
+    assert_eq!(full_rows(&rows)?[0].file, "big.pem");
     assert_eq!(rows.files_total, 1);
+    Ok(())
 }
 
 /// The `mode` switch is optional: a request JSON carrying only `path` still
 /// deserializes, to `full`.
 #[test]
-fn a_request_without_mode_deserializes_to_full() {
+fn a_request_without_mode_deserializes_to_full() -> TestResult {
     let request: LeadsRequest = serde_json::from_str(r#"{"path":"/tmp/anywhere"}"#)
-        .expect("path-only request deserializes");
+        .check("path-only request deserializes")?;
     assert_eq!(request.mode, LeadMode::Full);
     assert!(request.mechanic.is_none() && request.pattern.is_none());
+    Ok(())
 }
 
 /// The compact mode's whole point: a `mechanic`/`file`/`line` triple with no
@@ -442,51 +459,52 @@ fn a_request_without_mode_deserializes_to_full() {
 /// `detail` — and, with no `mechanic`, that is the whole surface in one
 /// response, every row tagged. The default mode keeps its text.
 #[test]
-fn compact_rows_are_mechanic_file_line_triples_without_detail() {
-    let project = rust_fixture();
-    let response = run(compact_request(project.path(), None));
-    let rows = compact_rows(&response);
+fn compact_rows_are_mechanic_file_line_triples_without_detail() -> TestResult {
+    let project = rust_fixture()?;
+    let response = run(compact_request(project.path(), None))?;
+    let rows = compact_rows(&response)?;
     assert!(rows.iter().any(|r| r.mechanic == "unwrap_calls"));
     assert!(rows.iter().any(|r| r.mechanic == "comment_markers"));
-    let returned = u64::try_from(response.page.returned).expect("fits");
+    let returned = u64::try_from(response.page.returned).check("fits")?;
     assert_eq!(Some(returned), response.page.total);
-    let serialized = serde_json::to_value(rows).expect("rows serialize");
+    let serialized = serde_json::to_value(rows).check("rows serialize")?;
     let row = &serialized[0];
     assert_eq!(row["mechanic"], "unwrap_calls");
     assert_eq!(row["file"], "lib.rs");
-    assert!(row["line"].as_i64().expect("line") > 0);
-    assert_eq!(row.as_object().expect("object").len(), 3, "{row}");
+    assert!(row["line"].as_i64().check("line")? > 0);
+    assert_eq!(row.as_object().check("object")?.len(), 3, "{row}");
 
-    let full = run(request(project.path(), Some("unwrap_calls")));
-    let text = serde_json::to_value(&full.rows).expect("rows serialize");
+    let full = run(request(project.path(), Some("unwrap_calls")))?;
+    let text = serde_json::to_value(&full.rows).check("rows serialize")?;
     assert_eq!(text[0]["detail"], "x.unwrap");
     assert!(text[0].get("mechanic").is_none());
 
     let mut paged = compact_request(project.path(), None);
     paged.limit = Some(1);
-    let page = run(paged);
-    assert_eq!(compact_rows(&page)[0].mechanic, rows[0].mechanic);
+    let page = run(paged)?;
+    assert_eq!(compact_rows(&page)?[0].mechanic, rows[0].mechanic);
     assert!(page.page.cursor.is_some());
 
     let mut scoped = compact_request(project.path(), None);
     scoped.pattern = Some("lib.rs".to_owned());
-    let scoped = run(scoped);
-    let files: Vec<&str> = compact_rows(&scoped)
+    let scoped = run(scoped)?;
+    let files: Vec<&str> = compact_rows(&scoped)?
         .iter()
         .map(|r| r.file.as_str())
         .collect();
     assert!(!files.is_empty() && files.iter().all(|f| *f == "lib.rs"));
+    Ok(())
 }
 
 /// Paging a compact sweep: the pages partition the rows and `files_covered`
 /// stays cumulative rather than per-page.
 #[test]
-fn compact_paging_reports_a_cumulative_file_denominator() {
-    let project = unwrap_fixture(2, 3); // 6 rows across 2 files
+fn compact_paging_reports_a_cumulative_file_denominator() -> TestResult {
+    let project = unwrap_fixture(2, 3)?; // 6 rows across 2 files
     let manager = crate::sync::SourceSyncManager::default();
     let mut first = compact_request(project.path(), None);
     first.limit = Some(4);
-    let first = run_on(&manager, first);
+    let first = run_on(&manager, first)?;
     assert_eq!((first.page.returned, first.page.total), (4, Some(6)));
     assert_eq!((first.files_covered, first.files_total), (2, 2));
     assert_eq!(
@@ -494,23 +512,24 @@ fn compact_paging_reports_a_cumulative_file_denominator() {
         (false, true)
     );
 
-    let rest = run_on(&manager, continuation(&first));
+    let rest = run_on(&manager, continuation(&first)?)?;
     assert_eq!((rest.page.returned, rest.page.complete), (2, true));
     assert_eq!((rest.files_covered, rest.files_total), (2, 2));
+    Ok(())
 }
 
 /// The completeness fields mean the same thing in both modes: for one
 /// mechanic they match field for field, the rows are the same places in the
 /// same order, and only the bytes differ.
 #[test]
-fn both_modes_report_the_same_completeness_for_one_mechanic() {
-    let project = unwrap_fixture(3, 4);
+fn both_modes_report_the_same_completeness_for_one_mechanic() -> TestResult {
+    let project = unwrap_fixture(3, 4)?;
     let mut full_req = request(project.path(), Some("unwrap_calls"));
     full_req.limit = Some(5);
-    let full = run(full_req);
+    let full = run(full_req)?;
     let mut compact_req = compact_request(project.path(), Some("unwrap_calls"));
     compact_req.limit = Some(5);
-    let compact = run(compact_req);
+    let compact = run(compact_req)?;
 
     assert_eq!(compact.page.returned, full.page.returned);
     assert_eq!(compact.page.total, full.page.total);
@@ -519,38 +538,40 @@ fn both_modes_report_the_same_completeness_for_one_mechanic() {
     assert_eq!(compact.files_covered, full.files_covered);
     assert_eq!(compact.page.limited_by, full.page.limited_by);
     assert_eq!(compact.page.cursor.is_some(), full.page.cursor.is_some());
-    let crows = compact_rows(&compact);
+    let crows = compact_rows(&compact)?;
     let cplaces: Vec<(&str, i64)> = crows.iter().map(|r| (r.file.as_str(), r.line)).collect();
-    let frows = full_rows(&full);
+    let frows = full_rows(&full)?;
     let fplaces: Vec<(&str, i64)> = frows.iter().map(|r| (r.file.as_str(), r.line)).collect();
     assert_eq!(cplaces, fplaces, "same rows, same order");
     let (cbytes, fbytes) = (compact.page.bytes_used, full.page.bytes_used);
     assert!(cbytes < fbytes, "{cbytes} vs {fbytes}");
+    Ok(())
 }
 
 /// Every caller-supplied string field is bounded before it reaches the
 /// project: an over-cap value is refused with the message naming the field
 /// and its cap, never truncated or passed through.
 #[test]
-fn leads_refuses_inputs_over_their_byte_caps() {
-    let refused = |mutate: fn(&mut LeadsRequest)| {
+fn leads_refuses_inputs_over_their_byte_caps() -> TestResult {
+    let refused = |mutate: fn(&mut LeadsRequest)| -> TestResult<ErrorData> {
         let mut request = request(Path::new("/tmp"), None);
         mutate(&mut request);
-        try_run(request).expect_err("an over-cap input is refused")
+        try_run(request).check_err("an over-cap input is refused")
     };
-    let mut path = refused(|r| r.path = Some("a".repeat(MAX_PATH_BYTES + 1)));
+    let mut path = refused(|r| r.path = Some("a".repeat(MAX_PATH_BYTES + 1)))?;
     assert_eq!(path.message, "path exceeds 32768 bytes");
-    path = refused(|r| r.mechanic = Some("m".repeat(MAX_FILTER_BYTES + 1)));
+    path = refused(|r| r.mechanic = Some("m".repeat(MAX_FILTER_BYTES + 1)))?;
     assert_eq!(path.message, "mechanic exceeds 8192 bytes");
-    path = refused(|r| r.pattern = Some("p".repeat(MAX_FILTER_BYTES + 1)));
+    path = refused(|r| r.pattern = Some("p".repeat(MAX_FILTER_BYTES + 1)))?;
     assert_eq!(path.message, "pattern exceeds 8192 bytes");
-    path = refused(|r| r.cursor = Some("c".repeat(MAX_CURSOR_BYTES + 1)));
+    path = refused(|r| r.cursor = Some("c".repeat(MAX_CURSOR_BYTES + 1)))?;
     assert_eq!(path.message, "cursor exceeds 1024 bytes");
     assert_eq!(
         path.code,
         rmcp::model::ErrorCode::INVALID_PARAMS,
         "{path:?}"
     );
+    Ok(())
 }
 
 #[path = "leads_page_tests.rs"]

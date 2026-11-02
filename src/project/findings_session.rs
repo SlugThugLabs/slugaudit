@@ -12,6 +12,7 @@
 use super::activation::{ActivationError, activation_dir};
 use super::findings_sweep::{lock_error, session_error, sweep_dead_sessions};
 use super::root::ProjectRoot;
+use crate::util::LockPoisoned;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
@@ -44,13 +45,16 @@ pub(super) fn lock_name(id: &str) -> String {
 /// directory is `dir`: `<dir>/findings-<id>.db`. `None` before the process
 /// first touched the project, or after `off` ended its session. The file
 /// itself exists only once a finding was written.
-#[must_use]
-pub fn session_findings_path(dir: &Path) -> Option<PathBuf> {
-    let sessions = crate::util::lock_or_recover(&SESSIONS, "findings_sessions");
-    sessions
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the session table was poisoned.
+pub fn session_findings_path(dir: &Path) -> Result<Option<PathBuf>, LockPoisoned> {
+    let sessions = crate::util::lock(&SESSIONS, "findings_sessions")?;
+    Ok(sessions
         .as_ref()
         .and_then(|sessions| sessions.get(dir))
-        .map(|session| session.findings.clone())
+        .map(|session| session.findings.clone()))
 }
 
 /// Starts this process's session for `root` on the first call: picks the
@@ -62,10 +66,11 @@ pub fn session_findings_path(dir: &Path) -> Option<PathBuf> {
 ///
 /// Returns [`ActivationError::FindingsSession`] when the lock cannot be
 /// taken or a dead session's file cannot be removed; the root then stays
-/// untouched, so the next call retries.
+/// untouched, so the next call retries. Returns [`ActivationError::Lock`]
+/// when the session table was poisoned.
 pub fn begin_process_session(root: &ProjectRoot) -> Result<(), ActivationError> {
     let dir = activation_dir(root);
-    let mut sessions = crate::util::lock_or_recover(&SESSIONS, "findings_sessions");
+    let mut sessions = crate::util::lock(&SESSIONS, "findings_sessions")?;
     let sessions = sessions.get_or_insert_with(HashMap::new);
     if sessions.contains_key(&dir) {
         return Ok(());
@@ -146,10 +151,15 @@ fn lock_when_free(lock: &File, lock_path: &Path) -> Result<(), ActivationError> 
 /// activation directory can be deleted (a locked file cannot be deleted
 /// through another handle on Windows). The next call starts a new session.
 /// Called by `disable` before it removes the directory.
-pub(super) fn end_process_session(root: &ProjectRoot) {
-    if let Some(sessions) = crate::util::lock_or_recover(&SESSIONS, "findings_sessions").as_mut() {
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the session table was poisoned.
+pub(super) fn end_process_session(root: &ProjectRoot) -> Result<(), LockPoisoned> {
+    if let Some(sessions) = crate::util::lock(&SESSIONS, "findings_sessions")?.as_mut() {
         sessions.remove(&activation_dir(root));
     }
+    Ok(())
 }
 
 /// Test seam: takes `root`'s session out of the process-wide set, so the next
@@ -158,26 +168,30 @@ pub(super) fn end_process_session(root: &ProjectRoot) {
 /// file live (a second process still running). Per root, because the set is
 /// process-wide and other tests use their own roots.
 #[cfg(test)]
-pub(crate) fn take_session_for_test(root: &ProjectRoot) -> Option<Session> {
-    crate::util::lock_or_recover(&SESSIONS, "findings_sessions")
+pub(crate) fn take_session_for_test(root: &ProjectRoot) -> Result<Option<Session>, LockPoisoned> {
+    Ok(crate::util::lock(&SESSIONS, "findings_sessions")?
         .as_mut()
-        .and_then(|sessions| sessions.remove(&activation_dir(root)))
+        .and_then(|sessions| sessions.remove(&activation_dir(root))))
 }
 
 /// Test seam: makes `session` this process's session for `root` again,
 /// returning the one it replaces.
 #[cfg(test)]
-pub(crate) fn put_session_for_test(root: &ProjectRoot, session: Session) -> Option<Session> {
-    crate::util::lock_or_recover(&SESSIONS, "findings_sessions")
+pub(crate) fn put_session_for_test(
+    root: &ProjectRoot,
+    session: Session,
+) -> Result<Option<Session>, LockPoisoned> {
+    Ok(crate::util::lock(&SESSIONS, "findings_sessions")?
         .get_or_insert_with(HashMap::new)
-        .insert(activation_dir(root), session)
+        .insert(activation_dir(root), session))
 }
 
 /// Test seam: forgets `root`'s session, like [`take_session_for_test`] with
 /// the process then exiting.
 #[cfg(test)]
-pub(crate) fn forget_root_for_test(root: &ProjectRoot) {
-    drop(take_session_for_test(root));
+pub(crate) fn forget_root_for_test(root: &ProjectRoot) -> Result<(), LockPoisoned> {
+    drop(take_session_for_test(root)?);
+    Ok(())
 }
 
 #[cfg(test)]

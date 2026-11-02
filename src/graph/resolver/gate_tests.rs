@@ -14,6 +14,7 @@
 //! These tests pin both halves: lines with `from` inside a module name
 //! extract, and real JS-shaped lines still do.
 use super::generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
+use slugaudit_test_check::{Check, TestResult};
 use std::collections::HashSet;
 
 fn paths<'a>(set: &'a [&'a str]) -> HashSet<&'a str> {
@@ -21,7 +22,7 @@ fn paths<'a>(set: &'a [&'a str]) -> HashSet<&'a str> {
 }
 
 #[test]
-fn python_bare_module_named_from_util_is_not_dropped() {
+fn python_bare_module_named_from_util_is_not_dropped() -> TestResult {
     // `import from_util` is a legal Python bare-module import. Token-gating
     // routes it to the generic `import X` extractor and the bare-name branch
     // returns `from_util` as a bare module name (a substring-gated JS branch
@@ -29,24 +30,26 @@ fn python_bare_module_named_from_util_is_not_dropped() {
     let resolver = GenericResolver::python();
     let reference = resolver
         .extract_reference("import from_util")
-        .expect("import from_util must not be dropped");
+        .check("import from_util must not be dropped")?;
     assert_eq!(reference.text, "from_util");
+    Ok(())
 }
 
 #[test]
-fn python_dotted_module_with_from_substring_is_not_dropped() {
+fn python_dotted_module_with_from_substring_is_not_dropped() -> TestResult {
     // `import foo_bar.from_baz`: `from` appears as a substring of the module
     // path. The module name is legal Python (`foo_bar.from_baz` is a real import
     // path pattern), so it must not be dropped.
     let resolver = GenericResolver::python();
     let reference = resolver
         .extract_reference("import foo_bar.from_baz")
-        .expect("import foo_bar.from_baz must not be dropped");
+        .check("import foo_bar.from_baz must not be dropped")?;
     assert_eq!(reference.text, "foo_bar.from_baz");
+    Ok(())
 }
 
 #[test]
-fn dotted_module_with_from_substring_resolves_to_real_file() {
+fn dotted_module_with_from_substring_resolves_to_real_file() -> TestResult {
     // End-to-end through the catch-all (non-Python) generic resolver
     // where `bare_names_are_external = false` (well, it is true by
     // default; we use a custom config so the dotted path goes through
@@ -60,13 +63,14 @@ fn dotted_module_with_from_substring_resolves_to_real_file() {
     let known = paths(&["foo_bar/from_baz.py"]);
     let reference = resolver
         .extract_reference("import foo_bar.from_baz")
-        .expect("extract succeeds");
+        .check("extract succeeds")?;
     let resolution = resolver.resolve(&reference, "main.py", &known);
     assert_eq!(resolution.kind.as_sql_text(), "Resolved");
     assert_eq!(
         resolution.to_relative_path.as_deref(),
         Some("foo_bar/from_baz.py"),
     );
+    Ok(())
 }
 
 #[test]
@@ -85,18 +89,19 @@ fn malformed_js_import_with_unquoted_from_still_drops() {
 }
 
 #[test]
-fn valid_js_import_still_extracts_the_quoted_path() {
+fn valid_js_import_still_extracts_the_quoted_path() -> TestResult {
     // The case the JS branch exists for:
     // `import x from 'foo.js'` → `text: "foo.js"`.
     let resolver = GenericResolver::js();
     let reference = resolver
         .extract_reference("import x from 'foo.js'")
-        .expect("valid JS import extracts cleanly");
+        .check("valid JS import extracts cleanly")?;
     assert_eq!(reference.text, "foo.js");
+    Ok(())
 }
 
 #[test]
-fn from_substring_inside_quoted_path_is_not_a_keyword() {
+fn from_substring_inside_quoted_path_is_not_a_keyword() -> TestResult {
     // A path string that itself contains the word "from" (e.g.
     // a generated module name like `meta/from-handler`) is fine —
     // `split_whitespace` treats the whole quoted path as one token
@@ -105,6 +110,7 @@ fn from_substring_inside_quoted_path_is_not_a_keyword() {
     let resolver = GenericResolver::js();
     let reference = resolver
         .extract_reference("import x from 'meta/from-handler'")
-        .expect("valid path with the word 'from' inside it");
+        .check("valid path with the word 'from' inside it")?;
     assert_eq!(reference.text, "meta/from-handler");
+    Ok(())
 }

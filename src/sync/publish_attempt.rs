@@ -150,7 +150,10 @@ fn unchanged_report(
         return Err(PublishError::Revision(
             revision::RevisionError::StaleBaseline {
                 expected: baseline.revision_id.clone(),
-                found: current_id_now.unwrap_or("").to_owned(),
+                found: match current_id_now {
+                    Some(id) => id.to_owned(),
+                    None => String::new(),
+                },
             },
         ));
     }

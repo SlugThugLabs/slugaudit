@@ -22,6 +22,7 @@
 //! The `install` step deliberately runs into the temp `SLUGTHUG_HOME`, never
 //! `~/.slugthug`, so it leaves the machine exactly as it found it.
 
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -128,7 +129,7 @@ const CASES: &[Case] = &[
 /// Writes a fake client CLI named `name` into `bin_dir`: a shell script that
 /// records its argv — one line per invocation, arguments space-separated — to
 /// `log` and exits 0.
-fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) {
+fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) -> TestResult {
     let script = bin_dir.join(name);
     fs::write(
         &script,
@@ -137,14 +138,15 @@ fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) {
             log.display()
         ),
     )
-    .expect("write fake cli");
+    .check("write fake cli")?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&script).expect("metadata").permissions();
+        let mut perms = fs::metadata(&script).check("metadata")?.permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&script, perms).expect("chmod fake cli");
+        fs::set_permissions(&script, perms).check("chmod fake cli")?;
     }
+    Ok(())
 }
 
 /// Spawns the slugaudit binary with every home pointed at `home` and `PATH`
@@ -155,7 +157,7 @@ fn hermetic_output(
     home: &Path,
     bin_dir: &Path,
     args: &[&str],
-) -> std::process::Output {
+) -> TestResult<std::process::Output> {
     Command::new(binary)
         .args(args)
         .env("HOME", home)
@@ -163,20 +165,20 @@ fn hermetic_output(
         .env("SLUGTHUG_CONFIG_HOME", home)
         .env("PATH", bin_dir)
         .output()
-        .expect("spawn slugaudit")
+        .check("spawn slugaudit")
 }
 
 #[test]
-fn connect_emits_the_documented_argv_for_every_client_dialect() {
-    let temp = tempfile::tempdir().expect("temp dir");
+fn connect_emits_the_documented_argv_for_every_client_dialect() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
     let log = temp.path().join("argv.log");
-    fs::create_dir_all(&home).expect("mkdir home");
-    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    fs::create_dir_all(&home).check("mkdir home")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
     for case in CASES {
         if case.cli {
-            write_fake_cli(&bin_dir, case.agent, &log);
+            write_fake_cli(&bin_dir, case.agent, &log)?;
         }
     }
 
@@ -189,7 +191,7 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
 
     // Run `install` so the binary lands at the stable home path `connect`
     // prefers, mirroring the real flow: install once, then connect.
-    let install = hermetic_output(&binary, &home, &bin_dir, &["install"]);
+    let install = hermetic_output(&binary, &home, &bin_dir, &["install"])?;
     assert!(
         install.status.success(),
         "install failed:\nstdout: {}\nstderr: {}",
@@ -204,8 +206,8 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
     );
 
     for case in CASES {
-        fs::write(&log, "").expect("truncate argv log");
-        let output = hermetic_output(&binary, &home, &bin_dir, &["connect", case.agent]);
+        fs::write(&log, "").check("truncate argv log")?;
+        let output = hermetic_output(&binary, &home, &bin_dir, &["connect", case.agent])?;
         assert!(
             output.status.success(),
             "{} connect failed:\nstdout: {}\nstderr: {}",
@@ -220,7 +222,7 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
             .map(|line| line.replace("{bin}", &installed.display().to_string()))
             .collect();
         let recorded: Vec<String> = fs::read_to_string(&log)
-            .expect("read argv log")
+            .check("read argv log")?
             .lines()
             .map(str::to_string)
             .collect();
@@ -234,9 +236,11 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
 
         if let Some(relative) = case.written {
             let path = home.join(relative);
-            let content = fs::read_to_string(&path).unwrap_or_else(|error| {
-                panic!("{} must write {}: {error}", case.agent, path.display())
-            });
+            let content = fs::read_to_string(&path).check(&format!(
+                "{} must write {}",
+                case.agent,
+                path.display()
+            ))?;
             assert!(
                 content.contains("slugaudit") && content.contains(&installed.display().to_string()),
                 "{} wrote {} without a slugaudit entry pointing at {}:\n{content}",
@@ -246,21 +250,22 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() {
             );
         }
     }
+    Ok(())
 }
 
 /// A disconnect that removes nothing must not report "Done.": goose has no
 /// writable section and no client CLI, so there is nothing this tool can take
 /// out.
 #[test]
-fn disconnecting_an_entry_with_nothing_to_remove_says_so() {
-    let temp = tempfile::tempdir().expect("temp dir");
+fn disconnecting_an_entry_with_nothing_to_remove_says_so() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&home).expect("mkdir home");
-    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    fs::create_dir_all(&home).check("mkdir home")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
 
-    let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "goose"]);
+    let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "goose"])?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -273,23 +278,24 @@ fn disconnecting_an_entry_with_nothing_to_remove_says_so() {
         "a no-op must be reported as one: {stdout}"
     );
     assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
+    Ok(())
 }
 
 /// An existing client config with no slugaudit entry is a no-op: the tool must
 /// say so and must not rewrite (or reformat) the user's file.
 #[test]
-fn disconnecting_a_config_without_an_entry_leaves_it_untouched() {
-    let temp = tempfile::tempdir().expect("temp dir");
+fn disconnecting_a_config_without_an_entry_leaves_it_untouched() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(home.join(".cursor")).expect("mkdir cursor");
-    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    fs::create_dir_all(home.join(".cursor")).check("mkdir cursor")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
     let config = home.join(".cursor/mcp.json");
     let original = "{\n  \"mcpServers\": {\"other\": {\"command\": \"/bin/other\"}}\n}";
-    fs::write(&config, original).expect("write config without slugaudit");
+    fs::write(&config, original).check("write config without slugaudit")?;
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
 
-    let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "cursor"]);
+    let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "cursor"])?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -303,10 +309,11 @@ fn disconnecting_a_config_without_an_entry_leaves_it_untouched() {
     );
     assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
     assert_eq!(
-        fs::read_to_string(&config).expect("read config"),
+        fs::read_to_string(&config).check("read config")?,
         original,
         "an untouched config must not be rewritten or reformatted"
     );
+    Ok(())
 }
 
 /// The replacement temp is created owner-only before any bytes are written, so
@@ -314,13 +321,13 @@ fn disconnecting_a_config_without_an_entry_leaves_it_untouched() {
 /// config file.
 #[cfg(unix)]
 #[test]
-fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() {
+fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() -> TestResult {
     use std::os::unix::fs::PermissionsExt as _;
-    let temp = tempfile::tempdir().expect("temp dir");
+    let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&home).expect("mkdir home");
-    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    fs::create_dir_all(&home).check("mkdir home")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
     // `exec` keeps the command's own pid and exit status; `umask 000` would
     // give a plain `fs::write` temp mode 0666.
@@ -333,7 +340,7 @@ fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() {
         .env("SLUGTHUG_CONFIG_HOME", &home)
         .env("PATH", &bin_dir)
         .output()
-        .expect("spawn slugaudit");
+        .check("spawn slugaudit")?;
 
     assert!(
         output.status.success(),
@@ -343,7 +350,7 @@ fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() {
     );
     let config = home.join(".cursor/mcp.json");
     let mode = fs::metadata(&config)
-        .expect("stat the written config")
+        .check("stat the written config")?
         .permissions()
         .mode()
         & 0o777;
@@ -351,19 +358,20 @@ fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() {
         mode, 0o600,
         "another user's umask must not make a credential-bearing config readable"
     );
+    Ok(())
 }
 
 /// A warning raised by a CLI command must reach the subscriber installed
 /// before dispatch; `connect` probes the client config and logs why an
 /// unparsable one is treated as unregistered.
 #[test]
-fn connect_logs_a_client_config_parse_warning_to_stderr() {
-    let temp = tempfile::tempdir().expect("temp dir");
+fn connect_logs_a_client_config_parse_warning_to_stderr() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(home.join(".cursor")).expect("mkdir cursor");
-    fs::create_dir_all(&bin_dir).expect("mkdir bin");
-    fs::write(home.join(".cursor/mcp.json"), "{ not json").expect("write malformed config");
+    fs::create_dir_all(home.join(".cursor")).check("mkdir cursor")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
+    fs::write(home.join(".cursor/mcp.json"), "{ not json").check("write malformed config")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_slugaudit"))
         .args(["connect", "cursor"])
@@ -374,7 +382,7 @@ fn connect_logs_a_client_config_parse_warning_to_stderr() {
         .env("RUST_LOG", "info")
         .env_remove("SLUGAUDIT_LOG_FORMAT")
         .output()
-        .expect("spawn slugaudit");
+        .check("spawn slugaudit")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -385,18 +393,19 @@ fn connect_logs_a_client_config_parse_warning_to_stderr() {
         stderr.contains("client config is not valid JSON"),
         "the warning must reach stderr: {stderr}"
     );
+    Ok(())
 }
 
 /// A closed stdin during the interactive agent choice is "input ended", not an
 /// empty answer that surfaces as "invalid agent choice".
 #[test]
-fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() {
-    let temp = tempfile::tempdir().expect("temp dir");
+fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
     // A `.cursor` directory is enough for Cursor to be detected as installed.
-    fs::create_dir_all(home.join(".cursor")).expect("mkdir cursor");
-    fs::create_dir_all(&bin_dir).expect("mkdir bin");
+    fs::create_dir_all(home.join(".cursor")).check("mkdir cursor")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_slugaudit"))
         .arg("connect")
@@ -406,7 +415,7 @@ fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() {
         .env("PATH", &bin_dir)
         .stdin(std::process::Stdio::null())
         .output()
-        .expect("spawn slugaudit");
+        .check("spawn slugaudit")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -415,4 +424,5 @@ fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() {
     );
     assert!(stderr.contains("input ended"), "stderr: {stderr}");
     assert!(!stderr.contains("invalid agent choice"), "stderr: {stderr}");
+    Ok(())
 }

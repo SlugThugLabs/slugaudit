@@ -17,17 +17,25 @@ pub struct Position {
     pub column: u32,
 }
 
-/// A line or column past `u32::MAX` is not a real source position. The clamp
-/// is unreachable for any file the profiles admit (`max_file_bytes` is at most
-/// 1 GiB, so no line or column count reaches 2^32), and it is logged if it
-/// ever happens. Shared by every caller that converts a parser's `usize`
-/// position into ours.
-#[must_use]
-pub fn saturating_u32(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or_else(|error| {
-        tracing::warn!(value, %error, "source position exceeds u32::MAX; clamped");
-        u32::MAX
-    })
+/// A line or column that does not fit `u32`: no real source position, since
+/// the profiles cap a file at 1 GiB. Reaching it means a caller computed a
+/// position wrong, so the file's extraction fails with this error.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("source position {value} exceeds u32::MAX")]
+pub struct PositionOverflow {
+    value: usize,
+    #[source]
+    source: std::num::TryFromIntError,
+}
+
+/// Converts a parser's `usize` line or column into ours. Shared by every
+/// caller that converts a parser position.
+///
+/// # Errors
+///
+/// Returns [`PositionOverflow`] when `value` exceeds `u32::MAX`.
+pub fn position_u32(value: usize) -> Result<u32, PositionOverflow> {
+    u32::try_from(value).map_err(|source| PositionOverflow { value, source })
 }
 
 /// Converts a Tree-sitter byte offset into the character offset from the
@@ -47,15 +55,14 @@ pub fn saturating_u32(value: usize) -> u32 {
 /// [`LineIndex::position`], which answers in O(log lines + 256 bytes)
 /// instead of walking back to the line start on every call.
 #[cfg(test)]
-#[must_use]
-pub(crate) fn char_column(source: &str, byte_offset: usize) -> u32 {
+pub(crate) fn char_column(source: &str, byte_offset: usize) -> Result<u32, PositionOverflow> {
     let mut offset = byte_offset.min(source.len());
     // Offset 0 is always a char boundary, so this terminates.
     while !source.is_char_boundary(offset) {
         offset -= 1;
     }
     let line_start = source[..offset].rfind('\n').map_or(0, |idx| idx + 1);
-    saturating_u32(source[line_start..offset].chars().count())
+    position_u32(source[line_start..offset].chars().count())
 }
 
 /// Bytes per block of the character-count table in [`LineIndex`]. A column
@@ -116,28 +123,34 @@ impl<'a> LineIndex<'a> {
     /// Zero-based line of `byte_offset` (clamped to the source length).
     /// Used by `span_tests`; production callers use [`LineIndex::position`].
     #[cfg(test)]
-    #[must_use]
-    pub(crate) fn line(&self, byte_offset: usize) -> u32 {
-        saturating_u32(self.line_index(byte_offset.min(self.source.len())))
+    pub(crate) fn line(&self, byte_offset: usize) -> Result<u32, PositionOverflow> {
+        position_u32(self.line_index(byte_offset.min(self.source.len())))
     }
 
     /// Character column of `byte_offset`, counted in Unicode scalar values
     /// from the start of its line.
-    #[must_use]
-    pub fn column(&self, byte_offset: usize) -> u32 {
-        self.position(byte_offset).column
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PositionOverflow`] when the column exceeds `u32::MAX`.
+    pub fn column(&self, byte_offset: usize) -> Result<u32, PositionOverflow> {
+        Ok(self.position(byte_offset)?.column)
     }
 
     /// Line and column of `byte_offset` in one lookup.
-    #[must_use]
-    pub fn position(&self, byte_offset: usize) -> Position {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PositionOverflow`] when the line or column exceeds
+    /// `u32::MAX`.
+    pub fn position(&self, byte_offset: usize) -> Result<Position, PositionOverflow> {
         let offset = self.floor_to_boundary(byte_offset);
         let line = self.line_index(offset);
         let line_start = self.line_start(line);
-        Position {
-            line: saturating_u32(line),
-            column: saturating_u32(self.chars_before(offset) - self.chars_before(line_start)),
-        }
+        Ok(Position {
+            line: position_u32(line)?,
+            column: position_u32(self.chars_before(offset) - self.chars_before(line_start))?,
+        })
     }
 
     fn floor_to_boundary(&self, byte_offset: usize) -> usize {
@@ -159,12 +172,10 @@ impl<'a> LineIndex<'a> {
     /// Byte offset of the start of line `line`. Line 0 has no entry in
     /// `later_line_starts` and starts at 0.
     fn line_start(&self, line: usize) -> usize {
-        self.later_line_starts
-            .iter()
-            .take(line)
-            .next_back()
-            .copied()
-            .unwrap_or(0)
+        match self.later_line_starts.iter().take(line).next_back() {
+            Some(start) => *start,
+            None => 0,
+        }
     }
 
     /// Characters in `source[..offset]`; `offset` must be a char boundary.

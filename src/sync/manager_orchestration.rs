@@ -30,13 +30,6 @@ struct Discard {
     what: &'static str,
 }
 
-fn elapsed_ms(start: std::time::Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
-        tracing::warn!(error = %error, "sync duration exceeds u64 milliseconds; stamp saturates");
-        u64::MAX
-    })
-}
-
 impl SourceSyncManager {
     // Owner decision (2026-10-31): the database only matters if it is exactly the same as the code base, and hashing every file on every call is simpler than trusting any shortcut.
     /// Ensures the project containing `path` is fully synchronized and
@@ -91,8 +84,8 @@ impl SourceSyncManager {
             };
         let revision_id = revision_after_sync(&connection, &database_path)?;
 
-        let duration_ms = elapsed_ms(start);
-        self.stamp_last_sync(duration_ms);
+        let duration_ms = crate::clock::saturating_millis(start.elapsed());
+        self.stamp_last_sync(duration_ms)?;
         tracing::debug!(
             revision_id = %revision_id,
             root = %root.as_path().display(),
@@ -305,8 +298,8 @@ impl SourceSyncManager {
             });
         })?;
         synced.discard = notice;
-        let duration_ms = elapsed_ms(start);
-        self.stamp_last_sync(duration_ms);
+        let duration_ms = crate::clock::saturating_millis(start.elapsed());
+        self.stamp_last_sync(duration_ms)?;
         sink.emit(ProgressEvent::Completed {
             phase: "ensuring_current",
         });
@@ -323,6 +316,9 @@ impl SourceSyncManager {
 /// unresolvable path, a symlinked activation directory — keeps its plain
 /// message and no code, because `project_control` cannot fix it.
 pub(crate) fn map_activation_error(error: &project::ActivationError) -> ErrorData {
+    if let project::ActivationError::Lock(poisoned) = error {
+        return poisoned.clone().into();
+    }
     let data = if matches!(error, project::ActivationError::NotActive) {
         error_codes::payload(ErrorCode::ProjectNotEnabled)
     } else {
@@ -335,6 +331,10 @@ pub(crate) fn map_activation_error(error: &project::ActivationError) -> ErrorDat
 /// `SLUGAUDIT_*` environment is invalid (a library embedder; the shipped
 /// binary validates before serving). Logged once here, with the source error.
 pub(crate) fn map_process_limits_error(error: &crate::model::EnvConfigError) -> ErrorData {
+    if let crate::model::EnvConfigError::WarningLedger(poisoned) = error {
+        tracing::error!(%poisoned, "process limits could not be derived");
+        return poisoned.clone().into();
+    }
     tracing::error!(%error, "process limits environment is invalid");
     ErrorData::internal_error(
         format!("the SLUGAUDIT_* environment is invalid: {error}; fix it and restart the server"),

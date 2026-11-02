@@ -190,7 +190,7 @@ pub(super) fn tally_cached(
         let registered = custom
             .get(*index)
             .ok_or_else(|| index_out_of_range("custom", *index, custom.len()))?;
-        match scope.cache.get(&key_of(scope, registered, glob)) {
+        match scope.cache.get(&key_of(scope, registered, glob))? {
             Some(rows) => {
                 let tallies_len = scanned.tallies.len();
                 *scanned
@@ -210,7 +210,7 @@ pub(super) fn tally_cached(
     if missed.is_empty() {
         return Ok(scanned);
     }
-    let budget = scope.cache.budget();
+    let budget = scope.cache.budget()?;
     let mut pass = Pass::new(budget, custom.len());
     let end = mechanic_scan::scan(tx, custom, &missed, glob, deadline, &mut |hit| {
         let tally = scanned.tallies.get_mut(hit.entry).ok_or_else(|| {
@@ -240,7 +240,7 @@ pub(super) fn tally_cached(
             .ok_or_else(|| index_out_of_range("custom", index, custom.len()))?;
         let Some(rows) = pass.take(index) else {
             if !stopped {
-                scope.cache.note_too_large();
+                scope.cache.note_too_large()?;
             }
             continue;
         };
@@ -248,7 +248,7 @@ pub(super) fn tally_cached(
         if !stopped {
             scope
                 .cache
-                .insert(key_of(scope, registered, glob), Arc::clone(&rows));
+                .insert(key_of(scope, registered, glob), Arc::clone(&rows))?;
         }
         let rows_len = scanned.rows.len();
         *scanned

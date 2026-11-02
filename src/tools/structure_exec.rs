@@ -177,7 +177,7 @@ impl Run<'_, '_, '_> {
                 &lines,
                 capture_names.get(capture.index as usize).copied(),
                 self.mode.full_text,
-            );
+            )?;
             self.sink.push(&StoredMatch { found })?;
         }
         drop(captures);
@@ -205,7 +205,11 @@ pub(super) fn produce(
     let (ts_language, compiled_query) = compile_query(&target_language, &request.query)?;
     let single_file = request.file.is_some();
     let mode = OutputMode {
-        full_text: request.full_text.unwrap_or(single_file),
+        // Unset means: full text for a single-file query, snippets otherwise.
+        full_text: match request.full_text {
+            Some(full_text) => full_text,
+            None => single_file,
+        },
         single_file,
     };
     let run = run_query(

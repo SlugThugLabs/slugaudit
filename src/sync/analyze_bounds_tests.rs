@@ -7,6 +7,7 @@ use super::*;
 use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
 use crate::sync::analyze_seam::forced_failure;
 use crate::util::BudgetBound;
+use slugaudit_test_check::{Check, TestResult};
 use std::time::Duration;
 
 /// A per-file allowance no test parse comes near.
@@ -18,7 +19,7 @@ fn generous_deadline() -> Deadline {
 }
 
 /// `analyze` under the default `max_parse_bytes`.
-fn analyze_default(relative_path: &str, content: &str) -> ParseResult {
+fn analyze_default(relative_path: &str, content: &str) -> TestResult<ParseResult> {
     analyze(
         relative_path,
         Some(content),
@@ -26,10 +27,11 @@ fn analyze_default(relative_path: &str, content: &str) -> ParseResult {
         PER_FILE,
         &generous_deadline(),
     )
+    .check("analyze the file")
 }
 
 #[test]
-fn content_over_max_parse_bytes_is_content_only_without_reaching_the_loader() {
+fn content_over_max_parse_bytes_is_content_only_without_reaching_the_loader() -> TestResult {
     let before = forced_failure::calls();
 
     let result = analyze(
@@ -38,7 +40,8 @@ fn content_over_max_parse_bytes_is_content_only_without_reaching_the_loader() {
         4,
         PER_FILE,
         &generous_deadline(),
-    );
+    )
+    .check("analyze the file")?;
 
     assert_eq!(forced_failure::calls(), before, "the pack is never called");
     assert_eq!(result.language.as_deref(), Some("rust"));
@@ -50,10 +53,11 @@ fn content_over_max_parse_bytes_is_content_only_without_reaching_the_loader() {
     );
     assert!(result.evidence.is_empty());
     assert!(result.run.validate().is_ok());
+    Ok(())
 }
 
 #[test]
-fn content_at_exactly_max_parse_bytes_is_parsed() {
+fn content_at_exactly_max_parse_bytes_is_parsed() -> TestResult {
     let content = "fn a() {}\n";
 
     let result = analyze(
@@ -62,16 +66,18 @@ fn content_at_exactly_max_parse_bytes_is_parsed() {
         content.len() as u64,
         PER_FILE,
         &generous_deadline(),
-    );
+    )
+    .check("analyze the file")?;
 
     assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
+    Ok(())
 }
 
 #[test]
-fn a_parse_cancelled_by_the_pack_is_recorded_as_parse_timeout() {
+fn a_parse_cancelled_by_the_pack_is_recorded_as_parse_timeout() -> TestResult {
     let _forced = forced_failure::force(|| PackError::ParseTimeout { timeout_ms: 1 });
 
-    let result = analyze_default("slow.rs", "fn a() {}");
+    let result = analyze_default("slow.rs", "fn a() {}")?;
 
     assert_eq!(result.run.availability, ParserAvailability::Available);
     assert_eq!(
@@ -81,11 +87,12 @@ fn a_parse_cancelled_by_the_pack_is_recorded_as_parse_timeout() {
         }
     );
     assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
+    Ok(())
 }
 
 #[test]
-fn a_re_parse_cut_at_the_deadline_keeps_the_pack_evidence_as_partial_parse_timeout() {
-    let pack_items = analyze_default("lib.rs", "pub fn a() {}\n").evidence;
+fn a_re_parse_cut_at_the_deadline_keeps_the_pack_evidence_as_partial_parse_timeout() -> TestResult {
+    let pack_items = analyze_default("lib.rs", "pub fn a() {}\n")?.evidence;
     let kept = pack_items.len();
     assert!(kept > 0, "the fixture extracts evidence");
 
@@ -105,17 +112,19 @@ fn a_re_parse_cut_at_the_deadline_keeps_the_pack_evidence_as_partial_parse_timeo
     assert_eq!(result.run.completeness, ExtractionCompleteness::Partial);
     assert_eq!(result.evidence.len(), kept);
     assert!(result.run.validate().is_ok());
+    Ok(())
 }
 
 #[test]
-fn a_spent_per_file_allowance_records_parse_timeout_without_parsing() {
+fn a_spent_per_file_allowance_records_parse_timeout_without_parsing() -> TestResult {
     let result = analyze(
         "lib.rs",
         Some("pub fn a() {}\n"),
         2 * 1024 * 1024,
         Duration::ZERO,
         &generous_deadline(),
-    );
+    )
+    .check("analyze the file")?;
 
     assert_eq!(
         result.run.outcome,
@@ -126,10 +135,11 @@ fn a_spent_per_file_allowance_records_parse_timeout_without_parsing() {
     assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
     assert!(result.evidence.is_empty());
     assert!(result.run.validate().is_ok());
+    Ok(())
 }
 
 #[test]
-fn a_per_file_allowance_longer_than_the_sync_budget_yields_to_the_sync_budget() {
+fn a_per_file_allowance_longer_than_the_sync_budget_yields_to_the_sync_budget() -> TestResult {
     let spent_sync = Deadline::after(Duration::ZERO);
 
     let result = analyze(
@@ -138,7 +148,8 @@ fn a_per_file_allowance_longer_than_the_sync_budget_yields_to_the_sync_budget() 
         2 * 1024 * 1024,
         PER_FILE,
         &spent_sync,
-    );
+    )
+    .check("analyze the file")?;
 
     assert_eq!(
         result.run.outcome,
@@ -146,10 +157,12 @@ fn a_per_file_allowance_longer_than_the_sync_budget_yields_to_the_sync_budget() 
             reason: "parse_timeout".to_owned()
         }
     );
+    Ok(())
 }
 
 #[test]
-fn a_one_millisecond_per_file_allowance_cuts_a_large_parse_and_leaves_the_sync_budget() {
+fn a_one_millisecond_per_file_allowance_cuts_a_large_parse_and_leaves_the_sync_budget() -> TestResult
+{
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let content = line.repeat(400 * 1024 / line.len());
     let sync = generous_deadline();
@@ -160,7 +173,8 @@ fn a_one_millisecond_per_file_allowance_cuts_a_large_parse_and_leaves_the_sync_b
         2 * 1024 * 1024,
         Duration::from_millis(1),
         &sync,
-    );
+    )
+    .check("analyze the file")?;
 
     assert_eq!(
         result.run.outcome,
@@ -169,4 +183,5 @@ fn a_one_millisecond_per_file_allowance_cuts_a_large_parse_and_leaves_the_sync_b
         }
     );
     assert!(sync.exceeded().is_none(), "the sync budget is untouched");
+    Ok(())
 }

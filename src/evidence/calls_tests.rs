@@ -1,14 +1,17 @@
 use crate::model::LineIndex;
+use slugaudit_test_check::{Check, TestResult};
 
-fn extract_rust(source: &str) -> Vec<crate::model::EvidenceItem> {
-    super::extract_rust(source, &LineIndex::new(source), None).items
+fn extract_rust(source: &str) -> TestResult<Vec<crate::model::EvidenceItem>> {
+    Ok(super::extract_rust(source, &LineIndex::new(source), None)
+        .check("extract Rust calls")?
+        .items)
 }
 use crate::model::EvidenceKind;
 
 #[test]
-fn extracts_direct_qualified_and_macro_calls() {
+fn extracts_direct_qualified_and_macro_calls() -> TestResult {
     let source = "fn run() {\n    helper();\n    crate::worker::start();\n    println!(\"ok\");\n}\nfn helper() {}\n";
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
     assert_eq!(calls.len(), 3);
     assert!(calls.iter().all(|item| item.kind == EvidenceKind::Call));
 
@@ -17,9 +20,9 @@ fn extracts_direct_qualified_and_macro_calls() {
         .map(|item| {
             item.payload["callee_name"]
                 .as_str()
-                .expect("callee_name as string")
+                .check("callee_name as string")
         })
-        .collect();
+        .collect::<TestResult<_>>()?;
     assert!(names.contains(&"helper"));
     assert!(names.contains(&"start"));
     assert!(names.contains(&"println"));
@@ -27,21 +30,22 @@ fn extracts_direct_qualified_and_macro_calls() {
     let run_call = calls
         .iter()
         .find(|item| item.payload["callee_name"] == "helper")
-        .expect("expected run_call helper");
+        .check("expected run_call helper")?;
     assert_eq!(run_call.payload["caller"], "run");
     assert_eq!(run_call.payload["resolution"], "unresolved-syntactic");
 
     let macro_call = calls
         .iter()
         .find(|item| item.payload["callee_name"] == "println")
-        .expect("expected macro_call println");
+        .check("expected macro_call println")?;
     assert_eq!(macro_call.payload["resolution"], "macro");
+    Ok(())
 }
 
 #[test]
-fn calls_have_spans_and_do_not_include_definition_names() {
+fn calls_have_spans_and_do_not_include_definition_names() -> TestResult {
     let source = "fn build() { make(); }\nfn make() {}\n";
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
     assert_eq!(calls.len(), 1);
     let call = &calls[0];
     assert_eq!(call.payload["callee_text"], "make");
@@ -50,34 +54,36 @@ fn calls_have_spans_and_do_not_include_definition_names() {
         call.span,
         crate::model::SpanAvailability::Present(_)
     ));
+    Ok(())
 }
 
 #[test]
-fn method_calls_report_the_field_name_as_callee_name() {
+fn method_calls_report_the_field_name_as_callee_name() -> TestResult {
     let source = "fn run(v: Option<u8>) -> u8 {\n    v.unwrap()\n}\n";
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].payload["callee_name"], "unwrap");
     assert_eq!(calls[0].payload["callee_text"], "v.unwrap");
     assert_eq!(calls[0].payload["caller"], "run");
+    Ok(())
 }
 
 #[test]
-fn turbofish_callees_report_the_inner_function_or_method_name() {
+fn turbofish_callees_report_the_inner_function_or_method_name() -> TestResult {
     let source = "fn run(x: &str) {\n    foo::<u8>();\n    x.parse::<u32>();\n}\n";
 
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
 
     let named: Vec<(&str, &str, &str)> = calls
         .iter()
         .map(|item| {
-            (
-                item.payload["callee_name"].as_str().expect("callee_name"),
-                item.payload["callee_text"].as_str().expect("callee_text"),
-                item.payload["resolution"].as_str().expect("resolution"),
-            )
+            Ok((
+                item.payload["callee_name"].as_str().check("callee_name")?,
+                item.payload["callee_text"].as_str().check("callee_text")?,
+                item.payload["resolution"].as_str().check("resolution")?,
+            ))
         })
-        .collect();
+        .collect::<TestResult<_>>()?;
     assert_eq!(
         named,
         [
@@ -85,42 +91,46 @@ fn turbofish_callees_report_the_inner_function_or_method_name() {
             ("parse", "x.parse::<u32>", "unresolved-syntactic"),
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn a_qualified_turbofish_callee_stays_qualified() {
+fn a_qualified_turbofish_callee_stays_qualified() -> TestResult {
     let source = "fn run() { std::mem::size_of::<u8>(); }\n";
 
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
 
     assert_eq!(calls.len(), 1, "{calls:?}");
     assert_eq!(calls[0].payload["callee_name"], "size_of");
     assert_eq!(calls[0].payload["resolution"], "qualified-syntactic");
     assert_eq!(calls[0].payload["confidence"], "high");
+    Ok(())
 }
 
 #[test]
-fn a_qualified_call_inside_a_macro_has_the_same_confidence_as_outside() {
+fn a_qualified_call_inside_a_macro_has_the_same_confidence_as_outside() -> TestResult {
     let source = "fn run() { println!(\"{}\", crate::util::now()); }\n";
 
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
 
     let now = calls
         .iter()
         .find(|item| item.payload["callee_name"] == "now")
-        .expect("the macro argument call is recovered");
+        .check("the macro argument call is recovered")?;
     assert_eq!(now.payload["resolution"], "qualified-syntactic");
     assert_eq!(now.payload["confidence"], "high");
+    Ok(())
 }
 
 #[test]
-fn malformed_rust_does_not_panic() {
-    let calls = extract_rust("fn run() { helper(\n");
+fn malformed_rust_does_not_panic() -> TestResult {
+    let calls = extract_rust("fn run() { helper(\n")?;
     assert!(calls.len() <= 1);
+    Ok(())
 }
 
 #[test]
-fn extracts_method_calls_from_macro_arguments_without_duplicates() {
+fn extracts_method_calls_from_macro_arguments_without_duplicates() -> TestResult {
     let source = r#"
 fn run(a: Option<u8>, b: Option<u8>) {
     assert_eq!(a.unwrap(), b.unwrap());
@@ -130,7 +140,7 @@ fn run(a: Option<u8>, b: Option<u8>) {
     let _ = vec![Some(4).unwrap(), Some(5).unwrap()];
 }
 "#;
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
     let unwraps: Vec<_> = calls
         .iter()
         .filter(|item| item.payload["callee_name"] == "unwrap")
@@ -143,17 +153,18 @@ fn run(a: Option<u8>, b: Option<u8>) {
             crate::model::SpanAvailability::Present(_)
         ));
     }
+    Ok(())
 }
 
 #[test]
-fn macro_arguments_do_not_index_strings_or_comments_as_calls() {
+fn macro_arguments_do_not_index_strings_or_comments_as_calls() -> TestResult {
     let source = r#"
 fn run(value: Option<u8>) {
     println!("fake.unwrap() {}", value.unwrap()); // ignored.unwrap()
     assert!(value.is_some(), "text.unwrap()");
 }
 "#;
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
     assert_eq!(
         calls
             .iter()
@@ -162,12 +173,13 @@ fn run(value: Option<u8>) {
         1,
         "{calls:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn nested_macros_do_not_duplicate_inner_method_calls() {
+fn nested_macros_do_not_duplicate_inner_method_calls() -> TestResult {
     let source = "fn run(v: Option<u8>) { assert!(matches!(v.unwrap(), 1)); }";
-    let calls = extract_rust(source);
+    let calls = extract_rust(source)?;
     assert_eq!(
         calls
             .iter()
@@ -176,25 +188,30 @@ fn nested_macros_do_not_duplicate_inner_method_calls() {
         1,
         "{calls:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_call_walk_under_a_spent_deadline_is_timed_out_not_truncated() {
+fn a_call_walk_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResult {
     let source = "fn run() { helper(); }\n";
     let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
 
-    let extraction = super::extract_rust(source, &LineIndex::new(source), Some(&spent));
+    let extraction = super::extract_rust(source, &LineIndex::new(source), Some(&spent))
+        .check("extract Rust calls")?;
 
     assert!(extraction.items.is_empty());
     assert!(extraction.timed_out);
     assert!(!extraction.truncated);
+    Ok(())
 }
 
 #[test]
-fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() {
+fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
     let source = "fn run() { println!(\"{}\", helper()); }\n";
     let lines = LineIndex::new(source);
-    let tree = crate::evidence::parse_tree("rust", source, None).expect("a tree");
+    let tree = crate::evidence::parse_tree("rust", source, None)
+        .map_err(|failure| format!("{failure:?}"))
+        .check("a tree")?;
     let mut pending = vec![tree.root_node()];
     let mut macro_node = None;
     while let Some(node) = pending.pop() {
@@ -204,7 +221,7 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() {
         }
         crate::evidence::push_children(&mut pending, &node, |child| child);
     }
-    let macro_node = macro_node.expect("the fixture has a macro");
+    let macro_node = macro_node.check("the fixture has a macro")?;
     let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
     let input = super::Input {
         source,
@@ -212,9 +229,11 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() {
         deadline: Some(&spent),
     };
 
-    let recovered = super::macro_calls::extract(&macro_node, &input);
+    let recovered =
+        super::macro_calls::extract(&macro_node, &input).check("recover the macro's calls")?;
 
     assert!(recovered.timed_out);
     assert!(!recovered.capped);
     assert!(recovered.rows.is_empty(), "helper() was not recovered");
+    Ok(())
 }

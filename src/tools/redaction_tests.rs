@@ -19,6 +19,7 @@ use crate::store::test_capture::capture_at_level;
 use crate::tools::test_support::activated_project;
 use crate::tools::{FindingRequest, QueryRequest, ReportRequest};
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, TestResult};
 use tracing::Level;
 
 /// Distinctive strings that must never appear in captured logs.
@@ -47,8 +48,8 @@ fn manager() -> crate::sync::SourceSyncManager {
 }
 
 #[test]
-fn query_logging_never_emits_sql_text() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn query_logging_never_emits_sql_text() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let sql = format!("SELECT '{SQL_SENTINEL}' AS marker FROM files");
     let request = QueryRequest {
         path: Some(project.path().to_string_lossy().into_owned()),
@@ -68,17 +69,18 @@ fn query_logging_never_emits_sql_text() {
         },
         Level::DEBUG,
     );
-    result.expect("query succeeds");
+    result.check("query succeeds")?;
     assert_capture_is_live(&logs);
     assert!(
         !logs.contains(SQL_SENTINEL),
         "the query tool leaked SQL text into logs:\n{logs}"
     );
+    Ok(())
 }
 
 #[test]
-fn finding_logging_never_emits_finding_content() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn finding_logging_never_emits_finding_content() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let request = FindingRequest {
         path: project.path().to_string_lossy().into_owned(),
         file: "lib.rs".to_owned(),
@@ -100,23 +102,24 @@ fn finding_logging_never_emits_finding_content() {
         },
         Level::DEBUG,
     );
-    result.expect("finding records");
+    result.check("finding records")?;
     assert_capture_is_live(&logs);
     assert!(
         !logs.contains(FINDING_TITLE_SENTINEL) && !logs.contains(FINDING_DESC_SENTINEL),
         "the finding tool leaked AI-authored judgment content into logs:\n{logs}"
     );
+    Ok(())
 }
 
 #[test]
-fn sync_and_report_logging_never_emits_source_content() {
+fn sync_and_report_logging_never_emits_source_content() -> TestResult {
     // The source file's content is a sentinel; a full publish samples and
     // indexes it. If any sync/publish/report logging site emitted the
     // sampled content, the sentinel would appear in the captured logs.
     let project = activated_project(
         "lib.rs",
         format!("// {SOURCE_SENTINEL}\npub fn a() {{}}\n").as_bytes(),
-    );
+    )?;
     let request = ReportRequest {
         path: project.path().to_string_lossy().into_owned(),
     };
@@ -131,12 +134,13 @@ fn sync_and_report_logging_never_emits_source_content() {
         },
         Level::DEBUG,
     );
-    result.expect("report builds");
+    result.check("report builds")?;
     assert_capture_is_live(&logs);
     assert!(
         !logs.contains(SOURCE_SENTINEL),
         "the sync/report path leaked source content into logs:\n{logs}"
     );
+    Ok(())
 }
 
 /// The machine-readable half of an error is a mirrored surface too: a code
@@ -147,18 +151,18 @@ fn sync_and_report_logging_never_emits_source_content() {
 /// renders it. Pinned at two real sites: an unknown mechanic id and an
 /// oversized SQL string.
 #[test]
-fn agent_supplied_input_never_reaches_the_error_payload() {
+fn agent_supplied_input_never_reaches_the_error_payload() -> TestResult {
     let Err(error) =
         crate::tools::leads_mechanics::resolve_mechanic(Some("SENTINEL_MECHANIC_9147"))
     else {
-        panic!("an unknown mechanic must fail")
+        return Err("an unknown mechanic must fail".to_owned()).check("unexpected outcome");
     };
     assert!(
         error.message.contains("SENTINEL_MECHANIC_9147"),
         "the message still names what the caller asked for: {}",
         error.message
     );
-    let payload = serde_json::to_string(&error.data).expect("payload serializes");
+    let payload = serde_json::to_string(&error.data).check("payload serializes")?;
     assert!(
         !payload.contains("SENTINEL_MECHANIC_9147"),
         "the mechanic id must not reach the payload: {payload}"
@@ -167,4 +171,5 @@ fn agent_supplied_input_never_reaches_the_error_payload() {
         payload.contains("unknown_mechanic"),
         "and the payload is the machine-readable half instead: {payload}"
     );
+    Ok(())
 }

@@ -259,6 +259,7 @@ pub fn store_error(error: &crate::store::ResultStoreError) -> rmcp::ErrorData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
     use std::collections::BTreeSet;
 
     /// The wire strings are what a caller branches on, so they must be
@@ -284,10 +285,10 @@ mod tests {
     /// payload names the knob and the profiles, and a non-budget failure
     /// gets no budget code.
     #[test]
-    fn the_budget_payload_names_the_knob_and_only_the_budget_gets_it() {
-        let payload = budget_payload(Some(120_000)).expect("a spent budget carries a payload");
+    fn the_budget_payload_names_the_knob_and_only_the_budget_gets_it() -> TestResult {
+        let payload = budget_payload(Some(120_000)).check("a spent budget carries a payload")?;
         assert_eq!(payload["code"], "sync_budget_exhausted");
-        let remedy = payload["remedy"].as_str().expect("remedy is a string");
+        let remedy = payload["remedy"].as_str().check("remedy is a string")?;
         assert!(
             remedy.contains("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS"),
             "the remedy must name the knob: {remedy}"
@@ -300,6 +301,7 @@ mod tests {
             budget_payload(None).is_none(),
             "a non-budget failure must not carry the budget code"
         );
+        Ok(())
     }
 
     /// Each store failure maps to exactly one wire code (or none for the

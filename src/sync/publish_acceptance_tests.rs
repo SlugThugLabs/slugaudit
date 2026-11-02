@@ -10,6 +10,7 @@ use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::{stored_paths, write};
 use rusqlite::OptionalExtension;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
 struct FileRow {
@@ -19,7 +20,7 @@ struct FileRow {
     parse_outcome: String,
 }
 
-fn file_row(connection: &Connection, path: &str) -> FileRow {
+fn file_row(connection: &Connection, path: &str) -> TestResult<FileRow> {
     connection
         .query_row(
             "SELECT file_kind, content, language, parse_outcome FROM files WHERE path = ?1",
@@ -33,26 +34,26 @@ fn file_row(connection: &Connection, path: &str) -> FileRow {
                 })
             },
         )
-        .unwrap_or_else(|error| panic!("expected a row for {path}: {error}"))
+        .check(&format!("a row for {path}"))
 }
 
-fn diagnostic_messages(connection: &Connection, path: &str) -> Vec<String> {
+fn diagnostic_messages(connection: &Connection, path: &str) -> TestResult<Vec<String>> {
     let mut statement = connection
         .prepare(
             "SELECT json_extract(e.payload, '$.message') FROM evidence e \
              JOIN files f ON f.id = e.file_id \
              WHERE f.path = ?1 AND e.kind = 'Diagnostic'",
         )
-        .expect("prepare");
+        .check("prepare")?;
     statement
         .query_map([path], |row| row.get(0))
-        .expect("query")
+        .check("query")?
         .collect::<Result<_, _>>()
-        .expect("collect")
+        .check("collect")
 }
 
-fn resolved_target(connection: &Connection, from: &str) -> Option<String> {
-    connection
+fn resolved_target(connection: &Connection, from: &str) -> TestResult<Option<String>> {
+    Ok(connection
         .query_row(
             "SELECT t.path FROM dependency_edges e \
              JOIN files f ON f.id = e.from_file_id \
@@ -62,45 +63,45 @@ fn resolved_target(connection: &Connection, from: &str) -> Option<String> {
             |row| row.get::<_, Option<String>>(0),
         )
         .optional()
-        .expect("resolved-edge query runs")
-        .flatten()
+        .check("resolved-edge query runs")?
+        .flatten())
 }
 
 #[test]
-fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
-    let project = tempfile::tempdir().expect("project dir");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_realistic_polyglot_project_syncs_correctly_end_to_end() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     // Python package with a real cross-module import.
-    write(project.path(), "pkg/__init__.py", b"");
-    write(project.path(), "pkg/helper.py", b"def f():\n    pass\n");
-    write(project.path(), "pkg/main.py", b"from .helper import f\n");
+    write(project.path(), "pkg/__init__.py", b"")?;
+    write(project.path(), "pkg/helper.py", b"def f():\n    pass\n")?;
+    write(project.path(), "pkg/main.py", b"from .helper import f\n")?;
     // Genuinely malformed Python: an unclosed parameter list.
-    write(project.path(), "pkg/broken.py", b"def broken(:\n    pass\n");
+    write(project.path(), "pkg/broken.py", b"def broken(:\n    pass\n")?;
     // Valid Rust.
-    write(project.path(), "src/lib.rs", b"pub fn greet() {}\n");
+    write(project.path(), "src/lib.rs", b"pub fn greet() {}\n")?;
     // A circular JavaScript import pair.
     write(
         project.path(),
         "src/circular_a.js",
         b"import { b } from './circular_b.js';\nexport function a() {}\n",
-    );
+    )?;
     write(
         project.path(),
         "src/circular_b.js",
         b"import { a } from './circular_a.js';\nexport function b() {}\n",
-    );
+    )?;
     // A binary file, sniffed via its NUL byte.
     write(
         project.path(),
         "assets/logo.png",
         &[0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02],
-    );
+    )?;
     // Will be deleted outright on the next sync.
-    write(project.path(), "to_delete.py", b"x = 1\n");
+    write(project.path(), "to_delete.py", b"x = 1\n")?;
     // Will be "renamed" (delete + add with identical content) on the next sync.
-    write(project.path(), "old_name.py", b"y = 2\n");
+    write(project.path(), "old_name.py", b"y = 2\n")?;
 
     let first = publish(
         &mut connection,
@@ -108,22 +109,22 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("first publish");
+    .check("first publish")?;
     assert_eq!(first.added, 10);
     assert_eq!(first.deleted, 0);
 
     // Malformed source is recorded as evidence, not silently treated as a
     // clean parse.
-    let broken = file_row(&connection, "pkg/broken.py");
+    let broken = file_row(&connection, "pkg/broken.py")?;
     assert_eq!(broken.parse_outcome, "SyntaxErrors");
     assert!(
-        !diagnostic_messages(&connection, "pkg/broken.py").is_empty(),
+        !diagnostic_messages(&connection, "pkg/broken.py")?.is_empty(),
         "a malformed file must produce at least one Diagnostic evidence row"
     );
 
     // The binary file is classified and inert: no content, no language, and
     // (implicitly, via foreign key cascade behavior elsewhere) no evidence.
-    let logo = file_row(&connection, "assets/logo.png");
+    let logo = file_row(&connection, "assets/logo.png")?;
     assert_eq!(logo.file_kind, "binary");
     assert_eq!(logo.content, None);
     assert_eq!(logo.language, None);
@@ -134,30 +135,30 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
             [],
             |row| row.get(0),
         )
-        .expect("count logo evidence");
+        .check("count logo evidence")?;
     assert_eq!(logo_evidence, 0, "a binary file must carry no evidence");
 
     // The real Python cross-module import resolves.
     assert_eq!(
-        resolved_target(&connection, "pkg/main.py").as_deref(),
+        resolved_target(&connection, "pkg/main.py")?.as_deref(),
         Some("pkg/helper.py")
     );
 
     // Both directions of the circular JS import pair resolve independently;
     // nothing loops or panics resolving a cycle.
     assert_eq!(
-        resolved_target(&connection, "src/circular_a.js").as_deref(),
+        resolved_target(&connection, "src/circular_a.js")?.as_deref(),
         Some("src/circular_b.js")
     );
     assert_eq!(
-        resolved_target(&connection, "src/circular_b.js").as_deref(),
+        resolved_target(&connection, "src/circular_b.js")?.as_deref(),
         Some("src/circular_a.js")
     );
 
     // --- Second sync: a deletion, and a rename simulated as delete+add. ---
-    fs::remove_file(project.path().join("to_delete.py")).expect("delete file");
-    fs::remove_file(project.path().join("old_name.py")).expect("remove old name");
-    write(project.path(), "new_name.py", b"y = 2\n");
+    fs::remove_file(project.path().join("to_delete.py")).check("delete file")?;
+    fs::remove_file(project.path().join("old_name.py")).check("remove old name")?;
+    write(project.path(), "new_name.py", b"y = 2\n")?;
 
     let second = publish(
         &mut connection,
@@ -165,7 +166,7 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("second publish");
+    .check("second publish")?;
     assert_eq!(
         second.deleted, 2,
         "the outright deletion and the old half of the rename both count as deletions"
@@ -176,20 +177,21 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
          the new half of the rename is just an Added file with the same content"
     );
 
-    let paths = stored_paths(&connection);
+    let paths = stored_paths(&connection)?;
     assert!(!paths.contains(&"to_delete.py".to_owned()));
     assert!(!paths.contains(&"old_name.py".to_owned()));
     assert!(paths.contains(&"new_name.py".to_owned()));
-    let renamed = file_row(&connection, "new_name.py");
+    let renamed = file_row(&connection, "new_name.py")?;
     assert_eq!(renamed.content.as_deref(), Some("y = 2\n"));
 
     // Everything untouched by the second sync is still intact.
     assert_eq!(
-        resolved_target(&connection, "src/circular_a.js").as_deref(),
+        resolved_target(&connection, "src/circular_a.js")?.as_deref(),
         Some("src/circular_b.js")
     );
-    let logo_after: FileRow = file_row(&connection, "assets/logo.png");
+    let logo_after: FileRow = file_row(&connection, "assets/logo.png")?;
     assert_eq!(logo_after.file_kind, "binary");
+    Ok(())
 }
 
 /// `files.file_class` is derived from the path at write time, on both write
@@ -197,16 +199,16 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() {
 /// cover: a file over the ceiling is never read, so its class has to come
 /// from its path alone.
 #[test]
-fn a_published_file_row_carries_its_path_derived_class() {
-    let project = tempfile::tempdir().expect("project dir");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_published_file_row_carries_its_path_derived_class() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
-    write(project.path(), "src/auth.rs", b"pub fn a() {}\n");
-    write(project.path(), "src/generated/api.rs", b"pub fn c() {}\n");
-    write(project.path(), "vendor/dep/lib.rs", b"pub fn b() {}\n");
+    write(project.path(), "src/auth.rs", b"pub fn a() {}\n")?;
+    write(project.path(), "src/generated/api.rs", b"pub fn c() {}\n")?;
+    write(project.path(), "vendor/dep/lib.rs", b"pub fn b() {}\n")?;
     // Over the ceiling: never read, so only the path can classify it.
-    write(project.path(), "vendor/dep/huge.rs", &vec![b'x'; 50_000]);
+    write(project.path(), "vendor/dep/huge.rs", &vec![b'x'; 50_000])?;
 
     let limits = ResourceLimits {
         max_file_bytes: 10_000,
@@ -219,24 +221,25 @@ fn a_published_file_row_carries_its_path_derived_class() {
         &crate::progress::NoopProgressSink,
         &limits,
     )
-    .expect("publish");
+    .check("publish")?;
 
-    let class_of = |path: &str| -> (String, String) {
+    let class_of = |path: &str| -> TestResult<(String, String)> {
         connection
             .query_row(
                 "SELECT file_class, file_kind FROM files WHERE path = ?1",
                 [path],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .unwrap_or_else(|error| panic!("expected a row for {path}: {error}"))
+            .check(&format!("a row for {path}"))
     };
-    assert_eq!(class_of("src/auth.rs").0, "authored");
-    assert_eq!(class_of("src/generated/api.rs").0, "generated");
-    assert_eq!(class_of("vendor/dep/lib.rs").0, "vendored");
-    let (huge_class, huge_kind) = class_of("vendor/dep/huge.rs");
+    assert_eq!(class_of("src/auth.rs")?.0, "authored");
+    assert_eq!(class_of("src/generated/api.rs")?.0, "generated");
+    assert_eq!(class_of("vendor/dep/lib.rs")?.0, "vendored");
+    let (huge_class, huge_kind) = class_of("vendor/dep/huge.rs")?;
     assert_eq!(huge_kind, "skipped", "the oversize file was never read");
     assert_eq!(
         huge_class, "vendored",
         "a skipped file's class is derived from its path, not its content"
     );
+    Ok(())
 }

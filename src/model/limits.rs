@@ -238,8 +238,15 @@ impl ResourceLimits {
     /// Adaptive profile on a host whose memory cannot be detected.
     pub(super) fn from_env() -> Result<Self, EnvConfigError> {
         let env = EnvOverrides::read()?;
-        let mut limits = base_limits(env.profile, detect_system_memory)?;
-        env.apply(&mut limits, false);
+        let mut limits = match env.profile {
+            Some(profile) => base_limits(profile, detect_system_memory)?,
+            // No `SLUGAUDIT_PROFILE`: the default profile (Adaptive).
+            None => base_limits(
+                super::profile::AuditProfile::default(),
+                detect_system_memory,
+            )?,
+        };
+        env.apply(&mut limits, false)?;
         Ok(limits)
     }
 }
@@ -248,10 +255,10 @@ impl ResourceLimits {
 /// Adaptive when none is set. Adaptive needs the host memory, so when that
 /// cannot be detected the operator must choose a profile explicitly.
 pub(super) fn base_limits(
-    profile: Option<super::profile::AuditProfile>,
+    profile: super::profile::AuditProfile,
     detect: impl FnOnce() -> Result<SystemMemoryInfo, MemoryDetectError>,
 ) -> Result<ResourceLimits, EnvConfigError> {
-    super::profile::limits_for_profile_with(profile.unwrap_or_default(), detect)
+    super::profile::limits_for_profile_with(profile, detect)
         .map_err(|source| EnvConfigError::MemoryUndetectable { source })
 }
 

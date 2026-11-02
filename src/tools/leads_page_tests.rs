@@ -1,17 +1,18 @@
 use super::*;
+use slugaudit_test_check::{CheckErr, TestResult};
 
 #[test]
-fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() {
-    let project = unwrap_fixture(3, 4);
+fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() -> TestResult {
+    let project = unwrap_fixture(3, 4)?;
     let mut whole = request(project.path(), Some("unwrap_calls"));
     whole.page_bytes = Some(1_000_000);
-    let whole = run(whole);
+    let whole = run(whole)?;
     assert_eq!(whole.page.returned, 12);
     let half = whole.page.bytes_used / 2;
 
     let mut paged = request(project.path(), Some("unwrap_calls"));
     paged.page_bytes = Some(half);
-    let paged = run(paged);
+    let paged = run(paged)?;
 
     assert_eq!(paged.page.page_bytes, half);
     assert!(
@@ -23,17 +24,18 @@ fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() {
     assert_eq!(paged.page.limited_by, PageLimit::PageBytes);
     assert!(!paged.oversized_row);
     assert!(paged.page.cursor.is_some());
+    Ok(())
 }
 
 #[test]
-fn leads_default_page_is_the_configured_default_page_bytes() {
-    let project = unwrap_fixture(3, 4);
+fn leads_default_page_is_the_configured_default_page_bytes() -> TestResult {
+    let project = unwrap_fixture(3, 4)?;
     let limits = ResourceLimits {
         default_page_bytes: 120,
         ..ResourceLimits::default()
     };
 
-    let response = run_with_limits(request(project.path(), Some("unwrap_calls")), &limits);
+    let response = run_with_limits(request(project.path(), Some("unwrap_calls")), &limits)?;
 
     assert_eq!(response.page.page_bytes, 120);
     assert_eq!(response.page.limited_by, PageLimit::PageBytes);
@@ -42,11 +44,12 @@ fn leads_default_page_is_the_configured_default_page_bytes() {
         Some(12),
         "counts stay complete under paging"
     );
+    Ok(())
 }
 
 #[test]
-fn leads_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() {
-    let project = unwrap_fixture(1, 2);
+fn leads_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() -> TestResult {
+    let project = unwrap_fixture(1, 2)?;
     let limits = ResourceLimits {
         max_query_response_bytes: 50,
         ..ResourceLimits::default()
@@ -54,48 +57,52 @@ fn leads_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling()
     let mut asked = request(project.path(), Some("unwrap_calls"));
     asked.page_bytes = Some(10_000);
 
-    let response = run_with_limits(asked, &limits);
+    let response = run_with_limits(asked, &limits)?;
 
     assert_eq!(response.page.page_bytes, 50);
     assert_eq!(response.page.limited_by, PageLimit::Ceiling);
     assert!(!response.page.complete);
+    Ok(())
 }
 
 #[test]
-fn leads_flags_a_first_row_larger_than_the_page() {
-    let project = unwrap_fixture(1, 3);
+fn leads_flags_a_first_row_larger_than_the_page() -> TestResult {
+    let project = unwrap_fixture(1, 3)?;
     let mut asked = request(project.path(), Some("unwrap_calls"));
     asked.page_bytes = Some(1);
 
-    let response = run(asked);
+    let response = run(asked)?;
 
     assert_eq!(response.page.returned, 1, "one row per page minimum");
     assert!(response.oversized_row);
     assert!(response.page.cursor.is_some());
+    Ok(())
 }
 
 #[test]
-fn leads_refuses_a_zero_page_bytes_instead_of_substituting() {
-    let project = unwrap_fixture(1, 1);
+fn leads_refuses_a_zero_page_bytes_instead_of_substituting() -> TestResult {
+    let project = unwrap_fixture(1, 1)?;
     let mut asked = request(project.path(), Some("unwrap_calls"));
     asked.page_bytes = Some(0);
 
-    let error = try_run(asked).expect_err("zero is a contract error");
+    let error = try_run(asked).check_err("zero is a contract error")?;
 
     assert!(error.message.contains("page_bytes"), "{}", error.message);
+    Ok(())
 }
 
 #[test]
-fn leads_counts_only_reply_carries_the_page_size_that_applied() {
-    let project = unwrap_fixture(1, 1);
+fn leads_counts_only_reply_carries_the_page_size_that_applied() -> TestResult {
+    let project = unwrap_fixture(1, 1)?;
 
-    let response = run(request(project.path(), None));
+    let response = run(request(project.path(), None))?;
 
     assert_eq!(
         response.page.page_bytes,
         ResourceLimits::default().default_page_bytes
     );
     assert!(!response.oversized_row);
+    Ok(())
 }
 
 /// The byte budget, not a row cap, bounds a page: with no `limit`, rows stop
@@ -103,8 +110,8 @@ fn leads_counts_only_reply_carries_the_page_size_that_applied() {
 /// reading as a small mechanic. One row is always returned, so an empty page
 /// never means "budget too small".
 #[test]
-fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() {
-    let project = unwrap_fixture(3, 4);
+fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() -> TestResult {
+    let project = unwrap_fixture(3, 4)?;
     for (mode, budget) in [(LeadMode::Full, 8), (LeadMode::Compact, 40)] {
         let limits = ResourceLimits {
             max_query_response_bytes: budget,
@@ -113,7 +120,7 @@ fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() {
         let mut request = request(project.path(), Some("unwrap_calls"));
         request.mode = mode;
 
-        let response = run_with_limits(request, &limits);
+        let response = run_with_limits(request, &limits)?;
 
         assert_eq!(
             response.page.returned, 1,
@@ -139,4 +146,5 @@ fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() {
         schema.contains("page_bytes") && !schema.contains("Raise `limit`"),
         "{schema}"
     );
+    Ok(())
 }

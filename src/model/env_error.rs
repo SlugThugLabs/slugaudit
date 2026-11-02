@@ -43,4 +43,8 @@ pub enum EnvConfigError {
         #[source]
         source: MemoryDetectError,
     },
+    /// The ledger of limit warnings already logged was poisoned by a panic,
+    /// so whether a warning is due cannot be decided.
+    #[error(transparent)]
+    WarningLedger(#[from] crate::util::LockPoisoned),
 }

@@ -75,6 +75,7 @@ use slugaudit_mcp_rust::model::{AuditProfile, limits_for_profile, process_limits
 use slugaudit_mcp_rust::progress::NoopProgressSink;
 use slugaudit_mcp_rust::store::open_existing;
 use slugaudit_mcp_rust::sync::SourceSyncManager;
+use slugaudit_test_check::{Check, TestResult};
 use tempfile::TempDir;
 
 /// Files the soak project contains. The target is "~10k".
@@ -87,18 +88,22 @@ const COMPANION_FILES: usize = 64;
 
 /// A tempdir with the `.planning/slugaudit` activation marker — the minimum
 /// shape of an enabled project (`project::resolve_project`).
-fn activated_project() -> TempDir {
-    let project = tempfile::tempdir().expect("create project temp dir");
+fn activated_project() -> TestResult<TempDir> {
+    let project = tempfile::tempdir().check("create project temp dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("create activation dir");
-    write_database_marker(&project.path().join(".planning").join("slugaudit"));
-    project
+        .check("create activation dir")?;
+    write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
+    Ok(project)
 }
 
 /// Writes `files` small but genuinely parseable Rust modules spread over
 /// `directories` directories, and returns their project-relative, sorted
 /// paths.
-fn write_synthetic_project(root: &Path, files: usize, directories: usize) -> Vec<String> {
+fn write_synthetic_project(
+    root: &Path,
+    files: usize,
+    directories: usize,
+) -> TestResult<Vec<String>> {
     assert!(
         directories > 0 && files.is_multiple_of(directories),
         "the synthetic project must divide evenly: {files} files over {directories} directories"
@@ -107,7 +112,7 @@ fn write_synthetic_project(root: &Path, files: usize, directories: usize) -> Vec
     for directory in 0..directories {
         let relative_directory = format!("src/mod_{directory:03}");
         fs::create_dir_all(root.join(&relative_directory))
-            .expect("create synthetic module directory");
+            .check("create synthetic module directory")?;
         for file in 0..files / directories {
             let relative = format!("{relative_directory}/file_{file:03}.rs");
             let source = format!(
@@ -131,51 +136,51 @@ fn write_synthetic_project(root: &Path, files: usize, directories: usize) -> Vec
                  }}\n",
                 directory + 1
             );
-            fs::write(root.join(&relative), source).expect("write synthetic source file");
+            fs::write(root.join(&relative), source).check("write synthetic source file")?;
             expected.push(relative);
         }
     }
     expected.sort();
-    expected
+    Ok(expected)
 }
 
 /// Count of rows matching `sql`.
-fn count(connection: &rusqlite::Connection, sql: &str) -> usize {
+fn count(connection: &rusqlite::Connection, sql: &str) -> TestResult<usize> {
     let value: i64 = connection
         .query_row(sql, [], |row| row.get(0))
-        .expect("count rows");
-    usize::try_from(value).expect("row count fits in usize")
+        .check("count rows")?;
+    usize::try_from(value).check("row count fits in usize")
 }
 
 /// Every stored `files.path`, sorted.
-fn stored_paths(connection: &rusqlite::Connection) -> Vec<String> {
+fn stored_paths(connection: &rusqlite::Connection) -> TestResult<Vec<String>> {
     let mut statement = connection
         .prepare("SELECT path FROM files ORDER BY path")
-        .expect("prepare");
+        .check("prepare stored paths query")?;
     statement
         .query_map([], |row| row.get(0))
-        .expect("query")
+        .check("query stored paths")?
         .collect::<Result<Vec<String>, _>>()
-        .expect("collect stored paths")
+        .check("collect stored paths")
 }
 
 /// Builds the fixture, syncs it through `SourceSyncManager::ensure_current`,
 /// and asserts three things: the sync completed, it
 /// stayed inside `max_sync_wall_clock`, and the index covers the whole file
 /// set (row count, file kinds, parse outcomes, and the exact path set).
-fn sync_synthetic_project(files: usize, directories: usize) {
-    let project = activated_project();
-    let expected = write_synthetic_project(project.path(), files, directories);
+fn sync_synthetic_project(files: usize, directories: usize) -> TestResult {
+    let project = activated_project()?;
+    let expected = write_synthetic_project(project.path(), files, directories)?;
     assert_eq!(expected.len(), files, "fixture wrote the wrong file count");
 
     // The budget the sync itself will enforce: whatever `process_limits()`
     // resolved (env overrides included). The profile default is printed
     // alongside it so a maintainer can see whether an override was in play.
     let budget = process_limits()
-        .expect("process limits")
+        .check("resolve process limits")?
         .max_sync_wall_clock;
     let profile_default = limits_for_profile(AuditProfile::default())
-        .expect("profile limits")
+        .check("resolve profile limits")?
         .max_sync_wall_clock;
 
     let manager = SourceSyncManager::new();
@@ -185,19 +190,22 @@ fn sync_synthetic_project(files: usize, directories: usize) {
 
     let synced = match synced {
         Ok(synced) => synced,
-        Err(error) => panic!(
-            "sync of {files} files did not complete after {elapsed:?} \
+        Err(error) => {
+            return Err(format!(
+                "sync of {files} files did not complete after {elapsed:?} \
              (budget {budget:?}, profile default {profile_default:?}): {error}"
-        ),
+            ))
+            .check("unexpected outcome");
+        }
     };
     assert!(
         elapsed < budget,
         "sync of {files} files completed in {elapsed:?}, outside the {budget:?} budget"
     );
 
-    let connection = open_existing(&synced.database_path).expect("open the published database");
+    let connection = open_existing(&synced.database_path).check("open the published database")?;
     assert_eq!(
-        count(&connection, "SELECT COUNT(*) FROM files"),
+        count(&connection, "SELECT COUNT(*) FROM files")?,
         files,
         "the index does not cover the fixture: {files} files were written but the \
          files table holds a different number of rows"
@@ -206,7 +214,7 @@ fn sync_synthetic_project(files: usize, directories: usize) {
         count(
             &connection,
             "SELECT COUNT(*) FROM files WHERE file_kind = 'indexed'"
-        ),
+        )?,
         files,
         "some fixture files were discovered but not indexed (binary/skipped rows)"
     );
@@ -214,12 +222,12 @@ fn sync_synthetic_project(files: usize, directories: usize) {
         count(
             &connection,
             "SELECT COUNT(*) FROM files WHERE parse_outcome = 'Succeeded'"
-        ),
+        )?,
         files,
         "some fixture files were indexed without a successful parse"
     );
     assert_eq!(
-        stored_paths(&connection),
+        stored_paths(&connection)?,
         expected,
         "the stored path set differs from the fixture's file set"
     );
@@ -235,25 +243,26 @@ fn sync_synthetic_project(files: usize, directories: usize) {
         },
         synced.revision_id,
     );
+    Ok(())
 }
 
 /// The default-suite companion: the same pipeline and the same assertions at
 /// a size every push can afford.
 #[test]
-fn a_sixty_four_file_project_syncs_inside_the_default_wall_clock_budget() {
-    sync_synthetic_project(COMPANION_FILES, 8);
+fn a_sixty_four_file_project_syncs_inside_the_default_wall_clock_budget() -> TestResult {
+    sync_synthetic_project(COMPANION_FILES, 8)
 }
 
 /// The soak. Deliberately `#[ignore]`d so the 10k-file import is a decision a
 /// maintainer makes, not a tax on every push.
 #[test]
 #[ignore = "10k-file soak; run on demand with `cargo test --test large_repo_soak -- --ignored --nocapture`"]
-fn a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget() {
-    sync_synthetic_project(SOAK_FILES, 100);
+fn a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget() -> TestResult {
+    sync_synthetic_project(SOAK_FILES, 100)
 }
 
 /// Creates the empty owner-only `project.db` that marks a project as active.
-fn write_database_marker(activation: &std::path::Path) {
+fn write_database_marker(activation: &std::path::Path) -> TestResult {
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .write(true)
@@ -261,5 +270,6 @@ fn write_database_marker(activation: &std::path::Path) {
         .truncate(true)
         .mode(0o600)
         .open(activation.join("project.db"))
-        .expect("create database marker");
+        .check("create database marker")?;
+    Ok(())
 }

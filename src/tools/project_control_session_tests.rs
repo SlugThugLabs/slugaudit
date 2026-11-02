@@ -1,6 +1,7 @@
 //! The profile `project_control on` takes is a session setting, and `off`
 //! leaves nothing behind.
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 
 fn on_with_profile(path: &str, profile: &str) -> Parameters<ProjectControlRequest> {
     Parameters(ProjectControlRequest {
@@ -11,73 +12,73 @@ fn on_with_profile(path: &str, profile: &str) -> Parameters<ProjectControlReques
 }
 
 /// The names in the activation directory, sorted.
-fn activation_entries(project: &tempfile::TempDir) -> Vec<String> {
+fn activation_entries(project: &tempfile::TempDir) -> TestResult<Vec<String>> {
     let mut names: Vec<String> = std::fs::read_dir(project.path().join(".planning/slugaudit"))
-        .expect("activation dir")
+        .check("activation dir")?
         .map(|entry| {
             entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
+                .check("directory entry")
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
         })
-        .collect();
+        .collect::<TestResult<_>>()?;
     names.sort();
-    names
+    Ok(names)
 }
 
 #[test]
-fn turning_on_with_a_profile_holds_it_in_memory_and_writes_no_config() {
-    let (project, path) = indexed_project();
+fn turning_on_with_a_profile_holds_it_in_memory_and_writes_no_config() -> TestResult {
+    let (project, path) = indexed_project()?;
 
     project_control(
         &on_with_profile(&path, "lean"),
         &crate::progress::NoopProgressSink,
         None,
     )
-    .expect("enable with a profile");
+    .check("enable with a profile")?;
 
-    let root = ProjectRoot::resolve(project.path()).expect("resolve root");
+    let root = ProjectRoot::resolve(project.path()).check("resolve root")?;
     assert_eq!(
-        project::session_profile(root.as_path()),
+        project::session_profile(root.as_path()).check("read the session profile")?,
         Some(crate::model::AuditProfile::Lean)
     );
-    let entries = activation_entries(&project);
+    let entries = activation_entries(&project)?;
     assert!(
         !entries.iter().any(|name| name.starts_with("config.")),
         "no config file is written: {entries:?}"
     );
-    let limits = project::effective_limits(root.as_path()).expect("limits");
+    let limits = project::effective_limits(root.as_path()).check("limits")?;
     assert_eq!(
         limits.max_total_import_bytes,
         crate::model::limits_for_profile(crate::model::AuditProfile::Lean)
-            .expect("lean")
+            .check("lean")?
             .max_total_import_bytes,
         "the session profile picks the base limits"
     );
+    Ok(())
 }
 
 #[test]
-fn a_per_repo_config_json_is_ignored_when_turning_on() {
-    let (project, path) = indexed_project();
+fn a_per_repo_config_json_is_ignored_when_turning_on() -> TestResult {
+    let (project, path) = indexed_project()?;
     let activation = project.path().join(".planning/slugaudit");
-    std::fs::create_dir_all(&activation).expect("activation dir");
+    std::fs::create_dir_all(&activation).check("activation dir")?;
     std::fs::write(
         activation.join("config.json"),
         br#"{"max_total_import_bytes": 1}"#,
     )
-    .expect("an old install's config");
+    .check("an old install's config")?;
 
-    let response = control(&path, ProjectControlAction::On).0;
+    let response = control(&path, ProjectControlAction::On)?.0;
 
     assert_eq!(response.status, "enabled");
     assert!(
         response.import.is_some(),
         "the 1-byte ceiling in the old file was not applied"
     );
+    Ok(())
 }
 
-fn control(path: &str, action: ProjectControlAction) -> Json<ProjectControlResponse> {
+fn control(path: &str, action: ProjectControlAction) -> TestResult<Json<ProjectControlResponse>> {
     project_control(
         &Parameters(ProjectControlRequest {
             path: Some(path.to_owned()),
@@ -87,24 +88,24 @@ fn control(path: &str, action: ProjectControlAction) -> Json<ProjectControlRespo
         &crate::progress::NoopProgressSink,
         None,
     )
-    .expect("project_control succeeds")
+    .check("project_control succeeds")
 }
 
-fn indexed_project() -> (tempfile::TempDir, String) {
-    let project = tempfile::tempdir().expect("project dir");
-    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+fn indexed_project() -> TestResult<(tempfile::TempDir, String)> {
+    let project = tempfile::tempdir().check("project dir")?;
+    std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
     let path = project.path().to_string_lossy().into_owned();
-    (project, path)
+    Ok((project, path))
 }
 
 #[test]
-fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directory() {
-    let (project, path) = indexed_project();
-    control(&path, ProjectControlAction::On);
+fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directory() -> TestResult {
+    let (project, path) = indexed_project()?;
+    control(&path, ProjectControlAction::On)?;
     let activation = project.path().join(".planning/slugaudit");
-    std::fs::write(activation.join("config.json"), b"{}").expect("write config");
+    std::fs::write(activation.join("config.json"), b"{}").check("write config")?;
 
-    let off = control(&path, ProjectControlAction::Off).0;
+    let off = control(&path, ProjectControlAction::Off)?.0;
 
     assert_eq!(off.status, "disabled");
     assert!(!activation.exists(), "off deletes the whole directory");
@@ -115,7 +116,7 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
         &sync::SourceSyncManager::new(),
     )
     .err()
-    .expect("a call on a project that is off fails");
+    .check("a call on a project that is off fails")?;
     assert_eq!(
         error.data.as_ref().and_then(|data| data.get("code")),
         Some(&serde_json::json!("project_not_enabled")),
@@ -126,17 +127,18 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
         "the failed call must not recreate the directory"
     );
     assert_eq!(
-        control(&path, ProjectControlAction::Off).0.status,
+        control(&path, ProjectControlAction::Off)?.0.status,
         "already_disabled",
         "a second off has nothing left to remove"
     );
+    Ok(())
 }
 
 #[test]
-fn off_fails_when_the_activation_dir_cannot_be_inspected() {
-    let (project, path) = indexed_project();
+fn off_fails_when_the_activation_dir_cannot_be_inspected() -> TestResult {
+    let (project, path) = indexed_project()?;
     // `.planning` is a file, so `.planning/slugaudit` fails with ENOTDIR.
-    std::fs::write(project.path().join(".planning"), b"x").expect("write file");
+    std::fs::write(project.path().join(".planning"), b"x").check("write file")?;
 
     let error = project_control(
         &Parameters(ProjectControlRequest {
@@ -148,11 +150,12 @@ fn off_fails_when_the_activation_dir_cannot_be_inspected() {
         None,
     )
     .err()
-    .expect("an uninspectable activation dir is not 'already disabled'");
+    .check("an uninspectable activation dir is not 'already disabled'")?;
 
     assert_eq!(
         error.message,
         "disable: failed to update the activation directory: Not a directory (os error 20)",
         "an uninspectable activation dir fails the operation with its cause"
     );
+    Ok(())
 }

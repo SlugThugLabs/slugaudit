@@ -48,6 +48,10 @@ pub enum ProjectLimitsError {
     /// choose `lean` or `audit`.
     #[error("profile 'adaptive' cannot be sized ({0}); choose the profile 'lean' or 'audit'")]
     Memory(#[from] MemoryDetectError),
+    /// Process state the limits are derived from (the session profiles or
+    /// the warning ledger) was poisoned by a panic.
+    #[error(transparent)]
+    Lock(#[from] crate::util::LockPoisoned),
 }
 
 /// The human's global defaults. An unknown key is a parse error, so a
@@ -140,7 +144,10 @@ impl GlobalConfig {
         let Some(path) = global_config_path() else {
             return Ok(Self::default());
         };
-        Ok(Self::load_from(&path)?.unwrap_or_default())
+        match Self::load_from(&path)? {
+            Some(config) => Ok(config),
+            None => Ok(Self::default()),
+        }
     }
 
     /// Attempts to load and parse the config at `config_path`; `None` when
@@ -173,10 +180,17 @@ impl GlobalConfig {
     /// Overrides fields in `limits` with the limit keys this config sets.
     /// The `profile` key is not applied here: it only chooses the base
     /// limits, which [`effective_limits`] does before calling this.
-    #[must_use]
-    pub fn apply_limit_keys(&self, mut limits: ResourceLimits) -> ResourceLimits {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::util::LockPoisoned`] when the ledger of limit
+    /// warnings already logged was poisoned.
+    pub fn apply_limit_keys(
+        &self,
+        mut limits: ResourceLimits,
+    ) -> Result<ResourceLimits, crate::util::LockPoisoned> {
         if let Some(file_bytes) =
-            ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)
+            ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)?
         {
             let capped = file_bytes.min(SQLITE_MAX_VALUE_BYTES);
             if capped != file_bytes {
@@ -189,47 +203,47 @@ impl GlobalConfig {
             limits.max_file_bytes = capped;
         }
         if let Some(parse_bytes) =
-            ResourceLimits::config_nonzero("config max_parse_bytes", self.max_parse_bytes)
+            ResourceLimits::config_nonzero("config max_parse_bytes", self.max_parse_bytes)?
         {
             limits.max_parse_bytes = parse_bytes;
         }
         if let Some(wall_clock_ms) = ResourceLimits::config_nonzero(
             "config max_parse_wall_clock_ms",
             self.max_parse_wall_clock_ms,
-        ) {
+        )? {
             limits.max_parse_wall_clock_ms = wall_clock_ms;
         }
         if let Some(query_bytes) = ResourceLimits::config_nonzero(
             "config max_structure_query_bytes",
             self.max_structure_query_bytes,
-        ) {
+        )? {
             limits.max_structure_query_bytes = query_bytes;
         }
         if let Some(import_bytes) = ResourceLimits::config_nonzero(
             "config max_total_import_bytes",
             self.max_total_import_bytes,
-        ) {
+        )? {
             limits.max_total_import_bytes = import_bytes;
         }
         if let Some(page_bytes) =
-            ResourceLimits::config_nonzero("config default_page_bytes", self.default_page_bytes)
+            ResourceLimits::config_nonzero("config default_page_bytes", self.default_page_bytes)?
         {
             limits.default_page_bytes = page_bytes;
         }
         if let Some(store_bytes) = ResourceLimits::config_nonzero(
             "config max_result_store_bytes",
             self.max_result_store_bytes,
-        ) {
+        )? {
             limits.max_result_store_bytes = store_bytes;
         }
         if let Some(grace_secs) = ResourceLimits::config_nonzero(
             "config result_active_grace_secs",
             self.result_active_grace_secs,
-        ) {
+        )? {
             limits.result_active_grace_secs = grace_secs;
         }
-        limits.clamp_parse_to_file_bytes();
-        limits
+        limits.clamp_parse_to_file_bytes()?;
+        Ok(limits)
     }
 }
 
@@ -245,8 +259,8 @@ impl GlobalConfig {
 /// is set but invalid, or the `adaptive` profile cannot be sized.
 pub fn effective_limits(project_root: &Path) -> Result<ResourceLimits, ProjectLimitsError> {
     let global = GlobalConfig::load()?;
-    let session = super::session_profile::session_profile(project_root);
-    Ok(resolve_limits(&global, env_overrides()?, session)?)
+    let session = super::session_profile::session_profile(project_root)?;
+    resolve_limits(&global, env_overrides()?, session)
 }
 
 /// Combines every source of limits.
@@ -268,19 +282,20 @@ pub fn effective_limits(project_root: &Path) -> Result<ResourceLimits, ProjectLi
 ///
 /// # Errors
 ///
-/// Returns [`MemoryDetectError`] when the chosen profile is `adaptive` and
-/// the host memory cannot be detected.
+/// Returns [`ProjectLimitsError::Memory`] when the chosen profile is
+/// `adaptive` and the host memory cannot be detected, and
+/// [`ProjectLimitsError::Lock`] when the warning ledger was poisoned.
 pub(crate) fn resolve_limits(
     global: &GlobalConfig,
     env: &EnvOverrides,
     session_profile: Option<AuditProfile>,
-) -> Result<ResourceLimits, MemoryDetectError> {
-    let profile = session_profile
-        .or(env.profile)
-        .or(global.profile)
-        .unwrap_or_default();
-    let mut limits = global.apply_limit_keys(limits_for_profile(profile)?);
-    env.apply(&mut limits, global.max_result_store_bytes.is_some());
+) -> Result<ResourceLimits, ProjectLimitsError> {
+    let base = match session_profile.or(env.profile).or(global.profile) {
+        Some(profile) => limits_for_profile(profile)?,
+        None => limits_for_profile(AuditProfile::default())?,
+    };
+    let mut limits = global.apply_limit_keys(base)?;
+    env.apply(&mut limits, global.max_result_store_bytes.is_some())?;
     Ok(limits)
 }
 

@@ -1,8 +1,9 @@
 use super::harness_tests::*;
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 
-fn round_trip(cells: &[Cell]) -> StoredRow {
-    let fx = fixture(1 << 30);
+fn round_trip(cells: &[Cell]) -> TestResult<StoredRow> {
+    let fx = fixture(1 << 30)?;
     let names: Vec<String> = (0..cells.len()).map(|index| format!("c{index}")).collect();
     let mut writer = fx
         .store
@@ -10,14 +11,14 @@ fn round_trip(cells: &[Cell]) -> StoredRow {
             columns: names,
             ..spec(&["unused"])
         })
-        .expect("begin");
-    writer.push(cells).expect("push");
-    let handle = writer.finish(&complete()).expect("finish");
-    read_all(&fx.store, handle.id).remove(0)
+        .check("begin")?;
+    writer.push(cells).check("push")?;
+    let handle = writer.finish(&complete()).check("finish")?;
+    Ok(read_all(&fx.store, handle.id)?.remove(0))
 }
 
 #[test]
-fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() {
+fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() -> TestResult {
     let cells = vec![
         Cell::Null,
         Cell::Int(i64::MIN),
@@ -34,37 +35,42 @@ fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() {
         Cell::Text("0x10".to_owned()),
     ];
 
-    let row = round_trip(&cells);
+    let row = round_trip(&cells)?;
 
     assert_eq!(row.cells, cells);
     assert!(row.nonfinite.is_empty());
+    Ok(())
 }
 
 #[test]
-fn result_store_negative_zero_keeps_its_sign_bit() {
-    let row = round_trip(&[Cell::Real(-0.0)]);
+fn result_store_negative_zero_keeps_its_sign_bit() -> TestResult {
+    let row = round_trip(&[Cell::Real(-0.0)])?;
 
     match row.cells[0] {
         Cell::Real(value) => assert!(value.is_sign_negative() && value == 0.0, "{value}"),
-        ref other => panic!("expected a real, got {other:?}"),
+        ref other => {
+            return Err(format!("expected a real, got {other:?}")).check("unexpected outcome");
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn result_store_nan_is_stored_as_null_and_marked() {
-    let row = round_trip(&[Cell::Int(1), Cell::Real(f64::NAN)]);
+fn result_store_nan_is_stored_as_null_and_marked() -> TestResult {
+    let row = round_trip(&[Cell::Int(1), Cell::Real(f64::NAN)])?;
 
     assert_eq!(row.cells, vec![Cell::Int(1), Cell::Null]);
     assert_eq!(row.nonfinite, vec![(1, NonFinite::NaN)]);
+    Ok(())
 }
 
 #[test]
-fn result_store_infinities_are_stored_natively_and_marked() {
+fn result_store_infinities_are_stored_natively_and_marked() -> TestResult {
     let row = round_trip(&[
         Cell::Real(f64::INFINITY),
         Cell::Real(f64::NEG_INFINITY),
         Cell::Real(2.0),
-    ]);
+    ])?;
 
     assert_eq!(
         row.cells,
@@ -78,12 +84,13 @@ fn result_store_infinities_are_stored_natively_and_marked() {
         row.nonfinite,
         vec![(0, NonFinite::Infinity), (1, NonFinite::NegInfinity)]
     );
+    Ok(())
 }
 
 #[test]
-fn result_store_a_row_of_the_wrong_width_is_invalid_and_poisons_the_writer() {
-    let fx = fixture(1 << 30);
-    let mut writer = fx.store.begin(spec(&["a", "b"])).expect("begin");
+fn result_store_a_row_of_the_wrong_width_is_invalid_and_poisons_the_writer() -> TestResult {
+    let fx = fixture(1 << 30)?;
+    let mut writer = fx.store.begin(spec(&["a", "b"])).check("begin")?;
 
     let wrong = writer.push(&[Cell::Null]);
     let after = writer.push(&[Cell::Null, Cell::Null]);
@@ -96,11 +103,12 @@ fn result_store_a_row_of_the_wrong_width_is_invalid_and_poisons_the_writer() {
         matches!(after, Err(ResultStoreError::Invalid { .. })),
         "{after:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn result_store_a_result_without_columns_or_with_too_many_is_invalid() {
-    let fx = fixture(1 << 30);
+fn result_store_a_result_without_columns_or_with_too_many_is_invalid() -> TestResult {
+    let fx = fixture(1 << 30)?;
     let none = fx.store.begin(spec(&[]));
     let names: Vec<String> = (0..1001).map(|index| index.to_string()).collect();
     let many = fx.store.begin(ResultSpec {
@@ -110,6 +118,7 @@ fn result_store_a_result_without_columns_or_with_too_many_is_invalid() {
 
     assert!(matches!(none, Err(ResultStoreError::Invalid { .. })));
     assert!(matches!(many, Err(ResultStoreError::Invalid { .. })));
+    Ok(())
 }
 
 #[derive(Debug, PartialEq)]
@@ -141,8 +150,8 @@ impl Materialize for Pair {
 }
 
 #[test]
-fn result_store_typed_rows_round_trip_through_materialize_with_their_meta() {
-    let fx = fixture(1 << 30);
+fn result_store_typed_rows_round_trip_through_materialize_with_their_meta() -> TestResult {
+    let fx = fixture(1 << 30)?;
     let rows: Vec<Pair> = (0..5)
         .map(|count| Pair {
             name: format!("n{count}"),
@@ -153,16 +162,16 @@ fn result_store_typed_rows_round_trip_through_materialize_with_their_meta() {
     let handle = fx
         .store
         .write_all("leads", "proj", "rev-9", rows, &complete())
-        .expect("write_all");
+        .check("write_all")?;
     let page = fx
         .store
         .read_page(handle.id, 0, |_| Take::Yes)
-        .expect("read_page");
-    let typed: Vec<Pair> = page
+        .check("read_page")?;
+    let typed = page
         .rows
         .iter()
-        .map(|row| Pair::from_values(&row.cells).expect("from_values"))
-        .collect();
+        .map(|row| Pair::from_values(&row.cells).check("from_values"))
+        .collect::<TestResult<Vec<Pair>>>()?;
 
     assert_eq!(typed.len(), 5);
     assert_eq!(
@@ -182,17 +191,18 @@ fn result_store_typed_rows_round_trip_through_materialize_with_their_meta() {
         ("leads", "rev-9")
     );
     assert_eq!(page.meta.completeness, complete());
+    Ok(())
 }
 
 #[test]
-fn result_store_typed_read_surfaces_a_layout_mismatch() {
-    let fx = fixture(1 << 30);
-    let handle = write_rows(&fx.store, 3, 4).expect("write");
+fn result_store_typed_read_surfaces_a_layout_mismatch() -> TestResult {
+    let fx = fixture(1 << 30)?;
+    let handle = write_rows(&fx.store, 3, 4).check("write")?;
 
     let page = fx
         .store
         .read_page(handle.id, 0, |_| Take::Yes)
-        .expect("read_page");
+        .check("read_page")?;
 
     let result = Pair::from_values(&page.rows[0].cells);
 
@@ -200,4 +210,5 @@ fn result_store_typed_read_surfaces_a_layout_mismatch() {
         matches!(result, Err(ResultStoreError::Invalid { .. })),
         "{result:?}"
     );
+    Ok(())
 }

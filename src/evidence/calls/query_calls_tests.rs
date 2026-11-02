@@ -7,60 +7,68 @@
 use super::extract;
 use crate::evidence::calls::call_queries::CALL_QUERIES;
 use crate::model::{EvidenceItem, EvidenceKind, LineIndex};
+use slugaudit_test_check::{Check, TestResult};
 
 /// Fails, naming the language, when its grammar cannot be loaded — through
 /// the same `get_language` the extraction uses.
-fn require_grammar(language: &str) -> tree_sitter::Language {
-    match tree_sitter_language_pack::get_language(language) {
-        Ok(grammar) => grammar,
-        Err(error) => panic!(
-            "grammar for {language} is not available on this host; run once with network access ({error})"
-        ),
-    }
+fn require_grammar(language: &str) -> TestResult<tree_sitter::Language> {
+    tree_sitter_language_pack::get_language(language)
+        .map_err(|error| {
+            format!(
+                "grammar for {language} is not available on this host; run once with network access ({error})"
+            )
+        })
+        .check("load the grammar")
 }
 
 /// The `Call` rows the full normalization produces for `source`, so the
 /// dispatch from `normalize::extract_within` is exercised too.
-fn calls(language: &str, source: &str) -> Vec<EvidenceItem> {
-    require_grammar(language);
-    let (items, truncated) = crate::evidence::extract(language, source).expect("extraction");
+fn calls(language: &str, source: &str) -> TestResult<Vec<EvidenceItem>> {
+    require_grammar(language)?;
+    let (items, truncated) =
+        crate::evidence::extract(language, source).check("extract the fixture")?;
     assert!(!truncated, "{language} fixture extraction was cut short");
-    items
+    Ok(items
         .into_iter()
         .filter(|item| item.kind == EvidenceKind::Call)
-        .collect()
+        .collect())
 }
 
 /// `(callee_name, 1-based stored line, callee_text)` per row, in row order.
-fn summary(rows: &[EvidenceItem]) -> Vec<(String, i64, String)> {
+fn summary(rows: &[EvidenceItem]) -> TestResult<Vec<(String, i64, String)>> {
     rows.iter()
         .map(|row| {
             let stored = crate::evidence::to_row(row);
-            (
+            Ok((
                 row.payload["callee_name"]
                     .as_str()
-                    .expect("callee_name")
+                    .check("callee_name")?
                     .to_owned(),
-                stored.start_line.expect("a stored line"),
+                stored.start_line.check("a stored line")?,
                 row.payload["callee_text"]
                     .as_str()
-                    .expect("callee_text")
+                    .check("callee_text")?
                     .to_owned(),
-            )
+            ))
         })
         .collect()
 }
 
 /// Asserts the exact rows, and that every row names `language`, the
 /// fixture's enclosing function as caller, and the query producer.
-fn assert_calls(language: &str, source: &str, caller: &str, expected: &[(&str, i64, &str)]) {
-    let rows = calls(language, source);
+fn assert_calls(
+    language: &str,
+    source: &str,
+    caller: &str,
+    expected: &[(&str, i64, &str)],
+) -> TestResult {
+    let rows = calls(language, source)?;
 
     let expected: Vec<(String, i64, String)> = expected
         .iter()
         .map(|(name, line, text)| ((*name).to_owned(), *line, (*text).to_owned()))
         .collect();
-    assert_eq!(summary(&rows), expected, "{language}: {rows:?}");
+    assert_eq!(summary(&rows)?, expected, "{language}: {rows:?}");
     for row in &rows {
         assert_eq!(row.payload["language"], language);
         assert_eq!(row.payload["caller"], caller, "{language}: {row:?}");
@@ -68,6 +76,7 @@ fn assert_calls(language: &str, source: &str, caller: &str, expected: &[(&str, i
         assert_eq!(row.payload["confidence"], "medium");
         assert_eq!(crate::evidence::to_row(row).origin, "RawTree");
     }
+    Ok(())
 }
 
 const PYTHON: &str = "# decoy: fake_call(1) in a comment
@@ -79,7 +88,7 @@ def run(child, x):
 ";
 
 #[test]
-fn python_calls_count_plain_attribute_and_nested_calls_but_not_decoys() {
+fn python_calls_count_plain_attribute_and_nested_calls_but_not_decoys() -> TestResult {
     assert_calls(
         "python",
         PYTHON,
@@ -90,7 +99,8 @@ fn python_calls_count_plain_attribute_and_nested_calls_but_not_decoys() {
             ("outer", 6, "outer"),
             ("inner", 6, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 const JAVASCRIPT: &str = "// decoy: fakeCall(1) in a comment
@@ -103,7 +113,7 @@ function run(child, x) {
 ";
 
 #[test]
-fn javascript_calls_count_plain_member_and_nested_calls_but_not_decoys() {
+fn javascript_calls_count_plain_member_and_nested_calls_but_not_decoys() -> TestResult {
     assert_calls(
         "javascript",
         JAVASCRIPT,
@@ -114,7 +124,8 @@ fn javascript_calls_count_plain_member_and_nested_calls_but_not_decoys() {
             ("outer", 6, "outer"),
             ("inner", 6, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 const TYPESCRIPT: &str = "// decoy: fakeCall(1) in a comment
@@ -127,7 +138,7 @@ function run(child: Child, x: number): void {
 ";
 
 #[test]
-fn typescript_calls_count_plain_member_and_nested_calls_but_not_decoys() {
+fn typescript_calls_count_plain_member_and_nested_calls_but_not_decoys() -> TestResult {
     assert_calls(
         "typescript",
         TYPESCRIPT,
@@ -138,7 +149,8 @@ fn typescript_calls_count_plain_member_and_nested_calls_but_not_decoys() {
             ("outer", 6, "outer"),
             ("inner", 6, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 const TSX: &str = "// decoy: fakeCall(1) in a comment
@@ -151,7 +163,7 @@ function Run({ child, x }: Props) {
 ";
 
 #[test]
-fn tsx_calls_count_plain_member_and_nested_calls_but_not_decoys() {
+fn tsx_calls_count_plain_member_and_nested_calls_but_not_decoys() -> TestResult {
     assert_calls(
         "tsx",
         TSX,
@@ -162,7 +174,8 @@ fn tsx_calls_count_plain_member_and_nested_calls_but_not_decoys() {
             ("outer", 6, "outer"),
             ("inner", 6, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 const GO: &str = "package main
@@ -177,7 +190,7 @@ func run(child Child, x int) {
 ";
 
 #[test]
-fn go_calls_count_plain_selector_and_nested_calls_but_not_decoys() {
+fn go_calls_count_plain_selector_and_nested_calls_but_not_decoys() -> TestResult {
     assert_calls(
         "go",
         GO,
@@ -188,7 +201,8 @@ fn go_calls_count_plain_selector_and_nested_calls_but_not_decoys() {
             ("outer", 8, "outer"),
             ("inner", 8, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 const JAVA: &str = "class Fixture {
@@ -203,7 +217,7 @@ const JAVA: &str = "class Fixture {
 ";
 
 #[test]
-fn java_calls_count_plain_qualified_and_nested_invocations_but_not_decoys() {
+fn java_calls_count_plain_qualified_and_nested_invocations_but_not_decoys() -> TestResult {
     assert_calls(
         "java",
         JAVA,
@@ -214,7 +228,8 @@ fn java_calls_count_plain_qualified_and_nested_invocations_but_not_decoys() {
             ("outer", 7, "outer"),
             ("inner", 7, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 const C: &str = "/* decoy: fake_call(1) in a comment */
@@ -227,7 +242,7 @@ void run(struct child *child, int x) {
 ";
 
 #[test]
-fn c_calls_count_plain_field_and_nested_calls_but_not_decoys() {
+fn c_calls_count_plain_field_and_nested_calls_but_not_decoys() -> TestResult {
     assert_calls(
         "c",
         C,
@@ -238,49 +253,53 @@ fn c_calls_count_plain_field_and_nested_calls_but_not_decoys() {
             ("outer", 6, "outer"),
             ("inner", 6, "inner"),
         ],
-    );
+    )?;
+    Ok(())
 }
 
 #[test]
-fn a_c_function_returning_a_pointer_is_still_named_as_the_caller() {
+fn a_c_function_returning_a_pointer_is_still_named_as_the_caller() -> TestResult {
     let source = "char *name(void) { return lookup(1); }\n";
 
-    let rows = calls("c", source);
+    let rows = calls("c", source)?;
 
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_eq!(rows[0].payload["caller"], "name");
+    Ok(())
 }
 
 #[test]
-fn a_call_at_file_scope_or_in_an_anonymous_function_has_no_caller() {
+fn a_call_at_file_scope_or_in_an_anonymous_function_has_no_caller() -> TestResult {
     let source = "setup()\nhandler = lambda: fire()\n";
 
-    let rows = calls("python", source);
+    let rows = calls("python", source)?;
 
-    assert_eq!(summary(&rows).len(), 2, "{rows:?}");
+    assert_eq!(summary(&rows)?.len(), 2, "{rows:?}");
     assert!(
         rows.iter().all(|row| row.payload["caller"].is_null()),
         "{rows:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn every_embedded_call_query_compiles_with_exactly_one_callee_capture() {
+fn every_embedded_call_query_compiles_with_exactly_one_callee_capture() -> TestResult {
     for entry in &CALL_QUERIES {
-        let grammar = require_grammar(entry.language);
+        let grammar = require_grammar(entry.language)?;
 
         let query = entry
             .compiled(&grammar)
-            .expect("the embedded query compiles");
+            .check("the embedded query compiles")?;
 
         assert_eq!(query.capture_names(), ["callee"], "{}", entry.language);
     }
+    Ok(())
 }
 
 #[test]
-fn every_call_and_caller_node_kind_exists_in_its_grammar() {
+fn every_call_and_caller_node_kind_exists_in_its_grammar() -> TestResult {
     for entry in &CALL_QUERIES {
-        let grammar = require_grammar(entry.language);
+        let grammar = require_grammar(entry.language)?;
         for kind in std::iter::once(entry.call_kind).chain(entry.function_kinds.iter().copied()) {
             let compiled = tree_sitter::Query::new(&grammar, &format!("({kind}) @node"));
             assert!(
@@ -290,29 +309,34 @@ fn every_call_and_caller_node_kind_exists_in_its_grammar() {
             );
         }
     }
+    Ok(())
 }
 
 #[test]
-fn a_language_without_a_call_query_yields_no_calls_and_stays_complete() {
+fn a_language_without_a_call_query_yields_no_calls_and_stays_complete() -> TestResult {
     let source = "x.unwrap()\n";
 
-    let extraction = extract("ruby", source, &LineIndex::new(source), None);
+    let extraction =
+        extract("ruby", source, &LineIndex::new(source), None).check("extract ruby calls")?;
 
     assert!(extraction.items.is_empty());
     assert!(!extraction.truncated);
     assert!(!extraction.timed_out);
+    Ok(())
 }
 
 #[test]
-fn a_call_query_under_a_spent_deadline_is_timed_out_not_truncated() {
-    require_grammar("python");
+fn a_call_query_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResult {
+    require_grammar("python")?;
     let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
 
-    let extraction = extract("python", PYTHON, &LineIndex::new(PYTHON), Some(&spent));
+    let extraction = extract("python", PYTHON, &LineIndex::new(PYTHON), Some(&spent))
+        .check("extract python calls")?;
 
     assert!(extraction.items.is_empty());
     assert!(extraction.timed_out);
     assert!(!extraction.truncated);
+    Ok(())
 }
 
 #[test]

@@ -63,6 +63,7 @@ fn parse_from(
 #[cfg(test)]
 mod gate_args_tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     fn parse_list(args: &[&str], switches: &mut [(&str, &mut bool)]) -> Result<PathBuf, ExitCode> {
         let args = args.iter().map(|arg| (*arg).to_owned());
@@ -70,24 +71,29 @@ mod gate_args_tests {
     }
 
     #[test]
-    fn a_gate_with_no_arguments_checks_the_working_directory() {
-        let root = parse_list(&[], &mut []).expect("no arguments is valid");
+    fn a_gate_with_no_arguments_checks_the_working_directory() -> TestResult {
+        let root = parse_list(&[], &mut [])
+            .map_err(|code| format!("{code:?}"))
+            .check("no arguments is valid")?;
 
         assert_eq!(root, PathBuf::from("/cwd"));
+        Ok(())
     }
 
     #[test]
-    fn root_and_declared_switches_are_parsed_in_any_order() {
+    fn root_and_declared_switches_are_parsed_in_any_order() -> TestResult {
         let mut record = false;
 
         let root = parse_list(
             &["--record", "--root", "/elsewhere"],
             &mut [("--record", &mut record)],
         )
-        .expect("valid arguments");
+        .map_err(|code| format!("{code:?}"))
+        .check("valid arguments")?;
 
         assert_eq!(root, PathBuf::from("/elsewhere"));
         assert!(record, "the declared switch is set");
+        Ok(())
     }
 
     #[test]

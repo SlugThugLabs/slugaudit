@@ -94,7 +94,16 @@ impl EnvOverrides {
     /// its own override) unless something already set it:
     /// `result_store_pinned` is true when the global file set it, and then
     /// only its own variable replaces it.
-    pub(crate) fn apply(&self, limits: &mut ResourceLimits, result_store_pinned: bool) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::util::LockPoisoned`] when the ledger of limit
+    /// warnings already logged was poisoned.
+    pub(crate) fn apply(
+        &self,
+        limits: &mut ResourceLimits,
+        result_store_pinned: bool,
+    ) -> Result<(), crate::util::LockPoisoned> {
         set(&mut limits.max_file_bytes, self.max_file_bytes);
         set(&mut limits.max_parse_bytes, self.max_parse_bytes);
         set(
@@ -148,7 +157,7 @@ impl EnvOverrides {
             &mut limits.result_active_grace_secs,
             self.result_active_grace_secs,
         );
-        limits.clamp_parse_to_file_bytes();
+        limits.clamp_parse_to_file_bytes()
     }
 }
 

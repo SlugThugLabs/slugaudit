@@ -15,6 +15,7 @@ use crate::tools::{
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Parameters;
 use serde::{Deserialize, Serialize};
+use slugaudit_test_check::{Check, TestResult};
 use std::path::PathBuf;
 
 const TOOL: &str = "proof";
@@ -56,10 +57,10 @@ struct Seen {
     has_cursor: bool,
 }
 
-fn seen(served: &Served<Totals>) -> Seen {
-    Seen {
+fn seen(served: &Served<Totals>) -> TestResult<Seen> {
+    Ok(Seen {
         rows: decode_rows::<Item>(&served.rows)
-            .expect("proof rows decode")
+            .check("proof rows decode")?
             .into_iter()
             .map(|Item(n)| n)
             .collect(),
@@ -67,7 +68,7 @@ fn seen(served: &Served<Totals>) -> Seen {
         total: served.page.total,
         complete: served.page.complete,
         has_cursor: served.page.cursor.is_some(),
-    }
+    })
 }
 
 fn per_page() -> impl FnMut(&StoredRow) -> Take {
@@ -89,7 +90,7 @@ fn manager() -> SourceSyncManager {
     })
 }
 
-fn open_first_page(manager: &SourceSyncManager, path: &str) -> Served<Totals> {
+fn open_first_page(manager: &SourceSyncManager, path: &str) -> TestResult<Served<Totals>> {
     paginate(
         manager,
         &PageSpec::typed::<Item>(TOOL, 1000),
@@ -110,7 +111,7 @@ fn open_first_page(manager: &SourceSyncManager, path: &str) -> Served<Totals> {
         },
         |_| per_page(),
     )
-    .expect("materialise the result and serve page one")
+    .check("materialise the result and serve page one")
 }
 
 fn continue_with(manager: &SourceSyncManager, token: &str) -> Result<Served<Totals>, ErrorData> {
@@ -118,22 +119,27 @@ fn continue_with(manager: &SourceSyncManager, token: &str) -> Result<Served<Tota
         manager,
         &PageSpec::typed::<Item>(TOOL, 1000),
         PageRequest::Cursor(token),
-        |_, _| panic!("a continuation never produces"),
+        |_, _| {
+            Err(ErrorData::internal_error(
+                "a continuation never produces",
+                None,
+            ))
+        },
         |_| per_page(),
     )
 }
 
 /// Walks the continuation from `token` to the last page.
-fn remaining_pages(manager: &SourceSyncManager, token: &str) -> Vec<Seen> {
+fn remaining_pages(manager: &SourceSyncManager, token: &str) -> TestResult<Vec<Seen>> {
     let mut pages = Vec::new();
     let mut token = token.to_owned();
     loop {
-        let served = continue_with(manager, &token).expect("continuation page");
+        let served = continue_with(manager, &token).check("continuation page")?;
         let next = served.page.cursor.clone();
-        pages.push(seen(&served));
+        pages.push(seen(&served)?);
         match next {
             Some(next) => token = next,
-            None => return pages,
+            None => return Ok(pages),
         }
     }
 }
@@ -151,114 +157,120 @@ impl Open {
         self.project.path().join(".planning/slugaudit/project.db")
     }
 
-    fn resync(&self) {
+    fn resync(&self) -> TestResult {
         self.manager
             .ensure_current(&self.path, &NoopProgressSink)
-            .expect("the sync recovers by replacing the database");
+            .check("the sync recovers by replacing the database")?;
+        Ok(())
     }
 
     /// Reads the remaining pages again and compares them with the read taken
     /// before the replacement.
-    fn assert_continuation_unchanged(&self) {
+    fn assert_continuation_unchanged(&self) -> TestResult {
         assert_eq!(self.before.len(), 2, "pages two and three exist");
-        assert_eq!(remaining_pages(&self.manager, &self.token), self.before);
+        assert_eq!(remaining_pages(&self.manager, &self.token)?, self.before);
+        Ok(())
     }
 }
 
 /// A synced project with one result whose first page was served.
-fn open_result() -> Open {
-    let project = crate::tools::test_support::activated_project("lib.rs", b"pub fn a() {}\n");
+fn open_result() -> TestResult<Open> {
+    let project = crate::tools::test_support::activated_project("lib.rs", b"pub fn a() {}\n")?;
     let path = project.path().to_string_lossy().into_owned();
     let manager = manager();
-    let first = open_first_page(&manager, &path);
-    assert_eq!(seen(&first).rows, (0..10).collect::<Vec<_>>());
-    let token = first.page.cursor.clone().expect("more pages remain");
-    let before = remaining_pages(&manager, &token);
-    Open {
+    let first = open_first_page(&manager, &path)?;
+    assert_eq!(seen(&first)?.rows, (0..10).collect::<Vec<_>>());
+    let token = first.page.cursor.clone().check("more pages remain")?;
+    let before = remaining_pages(&manager, &token)?;
+    Ok(Open {
         project,
         path,
         manager,
         token,
         before,
-    }
+    })
 }
 
-fn database_rows(open: &Open, sql: &str) -> String {
+fn database_rows(open: &Open, sql: &str) -> TestResult<String> {
     crate::store::open_existing(&open.database())
-        .expect("open the index")
+        .check("open the index")?
         .query_row(sql, [], |row| row.get(0))
-        .expect("read the index")
+        .check("read the index")
 }
 
 #[test]
-fn result_store_proof_stale_root_replacement_keeps_the_open_result_readable() {
-    let open = open_result();
+fn result_store_proof_stale_root_replacement_keeps_the_open_result_readable() -> TestResult {
+    let open = open_result()?;
     {
-        let connection = crate::store::open_read_write(&open.database()).expect("open the index");
+        let connection = crate::store::open_read_write(&open.database()).check("open the index")?;
         connection
             .execute(
                 "UPDATE project SET root_path = '/elsewhere/moved' WHERE id = 1",
                 [],
             )
-            .expect("stamp a stale root");
+            .check("stamp a stale root")?;
     }
 
-    open.resync();
+    open.resync()?;
 
     assert_ne!(
-        database_rows(&open, "SELECT root_path FROM project WHERE id = 1"),
+        database_rows(&open, "SELECT root_path FROM project WHERE id = 1")?,
         "/elsewhere/moved",
         "the stale database was replaced"
     );
-    open.assert_continuation_unchanged();
+    open.assert_continuation_unchanged()?;
+    Ok(())
 }
 
 #[test]
-fn result_store_proof_incompatible_version_replacement_keeps_the_open_result_readable() {
-    let open = open_result();
+fn result_store_proof_incompatible_version_replacement_keeps_the_open_result_readable() -> TestResult
+{
+    let open = open_result()?;
     {
-        let connection = crate::store::open_read_write(&open.database()).expect("open the index");
+        let connection = crate::store::open_read_write(&open.database()).check("open the index")?;
         connection
             .execute(
                 "UPDATE project SET contract_version = 99, schema_version = 99 WHERE id = 1",
                 [],
             )
-            .expect("stamp an unsupported version");
+            .check("stamp an unsupported version")?;
     }
 
-    open.resync();
+    open.resync()?;
 
     assert_ne!(
         database_rows(
             &open,
             "SELECT CAST(contract_version AS TEXT) FROM project WHERE id = 1"
-        ),
+        )?,
         "99",
         "the incompatible database was replaced"
     );
-    open.assert_continuation_unchanged();
+    open.assert_continuation_unchanged()?;
+    Ok(())
 }
 
 #[test]
-fn result_store_proof_corruption_recovery_keeps_the_open_result_readable() {
-    let open = open_result();
-    std::fs::write(open.database(), b"this is not a sqlite database").expect("corrupt the index");
+fn result_store_proof_corruption_recovery_keeps_the_open_result_readable() -> TestResult {
+    let open = open_result()?;
+    std::fs::write(open.database(), b"this is not a sqlite database").check("corrupt the index")?;
 
-    open.resync();
+    open.resync()?;
 
     assert_eq!(
-        database_rows(&open, "SELECT path FROM files WHERE path = 'lib.rs'"),
+        database_rows(&open, "SELECT path FROM files WHERE path = 'lib.rs'")?,
         "lib.rs",
         "the corrupt database was replaced by a rebuilt one"
     );
-    open.assert_continuation_unchanged();
+    open.assert_continuation_unchanged()?;
+    Ok(())
 }
 
 #[test]
-fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
-    let open = open_result();
+fn result_store_proof_project_control_off_keeps_the_open_result_readable() -> TestResult {
+    let open = open_result()?;
     let activation = open.project.path().join(".planning/slugaudit");
-    std::fs::write(activation.join("config.json"), b"{}").expect("write config.json");
+    std::fs::write(activation.join("config.json"), b"{}").check("write config.json")?;
 
     let response = project_control(
         &Parameters(ProjectControlRequest {
@@ -269,7 +281,7 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
         &NoopProgressSink,
         Some(&open.manager),
     )
-    .expect("project_control off succeeds with a result open");
+    .check("project_control off succeeds with a result open")?;
 
     assert_eq!(response.0.status, "disabled");
     assert!(!open.database().exists(), "project.db is gone");
@@ -282,12 +294,13 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() {
         "the config lock is gone"
     );
     assert!(!activation.exists(), "the whole directory is gone");
-    open.assert_continuation_unchanged();
+    open.assert_continuation_unchanged()?;
+    Ok(())
 }
 
 #[test]
-fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor() {
-    let open = open_result();
+fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor() -> TestResult {
+    let open = open_result()?;
     let control = |action| {
         project_control(
             &Parameters(ProjectControlRequest {
@@ -298,16 +311,16 @@ fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor()
             &NoopProgressSink,
             Some(&open.manager),
         )
-        .expect("project_control succeeds")
+        .check("project_control succeeds")
     };
-    assert_eq!(control(ProjectControlAction::Off).0.status, "disabled");
-    assert_eq!(control(ProjectControlAction::On).0.status, "enabled");
+    assert_eq!(control(ProjectControlAction::Off)?.0.status, "disabled");
+    assert_eq!(control(ProjectControlAction::On)?.0.status, "enabled");
 
-    let first = open_first_page(&open.manager, &open.path);
-    assert_eq!(seen(&first).rows, (0..10).collect::<Vec<_>>());
-    let token = first.page.cursor.clone().expect("more pages remain");
-    let second = continue_with(&open.manager, &token).expect("page two by cursor");
-    assert_eq!(seen(&second).rows, (10..20).collect::<Vec<_>>());
+    let first = open_first_page(&open.manager, &open.path)?;
+    assert_eq!(seen(&first)?.rows, (0..10).collect::<Vec<_>>());
+    let token = first.page.cursor.clone().check("more pages remain")?;
+    let second = continue_with(&open.manager, &token).check("page two by cursor")?;
+    assert_eq!(seen(&second)?.rows, (10..20).collect::<Vec<_>>());
     assert!(
         open.project
             .path()
@@ -315,19 +328,20 @@ fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor()
             .is_dir(),
         "results/ was recreated"
     );
+    Ok(())
 }
 
 #[test]
-fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() {
-    let open = open_result();
-    let second = open_first_page(&open.manager, &open.path);
+fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() -> TestResult {
+    let open = open_result()?;
+    let second = open_first_page(&open.manager, &open.path)?;
     assert!(second.page.cursor.is_some(), "the second result is open");
     std::fs::write(
         open.project.path().join("lib.rs"),
         b"pub fn a() {}\npub fn b() {}\n",
     )
-    .expect("change a source file");
-    let mut connection = crate::store::open_read_write(&open.database()).expect("open the index");
+    .check("change a source file")?;
+    let mut connection = crate::store::open_read_write(&open.database()).check("open the index")?;
 
     crate::sync::publish_cas::publish(
         &mut connection,
@@ -335,12 +349,12 @@ fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() {
         "1.0",
         &NoopProgressSink,
     )
-    .expect("a full publish succeeds with results open");
+    .check("a full publish succeeds with results open")?;
     let (busy, log, checkpointed): (i64, i64, i64) = connection
         .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })
-        .expect("checkpoint the WAL");
+        .check("checkpoint the WAL")?;
 
     assert_eq!(
         (busy, log, checkpointed),
@@ -349,9 +363,10 @@ fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() {
     );
     let wal = open.database().with_extension("db-wal");
     assert_eq!(
-        std::fs::metadata(&wal).expect("the WAL file exists").len(),
+        std::fs::metadata(&wal).check("the WAL file exists")?.len(),
         0,
         "the WAL truncated to zero bytes"
     );
-    open.assert_continuation_unchanged();
+    open.assert_continuation_unchanged()?;
+    Ok(())
 }

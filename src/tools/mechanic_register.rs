@@ -64,8 +64,8 @@ pub(super) fn add(
     };
     let query = mechanic_catalog::compile(&entry, limits).map_err(refused)?;
     let session = manager.session_mechanics();
-    session.with_entries(|entries| check_free(entries, &entry.id))?;
-    let mut catalog = mechanic_catalog::load(session, limits);
+    session.with_entries(|entries| check_free(entries, &entry.id))??;
+    let mut catalog = mechanic_catalog::load(session, limits)?;
     insert_candidate(&mut catalog, entry.clone(), query);
     let first = LeadsRequest {
         path: Some(path.to_owned()),
@@ -82,7 +82,7 @@ pub(super) fn add(
         check_free(entries, &entry.id)?;
         entries.push(entry.clone());
         Ok::<(), ErrorData>(())
-    })?;
+    })??;
     Ok((entry.id, MechanicSource::Session, first_count))
 }
 
@@ -117,7 +117,7 @@ pub(super) fn remove(
         };
         entries.remove(position);
         Ok(())
-    })?;
-    manager.mechanic_scan_cache().remove_id(&id);
+    })??;
+    manager.mechanic_scan_cache().remove_id(&id)?;
     Ok((id, MechanicSource::Session))
 }

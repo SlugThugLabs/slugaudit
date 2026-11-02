@@ -66,6 +66,15 @@ pub enum InstallError {
         /// Underlying filesystem error.
         inner: std::io::Error,
     },
+    /// The install directory could not be resolved to its canonical path,
+    /// so whether it is already on `PATH` cannot be told.
+    #[error("could not resolve {path}: {inner}")]
+    Canonicalize {
+        /// Directory that could not be resolved.
+        path: String,
+        /// Underlying filesystem error.
+        inner: std::io::Error,
+    },
     /// The system clock could not be read to name the staged binary.
     #[error("could not read the system clock to name the staged binary: {0}")]
     Clock(std::time::SystemTimeError),
@@ -207,7 +216,8 @@ pub fn run_install() -> Result<(), InstallError> {
     // `install` is human-facing; `connect` follows naturally after PATH has
     // it, so offer to add the dir rather than forcing the user to type an
     // export by hand. No-op when stdin isn't a terminal or already on PATH.
-    if !on_path(&bin_dir)
+    let already_on_path = on_path(&bin_dir)?;
+    if !already_on_path
         && crate::prompt::confirm(&format!("Add {} to your PATH? [y/N] ", bin_dir.display()))
     {
         match path::add_to_path(&bin_dir) {
@@ -220,7 +230,7 @@ pub fn run_install() -> Result<(), InstallError> {
                 ))?;
             }
         }
-    } else if !on_path(&bin_dir) {
+    } else if !already_on_path {
         crate::cli::out(format_args!(
             "Add {} to your PATH, then run: slugaudit connect\n",
             bin_dir.display()
@@ -230,13 +240,26 @@ pub fn run_install() -> Result<(), InstallError> {
 }
 
 /// True when `dir` is already on `PATH` (as a canonicalized entry).
-fn on_path(dir: &Path) -> bool {
-    let canonical = crate::util::canonical_or_self(dir);
+///
+/// # Errors
+///
+/// Returns [`InstallError::Canonicalize`] when `dir` itself cannot be
+/// canonicalized.
+fn on_path(dir: &Path) -> Result<bool, InstallError> {
+    let canonical = std::fs::canonicalize(dir).map_err(|inner| InstallError::Canonicalize {
+        path: dir.display().to_string(),
+        inner,
+    })?;
     // An entry that cannot be canonicalized is compared as written; a missing
     // directory is routine on a PATH and silent, any other failure is logged.
     // A missed match only re-offers the (idempotent) PATH-add prompt.
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).any(|entry| {
-        match std::fs::canonicalize(&entry) {
+    // An unset PATH has no entries: nothing matches.
+    let path_var = match std::env::var_os("PATH") {
+        Some(value) => value,
+        None => std::ffi::OsString::new(),
+    };
+    Ok(
+        std::env::split_paths(&path_var).any(|entry| match std::fs::canonicalize(&entry) {
             Ok(resolved) => resolved == canonical,
             Err(error) => {
                 if error.kind() != std::io::ErrorKind::NotFound {
@@ -248,8 +271,8 @@ fn on_path(dir: &Path) -> bool {
                 }
                 entry == canonical
             }
-        }
-    })
+        }),
+    )
 }
 
 #[cfg(test)]

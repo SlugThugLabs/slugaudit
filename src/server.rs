@@ -11,9 +11,8 @@
 mod handlers;
 
 use crate::progress::ProgressSink;
-use crate::server_runner::{
-    MAX_CONCURRENT_BLOCKING_OPS, build_inner_sink, progress_target, run_blocking,
-};
+use crate::server_progress::{build_inner_sink, progress_target};
+use crate::server_runner::{MAX_CONCURRENT_BLOCKING_OPS, run_blocking};
 use crate::sync;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{
@@ -237,6 +236,7 @@ fn read_resource_contents(uri: &str) -> Result<ReadResourceResult, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     /// Every session pays for INSTRUCTIONS in context, so it stays short;
     /// detail belongs in the tool descriptions, schemas and resources.
@@ -253,13 +253,13 @@ mod tests {
     /// The `query` description is where a model learns what `evidence.kind`
     /// can hold, so it names every kind the schema's CHECK list allows.
     #[test]
-    fn the_query_tool_description_names_every_evidence_kind_the_schema_allows() {
+    fn the_query_tool_description_names_every_evidence_kind_the_schema_allows() -> TestResult {
         let schema = include_str!("store/schema.sql");
         let check = schema
             .split("CHECK (kind IN (")
             .nth(1)
             .and_then(|rest| rest.split("))").next())
-            .expect("the evidence kind CHECK list");
+            .check("the evidence kind CHECK list")?;
         let kinds: Vec<&str> = check
             .split(',')
             .map(|kind| kind.trim().trim_matches('\''))
@@ -268,12 +268,12 @@ mod tests {
         let query = surface
             .iter()
             .find(|tool| tool.name == "query")
-            .expect("the query tool is listed");
+            .check("the query tool is listed")?;
 
         let description = query
             .description
             .as_deref()
-            .expect("query has a description");
+            .check("query has a description")?;
 
         assert_eq!(kinds.len(), 8, "{kinds:?}");
         for kind in kinds {
@@ -282,12 +282,13 @@ mod tests {
                 "`{kind}` missing: {description}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn read_resource_reports_an_unknown_uri_as_resource_not_found() {
+    fn read_resource_reports_an_unknown_uri_as_resource_not_found() -> TestResult {
         let error =
-            read_resource_contents("slugaudit://nope").expect_err("an unknown URI is not served");
+            read_resource_contents("slugaudit://nope").check_err("an unknown URI is not served")?;
 
         assert_eq!(
             error.code,
@@ -295,13 +296,14 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(error.message, "unknown resource `slugaudit://nope`");
+        Ok(())
     }
 
     #[test]
-    fn read_resource_refuses_a_uri_over_the_cap_without_echoing_it() {
+    fn read_resource_refuses_a_uri_over_the_cap_without_echoing_it() -> TestResult {
         let uri = "u".repeat(MAX_RESOURCE_URI_BYTES + 1);
 
-        let error = read_resource_contents(&uri).expect_err("an over-cap URI is refused");
+        let error = read_resource_contents(&uri).check_err("an over-cap URI is refused")?;
 
         assert_eq!(
             error.code,
@@ -314,5 +316,6 @@ mod tests {
             "an oversized URI must not be echoed into the message: {}",
             error.message
         );
+        Ok(())
     }
 }

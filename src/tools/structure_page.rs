@@ -8,7 +8,7 @@ use super::paginate::{Served, decode_rows};
 use super::structure::stored::{CutFacts, PageCut, StoredMatch, StructureExtra};
 use super::structure::{StructureMatch, StructureResponse};
 use super::structure_source::{MAX_SNIPPET_BYTES, SourceWindow, truncate_snippet, truncate_text};
-use crate::model::{LineIndex, saturating_u32};
+use crate::model::{LineIndex, PositionOverflow, position_u32};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Json;
 use tree_sitter::{Query, QueryCapture, QueryMatch};
@@ -46,7 +46,8 @@ pub(super) fn require_captures(query: &Query) -> Result<(), ErrorData> {
     Ok(())
 }
 
-/// Maps a captured node back to source coordinates and bounded text.
+/// Maps a captured node back to source coordinates and bounded text. A line
+/// or column past `u32::MAX` fails the run with an internal error.
 pub(super) fn node_to_match(
     file: &str,
     node: tree_sitter::Node<'_>,
@@ -54,7 +55,7 @@ pub(super) fn node_to_match(
     lines: &LineIndex<'_>,
     capture_name: Option<&str>,
     want_full_text: bool,
-) -> StructureMatch {
+) -> Result<StructureMatch, ErrorData> {
     let (node_text, text_extraction_failed) = match node.utf8_text(content.as_bytes()) {
         Ok(text) => (text, false),
         Err(error) => {
@@ -68,38 +69,47 @@ pub(super) fn node_to_match(
             ("", true)
         }
     };
-    if capture_name.is_none() {
+    let (capture_name, capture_name_missing) = if let Some(name) = capture_name {
+        (name, false)
+    } else {
         tracing::warn!(
             file = %file,
             "structure: capture has no name; reporting extraction_failed",
         );
-    }
+        ("", true)
+    };
     let (text, text_truncated) = if want_full_text {
         truncate_text(node_text)
     } else {
         truncate_snippet(node_text, MAX_SNIPPET_BYTES)
     };
-    StructureMatch {
+    Ok(StructureMatch {
         file: file.to_owned(),
-        capture_name: capture_name.unwrap_or_default().to_owned(),
+        capture_name: capture_name.to_owned(),
         node_kind: node.kind().to_owned(),
         start_byte: node.start_byte() as u64,
         end_byte: node.end_byte() as u64,
-        start_line: one_based_row(node.start_position().row),
-        start_column: lines.column(node.start_byte()),
-        end_line: one_based_row(node.end_position().row),
-        end_column: lines.column(node.end_byte()),
+        start_line: position(one_based_row(node.start_position().row))?,
+        start_column: position(lines.column(node.start_byte()))?,
+        end_line: position(one_based_row(node.end_position().row))?,
+        end_column: position(lines.column(node.end_byte()))?,
         text,
         text_truncated,
-        extraction_failed: text_extraction_failed || capture_name.is_none(),
-    }
+        extraction_failed: text_extraction_failed || capture_name_missing,
+    })
 }
 
 /// The single zero-based to one-based line conversion for structure matches
 /// (tree-sitter rows are zero-based; the response is one-based, inclusive).
-/// An overflowing row is clamped and logged by `saturating_u32`.
-fn one_based_row(zero_based: usize) -> u32 {
-    saturating_u32(zero_based.saturating_add(1))
+fn one_based_row(zero_based: usize) -> Result<u32, PositionOverflow> {
+    position_u32(zero_based.saturating_add(1))
+}
+
+/// A match position, or the internal error when it does not fit the response.
+fn position(value: Result<u32, PositionOverflow>) -> Result<u32, ErrorData> {
+    value.map_err(|error| {
+        ErrorData::internal_error(format!("structure match position: {error}"), None)
+    })
 }
 
 /// The capture at `index`, or the internal error for an index the match does
@@ -190,7 +200,10 @@ pub(super) fn structure_response(
     let limited_by = if more_pages {
         cut.limit()
     } else {
-        partial_limit.unwrap_or(PageLimit::None)
+        match partial_limit {
+            Some(limit) => limit,
+            None => PageLimit::None,
+        }
     };
     tracing::info!(
         match_count = matches.len(),

@@ -11,6 +11,7 @@ use crate::sync::discovery::{discover, discover_with_deadline};
 use crate::sync::sample::sample_all_with_deadline;
 use crate::sync::test_support::{stored_paths, write};
 use crate::util::Deadline;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::time::Duration;
 
 fn tiny_budget() -> Deadline {
@@ -21,12 +22,12 @@ fn tiny_budget() -> Deadline {
 }
 
 #[test]
-fn discovery_times_out_when_the_walk_budget_is_exhausted() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"fn a() {}");
+fn discovery_times_out_when_the_walk_budget_is_exhausted() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"fn a() {}")?;
 
     let error = discover_with_deadline(project.path(), &tiny_budget())
-        .expect_err("a spent budget must abort discovery");
+        .check_err("a spent budget must abort discovery")?;
     assert!(
         matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
         "expected TimeBudgetExceeded, got {error:?}"
@@ -35,21 +36,23 @@ fn discovery_times_out_when_the_walk_budget_is_exhausted() {
         error.to_string().contains("wall-clock time budget"),
         "error should name the budget: {error}"
     );
+    Ok(())
 }
 
 #[test]
-fn discovery_with_a_generous_budget_succeeds() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"fn a() {}");
-    let (files, _skipped) = discover(project.path()).expect("discover");
+fn discovery_with_a_generous_budget_succeeds() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"fn a() {}")?;
+    let (files, _skipped) = discover(project.path()).check("discover")?;
     assert_eq!(files.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn sampling_times_out_when_the_budget_is_exhausted() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"fn a() {}");
-    let (discovered, _skipped) = discover(project.path()).expect("discover");
+fn sampling_times_out_when_the_budget_is_exhausted() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"fn a() {}")?;
+    let (discovered, _skipped) = discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
 
     let result = sample_all_with_deadline(
@@ -59,20 +62,21 @@ fn sampling_times_out_when_the_budget_is_exhausted() {
         &tiny_budget(),
     );
     let Err(error) = result else {
-        panic!("a spent budget must abort sampling")
+        return Err("a spent budget must abort sampling".to_owned()).check("unexpected outcome");
     };
     assert!(
         matches!(error, PublishError::TimeBudgetExceeded { .. }),
         "expected TimeBudgetExceeded, got {error:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn publish_times_out_when_the_wall_clock_budget_is_exhausted() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "src/main.rs", b"fn main() {}");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn publish_times_out_when_the_wall_clock_budget_is_exhausted() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "src/main.rs", b"fn main() {}")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     let limits = ResourceLimits {
         max_sync_wall_clock: Duration::from_nanos(1),
@@ -86,7 +90,7 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() {
         &limits,
     );
 
-    let error = result.expect_err("a spent budget must abort the publish");
+    let error = result.check_err("a spent budget must abort the publish")?;
     let message = error.to_string();
     assert!(
         message.contains("wall-clock time budget"),
@@ -103,6 +107,7 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() {
         ),
         "expected a time-budget error, got {error:?}"
     );
+    Ok(())
 }
 
 /// `discover_with_deadline` aborts when the budget is exhausted on the
@@ -113,18 +118,19 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() {
 /// `discovery_times_out_when_the_walk_budget_is_exhausted` (which
 /// aborts at the loop head without iterating).
 #[test]
-fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "many.rs", &vec![b'x'; 4096]);
-    write(project.path(), "more.rs", &vec![b'y'; 4096]);
-    write(project.path(), "last.rs", &vec![b'z'; 4096]);
+fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "many.rs", &vec![b'x'; 4096])?;
+    write(project.path(), "more.rs", &vec![b'y'; 4096])?;
+    write(project.path(), "last.rs", &vec![b'z'; 4096])?;
 
     let error = discover_with_deadline(project.path(), &tiny_budget())
-        .expect_err("a spent budget must abort discovery mid-walk");
+        .check_err("a spent budget must abort discovery mid-walk")?;
     assert!(
         matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
         "expected TimeBudgetExceeded, got {error:?}"
     );
+    Ok(())
 }
 
 /// `analyze` runs every parse of a file within what is left of the sync
@@ -135,7 +141,7 @@ fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() {
 /// own between-file deadline check then ends the sync. The progress-callback
 /// cancellation of a parse already running is pinned in `analyze_tests`.
 #[test]
-fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() {
+fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() -> TestResult {
     use crate::sync::analyze::analyze;
     let spent = Deadline::after(Duration::ZERO);
 
@@ -145,7 +151,8 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() {
         crate::model::ResourceLimits::default().max_parse_bytes,
         Duration::from_secs(5),
         &spent,
-    );
+    )
+    .check("analyze the file")?;
 
     assert!(result.run.validate().is_ok());
     assert_eq!(
@@ -159,6 +166,7 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() {
         crate::model::ExtractionCompleteness::ContentOnly
     );
     assert!(result.evidence.is_empty(), "nothing was parsed");
+    Ok(())
 }
 
 /// A real cancellation, not an injected one: a 400 KiB Rust file (under
@@ -168,7 +176,7 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() {
 /// `parse_timeout`, nothing is extracted, and `analyze` returns near the
 /// budget instead of after the whole parse.
 #[test]
-fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout() {
+fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout() -> TestResult {
     use crate::sync::analyze::analyze;
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let content = line.repeat(400 * 1024 / line.len());
@@ -182,7 +190,8 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
         limits.max_parse_bytes,
         Duration::from_millis(limits.max_parse_wall_clock_ms),
         &deadline,
-    );
+    )
+    .check("analyze the file")?;
     let elapsed = started.elapsed();
 
     assert_eq!(
@@ -197,22 +206,23 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
     );
     assert!(result.evidence.is_empty());
     assert!(elapsed < Duration::from_secs(1), "analyze took {elapsed:?}");
+    Ok(())
 }
 
 /// The sync budget still ends the sync: a file whose parse outlives it is cut
 /// at the sync deadline (the per-file allowance here is far longer), and the
 /// publish fails with the budget error and publishes nothing.
 #[test]
-fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() {
-    let project = tempfile::tempdir().expect("project dir");
+fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     write(
         project.path(),
         "slow.rs",
         line.repeat(1_900_000 / line.len()).as_bytes(),
-    );
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    )?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let limits = ResourceLimits {
         max_sync_wall_clock: Duration::from_millis(300),
         max_parse_wall_clock_ms: 600_000,
@@ -226,7 +236,7 @@ fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() {
         &crate::progress::NoopProgressSink,
         &limits,
     )
-    .expect_err("the sync budget ran out during the parse");
+    .check_err("the sync budget ran out during the parse")?;
 
     assert!(
         matches!(
@@ -237,7 +247,8 @@ fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() {
         "expected a time-budget error, got {error:?}"
     );
     assert!(
-        stored_paths(&connection).is_empty(),
+        stored_paths(&connection)?.is_empty(),
         "nothing was published"
     );
+    Ok(())
 }

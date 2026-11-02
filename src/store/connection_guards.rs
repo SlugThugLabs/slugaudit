@@ -156,7 +156,7 @@ pub(super) fn enable_wal(connection: &Connection, budget: Duration) -> Result<()
                 if std::time::Instant::now() >= deadline {
                     tracing::warn!(
                         target: "slugaudit::store",
-                        budget_ms = u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
+                        budget_ms = budget.as_millis(),
                         "database stayed locked by another process while enabling WAL"
                     );
                     return Err(StoreError::Busy(error));

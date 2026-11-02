@@ -4,21 +4,22 @@
 
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::time::{Duration, Instant};
 
 /// A 3 MiB Rust file (over the 2 MiB `max_parse_bytes` default) full of
 /// `unwrap()` calls, beside one small parsed file with exactly one.
-fn oversize_fixture() -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activate");
-    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
+fn oversize_fixture() -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).check("activate")?;
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let big = line.repeat(3 * 1024 * 1024 / line.len() + 1);
     assert!(big.len() > 3 * 1024 * 1024, "the fixture is over 3 MiB");
-    fs::write(project.path().join("big.rs"), big).expect("write oversize file");
-    fs::write(project.path().join("small.rs"), line).expect("write small file");
-    project
+    fs::write(project.path().join("big.rs"), big).check("write oversize file")?;
+    fs::write(project.path().join("small.rs"), line).check("write small file")?;
+    Ok(project)
 }
 
 fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> LeadsRequest {
@@ -34,32 +35,35 @@ fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> LeadsRe
     }
 }
 
-fn run_leads(request: LeadsRequest, manager: &crate::sync::SourceSyncManager) -> LeadsResponse {
-    leads(
+fn run_leads(
+    request: LeadsRequest,
+    manager: &crate::sync::SourceSyncManager,
+) -> TestResult<LeadsResponse> {
+    Ok(leads(
         &Parameters(request),
         &crate::progress::NoopProgressSink,
         manager,
     )
-    .expect("leads succeeds")
-    .0
+    .check("leads succeeds")?
+    .0)
 }
 
 #[test]
-fn an_oversize_file_indexes_fast_and_every_leads_response_counts_it_not_parsed() {
-    let project = oversize_fixture();
+fn an_oversize_file_indexes_fast_and_every_leads_response_counts_it_not_parsed() -> TestResult {
+    let project = oversize_fixture()?;
     let manager = crate::sync::SourceSyncManager::default();
 
     let started = Instant::now();
-    let counts = run_leads(leads_request(&project, None), &manager);
+    let counts = run_leads(leads_request(&project, None), &manager)?;
     let elapsed = started.elapsed();
-    let rows = run_leads(leads_request(&project, Some("unwrap_calls")), &manager);
+    let rows = run_leads(leads_request(&project, Some("unwrap_calls")), &manager)?;
     let compact = run_leads(
         LeadsRequest {
             mode: LeadMode::Compact,
             ..leads_request(&project, None)
         },
         &manager,
-    );
+    )?;
 
     assert!(
         elapsed < Duration::from_secs(2),
@@ -70,14 +74,15 @@ fn an_oversize_file_indexes_fast_and_every_leads_response_counts_it_not_parsed()
     assert_eq!(compact.files_not_parsed, 1, "compact mode");
     assert_eq!(rows.page.total, Some(1), "only small.rs was parsed");
     let LeadRows::Full(rows) = &rows.rows else {
-        panic!("full mode returns full rows");
+        return Err("full mode returns full rows".to_owned()).check("unexpected outcome");
     };
     assert_eq!(rows[0].file, "small.rs");
+    Ok(())
 }
 
 #[test]
-fn files_not_parsed_follows_the_request_pattern() {
-    let project = oversize_fixture();
+fn files_not_parsed_follows_the_request_pattern() -> TestResult {
+    let project = oversize_fixture()?;
     let manager = crate::sync::SourceSyncManager::default();
 
     let narrowed = run_leads(
@@ -86,14 +91,15 @@ fn files_not_parsed_follows_the_request_pattern() {
             ..leads_request(&project, None)
         },
         &manager,
-    );
+    )?;
 
     assert_eq!(narrowed.files_not_parsed, 0);
+    Ok(())
 }
 
 #[test]
-fn report_completeness_counts_an_oversize_for_parse_file_and_lists_its_reason() {
-    let project = oversize_fixture();
+fn report_completeness_counts_an_oversize_for_parse_file_and_lists_its_reason() -> TestResult {
+    let project = oversize_fixture()?;
 
     let response = crate::tools::report(
         &Parameters(crate::tools::ReportRequest {
@@ -102,7 +108,7 @@ fn report_completeness_counts_an_oversize_for_parse_file_and_lists_its_reason() 
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("report succeeds")
+    .check("report succeeds")?
     .0;
 
     assert_eq!(response.completeness.oversize_for_parse_file_count, 1);
@@ -113,67 +119,69 @@ fn report_completeness_counts_an_oversize_for_parse_file_and_lists_its_reason() 
         .map(|file| (file.path.as_str(), file.parse_error_reason.as_deref()))
         .collect();
     assert_eq!(listed, [("big.rs", Some("oversize_for_parse"))]);
+    Ok(())
 }
 
 #[test]
-fn a_file_with_no_detected_language_is_not_counted_as_not_parsed() {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).expect("activate");
-    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
-    fs::write(project.path().join(".gitignore"), "target/\n").expect("write .gitignore");
-    fs::write(project.path().join("small.rs"), "pub fn f() {}\n").expect("write small file");
+fn a_file_with_no_detected_language_is_not_counted_as_not_parsed() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::create_dir_all(project.path().join(".planning").join("slugaudit")).check("activate")?;
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
+    fs::write(project.path().join(".gitignore"), "target/\n").check("write .gitignore")?;
+    fs::write(project.path().join("small.rs"), "pub fn f() {}\n").check("write small file")?;
     let manager = crate::sync::SourceSyncManager::default();
 
-    let response = run_leads(leads_request(&project, None), &manager);
+    let response = run_leads(leads_request(&project, None), &manager)?;
 
     assert_eq!(response.files_not_parsed, 0);
+    Ok(())
 }
 
 /// Two small files and one just under `max_parse_bytes` that no 200 ms budget
 /// can parse, under a global config that sets `max_parse_wall_clock_ms`.
-fn slow_parse_fixture() -> (
+fn slow_parse_fixture() -> TestResult<(
     tempfile::TempDir,
     crate::tools::test_support::GlobalConfigGuard,
-) {
-    let project = tempfile::tempdir().expect("project dir");
+)> {
+    let project = tempfile::tempdir().check("project dir")?;
     let config_dir = project.path().join(".planning").join("slugaudit");
-    fs::create_dir_all(&config_dir).expect("activate");
-    crate::project::write_database_marker(&config_dir);
+    fs::create_dir_all(&config_dir).check("activate")?;
+    crate::project::write_database_marker(&config_dir)?;
     let config =
-        crate::tools::test_support::use_global_config(r#"{"max_parse_wall_clock_ms": 200}"#);
+        crate::tools::test_support::use_global_config(r#"{"max_parse_wall_clock_ms": 200}"#)?;
     let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
     let big = line.repeat(1_900_000 / line.len());
     assert!(big.len() < 2 * 1024 * 1024, "under max_parse_bytes");
-    fs::write(project.path().join("slow.rs"), big).expect("write slow file");
-    fs::write(project.path().join("one.rs"), line).expect("write small file");
-    fs::write(project.path().join("two.rs"), line).expect("write small file");
-    (project, config)
+    fs::write(project.path().join("slow.rs"), big).check("write slow file")?;
+    fs::write(project.path().join("one.rs"), line).check("write small file")?;
+    fs::write(project.path().join("two.rs"), line).check("write small file")?;
+    Ok((project, config))
 }
 
 fn run_report(
     project: &tempfile::TempDir,
     manager: &crate::sync::SourceSyncManager,
-) -> crate::tools::ReportResponse {
-    crate::tools::report(
+) -> TestResult<crate::tools::ReportResponse> {
+    Ok(crate::tools::report(
         &Parameters(crate::tools::ReportRequest {
             path: project.path().to_string_lossy().into_owned(),
         }),
         &crate::progress::NoopProgressSink,
         manager,
     )
-    .expect("report succeeds")
-    .0
+    .check("report succeeds")?
+    .0)
 }
 
 #[test]
-fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() {
-    let (project, _config) = slow_parse_fixture();
+fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() -> TestResult {
+    let (project, _config) = slow_parse_fixture()?;
     let manager = crate::sync::SourceSyncManager::default();
 
-    let counts = run_leads(leads_request(&project, None), &manager);
-    let rows = run_leads(leads_request(&project, Some("unwrap_calls")), &manager);
-    let first_report = run_report(&project, &manager);
-    let second_report = run_report(&project, &manager);
+    let counts = run_leads(leads_request(&project, None), &manager)?;
+    let rows = run_leads(leads_request(&project, Some("unwrap_calls")), &manager)?;
+    let first_report = run_report(&project, &manager)?;
+    let second_report = run_report(&project, &manager)?;
 
     assert_eq!(counts.files_not_parsed, 1, "counts mode");
     assert_eq!(rows.files_not_parsed, 1, "rows mode");
@@ -192,4 +200,5 @@ fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() {
             .collect();
         assert_eq!(listed, [("slow.rs", Some("parse_timeout"))]);
     }
+    Ok(())
 }

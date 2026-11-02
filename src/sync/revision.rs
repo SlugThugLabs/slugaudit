@@ -65,6 +65,9 @@ pub enum RevisionError {
         /// Revision id actually current when the transaction began.
         found: String,
     },
+    /// The system clock cannot timestamp the revision.
+    #[error(transparent)]
+    Clock(#[from] crate::util::ClockError),
 }
 
 /// The inputs one publish transaction needs, grouped by role.
@@ -167,7 +170,7 @@ fn insert_revision_row(
         tx.query_row("SELECT max(created_at_unix) FROM revisions", [], |row| {
             row.get(0)
         })?;
-    let created_at = util::at_least_timestamp(util::now_unix(), persisted_time);
+    let created_at = util::at_least_timestamp(util::now_unix()?, persisted_time);
     tx.execute(
         "INSERT INTO revisions (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
          VALUES ('pending', ?1, ?2, ?3, 0)",
@@ -304,9 +307,18 @@ fn assert_baseline(
         (None, None) => Ok(()),
         (Some(expected), Some(found)) if expected == found => Ok(()),
         (expected, found) => Err(RevisionError::StaleBaseline {
-            expected: expected.unwrap_or("none").to_owned(),
-            found: found.unwrap_or("none").to_owned(),
+            expected: baseline_label(expected),
+            found: baseline_label(found),
         }),
+    }
+}
+
+/// Names a revision id for a stale-baseline error; `none` when there is no
+/// current revision.
+fn baseline_label(revision_id: Option<&str>) -> String {
+    match revision_id {
+        Some(id) => id.to_owned(),
+        None => "none".to_owned(),
     }
 }
 

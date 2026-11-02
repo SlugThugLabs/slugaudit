@@ -5,15 +5,16 @@ use crate::sync::SourceSyncManager;
 use crate::tools::{FindingReadRequest, FindingRequest, LegacyPaging, finding, finding_read};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
-    let project = rust_project();
+fn paged_finding_read_matches_the_golden_apart_from_paging_fields() -> TestResult {
+    let project = rust_project()?;
     let manager = SourceSyncManager::default();
     for (n, title) in ["first", "second", "third"].iter().enumerate() {
         finding(
             &Parameters(FindingRequest {
-                path: path_of(&project),
+                path: path_of(&project)?,
                 file: format!("mod{n}.rs"),
                 line_start: 1,
                 line_end: 2,
@@ -25,21 +26,21 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
             &NoopProgressSink,
             &manager,
         )
-        .expect("finding is stored");
+        .check("finding is stored")?;
     }
-    let read = |request: FindingReadRequest| {
-        finding_read(&Parameters(request), &NoopProgressSink, &manager)
-            .expect("finding_read succeeds")
-            .0
+    let read = |request: FindingReadRequest| -> TestResult<crate::tools::FindingReadResponse> {
+        let response = finding_read(&Parameters(request), &NoopProgressSink, &manager)
+            .check("finding_read succeeds")?;
+        Ok(response.0)
     };
     let by_path = FindingReadRequest {
-        path: Some(path_of(&project)),
+        path: Some(path_of(&project)?),
         file: None,
         cursor: None,
         legacy_paging: LegacyPaging::default(),
     };
-    let list = read(by_path);
-    check_case("finding_read_list", &project, &json!({}), &list);
+    let list = read(by_path)?;
+    check_case("finding_read_list", &project, &json!({}), &list)?;
 
     // The `offset: 1` fixture case. A cursor continuation keeps page one's stored
     // page budget (300 bytes here), so its pages do not split the findings
@@ -48,14 +49,18 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
     // cannot match by design; the comparison is content-level: the findings
     // of every page after page one, concatenated, equal the fixture's
     // `findings` array element for element. Paging fields are not compared.
-    let _config = super::test_support::use_global_config("{\"default_page_bytes\": 300}");
+    let _config = super::test_support::use_global_config("{\"default_page_bytes\": 300}")?;
     let first = read(FindingReadRequest {
-        path: Some(path_of(&project)),
+        path: Some(path_of(&project)?),
         file: None,
         cursor: None,
         legacy_paging: LegacyPaging::default(),
-    });
-    let mut token = first.page.cursor.clone().expect("page one leaves a cursor");
+    })?;
+    let mut token = first
+        .page
+        .cursor
+        .clone()
+        .check("page one leaves a cursor")?;
     let mut findings: Vec<Value> = Vec::new();
     loop {
         let page = read(FindingReadRequest {
@@ -63,12 +68,12 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
             file: None,
             cursor: Some(token),
             legacy_paging: LegacyPaging::default(),
-        });
-        let mut body = serde_json::to_value(&page.findings).expect("findings serialize");
-        normalise(&mut body, &path_of(&project));
+        })?;
+        let mut body = serde_json::to_value(&page.findings).check("findings serialize")?;
+        normalise(&mut body, &path_of(&project)?);
         findings.extend(
             body.as_array()
-                .expect("findings is an array")
+                .check("findings is an array")?
                 .iter()
                 .cloned(),
         );
@@ -78,10 +83,11 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() {
         }
     }
     let text = std::fs::read_to_string(fixture_dir().join("finding_read_offset1.json"))
-        .expect("read fixture");
-    let fixture: Value = serde_json::from_str(&text).expect("fixture is JSON");
+        .check("read fixture")?;
+    let fixture: Value = serde_json::from_str(&text).check("fixture is JSON")?;
     let expected = fixture["response"]["findings"]
         .as_array()
-        .expect("fixture findings is an array");
+        .check("fixture findings is an array")?;
     assert_eq!(&findings, expected, "finding_read_offset1 findings drifted");
+    Ok(())
 }

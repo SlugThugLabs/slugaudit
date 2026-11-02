@@ -61,7 +61,13 @@ fn collect(
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let relative = path
             .strip_prefix(root)
-            .unwrap_or(&path)
+            .map_err(|error| {
+                format!(
+                    "{} is not under the scan root {}: {error}",
+                    path.display(),
+                    root.display()
+                )
+            })?
             .display()
             .to_string();
         sources.push((relative, production_code(&text)));
@@ -182,11 +188,12 @@ pub(super) fn enum_variants(source: &str, name: &str) -> Option<Vec<String>> {
         // A variant is the leading identifier of its line; a payload
         // (`LoadFailed { … }`) or discriminant never changes which variant
         // the line declares.
-        let head = trimmed
-            .split(['{', '(', '=', ','])
-            .next()
-            .unwrap_or(trimmed)
-            .trim();
+        // `split` always yields a first piece; the `None` arm cannot run and
+        // yields an empty head, which is not an identifier.
+        let head = match trimmed.split(['{', '(', '=', ',']).next() {
+            Some(piece) => piece.trim(),
+            None => "",
+        };
         if is_identifier(head) {
             variants.push(head.to_owned());
         }

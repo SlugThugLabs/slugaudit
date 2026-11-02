@@ -1,5 +1,6 @@
 use super::*;
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
+use slugaudit_test_check::TestResult;
 
 fn import_sources(items: &[EvidenceItem]) -> Vec<&str> {
     items
@@ -10,8 +11,8 @@ fn import_sources(items: &[EvidenceItem]) -> Vec<&str> {
 }
 
 #[test]
-fn kotlin_import_header_is_captured() {
-    let items = extract_generic_imports("kotlin", "import kotlin.math.max\nimport util.Helper\n");
+fn kotlin_import_header_is_captured() -> TestResult {
+    let items = extract_generic_imports("kotlin", "import kotlin.math.max\nimport util.Helper\n")?;
     let sources = import_sources(&items);
     assert_eq!(
         sources,
@@ -22,100 +23,111 @@ fn kotlin_import_header_is_captured() {
             .iter()
             .all(|i| i.origin == EvidenceOrigin::GenericWalker)
     );
+    Ok(())
 }
 
 #[test]
-fn swift_import_declaration_is_captured() {
-    let items = extract_generic_imports("swift", "import Foundation\nimport MyModule\n");
+fn swift_import_declaration_is_captured() -> TestResult {
+    let items = extract_generic_imports("swift", "import Foundation\nimport MyModule\n")?;
     assert_eq!(
         import_sources(&items),
         vec!["import Foundation", "import MyModule"]
     );
+    Ok(())
 }
 
 #[test]
-fn csharp_using_directive_is_captured() {
-    let items = extract_generic_imports("csharp", "using System.IO;\nusing MyApp.Core;\n");
+fn csharp_using_directive_is_captured() -> TestResult {
+    let items = extract_generic_imports("csharp", "using System.IO;\nusing MyApp.Core;\n")?;
     assert_eq!(
         import_sources(&items),
         vec!["using System.IO;", "using MyApp.Core;"]
     );
+    Ok(())
 }
 
 #[test]
-fn dart_import_specification_is_captured() {
+fn dart_import_specification_is_captured() -> TestResult {
     let items = extract_generic_imports(
         "dart",
         "import 'dart:async';\nimport '../util.dart';\nimport 'package:foo/bar.dart';\n",
-    );
+    )?;
     let sources = import_sources(&items);
     assert!(
         sources.contains(&"import '../util.dart';"),
         "expected the relative dart import among {sources:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn julia_import_and_using_are_captured() {
-    let items = extract_generic_imports("julia", "using LinearAlgebra\nimport Pkg\n");
+fn julia_import_and_using_are_captured() -> TestResult {
+    let items = extract_generic_imports("julia", "using LinearAlgebra\nimport Pkg\n")?;
     assert_eq!(
         import_sources(&items),
         vec!["using LinearAlgebra", "import Pkg"]
     );
+    Ok(())
 }
 
 #[test]
-fn c_preproc_include_is_captured() {
-    let items = extract_generic_imports("c", "#include <stdio.h>\n#include \"local.h\"\n");
+fn c_preproc_include_is_captured() -> TestResult {
+    let items = extract_generic_imports("c", "#include <stdio.h>\n#include \"local.h\"\n")?;
     assert_eq!(
         import_sources(&items),
         vec!["#include <stdio.h>", "#include \"local.h\""]
     );
+    Ok(())
 }
 
 #[test]
-fn cpp_preproc_include_is_captured() {
-    let items = extract_generic_imports("cpp", "#include <vector>\n#include \"util.hpp\"\n");
+fn cpp_preproc_include_is_captured() -> TestResult {
+    let items = extract_generic_imports("cpp", "#include <vector>\n#include \"util.hpp\"\n")?;
     assert_eq!(
         import_sources(&items),
         vec!["#include <vector>", "#include \"util.hpp\""]
     );
+    Ok(())
 }
 
 #[test]
-fn haskell_import_is_captured() {
+fn haskell_import_is_captured() -> TestResult {
     let items = extract_generic_imports(
         "haskell",
         "import Data.List\nimport qualified Data.Map as M\n",
-    );
+    )?;
     assert_eq!(
         import_sources(&items),
         vec!["import Data.List", "import qualified Data.Map as M"]
     );
+    Ok(())
 }
 
 #[test]
-fn perl_use_statement_is_captured() {
-    let items = extract_generic_imports("perl", "use strict;\nuse lib 'lib';\n");
+fn perl_use_statement_is_captured() -> TestResult {
+    let items = extract_generic_imports("perl", "use strict;\nuse lib 'lib';\n")?;
     assert_eq!(
         import_sources(&items),
         vec!["use strict;", "use lib 'lib';"]
     );
+    Ok(())
 }
 
 #[test]
-fn php_namespace_use_is_captured() {
-    let items = extract_generic_imports("php", "<?php\nuse Foo\\Bar\\Baz;\nuse MyApp\\Core;\n");
+fn php_namespace_use_is_captured() -> TestResult {
+    let items = extract_generic_imports("php", "<?php\nuse Foo\\Bar\\Baz;\nuse MyApp\\Core;\n")?;
     let sources = import_sources(&items);
     assert!(
         sources.contains(&"use Foo\\Bar\\Baz;"),
         "expected the php namespace use among {sources:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn unknown_language_returns_nothing_without_error() {
-    assert!(extract_generic_imports("not-a-real-language", "import x\n").is_empty());
+fn unknown_language_returns_nothing_without_error() -> TestResult {
+    assert!(extract_generic_imports("not-a-real-language", "import x\n")?.is_empty());
+    Ok(())
 }
 
 /// The exact import-kind list must not fire on ordinary non-import
@@ -124,7 +136,7 @@ fn unknown_language_returns_nothing_without_error() {
 /// against a future kind being added that collides with, say, a function
 /// or expression node in an unforeseen grammar.
 #[test]
-fn c7_no_imports_source_produces_no_import_items_in_any_matrix_language() {
+fn c7_no_imports_source_produces_no_import_items_in_any_matrix_language() -> TestResult {
     for (language, source) in [
         ("rust", "fn f() { let x = 1; x }\n"),
         ("python", "def f():\n    return 1\n"),
@@ -145,20 +157,21 @@ fn c7_no_imports_source_produces_no_import_items_in_any_matrix_language() {
         ("ruby", "def f\n  1\nend\n"),
         ("java", "int f() { return 1; }\n"),
     ] {
-        let items = extract_generic_imports(language, source);
+        let items = extract_generic_imports(language, source)?;
         assert_eq!(
             import_sources(&items),
             Vec::<&str>::new(),
             "{language}: a function with no imports must produce no Import items"
         );
     }
+    Ok(())
 }
 
 /// The matrix languages' real import statements must be captured —
 /// exact matching must not lose coverage for a language whose kind a
 /// substring match would catch.
 #[test]
-fn c7_matrix_languages_still_capture_their_real_imports() {
+fn c7_matrix_languages_still_capture_their_real_imports() -> TestResult {
     for (language, source, expected) in [
         ("swift", "import Foundation\n", vec!["import Foundation"]),
         (
@@ -187,18 +200,19 @@ fn c7_matrix_languages_still_capture_their_real_imports() {
             vec!["use Foo\\Bar\\Baz;"],
         ),
     ] {
-        let items = extract_generic_imports(language, source);
+        let items = extract_generic_imports(language, source)?;
         assert_eq!(
             import_sources(&items),
             expected,
             "{language}: the real import statement must still be captured"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn spans_are_present_and_payloads_are_pack_shaped() {
-    let items = extract_generic_imports("swift", "import Foundation\n");
+fn spans_are_present_and_payloads_are_pack_shaped() -> TestResult {
+    let items = extract_generic_imports("swift", "import Foundation\n")?;
     assert_eq!(items.len(), 1);
     assert!(matches!(items[0].span, SpanAvailability::Present(_)));
     assert_eq!(
@@ -206,4 +220,5 @@ fn spans_are_present_and_payloads_are_pack_shaped() {
         serde_json::Value::Bool(false)
     );
     assert_eq!(items[0].payload["items"], serde_json::Value::Array(vec![]));
+    Ok(())
 }

@@ -2,6 +2,7 @@
 //! memory only: this set dies with the process.
 
 use super::mechanic_entry::MechanicEntry;
+use crate::util::LockPoisoned;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -20,19 +21,29 @@ pub const MAX_SESSION_MECHANICS: usize = 64;
 
 impl SessionMechanics {
     /// A snapshot of the session entries, oldest first.
-    #[must_use]
-    pub fn entries(&self) -> Vec<MechanicEntry> {
-        crate::util::lock_or_recover(&self.entries, "session_mechanics").clone()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the entries were poisoned.
+    pub fn entries(&self) -> Result<Vec<MechanicEntry>, LockPoisoned> {
+        Ok(crate::util::lock(&self.entries, "session_mechanics")?.clone())
     }
 
     /// Runs `change` with the session entries locked, so a check and the
     /// change it guards (collision, cap) are one step for every
     /// `mechanic` call on this server.
-    pub fn with_entries<T>(&self, change: impl FnOnce(&mut Vec<MechanicEntry>) -> T) -> T {
-        change(&mut crate::util::lock_or_recover(
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the entries were poisoned.
+    pub fn with_entries<T>(
+        &self,
+        change: impl FnOnce(&mut Vec<MechanicEntry>) -> T,
+    ) -> Result<T, LockPoisoned> {
+        Ok(change(&mut *crate::util::lock(
             &self.entries,
             "session_mechanics",
-        ))
+        )?))
     }
 
     /// True exactly once per server: for the first caller that claims the

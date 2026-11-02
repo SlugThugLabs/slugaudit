@@ -16,10 +16,27 @@ use crate::tools;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::RequestMetaObject;
 use rmcp::{ErrorData, Peer, RoleServer, tool, tool_router};
+use std::sync::Arc;
+
+/// The `inputSchema` of a tool whose arguments are `T`: the schema rmcp's
+/// `schema_for_input` returns (the generated schema without its top-level
+/// `title` and `description`), built without that function's fallible
+/// root-type check, whose failure the `#[tool]` macro would turn into a
+/// panic. Every request type's root is an object; the test
+/// `every_input_schema_matches_rmcp_and_has_an_object_root` pins both facts.
+fn input_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
+    let mut schema = rmcp::handler::server::common::schema_for_type::<T>()
+        .as_ref()
+        .clone();
+    schema.remove("title");
+    schema.remove("description");
+    Arc::new(schema)
+}
 
 #[tool_router(vis = "pub(crate)")]
 impl SlugAuditServer {
     #[tool(
+        input_schema = input_schema::<tools::ReportRequest>(),
         title = "Project snapshot",
         description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads. `notices` flags untested languages (only Rust is tested); `languages[].tested` says which.",
         annotations(read_only_hint = true, destructive_hint = false)
@@ -37,6 +54,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::LeadsRequest>(),
         title = "Mechanical leads",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Want somewhere to start? Mechanical facts extracted from the index — \
@@ -71,6 +89,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::MechanicRequest>(),
         title = "Register auditor mechanics",
         annotations(read_only_hint = false, destructive_hint = false),
         description = "Register, remove, or list your own mechanics. The built-in `leads` \
@@ -100,6 +119,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::QueryRequest>(),
         title = "Read-only SQL query",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Query the indexed codebase with read-only SQL. Key tables: \
@@ -124,6 +144,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::StructureRequest>(),
         title = "AST structure query",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Inspect and extract code AST structures from a file or across the project using Tree-sitter. \
@@ -149,6 +170,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::FindingRequest>(),
         title = "Record a finding",
         annotations(read_only_hint = false, destructive_hint = false),
         description = "Persist a conclusion you have personally reviewed about a specific file \
@@ -172,6 +194,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::FindingReadRequest>(),
         title = "Read session findings",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "Retrieve the findings recorded in this session (since this server \
@@ -194,6 +217,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::FindingClearRequest>(),
         title = "Clear session findings",
         annotations(read_only_hint = false, destructive_hint = true),
         description = "Delete every finding recorded in this session for the project and report \
@@ -214,6 +238,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::ProjectControlRequest>(),
         title = "Enable or disable a project",
         annotations(read_only_hint = false, destructive_hint = true),
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
@@ -244,6 +269,7 @@ impl SlugAuditServer {
     }
 
     #[tool(
+        input_schema = input_schema::<tools::HealthRequest>(),
         title = "Operational health",
         annotations(read_only_hint = true, destructive_hint = false),
         description = "What state the server is in and what to do next: `phase`, `remedy` (the \
@@ -266,3 +292,7 @@ impl SlugAuditServer {
         .await
     }
 }
+
+#[cfg(test)]
+#[path = "handlers_tests.rs"]
+mod tests;

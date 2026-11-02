@@ -12,6 +12,7 @@
 
 use super::*;
 use crate::model::EvidenceKind;
+use slugaudit_test_check::{Check, TestResult};
 
 // --- Grammar-matrix validation ---
 //
@@ -24,8 +25,8 @@ use crate::model::EvidenceKind;
 // unambiguous.
 
 /// `extract` also reports the depth cap; these tests are about items.
-fn extract_items(language: &str, source: &str) -> Vec<EvidenceItem> {
-    extract(language, source).expect("extract").0
+fn extract_items(language: &str, source: &str) -> TestResult<Vec<EvidenceItem>> {
+    Ok(extract(language, source).check("extract")?.0)
 }
 
 fn field_names(items: &[EvidenceItem]) -> Vec<&str> {
@@ -40,19 +41,20 @@ fn field_names(items: &[EvidenceItem]) -> Vec<&str> {
 }
 
 #[test]
-fn c7_field_declaration_kinds_surface_exactly_the_members_in_rust() {
+fn c7_field_declaration_kinds_surface_exactly_the_members_in_rust() -> TestResult {
     let source = "struct S { a: i32, b: String }\n";
-    let items = extract_items("rust", source);
+    let items = extract_items("rust", source)?;
     let names = field_names(&items);
     assert_eq!(
         names,
         vec!["a", "b"],
         "exact members, no container duplicate"
     );
+    Ok(())
 }
 
 #[test]
-fn c7_field_declaration_kinds_surface_exactly_the_members_in_go_and_c_family() {
+fn c7_field_declaration_kinds_surface_exactly_the_members_in_go_and_c_family() -> TestResult {
     for (language, source) in [
         ("go", "type S struct { a int; b string }\n"),
         ("c", "struct S { int a; int b; };\n"),
@@ -61,7 +63,7 @@ fn c7_field_declaration_kinds_surface_exactly_the_members_in_go_and_c_family() {
         ("csharp", "class C { public int a; private string b; }\n"),
         ("ocaml", "type t = { a : int; b : string }\n"),
     ] {
-        let items = extract_items(language, source);
+        let items = extract_items(language, source)?;
         let names = field_names(&items);
         assert_eq!(
             names,
@@ -69,15 +71,16 @@ fn c7_field_declaration_kinds_surface_exactly_the_members_in_go_and_c_family() {
             "{language}: exact members, no duplicate"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn c7_property_declaration_kinds_surface_exactly_the_members_in_swift_and_kotlin() {
+fn c7_property_declaration_kinds_surface_exactly_the_members_in_swift_and_kotlin() -> TestResult {
     for (language, source) in [
         ("swift", "struct S { let a: Int; var b: String }\n"),
         ("kotlin", "class C { val a: Int; var b: String }\n"),
     ] {
-        let items = extract_items(language, source);
+        let items = extract_items(language, source)?;
         let names = field_names(&items);
         assert_eq!(
             names,
@@ -85,10 +88,12 @@ fn c7_property_declaration_kinds_surface_exactly_the_members_in_swift_and_kotlin
             "{language}: exact members, no duplicate"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_typescript() {
+fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_typescript() -> TestResult
+{
     for (language, source) in [
         ("javascript", "class C { a = 1; b = 2; }\n"),
         (
@@ -96,7 +101,7 @@ fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_types
             "class C { a: number = 1; b: string = 'x'; }\n",
         ),
     ] {
-        let items = extract_items(language, source);
+        let items = extract_items(language, source)?;
         let names = field_names(&items);
         assert_eq!(
             names,
@@ -104,10 +109,11 @@ fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_types
             "{language}: exact members, no duplicate"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn c7_languages_without_field_declaration_kinds_produce_no_field_symbols() {
+fn c7_languages_without_field_declaration_kinds_produce_no_field_symbols() -> TestResult {
     // Languages whose grammars have no member-declaration node kind must
     // produce no Field symbols at all — the exact-match list must not
     // fire on their ordinary expression/assignment kinds (no false positives per
@@ -120,17 +126,18 @@ fn c7_languages_without_field_declaration_kinds_produce_no_field_symbols() {
         ("julia", "struct S\n  a::Int\nend\n"),
         ("perl", "my $a = 1;\n"),
     ] {
-        let items = extract_items(language, source);
+        let items = extract_items(language, source)?;
         assert_eq!(
             field_names(&items),
             Vec::<&str>::new(),
             "{language}: no field kinds in this grammar, so no Field symbols"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn c7_plain_function_source_produces_no_field_symbols_in_any_matrix_language() {
+fn c7_plain_function_source_produces_no_field_symbols_in_any_matrix_language() -> TestResult {
     // A function definition (no struct/class members anywhere) must never
     // produce a Field symbol in any matrix language — guards against the
     // list growing a kind that collides with function/expression nodes.
@@ -154,11 +161,12 @@ fn c7_plain_function_source_produces_no_field_symbols_in_any_matrix_language() {
         ("ruby", "def f\n  1\nend\n"),
         ("java", "int f() { return 1; }\n"),
     ] {
-        let items = extract_items(language, source);
+        let items = extract_items(language, source)?;
         assert_eq!(
             field_names(&items),
             Vec::<&str>::new(),
             "{language}: a function with no members must produce no Field symbols"
         );
     }
+    Ok(())
 }

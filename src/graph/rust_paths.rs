@@ -16,7 +16,10 @@ use std::collections::HashSet;
 /// imports (the single most common form in real Rust code) unresolved.
 pub(super) fn strip_trailing_glob(rest: &str) -> &str {
     let trimmed = rest.trim();
-    let without_star = trimmed.strip_suffix('*').unwrap_or(trimmed);
+    let without_star = match trimmed.strip_suffix('*') {
+        Some(rest) => rest,
+        None => trimmed,
+    };
     without_star.trim_end_matches(':')
 }
 

@@ -1,5 +1,7 @@
-use super::Extraction;
-use crate::model::{EvidenceItem, LineIndex, Position, Span, SpanAvailability, saturating_u32};
+use super::{ExtractError, Extraction};
+use crate::model::{
+    EvidenceItem, LineIndex, Position, PositionOverflow, Span, SpanAvailability, position_u32,
+};
 use crate::util::Deadline;
 use tree_sitter_language_pack::{
     DiagnosticSeverity, Error as PackError, ProcessConfig, ProcessResult, Span as PackSpan, process,
@@ -19,10 +21,11 @@ use super::normalize_builders::{
 ///
 /// # Errors
 ///
-/// Returns an error if `language` is not known to the pack or parsing
-/// fails outright; a tree with syntax-error nodes is not an error here, it
-/// surfaces as `Diagnostic` evidence instead.
-pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool), PackError> {
+/// Returns an error if `language` is not known to the pack, parsing fails
+/// outright, or a line or column exceeds `u32::MAX`; a tree with
+/// syntax-error nodes is not an error here, it surfaces as `Diagnostic`
+/// evidence instead.
+pub fn extract(language: &str, source: &str) -> Result<(Vec<EvidenceItem>, bool), ExtractError> {
     // With no deadline no parse can time out, so `timed_out` is always false.
     extract_within(language, source, None)
         .map(|extraction| (extraction.items, extraction.truncated))
@@ -45,11 +48,11 @@ pub(crate) fn extract_within(
     language: &str,
     source: &str,
     deadline: Option<&Deadline>,
-) -> Result<Extraction, PackError> {
+) -> Result<Extraction, ExtractError> {
     let mut config = ProcessConfig::new(language).all();
     let result = if let Some(deadline) = deadline {
         let Some(budget) = deadline.remaining_millis() else {
-            return Err(PackError::ParseTimeout { timeout_ms: 0 });
+            return Err(PackError::ParseTimeout { timeout_ms: 0 }.into());
         };
         config = config.with_parse_timeout_ms(Some(budget.get()));
         process_on_fresh_thread(source, &config)?
@@ -61,30 +64,26 @@ pub(crate) fn extract_within(
     let mut items = Vec::new();
     let mut counter = 0usize;
     for item in &result.structure {
-        flatten_structure(item, &lines, &mut items, &mut counter);
+        flatten_structure(item, &lines, &mut items, &mut counter)?;
     }
     for (index, item) in result.imports.iter().enumerate() {
-        items.push(import_item(index, item, &lines));
+        items.push(import_item(index, item, &lines)?);
     }
     for (index, item) in result.exports.iter().enumerate() {
-        items.push(export_item(index, item, &lines));
+        items.push(export_item(index, item, &lines)?);
     }
     for (index, item) in result.comments.iter().enumerate() {
-        items.push(comment_item(index, item, &lines));
+        items.push(comment_item(index, item, &lines)?);
     }
     for (index, item) in result.docstrings.iter().enumerate() {
-        items.push(docstring_item(index, item, &lines));
+        items.push(docstring_item(index, item, &lines)?);
     }
     for (index, item) in result.symbols.iter().enumerate() {
-        items.push(symbol_item(index, item, &lines));
+        items.push(symbol_item(index, item, &lines)?);
     }
-    items.extend(
-        result
-            .diagnostics
-            .iter()
-            .enumerate()
-            .map(|(index, diagnostic)| diagnostic_item(index, diagnostic, &lines)),
-    );
+    for (index, diagnostic) in result.diagnostics.iter().enumerate() {
+        items.push(diagnostic_item(index, diagnostic, &lines)?);
+    }
 
     // The language pack's `process()` extracts structure, imports, exports,
     // comments, docstrings, symbols, and diagnostics — but not individual
@@ -114,8 +113,8 @@ pub(crate) fn extract_within(
         &lines,
         result.imports.is_empty(),
         deadline,
-    ));
-    extraction.absorb(super::calls::extract(language, source, &lines, deadline));
+    )?);
+    extraction.absorb(super::calls::extract(language, source, &lines, deadline)?);
 
     Ok(extraction)
 }
@@ -178,40 +177,48 @@ fn extract_extra_walkers(
     lines: &LineIndex<'_>,
     pack_imports_was_empty: bool,
     deadline: Option<&Deadline>,
-) -> Extraction {
+) -> Result<Extraction, PositionOverflow> {
     let tree = match super::parse_tree(language, source, deadline) {
         Ok(tree) => tree,
-        Err(why) => return Extraction::without_tree(why),
+        Err(why) => return Ok(Extraction::without_tree(why)),
     };
     let root = tree.root_node();
 
     let mut items = Vec::new();
     let mut counter = 0usize;
-    let mut capped = super::bindings::walk_bindings(&root, source, lines, &mut items, &mut counter);
+    let mut capped =
+        super::bindings::walk_bindings(&root, source, lines, &mut items, &mut counter)?;
     if pack_imports_was_empty {
         capped |=
-            super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter);
+            super::generic_imports::walk_imports(&root, source, lines, &mut items, &mut counter)?;
     }
-    Extraction {
+    Ok(Extraction {
         items,
         truncated: capped,
         timed_out: false,
-    }
+    })
 }
 
-pub(super) fn convert_span(span: &PackSpan, lines: &LineIndex<'_>) -> SpanAvailability {
+/// A pack span in our coordinates. A line or column past `u32::MAX` is an
+/// error that fails the file's extraction.
+pub(super) fn convert_span(
+    span: &PackSpan,
+    lines: &LineIndex<'_>,
+) -> Result<SpanAvailability, PositionOverflow> {
     let start = Position {
-        line: saturating_u32(span.start_line),
-        column: lines.column(span.start_byte),
+        line: position_u32(span.start_line)?,
+        column: lines.column(span.start_byte)?,
     };
     let end = Position {
-        line: saturating_u32(span.end_line),
-        column: lines.column(span.end_byte),
+        line: position_u32(span.end_line)?,
+        column: lines.column(span.end_byte)?,
     };
-    match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
-        Ok(converted) => SpanAvailability::Present(converted),
-        Err(error) => super::span_unavailable("pack", &error),
-    }
+    Ok(
+        match Span::new(span.start_byte as u64, span.end_byte as u64, start, end) {
+            Ok(converted) => SpanAvailability::Present(converted),
+            Err(error) => super::span_unavailable("pack", &error),
+        },
+    )
 }
 
 pub(super) fn severity_text(severity: &DiagnosticSeverity) -> &'static str {

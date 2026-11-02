@@ -137,10 +137,20 @@ pub(crate) fn indexable_walker_with_max_depth(
         // still pays for `.git` and `.planning/slugaudit`, and a large
         // object store or database journal slows every sync.
         .filter_entry(move |entry| {
-            let relative = entry
-                .path()
-                .strip_prefix(&filter_root)
-                .unwrap_or_else(|_| entry.path());
+            let relative = match entry.path().strip_prefix(&filter_root) {
+                Ok(relative) => relative,
+                Err(error) => {
+                    // Continuing is correct: an entry outside the root is kept
+                    // (not pruned) so discovery sees it, and discovery records
+                    // the same `strip_prefix` failure in its `skipped` list.
+                    tracing::warn!(
+                        path = %crate::util::redacted_path(entry.path()),
+                        error = %error,
+                        "walk entry is outside the project root; not pruning it",
+                    );
+                    return true;
+                }
+            };
             !is_excluded_dir(&relative.to_string_lossy())
         });
     if let Some(max_depth) = max_depth {
@@ -246,7 +256,12 @@ impl IgnoreRules {
         is_dir: bool,
         root: &Path,
     ) -> Option<Match<()>> {
-        let mut dir = path.parent().unwrap_or(root).to_path_buf();
+        // A path with no parent is the filesystem root: match it against the
+        // project root's matcher.
+        let mut dir = match path.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => root.to_path_buf(),
+        };
         loop {
             if let Some(matcher) = matchers.get(&dir) {
                 match matcher.matched(path, is_dir) {

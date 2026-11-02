@@ -18,7 +18,7 @@
 //! entry fits; an entry larger than the whole budget is not cached and is
 //! counted instead.
 
-use crate::util::lock_or_recover;
+use crate::util::{LockPoisoned, lock};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -168,16 +168,22 @@ impl MechanicScanCache {
 
     /// The byte budget; a caller collecting rows to cache stops keeping them
     /// once their estimate passes it.
-    #[must_use]
-    pub fn budget(&self) -> usize {
-        lock_or_recover(&self.inner, "mechanic_scan_cache").budget
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn budget(&self) -> Result<usize, LockPoisoned> {
+        Ok(lock(&self.inner, "mechanic_scan_cache")?.budget)
     }
 
     /// The rows cached for exactly `key`, if any. A lookup at a new revision
     /// of the key's project first drops that project's older entries.
-    #[must_use]
-    pub fn get(&self, key: &ScanKey) -> Option<Arc<Vec<CachedRow>>> {
-        let mut inner = lock_or_recover(&self.inner, "mechanic_scan_cache");
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn get(&self, key: &ScanKey) -> Result<Option<Arc<Vec<CachedRow>>>, LockPoisoned> {
+        let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
         inner.drop_stale(&key.project, &key.revision);
         let found = inner
             .entries
@@ -189,21 +195,25 @@ impl MechanicScanCache {
         } else {
             inner.misses = inner.misses.saturating_add(1);
         }
-        found
+        Ok(found)
     }
 
     /// Caches the complete result of one scan, evicting oldest-first to fit;
     /// a result larger than the whole budget is counted and not cached.
-    pub fn insert(&self, key: ScanKey, rows: Arc<Vec<CachedRow>>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn insert(&self, key: ScanKey, rows: Arc<Vec<CachedRow>>) -> Result<(), LockPoisoned> {
         let bytes = rows
             .iter()
             .map(CachedRow::estimated_bytes)
             .fold(key.estimated_bytes(), usize::saturating_add);
-        let mut inner = lock_or_recover(&self.inner, "mechanic_scan_cache");
+        let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
         inner.drop_stale(&key.project, &key.revision);
         if bytes > inner.budget {
             inner.skipped_too_large = inner.skipped_too_large.saturating_add(1);
-            return;
+            return Ok(());
         }
         if let Some(position) = inner.entries.iter().position(|stored| stored.key == key)
             && let Some(old) = inner.entries.remove(position)
@@ -219,27 +229,41 @@ impl MechanicScanCache {
         }
         inner.bytes = inner.bytes.saturating_add(bytes);
         inner.entries.push_back(Stored { key, rows, bytes });
+        Ok(())
     }
 
     /// Counts a scan whose rows outgrew the budget while being collected, so
     /// it was never offered to [`MechanicScanCache::insert`].
-    pub fn note_too_large(&self) {
-        let mut inner = lock_or_recover(&self.inner, "mechanic_scan_cache");
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn note_too_large(&self) -> Result<(), LockPoisoned> {
+        let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
         inner.skipped_too_large = inner.skipped_too_large.saturating_add(1);
+        Ok(())
     }
 
     /// Drops every entry of mechanic `id`, whatever its revision or identity.
-    pub fn remove_id(&self, id: &str) {
-        let mut inner = lock_or_recover(&self.inner, "mechanic_scan_cache");
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn remove_id(&self, id: &str) -> Result<(), LockPoisoned> {
+        let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
         inner.entries.retain(|stored| stored.key.id != id);
         inner.bytes = inner.entries.iter().map(|stored| stored.bytes).sum();
+        Ok(())
     }
 
     /// A snapshot of the counters.
-    #[must_use]
-    pub fn stats(&self) -> CacheStats {
-        let inner = lock_or_recover(&self.inner, "mechanic_scan_cache");
-        CacheStats {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn stats(&self) -> Result<CacheStats, LockPoisoned> {
+        let inner = lock(&self.inner, "mechanic_scan_cache")?;
+        Ok(CacheStats {
             entries: inner.entries.len(),
             bytes: inner.bytes,
             budget: inner.budget,
@@ -247,7 +271,7 @@ impl MechanicScanCache {
             skipped_too_large: inner.skipped_too_large,
             hits: inner.hits,
             misses: inner.misses,
-        }
+        })
     }
 }
 

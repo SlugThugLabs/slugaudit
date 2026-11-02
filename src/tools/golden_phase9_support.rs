@@ -6,6 +6,7 @@
 //! the same tests write the fixtures instead; see `tests/golden/phase9/README.md`.
 use serde::Serialize;
 use serde_json::{Value, json};
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,12 +32,12 @@ pub(super) fn fixture_dir() -> PathBuf {
         .join("phase9")
 }
 
-pub(super) fn path_of(project: &tempfile::TempDir) -> String {
-    project
+pub(super) fn path_of(project: &tempfile::TempDir) -> TestResult<String> {
+    Ok(project
         .path()
         .to_str()
-        .expect("temp path is UTF-8")
-        .to_owned()
+        .check("temp path is UTF-8")?
+        .to_owned())
 }
 
 /// Replaces the revision id and the absolute project path with fixed
@@ -89,47 +90,46 @@ pub(super) fn check_case<R: Serialize, S: Serialize>(
     project: &tempfile::TempDir,
     request: &R,
     response: &S,
-) {
-    let root = path_of(project);
-    let mut request = serde_json::to_value(request).expect("request serializes");
-    let mut response = serde_json::to_value(response).expect("response serializes");
+) -> TestResult {
+    let root = path_of(project)?;
+    let mut request = serde_json::to_value(request).check("request serializes")?;
+    let mut response = serde_json::to_value(response).check("response serializes")?;
     normalise(&mut request, &root);
     normalise(&mut response, &root);
     let file = fixture_dir().join(format!("{name}.json"));
     if std::env::var(RECORD_ENV).as_deref() == Ok("1") {
         let fixture = json!({ "case": name, "request": request, "response": response });
-        let mut text = serde_json::to_string_pretty(&fixture).expect("fixture serializes");
+        let mut text = serde_json::to_string_pretty(&fixture).check("fixture serializes")?;
         text.push('\n');
-        fs::create_dir_all(fixture_dir()).expect("create fixture dir");
-        fs::write(&file, text).expect("write fixture");
-        return;
+        fs::create_dir_all(fixture_dir()).check("create fixture dir")?;
+        fs::write(&file, text).check("write fixture")?;
+        return Ok(());
     }
-    let text = fs::read_to_string(&file).unwrap_or_else(|error| {
-        panic!(
-            "fixture {} is missing ({error}); run generate.sh",
-            file.display()
-        )
-    });
-    let mut expected: Value = serde_json::from_str(&text).expect("fixture is JSON");
+    let text = fs::read_to_string(&file).check(&format!(
+        "fixture {} is missing; run generate.sh",
+        file.display()
+    ))?;
+    let mut expected: Value = serde_json::from_str(&text).check("fixture is JSON")?;
     let mut expected = expected["response"].take();
     mask_paging(&mut expected);
     mask_paging(&mut response);
     assert_eq!(response, expected, "golden case {name} drifted");
+    Ok(())
 }
 
-pub(super) fn project_with(files: &[(&str, String)]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
+pub(super) fn project_with(files: &[(&str, String)]) -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
+        .check("activate project")?;
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     for (relative, content) in files {
-        fs::write(project.path().join(relative), content).expect("write fixture file");
+        fs::write(project.path().join(relative), content).check("write fixture file")?;
     }
-    project
+    Ok(project)
 }
 
 /// Three Rust files with four `unwrap` calls each, one `expect` and a TODO.
-pub(super) fn rust_project() -> tempfile::TempDir {
+pub(super) fn rust_project() -> TestResult<tempfile::TempDir> {
     let files: Vec<(String, String)> = (0..3)
         .map(|file| {
             let body = (0..4)

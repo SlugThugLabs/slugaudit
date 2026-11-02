@@ -98,7 +98,7 @@ pub(super) struct UnsupportedPlatform;
 
 impl ResultStoreError {
     /// An `Unavailable`, logged once here with its cause.
-    pub(super) fn unavailable(
+    pub(crate) fn unavailable(
         context: &'static str,
         source: impl Error + Send + Sync + 'static,
     ) -> Self {

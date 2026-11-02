@@ -2,6 +2,7 @@
 //! with an injected clock, row builders, and directory/descriptor inspection.
 
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -29,7 +30,7 @@ impl Fixture {
 
 pub(super) fn clock_at(time: &Arc<AtomicI64>) -> Clock {
     let time = Arc::clone(time);
-    Arc::new(move || time.load(Ordering::SeqCst))
+    Arc::new(move || Ok(time.load(Ordering::SeqCst)))
 }
 
 pub(super) fn limits(max_bytes: u64) -> ResultStoreLimits {
@@ -39,8 +40,8 @@ pub(super) fn limits(max_bytes: u64) -> ResultStoreLimits {
     }
 }
 
-pub(super) fn fixture(max_bytes: u64) -> Fixture {
-    let dir = tempfile::tempdir().expect("temp dir");
+pub(super) fn fixture(max_bytes: u64) -> TestResult<Fixture> {
+    let dir = tempfile::tempdir().check("temp dir")?;
     let time = Arc::new(AtomicI64::new(1_000));
     let store = ResultStore::open_with_clock(
         dir.path(),
@@ -48,8 +49,8 @@ pub(super) fn fixture(max_bytes: u64) -> Fixture {
         limits(max_bytes),
         clock_at(&time),
     )
-    .expect("open the store");
-    Fixture { dir, time, store }
+    .check("open the store")?;
+    Ok(Fixture { dir, time, store })
 }
 
 pub(super) fn spec(columns: &[&str]) -> ResultSpec {
@@ -73,26 +74,23 @@ pub(super) fn write_rows(
 ) -> Result<ResultHandle, ResultStoreError> {
     let mut writer = store.begin(spec(&["id", "payload"]))?;
     let payload = "x".repeat(payload_len);
-    for index in 0..rows {
-        writer.push(&[
-            Cell::Int(i64::try_from(index).expect("row index fits i64")),
-            Cell::Text(payload.clone()),
-        ])?;
+    for (index, _) in (0_i64..).zip(0..rows) {
+        writer.push(&[Cell::Int(index), Cell::Text(payload.clone())])?;
     }
     writer.finish(&complete())
 }
 
 /// Reads one row and stops, leaving the result unfinished.
-pub(super) fn touch(store: &ResultStore, id: ResultId) -> PageRead {
-    store.read_page(id, 0, |_| Take::No).expect("read one row")
+pub(super) fn touch(store: &ResultStore, id: ResultId) -> TestResult<PageRead> {
+    store.read_page(id, 0, |_| Take::No).check("read one row")
 }
 
 /// Reads to the end, returning the ordinal of every row.
-pub(super) fn read_all(store: &ResultStore, id: ResultId) -> Vec<StoredRow> {
-    store
+pub(super) fn read_all(store: &ResultStore, id: ResultId) -> TestResult<Vec<StoredRow>> {
+    Ok(store
         .read_page(id, 0, |_| Take::Yes)
-        .expect("read all rows")
-        .rows
+        .check("read all rows")?
+        .rows)
 }
 
 /// Reads the page a token names: the production path, decode then read.
@@ -101,36 +99,42 @@ pub(super) fn read_token(store: &ResultStore, token: &str) -> Result<PageRead, R
     store.read_page(cursor.result, cursor.ord, |_| Take::Yes)
 }
 
-pub(super) fn db_files(results_dir: &std::path::Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(results_dir)
-        .expect("list results")
-        .map(|entry| {
-            entry
-                .expect("entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .filter(|name| {
-            std::path::Path::new(name)
-                .extension()
-                .is_some_and(|extension| extension == "db")
-        })
-        .collect();
+pub(super) fn db_files(results_dir: &std::path::Path) -> TestResult<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(results_dir).check("list results")? {
+        let name = entry
+            .check("entry")?
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        if std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|extension| extension == "db")
+        {
+            names.push(name);
+        }
+    }
     names.sort();
-    names
+    Ok(names)
 }
 
 /// Descriptors of this process that point at a deleted file under `dir`.
 #[cfg(target_os = "linux")]
-pub(super) fn deleted_descriptors_under(dir: &std::path::Path) -> Vec<String> {
-    let root = dir.canonicalize().expect("canonical dir");
-    std::fs::read_dir("/proc/self/fd")
-        .expect("list descriptors")
-        .filter_map(|entry| std::fs::read_link(entry.expect("fd entry").path()).ok())
-        .map(|target| target.to_string_lossy().into_owned())
-        .filter(|target| {
-            target.starts_with(root.to_string_lossy().as_ref()) && target.ends_with("(deleted)")
-        })
-        .collect()
+pub(super) fn deleted_descriptors_under(dir: &std::path::Path) -> TestResult<Vec<String>> {
+    let root = dir.canonicalize().check("canonical dir")?;
+    let root = root.to_string_lossy();
+    let mut deleted = Vec::new();
+    for entry in std::fs::read_dir("/proc/self/fd").check("list descriptors")? {
+        let entry = entry.check("fd entry")?;
+        let target = match std::fs::read_link(entry.path()) {
+            Ok(target) => target.to_string_lossy().into_owned(),
+            // The listing's own descriptor is already closed: not a leak.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).check("read a descriptor link"),
+        };
+        if target.starts_with(root.as_ref()) && target.ends_with("(deleted)") {
+            deleted.push(target);
+        }
+    }
+    Ok(deleted)
 }

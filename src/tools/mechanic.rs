@@ -202,7 +202,7 @@ pub fn mechanic(
             (Some(id), Some(source), None)
         }
     };
-    let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
+    let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits)?;
     tracing::info!(
         action = ?request.action,
         source = ?source,

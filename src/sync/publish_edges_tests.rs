@@ -5,6 +5,7 @@
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::write;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
 #[derive(Debug)]
@@ -14,7 +15,7 @@ struct Edge {
     kind: String,
 }
 
-fn edges(connection: &Connection) -> Vec<Edge> {
+fn edges(connection: &Connection) -> TestResult<Vec<Edge>> {
     let mut statement = connection
         .prepare(
             "SELECT f.path, t.path, e.resolution_kind FROM dependency_edges e \
@@ -22,7 +23,7 @@ fn edges(connection: &Connection) -> Vec<Edge> {
              LEFT JOIN files t ON t.id = e.to_file_id \
              ORDER BY f.path, e.raw_import_text",
         )
-        .expect("prepare");
+        .check("prepare")?;
     statement
         .query_map([], |row| {
             Ok(Edge {
@@ -31,19 +32,19 @@ fn edges(connection: &Connection) -> Vec<Edge> {
                 kind: row.get(2)?,
             })
         })
-        .expect("query")
+        .check("query")?
         .collect::<Result<_, _>>()
-        .expect("collect")
+        .check("collect")
 }
 
 #[test]
-fn a_python_relative_import_resolves_to_the_real_sibling_file() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "pkg/__init__.py", b"");
-    write(project.path(), "pkg/helper.py", b"def f():\n    pass\n");
-    write(project.path(), "pkg/main.py", b"from .helper import f\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_python_relative_import_resolves_to_the_real_sibling_file() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "pkg/__init__.py", b"")?;
+    write(project.path(), "pkg/helper.py", b"def f():\n    pass\n")?;
+    write(project.path(), "pkg/main.py", b"from .helper import f\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     publish(
         &mut connection,
@@ -51,35 +52,33 @@ fn a_python_relative_import_resolves_to_the_real_sibling_file() {
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("publish");
+    .check("publish")?;
 
-    let all = edges(&connection);
+    let all = edges(&connection)?;
     let resolved = all
         .iter()
         .find(|edge| edge.from == "pkg/main.py" && edge.kind == "Resolved")
-        .unwrap_or_else(|| {
-            panic!(
-                "no resolved edge among {all:?}",
-                all = all
-                    .iter()
-                    .map(|e| (&e.from, &e.to, &e.kind))
-                    .collect::<Vec<_>>()
-            )
-        });
+        .check(&format!(
+            "a resolved edge from pkg/main.py among {:?}",
+            all.iter()
+                .map(|e| (&e.from, &e.to, &e.kind))
+                .collect::<Vec<_>>()
+        ))?;
     assert_eq!(resolved.to.as_deref(), Some("pkg/helper.py"));
+    Ok(())
 }
 
 #[test]
-fn a_rust_crate_use_path_resolves_to_the_real_module_file() {
-    let project = tempfile::tempdir().expect("project dir");
+fn a_rust_crate_use_path_resolves_to_the_real_module_file() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
     write(
         project.path(),
         "src/main.rs",
         b"use crate::helper::greet;\nfn main() {}\n",
-    );
-    write(project.path(), "src/helper.rs", b"pub fn greet() {}\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    )?;
+    write(project.path(), "src/helper.rs", b"pub fn greet() {}\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     publish(
         &mut connection,
@@ -87,26 +86,27 @@ fn a_rust_crate_use_path_resolves_to_the_real_module_file() {
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("publish");
+    .check("publish")?;
 
-    let all = edges(&connection);
+    let all = edges(&connection)?;
     let resolved = all
         .iter()
         .find(|edge| edge.from == "src/main.rs" && edge.kind == "Resolved")
-        .expect("a resolved edge");
+        .check("a resolved edge")?;
     assert_eq!(resolved.to.as_deref(), Some("src/helper.rs"));
+    Ok(())
 }
 
 #[test]
-fn an_external_crate_use_is_recorded_as_external_with_no_target() {
-    let project = tempfile::tempdir().expect("project dir");
+fn an_external_crate_use_is_recorded_as_external_with_no_target() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
     write(
         project.path(),
         "src/main.rs",
         b"use std::collections::HashMap;\nfn main() {}\n",
-    );
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    )?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     publish(
         &mut connection,
@@ -114,44 +114,45 @@ fn an_external_crate_use_is_recorded_as_external_with_no_target() {
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("publish");
+    .check("publish")?;
 
-    let all = edges(&connection);
+    let all = edges(&connection)?;
     let external = all
         .iter()
         .find(|edge| edge.from == "src/main.rs")
-        .expect("an edge for main.rs");
+        .check("an edge for main.rs")?;
     assert_eq!(external.kind, "External");
     assert_eq!(external.to, None);
+    Ok(())
 }
 
 #[test]
-fn a_modified_file_gets_its_edges_replaced_not_duplicated() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "pkg/__init__.py", b"");
-    write(project.path(), "pkg/a.py", b"");
-    write(project.path(), "pkg/b.py", b"");
-    write(project.path(), "pkg/main.py", b"from .a import x\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_modified_file_gets_its_edges_replaced_not_duplicated() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "pkg/__init__.py", b"")?;
+    write(project.path(), "pkg/a.py", b"")?;
+    write(project.path(), "pkg/b.py", b"")?;
+    write(project.path(), "pkg/main.py", b"from .a import x\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     publish(
         &mut connection,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("first publish");
+    .check("first publish")?;
 
-    write(project.path(), "pkg/main.py", b"from .b import y\n");
+    write(project.path(), "pkg/main.py", b"from .b import y\n")?;
     publish(
         &mut connection,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("second publish");
+    .check("second publish")?;
 
-    let all = edges(&connection);
+    let all = edges(&connection)?;
     let from_main: Vec<&Edge> = all
         .iter()
         .filter(|edge| edge.from == "pkg/main.py")
@@ -162,33 +163,34 @@ fn a_modified_file_gets_its_edges_replaced_not_duplicated() {
         "the stale edge to a.py must be gone, not accumulated alongside the new one"
     );
     assert_eq!(from_main[0].to.as_deref(), Some("pkg/b.py"));
+    Ok(())
 }
 
 #[test]
-fn generic_walker_languages_get_edges_through_the_full_pipeline() {
+fn generic_walker_languages_get_edges_through_the_full_pipeline() -> TestResult {
     // Languages the pack's own import pass doesn't cover (swift, csharp,
     // dart, c, julia) must still produce dependency edges via the generic
     // import walker, resolved against real project files.
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "App.swift", b"import Foundation\n");
-    write(project.path(), "Program.cs", b"using Core.Helper;\n");
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "App.swift", b"import Foundation\n")?;
+    write(project.path(), "Program.cs", b"using Core.Helper;\n")?;
     write(
         project.path(),
         "Core/Helper.cs",
         b"namespace Core { class Helper {} }\n",
-    );
+    )?;
     write(
         project.path(),
         "lib/main.dart",
         b"import '../helper.dart';\nvoid main() {}\n",
-    );
-    write(project.path(), "helper.dart", b"int helper() => 1;\n");
-    write(project.path(), "main.c", b"#include \"local.h\"\n");
-    write(project.path(), "local.h", b"#define X 1\n");
-    write(project.path(), "main.jl", b"using .Helper\n");
-    write(project.path(), "Helper.jl", b"module Helper end\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    )?;
+    write(project.path(), "helper.dart", b"int helper() => 1;\n")?;
+    write(project.path(), "main.c", b"#include \"local.h\"\n")?;
+    write(project.path(), "local.h", b"#define X 1\n")?;
+    write(project.path(), "main.jl", b"using .Helper\n")?;
+    write(project.path(), "Helper.jl", b"module Helper end\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     publish(
         &mut connection,
@@ -196,9 +198,9 @@ fn generic_walker_languages_get_edges_through_the_full_pipeline() {
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("publish");
+    .check("publish")?;
 
-    let all = edges(&connection);
+    let all = edges(&connection)?;
     let assert_edge = |from: &str, to: &str| {
         assert!(
             all.iter().any(|edge| edge.from == from
@@ -217,47 +219,49 @@ fn generic_walker_languages_get_edges_through_the_full_pipeline() {
     let swift_edge = all
         .iter()
         .find(|edge| edge.from == "App.swift")
-        .expect("an edge for App.swift");
+        .check("an edge for App.swift")?;
     assert_eq!(swift_edge.kind, "External");
     assert_eq!(swift_edge.to, None);
+    Ok(())
 }
 
 #[test]
-fn a_deleted_target_file_cascades_away_its_incoming_edge() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "pkg/__init__.py", b"");
-    write(project.path(), "pkg/helper.py", b"");
-    write(project.path(), "pkg/main.py", b"from .helper import f\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_deleted_target_file_cascades_away_its_incoming_edge() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "pkg/__init__.py", b"")?;
+    write(project.path(), "pkg/helper.py", b"")?;
+    write(project.path(), "pkg/main.py", b"from .helper import f\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     publish(
         &mut connection,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("first publish");
+    .check("first publish")?;
     assert!(
-        edges(&connection)
+        edges(&connection)?
             .iter()
             .any(|edge| edge.kind == "Resolved")
     );
 
-    fs::remove_file(project.path().join("pkg/helper.py")).expect("delete target");
+    fs::remove_file(project.path().join("pkg/helper.py")).check("delete target")?;
     publish(
         &mut connection,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("second publish");
+    .check("second publish")?;
 
     assert!(
-        !edges(&connection)
+        !edges(&connection)?
             .iter()
             .any(|edge| edge.to.as_deref() == Some("pkg/helper.py")),
         "an edge pointing at a deleted file must not survive"
     );
+    Ok(())
 }
 
 /// An import whose target is discovered on disk but skipped by sampling
@@ -268,15 +272,15 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() {
 /// rather than only being classified `Resolved`; what this test pins is the
 /// verdict either way.
 #[test]
-fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "pkg/__init__.py", b"");
-    write(project.path(), "pkg/main.py", b"from .helper import f\n");
+fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "pkg/__init__.py", b"")?;
+    write(project.path(), "pkg/main.py", b"from .helper import f\n")?;
     // Larger than `max_file_bytes` below, so sampling skips it while
     // discovery still walks it.
-    write(project.path(), "pkg/helper.py", &[b'#'; 200]);
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    write(project.path(), "pkg/helper.py", &[b'#'; 200])?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let limits = ResourceLimits {
         max_file_bytes: 50,
         max_total_import_bytes: 100_000,
@@ -290,7 +294,7 @@ fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
         &crate::progress::NoopProgressSink,
         &limits,
     )
-    .expect("publish");
+    .check("publish")?;
 
     assert!(
         report
@@ -301,11 +305,11 @@ fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
         report.skipped
     );
 
-    let all = edges(&connection);
+    let all = edges(&connection)?;
     let imported = all
         .iter()
         .find(|edge| edge.from == "pkg/main.py")
-        .unwrap_or_else(|| panic!("no edge for pkg/main.py among {all:?}"));
+        .check(&format!("an edge from pkg/main.py among {all:?}"))?;
     assert_eq!(
         imported.kind, "Resolved",
         "an import of a discovered-but-skipped file must not be reported Unresolved: {all:?}"
@@ -315,4 +319,5 @@ fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() {
         Some("pkg/helper.py"),
         "the skipped file's existence row is the edge's resolved target: {all:?}"
     );
+    Ok(())
 }

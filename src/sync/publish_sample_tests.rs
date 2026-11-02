@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::sync::discovery::{DiscoveredFile, FileKind};
+use slugaudit_test_check::{Check, TestResult};
 use std::path::PathBuf;
 
 fn file(path: &str) -> DiscoveredFile {
@@ -91,11 +92,15 @@ fn sample_absent_from_pass1_is_not_a_mismatch() {
 }
 
 #[test]
-fn mismatched_sample_hash_is_changed_during_sample() {
+fn mismatched_sample_hash_is_changed_during_sample() -> TestResult {
     let samples = [sample_of("a.rs", "h1"), sample_of("b.rs", "other")];
     let identities = [identity("a.rs", "h1"), identity("b.rs", "h2")];
     match check_samples_match_pass1(&samples, &identities) {
         Err(PublishError::ChangedDuringSample { path }) => assert_eq!(path, "b.rs"),
-        other => panic!("expected ChangedDuringSample, got {other:?}"),
+        other => {
+            return Err(format!("expected ChangedDuringSample, got {other:?}"))
+                .check("unexpected outcome");
+        }
     }
+    Ok(())
 }

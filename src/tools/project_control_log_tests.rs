@@ -2,19 +2,20 @@
 //! database discard WARN names the real database path.
 
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
 /// The enable-path corrupt-database discard WARN names the real database
 /// path and the raw source error, not a redacted id.
 #[test]
-fn on_action_corrupt_database_discard_warn_logs_the_real_path() {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::write(project.path().join("lib.rs"), "pub fn a() {}\n").expect("source file");
+fn on_action_corrupt_database_discard_warn_logs_the_real_path() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::write(project.path().join("lib.rs"), "pub fn a() {}\n").check("source file")?;
     let path = project.path().to_string_lossy().to_string();
     let activation = project.path().join(".planning").join("slugaudit");
     let database = activation.join("project.db");
-    fs::create_dir_all(&activation).expect("db dir");
-    fs::write(&database, vec![0xA5_u8; 4096]).expect("write a corrupt database");
+    fs::create_dir_all(&activation).check("db dir")?;
+    fs::write(&database, vec![0xA5_u8; 4096]).check("write a corrupt database")?;
     let expected_path = database.display().to_string();
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
@@ -30,12 +31,12 @@ fn on_action_corrupt_database_discard_warn_logs_the_real_path() {
         )
     });
 
-    let response = result.expect("the corrupt database must be discarded and rebuilt");
+    let response = result.check("the corrupt database must be discarded and rebuilt")?;
     assert_eq!(response.0.status, "enabled");
     let record = logs
         .lines()
         .find(|line| line.contains("operation=\"enable_project\""))
-        .unwrap_or_else(|| panic!("the discard record must exist:\n{logs}"));
+        .check(&format!("the discard record must exist:\n{logs}"))?;
     assert!(
         record.contains(&format!(" path={expected_path} ")),
         "the discard WARN must carry the real database path:\n{logs}"
@@ -48,4 +49,5 @@ fn on_action_corrupt_database_discard_warn_logs_the_real_path() {
         !record.contains("database_id="),
         "the redacted database id is gone:\n{logs}"
     );
+    Ok(())
 }

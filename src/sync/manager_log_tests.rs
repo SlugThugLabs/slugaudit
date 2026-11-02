@@ -5,6 +5,7 @@
 
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
 /// The structured records for one sync-log operation, one per failure.
@@ -18,11 +19,11 @@ fn sync_failure_records<'a>(logs: &'a str, operation: &str) -> Vec<&'a str> {
 /// scenario). The record must carry a static kind, the real database path,
 /// and the old root as a real path.
 #[test]
-fn a_stale_project_root_discard_warn_logs_real_path() {
+fn a_stale_project_root_discard_warn_logs_real_path() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
-    let _synced = sync_project(&manager, &project);
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
+    let _synced = sync_project(&manager, &project)?;
 
     let database = project.path().join(".planning/slugaudit/project.db");
     let stale_root = format!(
@@ -30,24 +31,25 @@ fn a_stale_project_root_discard_warn_logs_real_path() {
         project
             .path()
             .canonicalize()
-            .expect("canonicalize project tempdir")
+            .check("canonicalize project tempdir")?
             .display()
     );
     {
-        let connection = crate::store::open_read_write(&database).expect("open db");
+        let connection = crate::store::open_read_write(&database).check("open db")?;
         connection
             .execute(
                 "UPDATE project SET root_path = ?1 WHERE id = 1",
                 [&stale_root],
             )
-            .expect("rewrite stored root");
+            .check("rewrite stored root")?;
     }
     let expected_path = database.display().to_string();
 
-    let (_synced, logs) = crate::store::test_capture::capture_warns(|| {
+    let (synced, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("capture liveness control for verify_project_database");
         sync_project(&manager, &project)
     });
+    synced?;
 
     assert!(
         logs.contains("capture liveness control for verify_project_database"),
@@ -67,19 +69,20 @@ fn a_stale_project_root_discard_warn_logs_real_path() {
         records[0].contains(&format!("stored_root={stale_root}")),
         "the old root must be logged as a real path:\n{logs}"
     );
+    Ok(())
 }
 
 /// R12: the open-failure warning must not format `StoreError`, whose
 /// dependency errors can embed the database path. The record must carry a
 /// static kind and the real database path.
 #[test]
-fn a_database_open_failure_warn_logs_real_path() {
+fn a_database_open_failure_warn_logs_real_path() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
+    let project = create_project()?;
     let database = project.path().join(".planning/slugaudit/project.db");
     // A regular file keeps the project active; a directory at the `-wal`
     // sidecar path is what makes the SQLite connection setup fail.
-    fs::create_dir_all(database.with_extension("db-wal")).expect("make the wal path a directory");
+    fs::create_dir_all(database.with_extension("db-wal")).check("make the wal path a directory")?;
     // The failure is the SQLite connection setup (`StoreError::Configure`).
     let expected_path = database.display().to_string();
 
@@ -106,6 +109,7 @@ fn a_database_open_failure_warn_logs_real_path() {
         records[0].contains(&format!("path={expected_path}")),
         "the WARN must carry the real database path:\n{logs}"
     );
+    Ok(())
 }
 
 /// An `OpenCorrupt` recovery record: the real database path and the source
@@ -192,10 +196,10 @@ fn an_open_failed_recovery_warn_logs_the_source_error() {
 /// A database with no revision row makes `revision_after_sync` WARN with the
 /// real database path (and return the internal error).
 #[test]
-fn a_missing_revision_warn_logs_the_real_database_path() {
-    let directory = tempfile::tempdir().expect("db dir");
+fn a_missing_revision_warn_logs_the_real_database_path() -> TestResult {
+    let directory = tempfile::tempdir().check("db dir")?;
     let database = directory.path().join("project.db");
-    let connection = crate::store::open_read_write(&database).expect("open db");
+    let connection = crate::store::open_read_write(&database).check("open db")?;
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
         crate::sync::manager_meta::revision_after_sync(&connection, &database)
@@ -208,4 +212,5 @@ fn a_missing_revision_warn_logs_the_real_database_path() {
             && !logs.contains("database_id="),
         "the WARN must carry the real database path:\n{logs}"
     );
+    Ok(())
 }

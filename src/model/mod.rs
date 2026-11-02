@@ -21,5 +21,5 @@ pub use parser::{
 };
 pub use profile::{AuditProfile, limits_for_profile};
 pub use source::SourceIdentity;
-pub use span::{LineIndex, Position, Span, SpanError, saturating_u32};
+pub use span::{LineIndex, Position, PositionOverflow, Span, SpanError, position_u32};
 pub use system_ram::{MemoryDetectError, SystemMemoryInfo, detect_system_memory};

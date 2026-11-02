@@ -51,7 +51,11 @@ pub(super) fn resolve(
             None,
         ));
     }
-    let wanted = requested.unwrap_or(limits.default_page_bytes);
+    // The default page size is resolved once here, at the request boundary.
+    let wanted = match requested {
+        Some(bytes) => bytes,
+        None => limits.default_page_bytes,
+    };
     let ceiling = limits.max_query_response_bytes;
     Ok(PageSize {
         bytes: wanted.min(ceiling),
@@ -62,71 +66,78 @@ pub(super) fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     #[test]
-    fn an_omitted_page_size_resolves_to_the_default() {
+    fn an_omitted_page_size_resolves_to_the_default() -> TestResult {
         let limits = ResourceLimits::default();
 
-        let size = resolve(None, &limits).expect("default resolves");
+        let size = resolve(None, &limits).check("default resolves")?;
 
         assert_eq!(size.bytes, limits.default_page_bytes);
         assert!(!size.at_ceiling);
         assert_eq!(size.byte_cut(), PageLimit::PageBytes);
+        Ok(())
     }
 
     #[test]
-    fn a_page_size_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() {
+    fn a_page_size_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() -> TestResult {
         let limits = ResourceLimits {
             max_query_response_bytes: 1_000,
             ..ResourceLimits::default()
         };
 
-        let size = resolve(Some(5_000), &limits).expect("clamps");
+        let size = resolve(Some(5_000), &limits).check("clamps")?;
 
         assert_eq!((size.bytes, size.byte_cut()), (1_000, PageLimit::Ceiling));
+        Ok(())
     }
 
     #[test]
-    fn a_configured_default_above_the_ceiling_is_clamped_and_reported() {
+    fn a_configured_default_above_the_ceiling_is_clamped_and_reported() -> TestResult {
         let limits = ResourceLimits {
             max_query_response_bytes: 100,
             default_page_bytes: 400,
             ..ResourceLimits::default()
         };
 
-        let size = resolve(None, &limits).expect("clamps");
+        let size = resolve(None, &limits).check("clamps")?;
 
         assert_eq!((size.bytes, size.byte_cut()), (100, PageLimit::Ceiling));
+        Ok(())
     }
 
     #[test]
-    fn a_page_size_exactly_at_the_ceiling_reports_the_ceiling_when_it_cuts() {
+    fn a_page_size_exactly_at_the_ceiling_reports_the_ceiling_when_it_cuts() -> TestResult {
         let limits = ResourceLimits {
             max_query_response_bytes: 1_000,
             ..ResourceLimits::default()
         };
 
-        let size = resolve(Some(1_000), &limits).expect("resolves");
+        let size = resolve(Some(1_000), &limits).check("resolves")?;
 
         assert_eq!((size.bytes, size.byte_cut()), (1_000, PageLimit::Ceiling));
+        Ok(())
     }
 
     #[test]
-    fn a_page_size_below_the_ceiling_reports_page_bytes_when_it_cuts() {
+    fn a_page_size_below_the_ceiling_reports_page_bytes_when_it_cuts() -> TestResult {
         let limits = ResourceLimits {
             max_query_response_bytes: 1_000,
             ..ResourceLimits::default()
         };
 
-        let size = resolve(Some(999), &limits).expect("resolves");
+        let size = resolve(Some(999), &limits).check("resolves")?;
 
         assert_eq!((size.bytes, size.byte_cut()), (999, PageLimit::PageBytes));
+        Ok(())
     }
 
     #[test]
-    fn a_zero_page_size_is_refused_not_substituted() {
-        let error = resolve(Some(0), &ResourceLimits::default()).expect_err("zero is invalid");
+    fn a_zero_page_size_is_refused_not_substituted() -> TestResult {
+        let error = resolve(Some(0), &ResourceLimits::default()).check_err("zero is invalid")?;
 
         assert!(error.message.contains("page_bytes"), "{}", error.message);
+        Ok(())
     }
 }

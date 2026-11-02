@@ -213,6 +213,10 @@ pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, 
     use crate::project::ProjectLimitsError;
     crate::project::effective_limits(root).map_err(|error| match error {
         ProjectLimitsError::Env(error) => crate::sync::map_process_limits_error(&error),
+        ProjectLimitsError::Lock(error) => {
+            tracing::error!(%error, "limits could not be derived");
+            error.into()
+        }
         error => {
             tracing::error!(%error, "limits could not be derived");
             ErrorData::invalid_params(
@@ -226,13 +230,14 @@ pub(super) fn limits_for_root(root: &std::path::Path) -> Result<ResourceLimits, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     #[test]
-    fn resolve_limits_rejects_a_path_with_no_active_project() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn resolve_limits_rejects_a_path_with_no_active_project() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
 
-        let error = resolve_limits(directory.path().to_str().expect("utf-8 path"))
-            .expect_err("a path with no project root must fail, not fall back");
+        let error = resolve_limits(directory.path().to_str().check("utf-8 path")?)
+            .check_err("a path with no project root must fail, not fall back")?;
 
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         let code = error
@@ -241,42 +246,45 @@ mod tests {
             .and_then(|data| data.get("code"))
             .and_then(|code| code.as_str());
         assert_eq!(code, Some("project_not_enabled"));
+        Ok(())
     }
 
     #[test]
-    fn resolve_limits_returns_limits_for_an_active_project() {
-        let project = test_support::activated_project("a.rs", b"fn a() {}");
+    fn resolve_limits_returns_limits_for_an_active_project() -> TestResult {
+        let project = test_support::activated_project("a.rs", b"fn a() {}")?;
 
-        let limits = resolve_limits(project.path().to_str().expect("utf-8 path"))
-            .expect("an active project resolves");
+        let limits = resolve_limits(project.path().to_str().check("utf-8 path")?)
+            .check("an active project resolves")?;
 
         assert!(limits.max_file_bytes > 0);
+        Ok(())
     }
 
     #[test]
-    fn fail_closed_a_malformed_global_config_fails_the_call_naming_the_file() {
-        let project = test_support::activated_project("a.rs", b"fn a() {}");
-        let home = tempfile::tempdir().expect("temp home");
+    fn fail_closed_a_malformed_global_config_fails_the_call_naming_the_file() -> TestResult {
+        let project = test_support::activated_project("a.rs", b"fn a() {}")?;
+        let home = tempfile::tempdir().check("temp home")?;
         let config = home.path().join("config.json");
-        std::fs::write(&config, "{ not json").expect("write config");
+        std::fs::write(&config, "{ not json").check("write config")?;
         crate::project::set_global_config_path_for_test(Some(config.clone()));
 
-        let error = resolve_limits(project.path().to_str().expect("utf-8 path"))
-            .expect_err("a malformed config must fail the call, not fall back to defaults");
+        let error = resolve_limits(project.path().to_str().check("utf-8 path")?)
+            .check_err("a malformed config must fail the call, not fall back to defaults")?;
 
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
-            error.message.contains(config.to_str().expect("utf-8 path")),
+            error.message.contains(config.to_str().check("utf-8 path")?),
             "{}",
             error.message
         );
+        Ok(())
     }
 
     /// Runs the shared fragment — the literal SQL text, not a Rust copy of
     /// it — against one path with the real SQLite engine both surfaces use,
     /// binding the path as a parameter.
-    fn credential_path_predicate_matches(path: &str) -> bool {
-        let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+    fn credential_path_predicate_matches(path: &str) -> TestResult<bool> {
+        let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
         let matched: i64 = connection
             .query_row(
                 &format!(
@@ -285,24 +293,25 @@ mod tests {
                 rusqlite::params![path],
                 |row| row.get(0),
             )
-            .expect("evaluate credential predicate");
-        matched != 0
+            .check("evaluate credential predicate")?;
+        Ok(matched != 0)
     }
 
     /// Asserts each `(path, expected)` verdict through the real SQLite engine,
     /// so the test cannot pass while `report` and `leads` behave differently.
-    fn assert_predicate_cases(cases: &[(&str, bool)]) {
+    fn assert_predicate_cases(cases: &[(&str, bool)]) -> TestResult {
         for &(path, expected) in cases {
             assert_eq!(
-                credential_path_predicate_matches(path),
+                credential_path_predicate_matches(path)?,
                 expected,
                 "predicate verdict for {path}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn credential_path_predicate_matches_credential_shaped_paths() {
+    fn credential_path_predicate_matches_credential_shaped_paths() -> TestResult {
         assert_predicate_cases(&[
             // The baseline rules.
             (".env", true),
@@ -331,11 +340,12 @@ mod tests {
             ("service-account.json", true),
             ("keys/service-account.json", true),
             ("service-account-prod.json", true),
-        ]);
+        ])?;
+        Ok(())
     }
 
     #[test]
-    fn credential_path_predicate_matches_ssh_private_keys() {
+    fn credential_path_predicate_matches_ssh_private_keys() -> TestResult {
         assert_predicate_cases(&[
             // Root-level SSH keys match as well as nested ones.
             ("id_rsa", true),
@@ -346,11 +356,12 @@ mod tests {
             ("home/.ssh/id_ecdsa", true),
             ("backup/id_rsa_bak", true),
             ("ID_RSA", true),
-        ]);
+        ])?;
+        Ok(())
     }
 
     #[test]
-    fn credential_path_predicate_rejects_public_keys_and_lookalikes() {
+    fn credential_path_predicate_rejects_public_keys_and_lookalikes() -> TestResult {
         assert_predicate_cases(&[
             // A public key is not a secret.
             ("id_rsa.pub", false),
@@ -374,7 +385,8 @@ mod tests {
             // Public SSH material.
             ("authorized_keys", false),
             ("known_hosts", false),
-        ]);
+        ])?;
+        Ok(())
     }
 
     // `ToolCounters` is deliberately not tested here. Its three counters are

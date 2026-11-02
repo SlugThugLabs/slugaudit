@@ -4,17 +4,18 @@
 use super::*;
 use crate::error_codes::ErrorCode;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 
-fn project_with(files: &[(&str, &[u8])]) -> tempfile::TempDir {
-    let project = tempfile::tempdir().expect("project dir");
+fn project_with(files: &[(&str, &[u8])]) -> TestResult<tempfile::TempDir> {
+    let project = tempfile::tempdir().check("project dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
-        .expect("activate project");
-    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"));
+        .check("activate project")?;
+    crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     for (relative, content) in files {
-        fs::write(project.path().join(relative), content).expect("write fixture file");
+        fs::write(project.path().join(relative), content).check("write fixture file")?;
     }
-    project
+    Ok(project)
 }
 
 fn ask_language(
@@ -36,15 +37,15 @@ fn ask_language(
 }
 
 #[test]
-fn a_language_the_pack_does_not_know_is_unknown_language_naming_the_indexed_ones() {
+fn a_language_the_pack_does_not_know_is_unknown_language_naming_the_indexed_ones() -> TestResult {
     let project = project_with(&[
         ("lib.rs", b"pub fn a() {}\n"),
         ("tool.py", b"def b():\n    return 1\n"),
         ("NOTES.md", b"# notes\n"),
-    ]);
+    ])?;
 
     let error = ask_language(&project, "klingon", "(identifier) @name")
-        .expect_err("an unknown language is refused");
+        .check_err("an unknown language is refused")?;
 
     assert_eq!(
         error.code,
@@ -63,17 +64,18 @@ fn a_language_the_pack_does_not_know_is_unknown_language_naming_the_indexed_ones
         "the requested name is not echoed: {}",
         error.message
     );
-    let data = error.data.expect("the refusal carries data");
+    let data = error.data.check("the refusal carries data")?;
     assert_eq!(data["code"], "unknown_language");
     assert_eq!(data["remedy"], ErrorCode::UnknownLanguage.remedy());
+    Ok(())
 }
 
 #[test]
-fn a_real_grammar_absent_from_the_project_is_unknown_language_not_a_query_error() {
-    let project = project_with(&[("lib.rs", b"pub fn a() {}\n")]);
+fn a_real_grammar_absent_from_the_project_is_unknown_language_not_a_query_error() -> TestResult {
+    let project = project_with(&[("lib.rs", b"pub fn a() {}\n")])?;
 
     let error = ask_language(&project, "python", "(function_item) @f")
-        .expect_err("a language with no indexed file is refused");
+        .check_err("a language with no indexed file is refused")?;
 
     assert!(
         !error.message.contains("Invalid node type"),
@@ -86,35 +88,37 @@ fn a_real_grammar_absent_from_the_project_is_unknown_language_not_a_query_error(
         error.message
     );
     assert_eq!(
-        error.data.expect("the refusal carries data")["code"],
+        error.data.check("the refusal carries data")?["code"],
         "unknown_language"
     );
+    Ok(())
 }
 
 #[test]
-fn an_indexed_language_still_runs_its_project_wide_query() {
-    let project = project_with(&[("lib.rs", b"pub fn a() {}\n")]);
+fn an_indexed_language_still_runs_its_project_wide_query() -> TestResult {
+    let project = project_with(&[("lib.rs", b"pub fn a() {}\n")])?;
 
     let response = ask_language(&project, "rust", "(function_item name: (identifier) @name)")
-        .expect("an indexed language runs");
+        .check("an indexed language runs")?;
 
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
     assert_eq!(names, ["a"]);
+    Ok(())
 }
 
 #[test]
-fn an_untested_language_query_carries_one_notice() {
+fn an_untested_language_query_carries_one_notice() -> TestResult {
     let project = project_with(&[
         ("lib.rs", b"pub fn a() {}\n"),
         ("tool.py", b"def b():\n    return 1\n"),
-    ]);
+    ])?;
 
     let response = ask_language(
         &project,
         "python",
         "(function_definition name: (identifier) @name)",
     )
-    .expect("an indexed language runs");
+    .check("an indexed language runs")?;
 
     assert_eq!(
         response.notices,
@@ -123,17 +127,19 @@ fn an_untested_language_query_carries_one_notice() {
              Only Rust is tested; treat python results as best-effort."
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn a_rust_query_carries_no_notice() {
+fn a_rust_query_carries_no_notice() -> TestResult {
     let project = project_with(&[
         ("lib.rs", b"pub fn a() {}\n"),
         ("tool.py", b"def b():\n    return 1\n"),
-    ]);
+    ])?;
 
     let response = ask_language(&project, "rust", "(function_item name: (identifier) @name)")
-        .expect("an indexed language runs");
+        .check("an indexed language runs")?;
 
     assert!(response.notices.is_empty(), "{:?}", response.notices);
+    Ok(())
 }

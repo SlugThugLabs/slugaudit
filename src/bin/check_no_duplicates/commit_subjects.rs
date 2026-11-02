@@ -102,6 +102,7 @@ fn commit_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
     use std::ffi::OsString;
 
     #[test]
@@ -132,18 +133,19 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_git_log_reports_its_stderr() {
-        let dir = tempfile::tempdir().expect("tempdir");
+    fn a_failing_git_log_reports_its_stderr() -> TestResult {
+        let dir = tempfile::tempdir().check("tempdir")?;
         let mut failures = Vec::new();
 
         let subjects = duplicate_commit_subjects(dir.path(), &mut failures);
 
         assert!(subjects.is_empty());
-        let message = failures.first().expect("git log outside a repo must fail");
+        let message = failures.first().check("git log outside a repo must fail")?;
         assert!(message.contains("stderr: "), "{message}");
         assert!(
             !message.ends_with("stderr: )"),
             "stderr was dropped: {message}"
         );
+        Ok(())
     }
 }

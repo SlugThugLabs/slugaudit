@@ -7,6 +7,7 @@ use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
 use crate::tools::context::with_verified_read;
 use rmcp::ErrorData;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
 fn db_error(error: &rusqlite::Error) -> ErrorData {
@@ -14,12 +15,12 @@ fn db_error(error: &rusqlite::Error) -> ErrorData {
 }
 
 #[test]
-fn edit_file_between_calls_returns_fresh_evidence() {
+fn edit_file_between_calls_returns_fresh_evidence() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn value() -> i32 { 42 }\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn value() -> i32 { 42 }\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     let value_a_revision = synced.revision_id.clone();
 
     let content_a: Option<String> = with_verified_read(&synced, |tx| {
@@ -30,12 +31,12 @@ fn edit_file_between_calls_returns_fresh_evidence() {
         )
         .map_err(|error| db_error(&error))
     })
-    .expect("read content");
-    assert!(content_a.expect("read file back").contains("42"));
+    .check("read content")?;
+    assert!(content_a.check("read file back")?.contains("42"));
 
-    write_file(&project, "lib.rs", b"pub fn value() -> i32 { 99 }\n");
+    write_file(&project, "lib.rs", b"pub fn value() -> i32 { 99 }\n")?;
 
-    let synced_b = sync_project(&manager, &project);
+    let synced_b = sync_project(&manager, &project)?;
     assert_ne!(value_a_revision, synced_b.revision_id);
 
     let content_b: Option<String> = with_verified_read(&synced_b, |tx| {
@@ -46,36 +47,38 @@ fn edit_file_between_calls_returns_fresh_evidence() {
         )
         .map_err(|error| db_error(&error))
     })
-    .expect("read content");
-    assert!(content_b.expect("read file back").contains("99"));
+    .check("read content")?;
+    assert!(content_b.check("read file back")?.contains("99"));
+    Ok(())
 }
 
 #[test]
-fn edit_file_immediately_returns_fresh_evidence() {
+fn edit_file_immediately_returns_fresh_evidence() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     let old_revision = synced.revision_id;
 
-    write_file(&project, "lib.rs", b"pub fn a() { changed() }\n");
+    write_file(&project, "lib.rs", b"pub fn a() { changed() }\n")?;
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
 
     assert_ne!(old_revision, synced2.revision_id);
+    Ok(())
 }
 
 #[test]
-fn global_file_size_limit_governs_the_scan() {
+fn global_file_size_limit_governs_the_scan() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
+    let project = create_project()?;
     let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes":50}"#);
-    write_file(&project, "lib.rs", b"pub fn initially_small() {}\n");
-    let first = sync_project(&manager, &project);
+    write_file(&project, "lib.rs", b"pub fn initially_small() {}\n")?;
+    let first = sync_project(&manager, &project)?;
 
-    write_file(&project, "lib.rs", &[b'x'; 200]);
-    let second = sync_project(&manager, &project);
+    write_file(&project, "lib.rs", &[b'x'; 200])?;
+    let second = sync_project(&manager, &project)?;
 
     assert_ne!(first.revision_id, second.revision_id);
     let (kind, content): (String, Option<String>) = with_verified_read(&second, |tx| {
@@ -86,85 +89,89 @@ fn global_file_size_limit_governs_the_scan() {
         )
         .map_err(|error| db_error(&error))
     })
-    .expect("read scanned file state");
+    .check("read scanned file state")?;
     assert_eq!(kind, "skipped", "the project limit must govern the scan");
     assert_eq!(content, None, "an oversized file must retain no content");
+    Ok(())
 }
 
 #[test]
-fn create_new_file_gets_indexed() {
+fn create_new_file_gets_indexed() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     let file_count: i64 = with_verified_read(&synced, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(file_count, 1);
 
-    write_file(&project, "new.rs", b"pub fn b() {}\n");
+    write_file(&project, "new.rs", b"pub fn b() {}\n")?;
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
     let file_count2: i64 = with_verified_read(&synced2, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(file_count2, 2);
+    Ok(())
 }
 
 #[test]
-fn delete_file_gets_removed_from_index() {
+fn delete_file_gets_removed_from_index() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
-    write_file(&project, "to_delete.rs", b"pub fn b() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
+    write_file(&project, "to_delete.rs", b"pub fn b() {}\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     let file_count: i64 = with_verified_read(&synced, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(file_count, 2);
 
-    fs::remove_file(project.path().join("to_delete.rs")).expect("delete file");
+    fs::remove_file(project.path().join("to_delete.rs")).check("delete file")?;
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
     let file_count2: i64 = with_verified_read(&synced2, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(file_count2, 1);
+    Ok(())
 }
 
 #[test]
-fn write_same_contents_does_not_create_new_revision() {
+fn write_same_contents_does_not_create_new_revision() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
+    let project = create_project()?;
     let content = b"pub fn a() {}\n";
-    write_file(&project, "lib.rs", content);
+    write_file(&project, "lib.rs", content)?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     let revision = synced.revision_id;
 
-    write_file(&project, "lib.rs", content);
+    write_file(&project, "lib.rs", content)?;
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
     assert_eq!(revision, synced2.revision_id);
+    Ok(())
 }
 
 #[test]
-fn multiple_rapid_edits_collapse_to_one_revision() {
+fn multiple_rapid_edits_collapse_to_one_revision() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     let old_revision = synced.revision_id;
 
     for i in 0..5 {
@@ -172,45 +179,47 @@ fn multiple_rapid_edits_collapse_to_one_revision() {
             &project,
             "lib.rs",
             format!("pub fn a{i}() {{}}\n").as_bytes(),
-        );
+        )?;
     }
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
     assert_ne!(old_revision, synced2.revision_id);
+    Ok(())
 }
 
 #[test]
-fn restart_after_offline_changes_detects_changes() {
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn original() {}\n");
+fn restart_after_offline_changes_detects_changes() -> TestResult {
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn original() {}\n")?;
 
     let manager1 = SourceSyncManager::new();
-    let synced1 = sync_project(&manager1, &project);
+    let synced1 = sync_project(&manager1, &project)?;
     let revision1 = synced1.revision_id;
     drop(manager1);
 
-    write_file(&project, "lib.rs", b"pub fn changed() {}\n");
+    write_file(&project, "lib.rs", b"pub fn changed() {}\n")?;
 
     let manager2 = SourceSyncManager::new();
-    let synced2 = sync_project(&manager2, &project);
+    let synced2 = sync_project(&manager2, &project)?;
     assert_ne!(revision1, synced2.revision_id);
+    Ok(())
 }
 
 /// Proves delete-then-recreate is handled correctly: the file should be
 /// re-indexed with its new content, not left as a deletion.
 #[test]
-fn delete_then_recreate_gets_reindexed() {
+fn delete_then_recreate_gets_reindexed() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn original() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn original() {}\n")?;
 
-    let _synced = sync_project(&manager, &project);
+    let _synced = sync_project(&manager, &project)?;
 
     // Delete and recreate the file with different content.
-    fs::remove_file(project.path().join("lib.rs")).expect("delete file");
-    write_file(&project, "lib.rs", b"pub fn recreated() {}\n");
+    fs::remove_file(project.path().join("lib.rs")).check("delete file")?;
+    write_file(&project, "lib.rs", b"pub fn recreated() {}\n")?;
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
 
     let content: Option<String> = with_verified_read(&synced2, |tx| {
         tx.query_row(
@@ -220,35 +229,36 @@ fn delete_then_recreate_gets_reindexed() {
         )
         .map_err(|error| db_error(&error))
     })
-    .expect("read content");
+    .check("read content")?;
     assert!(
         content
-            .expect("read file back")
+            .check("read file back")?
             .contains("pub fn recreated()")
     );
+    Ok(())
 }
 
 /// The database-side proof: content edited directly in the database, with
 /// the hash column left alone, is repaired from the file on the next call.
 #[test]
-fn a_content_edit_in_the_database_is_repaired_on_the_next_call() {
+fn a_content_edit_in_the_database_is_repaired_on_the_next_call() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn a() {}\n");
-    let synced = sync_project(&manager, &project);
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
+    let synced = sync_project(&manager, &project)?;
     let revision_before = synced.revision_id.clone();
 
     {
-        let connection = rusqlite::Connection::open(&synced.database_path).expect("raw open");
+        let connection = rusqlite::Connection::open(&synced.database_path).check("raw open")?;
         connection
             .execute(
                 "UPDATE files SET content = 'fn tampered() {}\n' WHERE path = 'lib.rs'",
                 [],
             )
-            .expect("tamper with the stored content");
+            .check("tamper with the stored content")?;
     }
 
-    let synced2 = sync_project(&manager, &project);
+    let synced2 = sync_project(&manager, &project)?;
 
     assert_ne!(
         revision_before, synced2.revision_id,
@@ -262,42 +272,43 @@ fn a_content_edit_in_the_database_is_repaired_on_the_next_call() {
         )
         .map_err(|error| db_error(&error))
     })
-    .expect("read content");
+    .check("read content")?;
     assert_eq!(
         content.as_deref(),
         Some("pub fn a() {}\n"),
         "the source wins over the database"
     );
+    Ok(())
 }
 
 #[test]
-fn outdated_database_is_automatically_deleted_and_recreated() {
+fn outdated_database_is_automatically_deleted_and_recreated() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn first() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn first() {}\n")?;
 
     // First sync to establish the initial database.
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     assert!(!synced.revision_id.is_empty());
 
     // Artificially stamp an outdated schema version into user_version (simulating an older version).
     {
-        let connection = rusqlite::Connection::open(&synced.database_path).expect("raw open");
+        let connection = rusqlite::Connection::open(&synced.database_path).check("raw open")?;
         connection
             .pragma_update(None, "user_version", 1_i64)
-            .expect("rewind user_version to 1");
+            .check("rewind user_version to 1")?;
     }
 
     // Next sync must detect the outdated version, discard the old DB, and create a fresh new one.
-    let synced_after = sync_project(&manager, &project);
+    let synced_after = sync_project(&manager, &project)?;
     assert!(!synced_after.revision_id.is_empty());
 
     // Read the version through a raw connection, the same way it was stamped
     // above, so the check does not depend on the store's connection contract.
     let version: i64 = rusqlite::Connection::open(&synced_after.database_path)
-        .expect("raw open")
+        .check("raw open")?
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read version");
+        .check("read version")?;
     assert_eq!(
         version, CURRENT_SCHEMA_VERSION,
         "recreated database must be at current schema version"
@@ -307,20 +318,21 @@ fn outdated_database_is_automatically_deleted_and_recreated() {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(
         file_count, 1,
         "source files must be republished from scratch"
     );
+    Ok(())
 }
 
 #[test]
-fn database_corrupted_during_sync_is_automatically_rebuilt() {
+fn database_corrupted_during_sync_is_automatically_rebuilt() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn first() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn first() {}\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     assert!(!synced.revision_id.is_empty());
 
     // Corrupt the database file content by overwriting SQLite header with garbage.
@@ -330,14 +342,14 @@ fn database_corrupted_during_sync_is_automatically_rebuilt() {
             .read(true)
             .write(true)
             .open(&synced.database_path)
-            .expect("open db file");
-        file.seek(SeekFrom::Start(0)).expect("seek");
+            .check("open db file")?;
+        file.seek(SeekFrom::Start(0)).check("seek")?;
         file.write_all(b"not a valid sqlite database header at all!")
-            .expect("corrupt header");
+            .check("corrupt header")?;
     }
 
     // Next sync must detect the corrupt DB, discard it, and rebuild from scratch.
-    let synced_after = sync_project(&manager, &project);
+    let synced_after = sync_project(&manager, &project)?;
     assert!(!synced_after.revision_id.is_empty());
     assert!(synced_after.discard.is_some());
 
@@ -345,23 +357,24 @@ fn database_corrupted_during_sync_is_automatically_rebuilt() {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(
         file_count, 1,
         "source files must be republished from scratch after corruption"
     );
+    Ok(())
 }
 
 #[test]
-fn database_corrupted_during_publish_is_automatically_rebuilt() {
+fn database_corrupted_during_publish_is_automatically_rebuilt() -> TestResult {
     let manager = SourceSyncManager::new();
-    let project = create_project();
-    write_file(&project, "lib.rs", b"pub fn first() {}\n");
+    let project = create_project()?;
+    write_file(&project, "lib.rs", b"pub fn first() {}\n")?;
 
-    let synced = sync_project(&manager, &project);
+    let synced = sync_project(&manager, &project)?;
     assert!(!synced.revision_id.is_empty());
 
-    write_file(&project, "second.rs", b"pub fn second() {}\n");
+    write_file(&project, "second.rs", b"pub fn second() {}\n")?;
 
     let db_path = synced.database_path.clone();
     super::super::race_hook::set(project.path(), move || {
@@ -369,18 +382,18 @@ fn database_corrupted_during_publish_is_automatically_rebuilt() {
             .read(true)
             .write(true)
             .open(&db_path)
-            .expect("open db file");
-        file.set_len(512).expect("truncate db");
-        file.sync_all().expect("sync");
-    });
+            .check("open db file")?;
+        file.set_len(512).check("truncate db")?;
+        file.sync_all().check("sync")
+    })?;
 
-    let synced_after = sync_project(&manager, &project);
+    let synced_after = sync_project(&manager, &project)?;
     assert!(!synced_after.revision_id.is_empty());
     assert!(synced_after.discard.is_some());
     let discard = synced_after
         .discard
         .as_ref()
-        .expect("discard notice expected");
+        .check("discard notice expected")?;
     assert!(
         discard.cause.contains("corrupt"),
         "discard notice should mention corruption: {}",
@@ -391,9 +404,10 @@ fn database_corrupted_during_publish_is_automatically_rebuilt() {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
             .map_err(|error| db_error(&error))
     })
-    .expect("read count");
+    .check("read count")?;
     assert_eq!(
         file_count, 2,
         "both files must be published after rebuilding from corruption"
     );
+    Ok(())
 }

@@ -10,8 +10,8 @@
 
 use super::call_queries::{CALL_QUERIES, CallQuery, MAX_CALLEE_DEPTH};
 use super::site::{CallSite, call_item};
-use crate::evidence::{Extraction, NoTree, TextRangeError, node_text};
-use crate::model::{EvidenceOrigin, LineIndex};
+use crate::evidence::{Extraction, NoTree, NodeError, TextRangeError, node_text};
+use crate::model::{EvidenceOrigin, LineIndex, PositionOverflow};
 use crate::parse::budget::{Parsed, parse_within};
 use crate::util::Deadline;
 use std::ops::ControlFlow;
@@ -22,32 +22,33 @@ use tree_sitter::{
 
 /// Extracts call evidence for `language` when it has an embedded call query
 /// (an empty, complete extraction otherwise). The parse and the query cursor
-/// both run within what is left of `deadline`.
+/// both run within what is left of `deadline`. A position past `u32::MAX` is
+/// an error that fails the file's extraction.
 pub(super) fn extract(
     language: &str,
     source: &str,
     lines: &LineIndex<'_>,
     deadline: Option<&Deadline>,
-) -> Extraction {
+) -> Result<Extraction, PositionOverflow> {
     let Some(entry) = CALL_QUERIES.iter().find(|entry| entry.language == language) else {
-        return Extraction::default();
+        return Ok(Extraction::default());
     };
     let grammar = match tree_sitter_language_pack::get_language(entry.language) {
         Ok(grammar) => grammar,
         Err(error) => {
             tracing::warn!(language = entry.language, %error, "call query has no grammar; extraction is partial");
-            return Extraction::without_tree(NoTree::Failed);
+            return Ok(Extraction::without_tree(NoTree::Failed));
         }
     };
     let query = match entry.compiled(&grammar) {
         Ok(query) => query,
         // Logged once, when the query failed to compile; the file's call
         // evidence is reported partial.
-        Err(_logged_at_compile) => return Extraction::without_tree(NoTree::Failed),
+        Err(_logged_at_compile) => return Ok(Extraction::without_tree(NoTree::Failed)),
     };
     let tree = match parse_call_tree(&grammar, source, deadline) {
         Ok(tree) => tree,
-        Err(why) => return Extraction::without_tree(why),
+        Err(why) => return Ok(Extraction::without_tree(why)),
     };
     run(entry, query, &tree, source, lines, deadline)
 }
@@ -90,7 +91,8 @@ fn parse_call_tree(
 /// deadline (the rows so far are kept and the extraction is timed out), and
 /// starts no match deeper than [`crate::evidence::MAX_WALK_DEPTH`] — the bound
 /// every walker shares; the bindings walker reads the same tree and reports
-/// such a file partial.
+/// such a file partial. A position past `u32::MAX` is an error that fails the
+/// file's extraction.
 fn run(
     entry: &CallQuery,
     query: &Query,
@@ -98,7 +100,7 @@ fn run(
     source: &str,
     lines: &LineIndex<'_>,
     deadline: Option<&Deadline>,
-) -> Extraction {
+) -> Result<Extraction, PositionOverflow> {
     let mut out = Extraction::default();
     let mut cut = false;
     let mut progress = |_state: &QueryCursorState| -> ControlFlow<()> {
@@ -133,16 +135,17 @@ fn run(
                     );
                     out.truncated = true;
                 }
-                Err(error) => {
+                Err(NodeError::Text(error)) => {
                     tracing::warn!(%error, "call capture skipped; extraction is partial");
                     out.truncated = true;
                 }
+                Err(NodeError::Position(error)) => return Err(error),
             }
         }
     }
     drop(matches);
     out.timed_out |= cut;
-    out
+    Ok(out)
 }
 
 /// The call site of one `@callee` capture, or `None` when no call node of
@@ -153,7 +156,7 @@ fn call_site(
     callee: Node<'_>,
     source: &str,
     lines: &LineIndex<'_>,
-) -> Result<Option<CallSite>, TextRangeError> {
+) -> Result<Option<CallSite>, NodeError> {
     let mut above = callee.parent();
     let mut call = None;
     for _ in 0..MAX_CALLEE_DEPTH {
@@ -184,7 +187,7 @@ fn call_site(
             (call.start_position().row, call.end_position().row),
             lines,
             "call query",
-        ),
+        )?,
     }))
 }
 

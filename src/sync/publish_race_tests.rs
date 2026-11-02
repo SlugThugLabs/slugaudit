@@ -5,57 +5,60 @@
 use super::*;
 use crate::store::open_read_write;
 use crate::store::test_capture::capture_at_level;
+use crate::store::test_join::join_checked;
 use crate::sync::test_support::{stored_paths, write};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 // --- File-changed-during-sample (TOCTOU) coverage ---
 
 #[test]
-fn a_file_changed_after_sampling_is_detected_and_rejected() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"original\n");
-    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+fn a_file_changed_after_sampling_is_detected_and_rejected() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"original\n")?;
+    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     // A far-future deadline so these tests exercise the race logic, not the
     // wall-clock budget.
     let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
-        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).check("sample")?;
     // `parser_version_changed: true` forces every sampled file into
     // `upserts` regardless of the (deliberately empty) diff — otherwise an
     // empty `changes` list would make `upserts` empty too, and revalidation
     // over zero files would trivially pass no matter what this test does.
-    let (upserts, _deletions) =
-        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
+    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits, &deadline)
+        .check("build upserts")?;
 
     // Simulate an editor saving a new version in the gap between sampling
     // and the write that would have published the old sample as current.
-    write(project.path(), "lib.rs", b"changed after sampling\n");
+    write(project.path(), "lib.rs", b"changed after sampling\n")?;
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
     assert!(
         matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
         "expected ChangedDuringSample, got {result:?}"
     );
+    Ok(())
 }
 
 #[test]
 fn a_file_that_became_unreadable_after_sampling_fails_with_its_real_cause_not_as_a_concurrent_edit()
-{
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"original\n");
-    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+-> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"original\n")?;
+    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
-        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
-    let (upserts, _deletions) =
-        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).check("sample")?;
+    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits, &deadline)
+        .check("build upserts")?;
     // The path becomes a directory: stat succeeds but the read fails with
     // something other than NotFound, which retrying cannot fix.
-    std::fs::remove_file(project.path().join("lib.rs")).expect("remove the file");
-    std::fs::create_dir(project.path().join("lib.rs")).expect("replace it with a directory");
+    std::fs::remove_file(project.path().join("lib.rs")).check("remove the file")?;
+    std::fs::create_dir(project.path().join("lib.rs")).check("replace it with a directory")?;
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
 
@@ -66,22 +69,23 @@ fn a_file_that_became_unreadable_after_sampling_fails_with_its_real_cause_not_as
         ),
         "expected the read error, got {result:?}"
     );
-    assert!(!is_retryable(&result.expect_err("revalidation fails")));
+    assert!(!is_retryable(&result.check_err("revalidation fails")?));
+    Ok(())
 }
 
 #[test]
-fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"original\n");
-    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"original\n")?;
+    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
-        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
-    let (upserts, _deletions) =
-        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
-    std::fs::remove_file(project.path().join("lib.rs")).expect("remove the file");
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).check("sample")?;
+    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits, &deadline)
+        .check("build upserts")?;
+    std::fs::remove_file(project.path().join("lib.rs")).check("remove the file")?;
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
 
@@ -89,38 +93,41 @@ fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() {
         matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
         "a vanished file is a change a fresh sample resolves, got {result:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn an_unchanged_file_passes_revalidation() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"stable\n");
-    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+fn an_unchanged_file_passes_revalidation() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"stable\n")?;
+    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let (samples, _skipped) =
-        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).expect("sample");
-    let (upserts, _deletions) =
-        build_upserts_and_deletions(samples, &[], true, &limits, &deadline).expect("build upserts");
+        sample_all_with_deadline(&discovered, &limits, &sink, &deadline).check("sample")?;
+    let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits, &deadline)
+        .check("build upserts")?;
 
     assert!(revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline).is_ok());
+    Ok(())
 }
 
 #[test]
-fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_latest_content() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"version one\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_latest_content()
+-> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"version one\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     let project_path = project.path().to_path_buf();
     race_hook::set(project.path(), move || {
         // Fires once, immediately after the first attempt finishes sampling
         // "version one" but before it revalidates/writes — simulates a
         // concurrent editor save landing in that exact window.
-        write(&project_path, "lib.rs", b"version two\n");
-    });
+        write(&project_path, "lib.rs", b"version two\n")
+    })?;
 
     let report = publish(
         &mut connection,
@@ -128,7 +135,7 @@ fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_late
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("publish converges");
+    .check("publish converges")?;
 
     let content: String = connection
         .query_row(
@@ -136,166 +143,163 @@ fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_late
             [],
             |row| row.get(0),
         )
-        .expect("read content");
+        .check("read content")?;
     assert_eq!(
         content, "version two\n",
         "published content must be the latest sample, not the stale first one"
     );
     assert!(report.revision_id.starts_with("rev-"));
+    Ok(())
 }
 
 // --- Two-connection CAS race coverage ---
 
 #[test]
-fn two_connections_publishing_concurrently_the_loser_retries_and_converges() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"fn a() {}\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
+fn two_connections_publishing_concurrently_the_loser_retries_and_converges() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"fn a() {}\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
     let db_path = db_dir.path().join("project.db");
     {
-        let mut setup = open_read_write(&db_path).expect("open db");
+        let mut setup = open_read_write(&db_path).check("open db")?;
         publish(
             &mut setup,
             project.path(),
             "1.0.0",
             &crate::progress::NoopProgressSink,
         )
-        .expect("bootstrap publish");
+        .check("bootstrap publish")?;
     }
 
     let (tx_pause, rx_pause) = std::sync::mpsc::channel::<()>();
     let (tx_resume, rx_resume) = std::sync::mpsc::channel::<()>();
     race_hook::set(project.path(), move || {
-        tx_pause.send(()).expect("signal pause");
-        rx_resume.recv().expect("wait for resume");
-    });
+        tx_pause.send(()).check("signal pause")?;
+        rx_resume.recv().check("wait for resume")
+    })?;
 
     let project_path = project.path().to_path_buf();
     let db_path_a = db_path.clone();
-    let handle = std::thread::spawn(move || {
-        write(&project_path, "b.rs", b"fn b() {}\n");
-        let mut connection_a = open_read_write(&db_path_a).expect("open db (A)");
-        publish(
+    let handle = std::thread::spawn(move || -> TestResult<_> {
+        write(&project_path, "b.rs", b"fn b() {}\n")?;
+        let mut connection_a = open_read_write(&db_path_a).check("open db (A)")?;
+        Ok(publish(
             &mut connection_a,
             &project_path,
             "1.0.0",
             &crate::progress::NoopProgressSink,
-        )
+        ))
     });
 
     // A has sampled (a.rs, b.rs) and is now parked in the hook, holding no
     // SQLite lock yet — B is free to publish independently and commit
     // first.
-    rx_pause.recv().expect("A reached the barrier");
-    write(project.path(), "c.rs", b"fn c() {}\n");
-    let mut connection_b = open_read_write(&db_path).expect("open db (B)");
+    rx_pause.recv().check("A reached the barrier")?;
+    write(project.path(), "c.rs", b"fn c() {}\n")?;
+    let mut connection_b = open_read_write(&db_path).check("open db (B)")?;
     let report_b = publish(
         &mut connection_b,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("B publishes first");
+    .check("B publishes first")?;
     drop(connection_b);
 
     // Release A. Its first attempt must lose the CAS race in
     // `assert_baseline` against B's now-current revision; publish()'s
     // retry loop re-samples (this time seeing c.rs too) and converges.
-    tx_resume.send(()).expect("signal resume");
-    let report_a = handle
-        .join()
-        .expect("thread A joins")
-        .expect("A converges after retrying");
+    tx_resume.send(()).check("signal resume")?;
+    let report_a = join_checked(handle, "thread A joins")??.check("A converges after retrying")?;
 
     assert_eq!(
         report_a.revision_id, report_b.revision_id,
         "A's retry must land on the same revision B already published, not fork a duplicate"
     );
-    let connection = open_read_write(&db_path).expect("open db (final)");
-    let mut paths = stored_paths(&connection);
+    let connection = open_read_write(&db_path).check("open db (final)")?;
+    let mut paths = stored_paths(&connection)?;
     paths.sort();
     assert_eq!(
         paths,
         vec!["a.rs", "b.rs", "c.rs"],
         "no concurrent writer's filesystem change may be lost"
     );
+    Ok(())
 }
 
 #[test]
-fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"fn a() {}\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
+fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"fn a() {}\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
     let db_path = db_dir.path().join("project.db");
     {
-        let mut setup = open_read_write(&db_path).expect("open db");
+        let mut setup = open_read_write(&db_path).check("open db")?;
         publish(
             &mut setup,
             project.path(),
             "1.0.0",
             &crate::progress::NoopProgressSink,
         )
-        .expect("bootstrap publish");
+        .check("bootstrap publish")?;
     }
 
     let (tx_pause, rx_pause) = std::sync::mpsc::channel::<()>();
     let (tx_resume, rx_resume) = std::sync::mpsc::channel::<()>();
     race_hook::set(project.path(), move || {
-        tx_pause.send(()).expect("signal pause");
-        rx_resume.recv().expect("wait for resume");
-    });
+        tx_pause.send(()).check("signal pause")?;
+        rx_resume.recv().check("wait for resume")
+    })?;
 
     let project_path = project.path().to_path_buf();
     let db_path_a = db_path.clone();
-    let handle = std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || -> TestResult<_> {
         // A makes no novel change of its own — everything it eventually
         // reports must come from re-sampling after B's publish.
-        let mut connection_a = open_read_write(&db_path_a).expect("open db (A)");
-        publish(
+        let mut connection_a = open_read_write(&db_path_a).check("open db (A)")?;
+        Ok(publish(
             &mut connection_a,
             &project_path,
             "1.0.0",
             &crate::progress::NoopProgressSink,
-        )
+        ))
     });
 
-    rx_pause.recv().expect("A reached the barrier");
-    write(project.path(), "b.rs", b"fn b() {}\n");
-    let mut connection_b = open_read_write(&db_path).expect("open db (B)");
+    rx_pause.recv().check("A reached the barrier")?;
+    write(project.path(), "b.rs", b"fn b() {}\n")?;
+    let mut connection_b = open_read_write(&db_path).check("open db (B)")?;
     let report_b = publish(
         &mut connection_b,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("B publishes");
+    .check("B publishes")?;
     drop(connection_b);
 
-    tx_resume.send(()).expect("signal resume");
-    let report_a = handle
-        .join()
-        .expect("thread A joins")
-        .expect("A converges without error");
+    tx_resume.send(()).check("signal resume")?;
+    let report_a = join_checked(handle, "thread A joins")??.check("A converges without error")?;
 
     assert_eq!(
         report_a.revision_id, report_b.revision_id,
         "a no-op retry must return the actual current revision, not error or diverge"
     );
+    Ok(())
 }
 
 /// The retry line must not log `ChangedDuringSample`'s Display, which
 /// embeds the changed file's path; it names the retry through the category
 /// and a separate `path` field instead.
 #[test]
-fn a_retry_logs_the_changed_file_under_a_path_field() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"version one\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn a_retry_logs_the_changed_file_under_a_path_field() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"version one\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let project_path = project.path().to_path_buf();
     race_hook::set(project.path(), move || {
-        write(&project_path, "lib.rs", b"version two\n");
-    });
+        write(&project_path, "lib.rs", b"version two\n")
+    })?;
 
     let (result, logs) = capture_at_level(
         || {
@@ -309,11 +313,11 @@ fn a_retry_logs_the_changed_file_under_a_path_field() {
         tracing::Level::INFO,
     );
 
-    result.expect("the retry converges on the latest content");
+    result.check("the retry converges on the latest content")?;
     let retry_line = logs
         .lines()
         .find(|line| line.contains("publish retrying"))
-        .expect("the changed-during-sample hazard must log a retry");
+        .check("the changed-during-sample hazard must log a retry")?;
     assert!(
         retry_line.contains("error_kind=\"changed_during_sample\""),
         "got: {retry_line}"
@@ -322,4 +326,5 @@ fn a_retry_logs_the_changed_file_under_a_path_field() {
         retry_line.contains("path=lib.rs"),
         "the path must identify the file: {retry_line}"
     );
+    Ok(())
 }

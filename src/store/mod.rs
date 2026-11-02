@@ -14,6 +14,10 @@ mod sql_functions;
 #[path = "test_capture.rs"]
 pub(crate) mod test_capture;
 
+#[cfg(test)]
+#[path = "test_join.rs"]
+pub(crate) mod test_join;
+
 /// True when a `rusqlite` error reports a corrupt or non-database file.
 /// `StoreError::is_corruption` and `MigrationError::is_corruption` both
 /// delegate here so the two error types share one corruption definition

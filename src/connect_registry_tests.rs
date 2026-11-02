@@ -5,6 +5,7 @@
 //! `connect_tests.rs`.
 
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn find_agent_finds_standard_and_aliased_names() {
@@ -19,7 +20,7 @@ fn find_agent_finds_standard_and_aliased_names() {
 }
 
 #[test]
-fn registry_entries_declare_an_executable_or_a_config_file() {
+fn registry_entries_declare_an_executable_or_a_config_file() -> TestResult {
     assert_eq!(AGENTS.len(), 23, "the reconciled registry holds 23 clients");
     for a in AGENTS {
         match a.strategy {
@@ -47,16 +48,20 @@ fn registry_entries_declare_an_executable_or_a_config_file() {
                     a.id
                 );
             }
-            Strategy::Unknown => panic!(
-                "{}: no client may be left without an established mechanism",
-                a.id
-            ),
+            Strategy::Unknown => {
+                return Err(format!(
+                    "{}: no client may be left without an established mechanism",
+                    a.id
+                ))
+                .check("unexpected outcome");
+            }
         }
     }
+    Ok(())
 }
 
 #[test]
-fn registry_entries_carry_an_evidence_status() {
+fn registry_entries_carry_an_evidence_status() -> TestResult {
     for a in AGENTS {
         assert!(
             !a.note.is_empty(),
@@ -87,7 +92,7 @@ fn registry_entries_carry_an_evidence_status() {
         "pi",
     ] {
         assert_eq!(
-            find_agent(id).expect("agent").evidence,
+            find_agent(id).check("agent")?.evidence,
             Evidence::VerifiedByProbe,
             "{id} was probed"
         );
@@ -96,7 +101,7 @@ fn registry_entries_carry_an_evidence_status() {
     // path comes from vendor documentation alone.
     for id in ["windsurf", "warp", "claude-desktop"] {
         assert_eq!(
-            find_agent(id).expect("agent").evidence,
+            find_agent(id).check("agent")?.evidence,
             Evidence::DocVerified,
             "{id} is doc-verified"
         );
@@ -104,7 +109,7 @@ fn registry_entries_carry_an_evidence_status() {
     // Source-verified entries: the client's own code names the path and shape.
     for id in ["zed", "omp"] {
         assert_eq!(
-            find_agent(id).expect("agent").evidence,
+            find_agent(id).check("agent")?.evidence,
             Evidence::VerifiedFromSource,
             "{id} is source-verified"
         );
@@ -115,6 +120,7 @@ fn registry_entries_carry_an_evidence_status() {
         AGENTS.iter().all(|a| a.strategy != Strategy::Unknown),
         "no client is left without a known strategy"
     );
+    Ok(())
 }
 
 #[test]
@@ -195,65 +201,66 @@ fn registry_file_fallbacks_keep_a_real_executable_and_path() {
 }
 
 #[test]
-fn registry_cli_argument_grammar_is_preserved_per_client() {
+fn registry_cli_argument_grammar_is_preserved_per_client() -> TestResult {
     assert_eq!(
-        find_agent("claude").expect("claude").dialect,
+        find_agent("claude").check("claude")?.dialect,
         Dialect::Claude
     );
     assert_eq!(
-        find_agent("gemini").expect("gemini").dialect,
+        find_agent("gemini").check("gemini")?.dialect,
         Dialect::GeminiScope,
         "gemini's --scope defaults to project, so a global registration must pass -s user"
     );
     assert_eq!(
-        find_agent("hermes").expect("hermes").dialect,
+        find_agent("hermes").check("hermes")?.dialect,
         Dialect::Hermes
     );
-    assert_eq!(find_agent("crush").expect("crush").dialect, Dialect::Crush);
-    assert_eq!(find_agent("q").expect("q").dialect, Dialect::Q);
+    assert_eq!(find_agent("crush").check("crush")?.dialect, Dialect::Crush);
+    assert_eq!(find_agent("q").check("q")?.dialect, Dialect::Q);
     assert_eq!(
-        find_agent("pi").expect("pi").dialect,
+        find_agent("pi").check("pi")?.dialect,
         Dialect::DashSeparator
     );
     assert_eq!(
-        find_agent("opencode").expect("opencode").dialect,
+        find_agent("opencode").check("opencode")?.dialect,
         Dialect::DashSeparator,
         "opencode takes the command after `--`"
     );
     assert_eq!(
-        find_agent("copilot").expect("copilot").dialect,
+        find_agent("copilot").check("copilot")?.dialect,
         Dialect::DashSeparator,
         "copilot accepts neither a scope flag nor --command"
     );
     assert_eq!(
-        find_agent("amp").expect("amp").dialect,
+        find_agent("amp").check("amp")?.dialect,
         Dialect::DashSeparator
     );
     assert_eq!(
-        find_agent("openhands").expect("openhands").dialect,
+        find_agent("openhands").check("openhands")?.dialect,
         Dialect::TransportStdio,
         "openhands requires an explicit stdio transport"
     );
     assert_eq!(
-        find_agent("bob").expect("bob").dialect,
+        find_agent("bob").check("bob")?.dialect,
         Dialect::BobTransportScope,
         "bob spells the flag --transport and defaults to workspace scope"
     );
     assert_eq!(
-        find_agent("droid").expect("droid").dialect,
+        find_agent("droid").check("droid")?.dialect,
         Dialect::DroidType,
         "droid spells the flag --type, not --transport"
     );
+    Ok(())
 }
 
 #[test]
-fn registry_shape_and_path_models_match_the_documented_forms() {
-    let zed = find_agent("zed").expect("zed");
+fn registry_shape_and_path_models_match_the_documented_forms() -> TestResult {
+    let zed = find_agent("zed").check("zed")?;
     assert_eq!(zed.shape, ConfigShape::ZedContextServer);
     let zed_entry = zed
         .shape
         .entry(Path::new("/bin/slugaudit"))
-        .expect("UTF-8 binary path");
+        .check("UTF-8 binary path")?;
     assert_eq!(
         zed_entry["command"], "/bin/slugaudit",
         "zed's command is a string, not a nested object"
@@ -265,29 +272,29 @@ fn registry_shape_and_path_models_match_the_documented_forms() {
     assert_eq!(zed.shape.write_section(), Some("context_servers"));
 
     assert_eq!(
-        find_agent("opencode").expect("opencode").shape,
+        find_agent("opencode").check("opencode")?.shape,
         ConfigShape::OpenCodeLocal
     );
     assert_eq!(
-        find_agent("opencode").expect("opencode").config,
+        find_agent("opencode").check("opencode")?.config,
         ConfigPath::Home(".config/opencode/opencode.jsonc"),
         "the probe wrote the .jsonc variant"
     );
     let opencode_entry = ConfigShape::OpenCodeLocal
         .entry(Path::new("/bin/slugaudit"))
-        .expect("UTF-8 binary path");
+        .check("UTF-8 binary path")?;
     assert_eq!(opencode_entry["type"], "local");
     assert_eq!(opencode_entry["command"][0], "/bin/slugaudit");
     assert_eq!(opencode_entry["enabled"], true);
 
     assert_eq!(
-        find_agent("goose").expect("goose").shape,
+        find_agent("goose").check("goose")?.shape,
         ConfigShape::GooseExtensions
     );
 
-    let desktop = find_agent("claude-desktop").expect("claude-desktop");
+    let desktop = find_agent("claude-desktop").check("claude-desktop")?;
     let home = Path::new("/home/user");
-    let resolved = desktop.config.resolve(home).expect("per-os config path");
+    let resolved = desktop.config.resolve(home).check("per-os config path")?;
     assert!(resolved.ends_with("claude_desktop_config.json"));
     #[cfg(target_os = "linux")]
     assert_eq!(
@@ -329,4 +336,5 @@ fn registry_shape_and_path_models_match_the_documented_forms() {
             a.id
         );
     }
+    Ok(())
 }

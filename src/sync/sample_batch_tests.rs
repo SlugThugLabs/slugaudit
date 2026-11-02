@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::sync::test_support::write;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 fn one_file_batch<'a>(
     discovered: &'a [crate::sync::discovery::DiscoveredFile],
@@ -22,11 +23,11 @@ fn one_file_batch<'a>(
 }
 
 #[test]
-fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"fn a() {}\n");
+fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"fn a() {}\n")?;
     let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).expect("discover");
+        crate::sync::discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let deadline = Deadline::after(std::time::Duration::from_mins(1));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
@@ -43,19 +44,22 @@ fn a_result_that_cannot_be_delivered_aborts_the_run_with_the_file_named() {
     );
 
     assert!(!delivered, "a closed channel must stop the worker");
-    let recorded = lock_or_recover(&batch.error_slot, "sample_batch_error_slot").take();
+    let recorded = lock(&batch.error_slot, "sample_batch_error_slot")
+        .check("lock the error slot")?
+        .take();
     assert!(
         matches!(&recorded, Some(PublishError::SamplingResultLost { path, .. }) if path == "lib.rs"),
         "expected SamplingResultLost naming lib.rs, got {recorded:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"fn a() {}\n");
+fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"fn a() {}\n")?;
     let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).expect("discover");
+        crate::sync::discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let deadline = Deadline::after(std::time::Duration::from_mins(1));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
@@ -71,7 +75,9 @@ fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() {
     );
 
     assert!(!delivered, "an out-of-range index must stop the worker");
-    let recorded = lock_or_recover(&batch.error_slot, "sample_batch_error_slot").take();
+    let recorded = lock(&batch.error_slot, "sample_batch_error_slot")
+        .check("lock the error slot")?
+        .take();
     assert!(
         matches!(
             &recorded,
@@ -80,14 +86,15 @@ fn a_delivery_at_the_end_of_the_discovered_set_fails_with_the_index_error() {
         ),
         "expected SamplingIndexOutOfRange, got {recorded:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"fn a() {}\n");
+fn a_channel_result_with_an_out_of_range_index_fails_the_run() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"fn a() {}\n")?;
     let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).expect("discover");
+        crate::sync::discovery::discover(project.path()).check("discover")?;
     let limits = ResourceLimits::default();
     let deadline = Deadline::after(std::time::Duration::from_mins(1));
     let batch = one_file_batch(&discovered, &limits, &deadline, discovered.len());
@@ -99,12 +106,12 @@ fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
             code: "unreadable",
         }),
     ))
-    .expect("send the out-of-range result");
+    .check("send the out-of-range result")?;
     drop(tx);
 
     let error = batch
         .collect(&rx)
-        .expect_err("an out-of-range channel index must fail the run");
+        .check_err("an out-of-range channel index must fail the run")?;
 
     assert!(
         matches!(
@@ -114,10 +121,11 @@ fn a_channel_result_with_an_out_of_range_index_fails_the_run() {
         ),
         "expected SamplingIndexOutOfRange, got {error:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause() {
+fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause() -> TestResult {
     const SUPERSEDED_PATH: &str = "superseded-second-error-probe.rs";
 
     let (returned, logs) = crate::store::test_capture::capture_warns(|| {
@@ -136,8 +144,9 @@ fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause(
                 path: SUPERSEDED_PATH.to_owned(),
             },
         );
-        lock_or_recover(&slot, "sample_batch_error_slot").take()
+        lock(&slot, "sample_batch_error_slot").map(|mut slot| slot.take())
     });
+    let returned = returned.check("lock the error slot")?;
 
     assert!(
         matches!(returned, Some(PublishError::ImportTooLarge { .. })),
@@ -171,6 +180,7 @@ fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause(
         "the error Display must be logged: {}",
         logged[0]
     );
+    Ok(())
 }
 
 #[test]
@@ -192,7 +202,7 @@ fn skip_code_maps_each_per_file_failure_to_its_reason_and_leaves_read_errors_fat
 }
 
 #[test]
-fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() {
+fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() -> TestResult {
     let error = time_budget_error("src/lib.rs", Duration::from_millis(1500));
 
     match error {
@@ -200,6 +210,10 @@ fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() {
             assert_eq!(path, " while processing src/lib.rs");
             assert_eq!(elapsed_ms, 1500);
         }
-        other => panic!("expected TimeBudgetExceeded, got {other:?}"),
+        other => {
+            return Err(format!("expected TimeBudgetExceeded, got {other:?}"))
+                .check("unexpected outcome");
+        }
     }
+    Ok(())
 }

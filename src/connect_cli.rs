@@ -151,30 +151,33 @@ pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     #[cfg(unix)]
     #[test]
-    fn an_add_that_outlives_its_deadline_is_a_timeout_error() {
+    fn an_add_that_outlives_its_deadline_is_a_timeout_error() -> TestResult {
         use std::os::unix::fs::PermissionsExt as _;
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        let dir = tempfile::tempdir().expect("dir");
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let dir = tempfile::tempdir().check("dir")?;
         let cli = dir.path().join("fake-client");
-        std::fs::write(&cli, "#!/bin/sh\nexec /bin/sleep 30\n").expect("write");
-        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::write(&cli, "#!/bin/sh\nexec /bin/sleep 30\n").check("write")?;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).check("chmod")?;
         let cli = cli.display().to_string();
 
         let result = run_add_within(&cli, &["mcp".to_string()], Duration::from_millis(300));
 
         let Err(ConnectError::AgentTimeout { cli: named, .. }) = result else {
-            panic!("expected AgentTimeout, got {result:?}");
+            return Err(format!("expected AgentTimeout, got {result:?}"))
+                .check("unexpected outcome");
         };
         assert_eq!(named, cli);
+        Ok(())
     }
 
     #[test]
-    fn an_add_that_cannot_be_spawned_is_reported_as_an_agent_command_failure() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        let empty = tempfile::tempdir().expect("empty bin dir");
+    fn an_add_that_cannot_be_spawned_is_reported_as_an_agent_command_failure() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let empty = tempfile::tempdir().check("empty bin dir")?;
         let args = ["mcp", "add", "slugaudit", "--", "/bin/slugaudit"].map(str::to_string);
 
         let result = temp_env::with_var("PATH", Some(empty.path().as_os_str()), || {
@@ -182,7 +185,8 @@ mod tests {
         });
 
         let Err(ConnectError::AgentCommand { cli, inner }) = result else {
-            panic!("expected AgentCommand, got {result:?}");
+            return Err(format!("expected AgentCommand, got {result:?}"))
+                .check("unexpected outcome");
         };
         assert_eq!(cli, "claude");
         assert_eq!(
@@ -190,6 +194,7 @@ mod tests {
             std::io::ErrorKind::NotFound,
             "the missing executable must be the cause: {inner}"
         );
+        Ok(())
     }
 
     #[test]

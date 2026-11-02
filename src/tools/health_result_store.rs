@@ -97,9 +97,21 @@ impl From<StoreStats> for ResultStoreState {
 
 /// The store's state, or `None` while no paged result was ever made in this
 /// process (the store opens on the first one).
-pub(super) fn snapshot(manager: &sync::SourceSyncManager) -> Option<ResultStoreState> {
-    manager
-        .result_stores()
-        .current()
-        .map(|store| store.stats().into())
+///
+/// # Errors
+///
+/// Returns the tool error when the store slot or the store's registry was
+/// poisoned.
+pub(super) fn snapshot(
+    manager: &sync::SourceSyncManager,
+) -> Result<Option<ResultStoreState>, rmcp::ErrorData> {
+    match manager.result_stores().current()? {
+        Some(store) => Ok(Some(
+            store
+                .stats()
+                .map_err(|error| crate::error_codes::store_error(&error))?
+                .into(),
+        )),
+        None => Ok(None),
+    }
 }

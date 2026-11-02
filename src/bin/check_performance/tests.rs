@@ -6,6 +6,7 @@ use super::estimates;
 use super::estimates::{BaselineEntry, load_baseline};
 use super::format::{fmt_ns, table_line};
 use super::record::baseline_json;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
 fn fmt_ns_thresholds() {
@@ -17,7 +18,7 @@ fn fmt_ns_thresholds() {
 }
 
 #[test]
-fn load_baseline_parses_object() {
+fn load_baseline_parses_object() -> TestResult {
     let raw = r#"{
         "machine": "test",
         "threshold_percent": 20.0,
@@ -26,150 +27,160 @@ fn load_baseline_parses_object() {
             "parsing/extract_rust": {"median_ns": 50, "budget_ns": null}
         }
     }"#;
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().check("temp dir")?;
     let tmp = dir.path().join("baseline.json");
-    std::fs::write(&tmp, raw).expect("baseline file writes");
-    let map = load_baseline(&tmp).expect("parse");
+    std::fs::write(&tmp, raw).check("baseline file writes")?;
+    let map = load_baseline(&tmp).check("parse")?;
     assert_eq!(map["sync/first"].median_ns, 100);
     assert_eq!(map["sync/first"].budget_ns, Some(200));
     assert_eq!(map["parsing/extract_rust"].median_ns, 50);
     assert_eq!(map["parsing/extract_rust"].budget_ns, None);
+    Ok(())
 }
 
 #[test]
-fn load_baseline_rejects_missing_benches() {
+fn load_baseline_rejects_missing_benches() -> TestResult {
     let raw = r#"{"machine": "x", "threshold_percent": 20.0}"#;
-    let dir = tempfile::tempdir().expect("temp dir");
+    let dir = tempfile::tempdir().check("temp dir")?;
     let tmp = dir.path().join("baseline.json");
-    std::fs::write(&tmp, raw).expect("baseline file writes");
-    let err = load_baseline(&tmp).unwrap_err();
+    std::fs::write(&tmp, raw).check("baseline file writes")?;
+    let err = load_baseline(&tmp).check_err("a baseline without benches is rejected")?;
     assert!(err.contains("missing 'benches' object"), "{err}");
+    Ok(())
 }
 
 #[test]
-fn load_baseline_rejects_a_malformed_budget() {
-    let dir = tempfile::tempdir().expect("temp dir");
+fn load_baseline_rejects_a_malformed_budget() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
     for budget in [r#""200""#, "-5", "1.5"] {
         let raw = format!(
             r#"{{"benches": {{"sync/first": {{"median_ns": 100, "budget_ns": {budget}}}}}}}"#
         );
         let path = dir.path().join("baseline.json");
-        std::fs::write(&path, raw).expect("baseline file writes");
+        std::fs::write(&path, raw).check("baseline file writes")?;
 
-        let err = load_baseline(&path).expect_err("a malformed budget_ns must not be dropped");
+        let err = load_baseline(&path).check_err("a malformed budget_ns must not be dropped")?;
 
         assert!(err.contains("budget_ns"), "{budget}: {err}");
     }
+    Ok(())
 }
 
 #[test]
-fn collect_benches_rejects_a_non_finite_or_negative_median() {
+fn collect_benches_rejects_a_non_finite_or_negative_median() -> TestResult {
     for median in ["-1.0", "1e999"] {
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = tempfile::tempdir().check("temp dir")?;
         write_estimates(
             root.path(),
             "g",
             "f",
             &format!(r#"{{"median": {{"point_estimate": {median}}}}}"#),
-        );
+        )?;
 
         let result = estimates::collect_benches_in(root.path());
 
         assert!(result.is_err(), "median {median} must be rejected");
     }
+    Ok(())
 }
 
 #[test]
-fn collect_benches_truncates_a_fractional_median_and_rejects_one_past_u64() {
+fn collect_benches_truncates_a_fractional_median_and_rejects_one_past_u64() -> TestResult {
     for (median, expected) in [("1234.9", 1234_u64), ("0.5", 0), ("-0.0", 0)] {
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = tempfile::tempdir().check("temp dir")?;
         write_estimates(
             root.path(),
             "g",
             "f",
             &format!(r#"{{"median": {{"point_estimate": {median}}}}}"#),
-        );
+        )?;
 
-        let benches = estimates::collect_benches_in(root.path()).expect("valid median");
+        let benches = estimates::collect_benches_in(root.path()).check("valid median")?;
 
         assert_eq!(benches.get("g/f"), Some(&expected), "median {median}");
     }
     for median in ["-0.5", "1.8446744073709552e19"] {
-        let root = tempfile::tempdir().expect("temp dir");
+        let root = tempfile::tempdir().check("temp dir")?;
         write_estimates(
             root.path(),
             "g",
             "f",
             &format!(r#"{{"median": {{"point_estimate": {median}}}}}"#),
-        );
+        )?;
 
-        let error = estimates::collect_benches_in(root.path()).expect_err("invalid median");
+        let error = estimates::collect_benches_in(root.path()).check_err("invalid median")?;
 
         assert!(
             error.to_string().contains("is not a valid time in ns"),
             "median {median}: {error}"
         );
     }
+    Ok(())
 }
 
-fn write_estimates(root: &std::path::Path, group: &str, func: &str, body: &str) {
+fn write_estimates(root: &std::path::Path, group: &str, func: &str, body: &str) -> TestResult {
     let dir = root.join(group).join(func).join("new");
-    std::fs::create_dir_all(&dir).expect("estimates dir");
-    std::fs::write(dir.join("estimates.json"), body).expect("estimates file");
+    std::fs::create_dir_all(&dir).check("estimates dir")?;
+    std::fs::write(dir.join("estimates.json"), body).check("estimates file")?;
+    Ok(())
 }
 
 #[test]
-fn collect_benches_reads_every_new_median_keyed_by_group_and_function() {
-    let root = tempfile::tempdir().expect("temp dir");
+fn collect_benches_reads_every_new_median_keyed_by_group_and_function() -> TestResult {
+    let root = tempfile::tempdir().check("temp dir")?;
     write_estimates(
         root.path(),
         "search",
         "fts",
         r#"{"median":{"point_estimate":1500.7}}"#,
-    );
+    )?;
     write_estimates(
         root.path(),
         "parsing",
         "rust",
         r#"{"median":{"point_estimate":42}}"#,
-    );
+    )?;
 
-    let benches = estimates::collect_benches_in(root.path()).expect("collects");
+    let benches = estimates::collect_benches_in(root.path()).check("collects")?;
 
     assert_eq!(benches.get("search/fts"), Some(&1500));
     assert_eq!(benches.get("parsing/rust"), Some(&42));
     assert_eq!(benches.len(), 2);
+    Ok(())
 }
 
 #[test]
-fn collect_benches_fails_on_a_malformed_estimates_file_instead_of_dropping_the_bench() {
-    let root = tempfile::tempdir().expect("temp dir");
+fn collect_benches_fails_on_a_malformed_estimates_file_instead_of_dropping_the_bench() -> TestResult
+{
+    let root = tempfile::tempdir().check("temp dir")?;
     write_estimates(
         root.path(),
         "search",
         "fts",
         r#"{"median":{"point_estimate":10}}"#,
-    );
-    write_estimates(root.path(), "search", "broken", "{not json");
+    )?;
+    write_estimates(root.path(), "search", "broken", "{not json")?;
 
-    let error = estimates::collect_benches_in(root.path()).expect_err("malformed file fails");
+    let error = estimates::collect_benches_in(root.path()).check_err("malformed file fails")?;
 
     assert!(error.to_string().contains("broken"), "{error}");
+    Ok(())
 }
 
 #[test]
-fn collect_benches_fails_on_an_estimates_file_with_no_median() {
-    let root = tempfile::tempdir().expect("temp dir");
+fn collect_benches_fails_on_an_estimates_file_with_no_median() -> TestResult {
+    let root = tempfile::tempdir().check("temp dir")?;
     write_estimates(
         root.path(),
         "search",
         "fts",
         r#"{"mean":{"point_estimate":10}}"#,
-    );
+    )?;
 
-    let error = estimates::collect_benches_in(root.path()).expect_err("missing median fails");
+    let error = estimates::collect_benches_in(root.path()).check_err("missing median fails")?;
 
     assert!(error.to_string().contains("median"), "{error}");
+    Ok(())
 }
 
 fn medians(pairs: &[(&str, u64)]) -> std::collections::BTreeMap<String, u64> {
@@ -290,11 +301,11 @@ fn the_cli_rejects_a_non_finite_or_negative_threshold() {
 }
 
 #[test]
-fn the_cli_parses_record_threshold_and_help() {
+fn the_cli_parses_record_threshold_and_help() -> TestResult {
     let args = |list: &[&str]| parse(list.iter().map(|s| (*s).to_string()));
 
-    let run = args(&["--record", "35"]).expect("valid args parse");
-    let help = args(&["--help"]).expect("help parses");
+    let run = args(&["--record", "35"]).check("valid args parse")?;
+    let help = args(&["--help"]).check("help parses")?;
     let bad = args(&["fast"]);
 
     assert_eq!(
@@ -306,7 +317,8 @@ fn the_cli_parses_record_threshold_and_help() {
     );
     assert_eq!(help, Command::Help);
     assert!(
-        bad.expect_err("non-number is a usage error")
+        bad.check_err("non-number is a usage error")?
             .contains("\"fast\"")
     );
+    Ok(())
 }

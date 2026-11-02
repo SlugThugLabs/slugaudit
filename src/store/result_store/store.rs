@@ -5,7 +5,7 @@ use super::error::{ResultStoreError, UnsupportedPlatform};
 use super::owner::{self, SweepOutcome};
 use super::registry::{Entry, Refused, Registry, ResultMeta};
 use super::stats::StoreStats;
-use crate::util::lock_or_recover;
+use crate::util::lock;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,7 @@ use std::time::SystemTime;
 use uuid::Uuid;
 
 /// Seconds since the Unix epoch, injectable so tests control time.
-pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
+pub type Clock = Arc<dyn Fn() -> Result<i64, crate::util::ClockError> + Send + Sync>;
 
 /// The two limits the store obeys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,15 +111,18 @@ impl ResultStore {
         self.limits
     }
 
-    pub(super) fn now(&self) -> i64 {
+    /// The store clock's Unix seconds; an unusable clock is `Unavailable`.
+    pub(super) fn now(&self) -> Result<i64, ResultStoreError> {
         (self.clock)()
+            .map_err(|error| ResultStoreError::unavailable("the system clock is unusable", error))
     }
 
-    fn registry(&self) -> std::sync::MutexGuard<'_, Registry> {
-        // Recovery is safe: every registry mutation is planned first and then
-        // applied without a panicking step, so a poisoned lock never hides a
-        // half-applied change.
-        lock_or_recover(&self.registry, "result_registry")
+    /// The registry, locked. A poisoned registry is an `Unavailable` error
+    /// (logged once, by its constructor): the store cannot serve results.
+    fn registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>, ResultStoreError> {
+        lock(&self.registry, "result_registry").map_err(|error| {
+            ResultStoreError::unavailable("the result registry is poisoned", error)
+        })
     }
 
     /// Parses `token` and checks it was issued by this process.
@@ -134,22 +137,27 @@ impl ResultStore {
         }
     }
 
+    /// Logs and counts an unknown cursor and returns the error to report:
+    /// `Unknown`, or the registry's own error when it is poisoned.
     pub(super) fn unknown_cursor(&self) -> ResultStoreError {
-        self.registry().counters.unknown_cursors += 1;
         tracing::info!("cursor refused: unknown");
-        ResultStoreError::Unknown
+        self.refuse_foreign_tool()
     }
 
     /// Counts a cursor refused because it belongs to another tool and returns
-    /// the error to report. The caller logs the refusal, so this does not.
+    /// the error to report: `Unknown`, or the registry's own error when it is
+    /// poisoned. The caller logs the refusal, so this does not.
     #[must_use]
     pub fn refuse_foreign_tool(&self) -> ResultStoreError {
-        self.registry().counters.unknown_cursors += 1;
+        match self.registry() {
+            Ok(mut registry) => registry.counters.unknown_cursors += 1,
+            Err(error) => return error,
+        }
         ResultStoreError::Unknown
     }
 
     pub(super) fn lookup(&self, id: ResultId) -> Result<Arc<Entry>, ResultStoreError> {
-        let mut registry = self.registry();
+        let mut registry = self.registry()?;
         if let Some(entry) = registry.entries.get(&id) {
             return Ok(Arc::clone(entry));
         }
@@ -189,11 +197,11 @@ impl ResultStore {
             entry.meta.revision_id.clone(),
             entry.bytes,
         );
-        let (now, grace) = (self.now(), self.limits.active_grace_secs);
+        let (now, grace) = (self.now()?, self.limits.active_grace_secs);
         let budget = self.limits.max_bytes;
         // The guard is a temporary of this statement: it is released before
         // anything is logged or dropped.
-        let admitted = self.registry().admit(id, entry, budget, now, grace);
+        let admitted = self.registry()?.admit(id, entry, budget, now, grace);
         let reclaimed = match admitted {
             Ok(reclaimed) => reclaimed,
             Err(refused) => {
@@ -234,22 +242,29 @@ impl ResultStore {
         Ok(())
     }
 
-    /// Counts a writer that outgrew the whole budget.
-    pub(super) fn refuse_too_large(&self, id: ResultId, bytes: u64) {
-        self.registry().counters.refused_too_large += 1;
+    /// Counts a writer that outgrew the whole budget and returns the error to
+    /// report: `TooLarge`, or the registry's own error when it is poisoned.
+    pub(super) fn refuse_too_large(&self, id: ResultId, bytes: u64) -> ResultStoreError {
+        match self.registry() {
+            Ok(mut registry) => registry.counters.refused_too_large += 1,
+            Err(error) => return error,
+        }
         tracing::info!(result = %id, bytes, budget = self.limits.max_bytes, "result aborted: larger than the whole budget");
+        ResultStoreError::TooLarge
     }
 
     /// A snapshot of what the store holds and has decided.
-    #[must_use]
-    pub fn stats(&self) -> StoreStats {
-        let now = self.now();
-        self.registry().snapshot(
+    ///
+    /// # Errors
+    ///
+    /// `Unavailable` when the registry is poisoned.
+    pub fn stats(&self) -> Result<StoreStats, ResultStoreError> {
+        Ok(self.registry()?.snapshot(
             self.limits.max_bytes,
-            now,
+            self.now()?,
             self.limits.active_grace_secs,
             &self.sweep,
-        )
+        ))
     }
 }
 

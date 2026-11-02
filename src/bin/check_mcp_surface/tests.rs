@@ -1,5 +1,6 @@
 use super::diff::differences;
 use serde_json::json;
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn identical_surfaces_have_no_differences() {
@@ -60,7 +61,7 @@ fn schema_arrays_are_compared_by_position() {
 }
 
 #[test]
-fn every_live_tool_carries_a_title_a_description_and_both_schemas() {
+fn every_live_tool_carries_a_title_a_description_and_both_schemas() -> TestResult {
     let tools = slugaudit_mcp_rust::server::tool_surface();
 
     assert_eq!(tools.len(), 10, "the surface is the ten advertised tools");
@@ -79,17 +80,18 @@ fn every_live_tool_carries_a_title_a_description_and_both_schemas() {
         let schema = tool
             .output_schema
             .as_ref()
-            .expect("every tool declares its output schema");
+            .check("every tool declares its output schema")?;
         assert!(
             schema.contains_key("properties"),
             "{} output schema has no properties",
             tool.name
         );
     }
+    Ok(())
 }
 
 #[test]
-fn every_live_tool_matches_the_documented_annotation_table() {
+fn every_live_tool_matches_the_documented_annotation_table() -> TestResult {
     let expected = [
         ("finding", false, false),
         ("finding_clear", false, true),
@@ -108,11 +110,11 @@ fn every_live_tool_matches_the_documented_annotation_table() {
         let tool = tools
             .iter()
             .find(|tool| tool.name == name)
-            .unwrap_or_else(|| panic!("tool `{name}` is not advertised"));
+            .check(&format!("tool `{name}` is not advertised"))?;
         let annotations = tool
             .annotations
             .as_ref()
-            .unwrap_or_else(|| panic!("tool `{name}` has no annotations"));
+            .check(&format!("tool `{name}` has no annotations"))?;
         assert_eq!(
             annotations.read_only_hint,
             Some(read_only),
@@ -124,6 +126,7 @@ fn every_live_tool_matches_the_documented_annotation_table() {
             "`{name}` destructiveHint"
         );
     }
+    Ok(())
 }
 
 #[test]

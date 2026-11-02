@@ -7,10 +7,11 @@
 use super::*;
 use crate::sync::discover;
 use crate::util::TEST_ENV_LOCK;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
-fn project() -> tempfile::TempDir {
-    tempfile::tempdir().expect("project dir")
+fn project() -> TestResult<tempfile::TempDir> {
+    tempfile::tempdir().check("project dir")
 }
 
 /// The structured ignore-rule build records for one source in a captured
@@ -50,13 +51,13 @@ fn rules_for(root: &Path) -> IgnoreRules {
 }
 
 #[test]
-fn a_gitignored_directory_is_ignored() {
-    let project = project();
-    fs::write(project.path().join(".gitignore"), "target/\n").expect("gitignore");
-    fs::create_dir_all(project.path().join("target")).expect("target dir");
-    fs::write(project.path().join("target/gen.rs"), "fn gen() {}\n").expect("target file");
-    fs::create_dir_all(project.path().join("src")).expect("src dir");
-    fs::write(project.path().join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
+fn a_gitignored_directory_is_ignored() -> TestResult {
+    let project = project()?;
+    fs::write(project.path().join(".gitignore"), "target/\n").check("gitignore")?;
+    fs::create_dir_all(project.path().join("target")).check("target dir")?;
+    fs::write(project.path().join("target/gen.rs"), "fn gen() {}\n").check("target file")?;
+    fs::create_dir_all(project.path().join("src")).check("src dir")?;
+    fs::write(project.path().join("src/lib.rs"), "fn lib() {}\n").check("lib file")?;
 
     let rules = rules_for(project.path());
     assert!(rules.should_ignore("target/gen.rs"));
@@ -65,17 +66,18 @@ fn a_gitignored_directory_is_ignored() {
         !rules.should_ignore(".gitignore"),
         "a gitignore file is indexable"
     );
+    Ok(())
 }
 
 #[test]
-fn a_nested_gitignore_is_scoped_to_its_directory() {
-    let project = project();
-    fs::create_dir_all(project.path().join("sub")).expect("sub dir");
-    fs::create_dir_all(project.path().join("other")).expect("other dir");
-    fs::write(project.path().join("sub/.gitignore"), "*.log\n").expect("nested gitignore");
-    fs::write(project.path().join("sub/debug.log"), "x\n").expect("sub log");
-    fs::write(project.path().join("debug.log"), "x\n").expect("root log");
-    fs::write(project.path().join("other/debug.log"), "x\n").expect("other log");
+fn a_nested_gitignore_is_scoped_to_its_directory() -> TestResult {
+    let project = project()?;
+    fs::create_dir_all(project.path().join("sub")).check("sub dir")?;
+    fs::create_dir_all(project.path().join("other")).check("other dir")?;
+    fs::write(project.path().join("sub/.gitignore"), "*.log\n").check("nested gitignore")?;
+    fs::write(project.path().join("sub/debug.log"), "x\n").check("sub log")?;
+    fs::write(project.path().join("debug.log"), "x\n").check("root log")?;
+    fs::write(project.path().join("other/debug.log"), "x\n").check("other log")?;
 
     let rules = rules_for(project.path());
     assert!(rules.should_ignore("sub/debug.log"));
@@ -83,14 +85,15 @@ fn a_nested_gitignore_is_scoped_to_its_directory() {
     // per-directory scoping must keep these indexable.
     assert!(!rules.should_ignore("debug.log"));
     assert!(!rules.should_ignore("other/debug.log"));
+    Ok(())
 }
 
 #[test]
-fn negation_re_includes_a_file() {
-    let project = project();
-    fs::write(project.path().join(".gitignore"), "*.log\n!keep.log\n").expect("gitignore");
-    fs::write(project.path().join("keep.log"), "x\n").expect("keep file");
-    fs::write(project.path().join("debug.log"), "x\n").expect("debug file");
+fn negation_re_includes_a_file() -> TestResult {
+    let project = project()?;
+    fs::write(project.path().join(".gitignore"), "*.log\n!keep.log\n").check("gitignore")?;
+    fs::write(project.path().join("keep.log"), "x\n").check("keep file")?;
+    fs::write(project.path().join("debug.log"), "x\n").check("debug file")?;
 
     let rules = rules_for(project.path());
     assert!(
@@ -98,33 +101,35 @@ fn negation_re_includes_a_file() {
         "the negation must re-include"
     );
     assert!(rules.should_ignore("debug.log"));
+    Ok(())
 }
 
 #[test]
-fn a_file_under_an_ignored_directory_stays_ignored_even_if_whitelisted() {
+fn a_file_under_an_ignored_directory_stays_ignored_even_if_whitelisted() -> TestResult {
     // Git cannot re-include a file when a parent directory is excluded.
-    let project = project();
+    let project = project()?;
     fs::write(
         project.path().join(".gitignore"),
         "build/\n!build/keep.rs\n",
     )
-    .expect("gitignore");
-    fs::create_dir_all(project.path().join("build")).expect("build dir");
-    fs::write(project.path().join("build/keep.rs"), "fn keep() {}\n").expect("keep file");
+    .check("gitignore")?;
+    fs::create_dir_all(project.path().join("build")).check("build dir")?;
+    fs::write(project.path().join("build/keep.rs"), "fn keep() {}\n").check("keep file")?;
 
     let rules = rules_for(project.path());
     assert!(
         rules.should_ignore("build/keep.rs"),
         "an excluded parent directory prunes the whole subtree"
     );
+    Ok(())
 }
 
 #[test]
-fn a_dot_ignore_overrides_dot_gitignore() {
-    let project = project();
-    fs::write(project.path().join(".gitignore"), "*.log\n").expect("gitignore");
-    fs::write(project.path().join(".ignore"), "!keep.log\n").expect("dot ignore");
-    fs::write(project.path().join("keep.log"), "x\n").expect("keep file");
+fn a_dot_ignore_overrides_dot_gitignore() -> TestResult {
+    let project = project()?;
+    fs::write(project.path().join(".gitignore"), "*.log\n").check("gitignore")?;
+    fs::write(project.path().join(".ignore"), "!keep.log\n").check("dot ignore")?;
+    fs::write(project.path().join("keep.log"), "x\n").check("keep file")?;
 
     let rules = rules_for(project.path());
     assert!(
@@ -132,22 +137,24 @@ fn a_dot_ignore_overrides_dot_gitignore() {
         ".ignore must override .gitignore"
     );
     assert!(rules.should_ignore("debug.log"));
+    Ok(())
 }
 
 #[test]
-fn hardcoded_exclusions_apply_everywhere() {
-    let project = project();
-    fs::create_dir_all(project.path().join(".planning/slugaudit")).expect("data dir");
-    fs::create_dir_all(project.path().join("src")).expect("src dir");
-    fs::write(project.path().join(".planning/slugaudit/project.db"), "db").expect("db");
-    fs::write(project.path().join("src/lib.rs~"), "backup").expect("swap file");
-    fs::write(project.path().join("notes.tmp"), "tmp").expect("tmp file");
+fn hardcoded_exclusions_apply_everywhere() -> TestResult {
+    let project = project()?;
+    fs::create_dir_all(project.path().join(".planning/slugaudit")).check("data dir")?;
+    fs::create_dir_all(project.path().join("src")).check("src dir")?;
+    fs::write(project.path().join(".planning/slugaudit/project.db"), "db").check("db")?;
+    fs::write(project.path().join("src/lib.rs~"), "backup").check("swap file")?;
+    fs::write(project.path().join("notes.tmp"), "tmp").check("tmp file")?;
 
     let rules = rules_for(project.path());
     assert!(rules.should_ignore(".planning/slugaudit/project.db"));
     assert!(rules.should_ignore("src/lib.rs~"));
     assert!(rules.should_ignore("notes.tmp"));
     assert!(!rules.should_ignore("src/lib.rs"));
+    Ok(())
 }
 
 /// The crate documents that any `.ignore` file overrides all `.gitignore`
@@ -155,13 +162,13 @@ fn hardcoded_exclusions_apply_everywhere() {
 /// walker on this cross-type case — a nested `.gitignore` must not beat a
 /// root `.ignore` whitelist.
 #[test]
-fn a_dot_ignore_overrides_a_nested_gitignore() {
-    let project = project();
-    fs::create_dir_all(project.path().join("sub")).expect("sub dir");
-    fs::write(project.path().join(".ignore"), "!keep.log\n").expect("root dot ignore");
-    fs::write(project.path().join("sub/.gitignore"), "*.log\n").expect("nested gitignore");
-    fs::write(project.path().join("sub/keep.log"), "x\n").expect("keep file");
-    fs::write(project.path().join("sub/debug.log"), "x\n").expect("debug file");
+fn a_dot_ignore_overrides_a_nested_gitignore() -> TestResult {
+    let project = project()?;
+    fs::create_dir_all(project.path().join("sub")).check("sub dir")?;
+    fs::write(project.path().join(".ignore"), "!keep.log\n").check("root dot ignore")?;
+    fs::write(project.path().join("sub/.gitignore"), "*.log\n").check("nested gitignore")?;
+    fs::write(project.path().join("sub/keep.log"), "x\n").check("keep file")?;
+    fs::write(project.path().join("sub/debug.log"), "x\n").check("debug file")?;
 
     let rules = rules_for(project.path());
     assert!(
@@ -169,21 +176,22 @@ fn a_dot_ignore_overrides_a_nested_gitignore() {
         ".ignore overrides .gitignore even at different depths"
     );
     assert!(rules.should_ignore("sub/debug.log"));
+    Ok(())
 }
 
 /// Pins the *actual* walker behavior for the cross-type precedence case
 /// against the rules matcher: whatever discovery decides, the rules must
 /// agree — that is the whole point of the shared matcher.
 #[test]
-fn cross_type_precedence_matches_the_walker() {
-    let project = project();
-    fs::create_dir_all(project.path().join("sub")).expect("sub dir");
-    fs::write(project.path().join(".ignore"), "!keep.log\n").expect("root dot ignore");
-    fs::write(project.path().join("sub/.gitignore"), "*.log\n").expect("nested gitignore");
-    fs::write(project.path().join("sub/keep.log"), "x\n").expect("keep file");
-    fs::write(project.path().join("sub/debug.log"), "x\n").expect("debug file");
+fn cross_type_precedence_matches_the_walker() -> TestResult {
+    let project = project()?;
+    fs::create_dir_all(project.path().join("sub")).check("sub dir")?;
+    fs::write(project.path().join(".ignore"), "!keep.log\n").check("root dot ignore")?;
+    fs::write(project.path().join("sub/.gitignore"), "*.log\n").check("nested gitignore")?;
+    fs::write(project.path().join("sub/keep.log"), "x\n").check("keep file")?;
+    fs::write(project.path().join("sub/debug.log"), "x\n").check("debug file")?;
 
-    let (files, _skipped) = discover(project.path()).expect("discover");
+    let (files, _skipped) = discover(project.path()).check("discover")?;
     let indexed: std::collections::HashSet<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -204,21 +212,22 @@ fn cross_type_precedence_matches_the_walker() {
             "rules and discovery must agree on {path}",
         );
     }
+    Ok(())
 }
 
 /// The walker must not apply parent-directory ignore files above the
 /// project root; project-scoped rules are the contract.
 #[test]
-fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
-    let repo = project();
-    fs::write(repo.path().join(".gitignore"), "dist/\n").expect("parent gitignore");
+fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() -> TestResult {
+    let repo = project()?;
+    fs::write(repo.path().join(".gitignore"), "dist/\n").check("parent gitignore")?;
     let root = repo.path().join("nested-project");
-    fs::create_dir_all(root.join("dist")).expect("dist dir");
-    fs::write(root.join("dist/out.rs"), "fn out() {}\n").expect("dist file");
-    fs::create_dir_all(root.join("src")).expect("src dir");
-    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
+    fs::create_dir_all(root.join("dist")).check("dist dir")?;
+    fs::write(root.join("dist/out.rs"), "fn out() {}\n").check("dist file")?;
+    fs::create_dir_all(root.join("src")).check("src dir")?;
+    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").check("lib file")?;
 
-    let (files, _skipped) = discover(&root).expect("discover");
+    let (files, _skipped) = discover(&root).check("discover")?;
     let indexed: std::collections::HashSet<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -233,30 +242,31 @@ fn a_parent_gitignore_does_not_diverge_from_the_incremental_rules() {
         !rules.should_ignore("dist/out.rs"),
         "the incremental rules must agree with the walker"
     );
+    Ok(())
 }
 
 /// Excluded directories must be pruned at descent time. Filtering their
 /// yielded files keeps them out of the index, but walking a large `.git` or
 /// data directory still costs time on every sync.
 #[test]
-fn the_walker_does_not_descend_into_excluded_directories() {
-    let project = project();
+fn the_walker_does_not_descend_into_excluded_directories() -> TestResult {
+    let project = project()?;
     let root = project.path();
-    fs::create_dir_all(root.join(".git/objects")).expect("git objects");
+    fs::create_dir_all(root.join(".git/objects")).check("git objects")?;
     for index in 0..32 {
-        fs::write(root.join(format!(".git/objects/{index:02}")), "x").expect("git object");
+        fs::write(root.join(format!(".git/objects/{index:02}")), "x").check("git object")?;
     }
-    fs::create_dir_all(root.join(".planning/slugaudit")).expect("data dir");
+    fs::create_dir_all(root.join(".planning/slugaudit")).check("data dir")?;
     for index in 0..32 {
-        fs::write(root.join(format!(".planning/slugaudit/{index:02}.db")), "x").expect("data");
+        fs::write(root.join(format!(".planning/slugaudit/{index:02}.db")), "x").check("data")?;
     }
-    fs::create_dir_all(root.join("src")).expect("src dir");
-    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").expect("lib");
+    fs::create_dir_all(root.join("src")).check("src dir")?;
+    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").check("lib")?;
 
     let yielded: Vec<std::path::PathBuf> = indexable_walker(root)
-        .filter_map(Result::ok)
-        .map(|entry| entry.path().to_path_buf())
-        .collect();
+        .map(|entry| entry.map(|entry| entry.path().to_path_buf()))
+        .collect::<Result<_, _>>()
+        .check("walk the project")?;
 
     assert!(
         yielded
@@ -266,26 +276,27 @@ fn the_walker_does_not_descend_into_excluded_directories() {
         "excluded subtrees must not be yielded: {yielded:?}"
     );
     assert!(yielded.iter().any(|path| path.ends_with("src/lib.rs")));
+    Ok(())
 }
 
 /// The rules matcher and the walker must agree on every file: every
 /// discovered file is allowed by the rules, and every rule-ignored file is
 /// absent from discovery.
 #[test]
-fn discovery_parity_rules_and_walker_agree_on_every_file() {
-    let project = project();
-    fs::write(project.path().join(".gitignore"), "target/\n*.log\n").expect("gitignore");
-    fs::create_dir_all(project.path().join("target")).expect("target dir");
-    fs::write(project.path().join("target/gen.rs"), "fn gen() {}\n").expect("target file");
-    fs::create_dir_all(project.path().join("sub")).expect("sub dir");
-    fs::write(project.path().join("sub/.gitignore"), "secret.rs\n").expect("nested gitignore");
-    fs::write(project.path().join("sub/secret.rs"), "fn s() {}\n").expect("secret file");
-    fs::write(project.path().join("sub/open.rs"), "fn o() {}\n").expect("open file");
-    fs::write(project.path().join("debug.log"), "x\n").expect("log file");
-    fs::create_dir_all(project.path().join("src")).expect("src dir");
-    fs::write(project.path().join("src/lib.rs"), "fn lib() {}\n").expect("lib file");
+fn discovery_parity_rules_and_walker_agree_on_every_file() -> TestResult {
+    let project = project()?;
+    fs::write(project.path().join(".gitignore"), "target/\n*.log\n").check("gitignore")?;
+    fs::create_dir_all(project.path().join("target")).check("target dir")?;
+    fs::write(project.path().join("target/gen.rs"), "fn gen() {}\n").check("target file")?;
+    fs::create_dir_all(project.path().join("sub")).check("sub dir")?;
+    fs::write(project.path().join("sub/.gitignore"), "secret.rs\n").check("nested gitignore")?;
+    fs::write(project.path().join("sub/secret.rs"), "fn s() {}\n").check("secret file")?;
+    fs::write(project.path().join("sub/open.rs"), "fn o() {}\n").check("open file")?;
+    fs::write(project.path().join("debug.log"), "x\n").check("log file")?;
+    fs::create_dir_all(project.path().join("src")).check("src dir")?;
+    fs::write(project.path().join("src/lib.rs"), "fn lib() {}\n").check("lib file")?;
 
-    let (files, _skipped) = discover(project.path()).expect("discover");
+    let (files, _skipped) = discover(project.path()).check("discover")?;
     let rules = rules_for(project.path());
 
     for file in &files {
@@ -310,6 +321,7 @@ fn discovery_parity_rules_and_walker_agree_on_every_file() {
     assert!(indexed.contains("src/lib.rs"));
     assert!(indexed.contains(".gitignore"));
     assert!(indexed.contains("sub/.gitignore"));
+    Ok(())
 }
 
 #[test]
@@ -352,12 +364,12 @@ fn an_ignore_file_without_a_parent_is_skipped_with_a_warning() {
 }
 
 #[test]
-fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
-    let project = project();
-    fs::write(project.path().join(".gitignore"), "*.tmp\n").expect("gitignore");
+fn an_unstattable_git_exclude_is_reported_not_skipped_silently() -> TestResult {
+    let project = project()?;
+    fs::write(project.path().join(".gitignore"), "*.tmp\n").check("gitignore")?;
     // A linked worktree or submodule has `.git` as a file, so
     // `.git/info/exclude` fails to stat with "not a directory".
-    fs::write(project.path().join(".git"), "gitdir: elsewhere\n").expect("git file");
+    fs::write(project.path().join(".git"), "gitdir: elsewhere\n").check("git file")?;
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| rules_for(project.path()));
 
@@ -365,6 +377,7 @@ fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
         logs.contains("could not stat .git/info/exclude"),
         "stat failure must be logged:\n{logs}"
     );
+    Ok(())
 }
 
 /// `ignore::Error`'s `Display` for a `WithPath`/`Glob` error is
@@ -372,10 +385,10 @@ fn an_unstattable_git_exclude_is_reported_not_skipped_silently() {
 /// so a malformed project `.gitignore` must emit structured fields rather
 /// than the error text.
 #[test]
-fn a_malformed_project_gitignore_logs_the_path_but_no_glob_text() {
-    let project = project();
+fn a_malformed_project_gitignore_logs_the_path_but_no_glob_text() -> TestResult {
+    let project = project()?;
     let gitignore = project.path().join(".gitignore");
-    fs::write(&gitignore, "[z-a]\n").expect("malformed gitignore");
+    fs::write(&gitignore, "[z-a]\n").check("malformed gitignore")?;
     let expected_path = gitignore.to_string_lossy().to_string();
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
@@ -399,18 +412,19 @@ fn a_malformed_project_gitignore_logs_the_path_but_no_glob_text() {
         "the real path must be present:\n{logs}"
     );
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
+    Ok(())
 }
 
 /// The global gitignore normally lives under `$HOME`/XDG, so the same
 /// error `Display` would put the operator's home directory in a server log.
 #[test]
-fn a_malformed_global_gitignore_logs_the_path_but_no_glob_text() {
-    let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-    let home = project();
-    let xdg = tempfile::tempdir().expect("xdg config dir");
+fn a_malformed_global_gitignore_logs_the_path_but_no_glob_text() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let home = project()?;
+    let xdg = tempfile::tempdir().check("xdg config dir")?;
     let global = xdg.path().join("git/ignore");
-    fs::create_dir_all(global.parent().expect("git config dir")).expect("git config dir");
-    fs::write(&global, "[z-a]\n").expect("malformed global ignore");
+    fs::create_dir_all(global.parent().check("git config dir")?).check("git config dir")?;
+    fs::write(&global, "[z-a]\n").check("malformed global ignore")?;
     let missing_config = home.path().join("absent-gitconfig");
     let expected_path = global.to_string_lossy().to_string();
 
@@ -447,18 +461,19 @@ fn a_malformed_global_gitignore_logs_the_path_but_no_glob_text() {
         "the real path must be present:\n{logs}"
     );
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
+    Ok(())
 }
 
 /// `.git/info/exclude` is added from an absolute path (`root.join`), so
 /// its malformed glob must not reach the log either.
 #[test]
-fn a_malformed_git_exclude_logs_the_path_but_no_glob_text() {
-    let project = project();
+fn a_malformed_git_exclude_logs_the_path_but_no_glob_text() -> TestResult {
+    let project = project()?;
     let gitignore = project.path().join(".gitignore");
-    fs::write(&gitignore, "*.tmp\n").expect("valid gitignore");
+    fs::write(&gitignore, "*.tmp\n").check("valid gitignore")?;
     let exclude = project.path().join(".git/info/exclude");
-    fs::create_dir_all(exclude.parent().expect("exclude dir")).expect("git info dir");
-    fs::write(&exclude, "[z-a]\n").expect("malformed exclude");
+    fs::create_dir_all(exclude.parent().check("exclude dir")?).check("git info dir")?;
+    fs::write(&exclude, "[z-a]\n").check("malformed exclude")?;
     let expected_path = exclude.to_string_lossy().to_string();
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
@@ -482,16 +497,17 @@ fn a_malformed_git_exclude_logs_the_path_but_no_glob_text() {
         "the real path must be present:\n{logs}"
     );
     assert!(!logs.contains("[z-a]"), "the glob text leaked:\n{logs}");
+    Ok(())
 }
 
 /// `Error::Partial` joins its members with newlines, so each failure
 /// must be logged as its own one-line record rather than one multi-line
 /// field.
 #[test]
-fn a_partially_malformed_gitignore_logs_one_record_per_failure() {
-    let project = project();
+fn a_partially_malformed_gitignore_logs_one_record_per_failure() -> TestResult {
+    let project = project()?;
     let gitignore = project.path().join(".gitignore");
-    fs::write(&gitignore, "[z-a]\n[9-0]\n").expect("malformed gitignore");
+    fs::write(&gitignore, "[z-a]\n[9-0]\n").check("malformed gitignore")?;
     let expected_path = gitignore.to_string_lossy().to_string();
 
     let (_rules, logs) = crate::store::test_capture::capture_warns(|| {
@@ -520,4 +536,5 @@ fn a_partially_malformed_gitignore_logs_one_record_per_failure() {
         !logs.contains("[z-a]") && !logs.contains("[9-0]"),
         "the glob text leaked:\n{logs}"
     );
+    Ok(())
 }

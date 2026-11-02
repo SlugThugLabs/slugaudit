@@ -153,7 +153,10 @@ impl CutFacts {
     /// asked for (`Some`) in place of the stored one.
     pub(in crate::tools) fn judged(self, asked_at_ceiling: Option<bool>) -> Self {
         Self {
-            at_ceiling: asked_at_ceiling.unwrap_or(self.at_ceiling),
+            at_ceiling: match asked_at_ceiling {
+                Some(asked) => asked,
+                None => self.at_ceiling,
+            },
             ..self
         }
     }

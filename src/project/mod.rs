@@ -44,7 +44,10 @@ pub use session_profile::{session_profile, set_session_profile};
 /// Test fixture: an empty owner-only `project.db` in `activation` (a
 /// `.planning/slugaudit` directory), which SQLite opens as a fresh database.
 #[cfg(test)]
-pub(crate) fn write_database_marker(activation: &std::path::Path) {
+pub(crate) fn write_database_marker(
+    activation: &std::path::Path,
+) -> slugaudit_test_check::TestResult {
+    use slugaudit_test_check::Check;
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::OpenOptions::new()
         .write(true)
@@ -52,14 +55,17 @@ pub(crate) fn write_database_marker(activation: &std::path::Path) {
         .truncate(true)
         .mode(0o600)
         .open(activation.join("project.db"))
-        .expect("create database marker");
+        .check("create database marker")?;
+    Ok(())
 }
 
 /// Test fixture: creates `<root>/.planning/slugaudit` with an empty
 /// `project.db`, an active project whose first call builds the index.
 #[cfg(test)]
-pub(crate) fn activate_for_test(root: &std::path::Path) {
+pub(crate) fn activate_for_test(root: &std::path::Path) -> slugaudit_test_check::TestResult {
+    use slugaudit_test_check::Check;
     let activation = root.join(".planning").join("slugaudit");
-    std::fs::create_dir_all(&activation).expect("create activation dir");
-    write_database_marker(&activation);
+    std::fs::create_dir_all(&activation).check("create activation dir")?;
+    write_database_marker(&activation)?;
+    Ok(())
 }

@@ -1,23 +1,12 @@
-//! Best-effort detection probes for the `connect` surface (is a client
-//! installed, is its config present). Only a definite "not found" is a silent
+//! Best-effort detection probes for the `connect` surface (is a client CLI on
+//! `PATH`, is its config readable). Only a definite "not found" is a silent
 //! negative; any other failure is a deliberate recovery to the negative that
 //! is logged with the source error, so a detection miss always has a cause.
+//! Config-path existence is not probed here: `AgentDef::is_installed` returns
+//! that failure to its caller.
 
 use crate::util::{MAX_FOREIGN_TEXT_BYTES, read_file_capped};
 use std::path::Path;
-
-/// Whether `path` exists. A stat failure other than "not found" (permissions,
-/// a path component that is a file) reads as absent and is logged.
-pub(crate) fn exists_or_warn(path: &Path) -> bool {
-    path.try_exists().unwrap_or_else(|error| {
-        tracing::warn!(
-            path = %path.display(),
-            error = %error,
-            "could not stat path; treating it as absent",
-        );
-        false
-    })
-}
 
 /// Reads a client's config. A missing file is a silent `None`; an unreadable,
 /// non-UTF-8, or over-cap file is `None` with the cause logged. The write path
@@ -58,52 +47,11 @@ pub(crate) fn cli_on_path(cli: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     #[test]
-    fn a_missing_path_is_absent_without_a_warning() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let missing = directory.path().join("missing");
-
-        let (exists, logs) = crate::store::test_capture::capture_warns(|| {
-            tracing::warn!("control-line-probe-exists-missing");
-            exists_or_warn(&missing)
-        });
-
-        assert!(!exists);
-        assert!(
-            logs.contains("control-line-probe-exists-missing"),
-            "capture liveness control"
-        );
-        assert!(
-            !logs.contains("could not stat path"),
-            "not-found is silent:\n{logs}"
-        );
-    }
-
-    #[test]
-    fn a_stat_failure_is_absent_but_warns_with_the_cause() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let file = directory.path().join("file");
-        std::fs::write(&file, b"x").expect("write file");
-        let under_a_file = file.join("child");
-
-        let (exists, logs) =
-            crate::store::test_capture::capture_warns(|| exists_or_warn(&under_a_file));
-
-        assert!(!exists);
-        assert!(
-            logs.contains("could not stat path"),
-            "stat failure must be logged:\n{logs}"
-        );
-        assert!(
-            logs.contains("error="),
-            "the source error must be kept:\n{logs}"
-        );
-    }
-
-    #[test]
-    fn a_missing_config_reads_as_none_without_a_warning() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn a_missing_config_reads_as_none_without_a_warning() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
 
         let (contents, logs) = crate::store::test_capture::capture_warns(|| {
             tracing::warn!("control-line-probe-config-missing");
@@ -113,14 +61,15 @@ mod tests {
         assert_eq!(contents, None);
         assert!(logs.contains("control-line-probe-config-missing"));
         assert!(!logs.contains("could not read client config"), "{logs}");
+        Ok(())
     }
 
     #[test]
-    fn an_over_cap_config_reads_as_none_and_warns_with_the_cause() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn an_over_cap_config_reads_as_none_and_warns_with_the_cause() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
         let big = directory.path().join("mcp.json");
-        let over_cap = usize::try_from(MAX_FOREIGN_TEXT_BYTES).expect("cap fits usize") + 1;
-        std::fs::write(&big, vec![b' '; over_cap]).expect("write oversized config");
+        let over_cap = usize::try_from(MAX_FOREIGN_TEXT_BYTES).check("cap fits usize")? + 1;
+        std::fs::write(&big, vec![b' '; over_cap]).check("write oversized config")?;
 
         let (contents, logs) =
             crate::store::test_capture::capture_warns(|| read_config_or_warn(&big));
@@ -128,29 +77,33 @@ mod tests {
         assert_eq!(contents, None);
         assert!(logs.contains("could not read client config"), "{logs}");
         assert!(logs.contains("-byte cap"), "the cause is kept:\n{logs}");
+        Ok(())
     }
 
     /// Runs `f` with `PATH` set to an empty directory, so no client CLI
     /// resolves, and returns what it logged at warn level or above.
-    fn warns_with_empty_path<T>(f: impl FnOnce() -> T) -> (T, String) {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
-        let empty = tempfile::tempdir().expect("temp dir");
-        temp_env::with_var("PATH", Some(empty.path().as_os_str()), || {
-            crate::store::test_capture::capture_warns(f)
-        })
+    fn warns_with_empty_path<T>(f: impl FnOnce() -> T) -> TestResult<(T, String)> {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+        let empty = tempfile::tempdir().check("temp dir")?;
+        Ok(temp_env::with_var(
+            "PATH",
+            Some(empty.path().as_os_str()),
+            || crate::store::test_capture::capture_warns(f),
+        ))
     }
 
     #[test]
-    fn a_cli_that_is_not_on_path_is_absent_without_a_warning() {
-        let (found, logs) = warns_with_empty_path(|| cli_on_path("slugaudit-no-such-cli"));
+    fn a_cli_that_is_not_on_path_is_absent_without_a_warning() -> TestResult {
+        let (found, logs) = warns_with_empty_path(|| cli_on_path("slugaudit-no-such-cli"))?;
 
         assert!(!found);
         assert!(!logs.contains("could not search PATH"), "{logs}");
+        Ok(())
     }
 
     #[test]
-    fn a_path_lookup_failure_is_absent_but_logged_with_the_cause() {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().expect("env lock");
+    fn a_path_lookup_failure_is_absent_but_logged_with_the_cause() -> TestResult {
+        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
 
         let (found, logs) = temp_env::with_var_unset("PATH", || {
             crate::store::test_capture::capture_warns(|| cli_on_path("slugaudit-no-such-cli"))
@@ -159,5 +112,6 @@ mod tests {
         assert!(!found);
         assert!(logs.contains("could not search PATH"), "{logs}");
         assert!(logs.contains("error="), "the source error is kept:\n{logs}");
+        Ok(())
     }
 }

@@ -6,6 +6,7 @@
 
 use crate::tools::context::{SyncedProject, ensure_synced_no_progress, with_verified_read};
 use crate::tools::test_support::activated_project;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::path::PathBuf;
 
 fn missing_handle() -> SyncedProject {
@@ -16,20 +17,20 @@ fn missing_handle() -> SyncedProject {
     }
 }
 
-fn synced_project() -> (tempfile::TempDir, SyncedProject) {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn synced_project() -> TestResult<(tempfile::TempDir, SyncedProject)> {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let synced = ensure_synced_no_progress(
         &project.path().to_string_lossy(),
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("sync");
-    (project, synced)
+    .check("sync")?;
+    Ok((project, synced))
 }
 
 #[test]
-fn verified_read_fails_cleanly_when_the_database_is_missing() {
+fn verified_read_fails_cleanly_when_the_database_is_missing() -> TestResult {
     let result = with_verified_read(&missing_handle(), |_tx| Ok(()));
-    let error = result.expect_err("opening a missing database must fail");
+    let error = result.check_err("opening a missing database must fail")?;
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
         error.message.starts_with("opening the project database:"),
@@ -41,13 +42,14 @@ fn verified_read_fails_cleanly_when_the_database_is_missing() {
         "the error must carry the retry hint, got: {}",
         error.message
     );
+    Ok(())
 }
 
 #[test]
-fn verified_read_fails_cleanly_on_a_corrupt_database() {
-    let directory = tempfile::tempdir().expect("db dir");
+fn verified_read_fails_cleanly_on_a_corrupt_database() -> TestResult {
+    let directory = tempfile::tempdir().check("db dir")?;
     let database_path = directory.path().join("project.db");
-    std::fs::write(&database_path, b"this is not a sqlite database").expect("write corrupt db");
+    std::fs::write(&database_path, b"this is not a sqlite database").check("write corrupt db")?;
     let handle = SyncedProject {
         database_path,
         revision_id: "rev-1".to_owned(),
@@ -59,16 +61,17 @@ fn verified_read_fails_cleanly_on_a_corrupt_database() {
         result.is_err(),
         "a corrupt database must surface an error rather than serve stale data"
     );
+    Ok(())
 }
 
 /// A database that opens but has no `revisions` table forces the SELECT in
 /// `verify_revision_matches` to fail, the arm the stale-revision test cannot
 /// reach: the handle is current, but the read itself breaks.
 #[test]
-fn verified_read_reports_a_failure_reading_the_current_revision() {
-    let directory = tempfile::tempdir().expect("db dir");
+fn verified_read_reports_a_failure_reading_the_current_revision() -> TestResult {
+    let directory = tempfile::tempdir().check("db dir")?;
     let database_path = directory.path().join("project.db");
-    drop(rusqlite::Connection::open(&database_path).expect("create empty database"));
+    drop(rusqlite::Connection::open(&database_path).check("create empty database")?);
     let handle = SyncedProject {
         database_path,
         revision_id: "rev-1".to_owned(),
@@ -76,7 +79,7 @@ fn verified_read_reports_a_failure_reading_the_current_revision() {
     };
 
     let error = with_verified_read(&handle, |_tx| Ok(()))
-        .expect_err("a database without a revisions table must fail the read");
+        .check_err("a database without a revisions table must fail the read")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
@@ -89,21 +92,26 @@ fn verified_read_reports_a_failure_reading_the_current_revision() {
         "the SQLite cause must be kept, got: {}",
         error.message
     );
+    Ok(())
 }
 
 /// `verify_revision_matches` passes, the closure runs, but the transaction is
 /// no longer open when the wrapper commits: the commit arm must translate the
 /// failure with its own context instead of panicking.
 #[test]
-fn verified_read_reports_a_failed_commit() {
-    let (_project, synced) = synced_project();
+fn verified_read_reports_a_failed_commit() -> TestResult {
+    let (_project, synced) = synced_project()?;
 
     let error = with_verified_read(&synced, |tx| {
-        tx.execute_batch("COMMIT")
-            .expect("end the transaction inside the closure");
+        tx.execute_batch("COMMIT").map_err(|error| {
+            rmcp::ErrorData::internal_error(
+                format!("end the transaction inside the closure: {error}"),
+                None,
+            )
+        })?;
         Ok(())
     })
-    .expect_err("committing an already-ended transaction must fail");
+    .check_err("committing an already-ended transaction must fail")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert!(
@@ -118,23 +126,24 @@ fn verified_read_reports_a_failed_commit() {
         "the SQLite cause must be kept, got: {}",
         error.message
     );
+    Ok(())
 }
 
 /// `BEGIN DEFERRED` on a connection that already has an open transaction is
 /// the one reachable start failure: the wrapper must translate SQLite's
 /// refusal with the start context and keep the cause, not panic.
 #[test]
-fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction() {
-    let mut connection = rusqlite::Connection::open_in_memory().expect("open connection");
+fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction() -> TestResult {
+    let mut connection = rusqlite::Connection::open_in_memory().check("open connection")?;
     connection
         .execute_batch("BEGIN DEFERRED")
-        .expect("open the outer transaction");
+        .check("open the outer transaction")?;
     let cause = connection
         .execute_batch("BEGIN DEFERRED")
-        .expect_err("SQLite refuses a second BEGIN");
+        .check_err("SQLite refuses a second BEGIN")?;
 
     let error = super::start_read_transaction(&mut connection)
-        .expect_err("starting a nested read transaction must fail");
+        .check_err("starting a nested read transaction must fail")?;
 
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert_eq!(
@@ -147,5 +156,6 @@ fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction()
     );
     connection
         .execute_batch("ROLLBACK")
-        .expect("close the outer transaction");
+        .check("close the outer transaction")?;
+    Ok(())
 }

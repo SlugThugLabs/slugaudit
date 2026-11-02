@@ -1,26 +1,27 @@
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 
-fn activate(root: &std::path::Path) {
-    crate::project::activate_for_test(root);
+fn activate(root: &std::path::Path) -> TestResult {
+    crate::project::activate_for_test(root)
 }
 
 #[test]
-fn reports_credential_pattern_file_count() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
-    fs::write(project.path().join(".env"), b"API_KEY=secret\n").expect("write .env");
-    fs::create_dir_all(project.path().join("keys")).expect("keys dir");
+fn reports_credential_pattern_file_count() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
+    fs::write(project.path().join(".env"), b"API_KEY=secret\n").check("write .env")?;
+    fs::create_dir_all(project.path().join("keys")).check("keys dir")?;
     fs::write(
         project.path().join("keys").join("cred.pem"),
         b"-----BEGIN PRIVATE KEY-----\n",
     )
-    .expect("write pem");
+    .check("write pem")?;
     // Ordinary source must never match the credential patterns.
     fs::write(project.path().join("pem_util.rs"), b"pub fn parse() {}\n")
-        .expect("write ordinary source");
+        .check("write ordinary source")?;
 
     let response = report(
         &Parameters(ReportRequest {
@@ -29,24 +30,25 @@ fn reports_credential_pattern_file_count() {
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("report succeeds");
+    .check("report succeeds")?;
 
     assert_eq!(response.0.file_count, 4);
     assert_eq!(
         response.0.credential_pattern_file_count, 2,
         ".env and keys/cred.pem match credential patterns; pem_util.rs and lib.rs must not"
     );
+    Ok(())
 }
 
 #[test]
-fn reports_real_counts_for_an_active_project() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
+fn reports_real_counts_for_an_active_project() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
     fs::write(
         project.path().join("lib.rs"),
         b"pub fn a() {}\npub fn b() {}\n",
     )
-    .expect("write fixture");
+    .check("write fixture")?;
 
     let response = report(
         &Parameters(ReportRequest {
@@ -55,7 +57,7 @@ fn reports_real_counts_for_an_active_project() {
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("report succeeds");
+    .check("report succeeds")?;
 
     assert_eq!(response.0.file_count, 1);
     assert!(
@@ -84,6 +86,7 @@ fn reports_real_counts_for_an_active_project() {
         "a single-file project has no import edges"
     );
     assert_eq!(response.0.diagnostic_count, 0);
+    Ok(())
 }
 
 /// `unsupported_language_unresolved_count` must count only the `Unresolved`
@@ -94,11 +97,12 @@ fn reports_real_counts_for_an_active_project() {
 /// pins the *SQL count* over that cached column — the write-time
 /// computation itself is covered by the `publish_edges` pipeline tests.
 #[test]
-fn unsupported_language_unresolved_is_counted_separately_from_supported_language_unresolved() {
+fn unsupported_language_unresolved_is_counted_separately_from_supported_language_unresolved()
+-> TestResult {
     use crate::store::open_read_write;
 
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     connection
         .execute(
@@ -107,7 +111,7 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
              VALUES ('r1', 'h', '1.0.0', 0, 1)",
             [],
         )
-        .expect("insert revision");
+        .check("insert revision")?;
 
     for (path, language) in [("a.go", "go"), ("b.py", "python"), ("c.kt", "kotlin")] {
         connection
@@ -120,23 +124,23 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
                          ?2, 1, 'Available', 'Succeeded', 'Full', 1)",
                 rusqlite::params![path, language],
             )
-            .expect("insert file");
+            .check("insert file")?;
     }
     let go_id: i64 = connection
         .query_row("SELECT id FROM files WHERE path = 'a.go'", [], |row| {
             row.get(0)
         })
-        .expect("go file id");
+        .check("go file id")?;
     let py_id: i64 = connection
         .query_row("SELECT id FROM files WHERE path = 'b.py'", [], |row| {
             row.get(0)
         })
-        .expect("python file id");
+        .check("python file id")?;
     let kotlin_id: i64 = connection
         .query_row("SELECT id FROM files WHERE path = 'c.kt'", [], |row| {
             row.get(0)
         })
-        .expect("kotlin file id");
+        .check("kotlin file id")?;
 
     // syntax_unmodeled mirrors what `revision_edges::resolve_and_store`
     // would cache at write time for each raw import text: Go's quoted
@@ -149,24 +153,24 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
              VALUES (?1, 'import \"fmt\"', 'Unresolved', 1)",
             [go_id],
         )
-        .expect("insert go edge");
+        .check("insert go edge")?;
     connection
         .execute(
             "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind, syntax_unmodeled) \
              VALUES (?1, 'import missing_module', 'Unresolved', 0)",
             [py_id],
         )
-        .expect("insert python edge");
+        .check("insert python edge")?;
     connection
         .execute(
             "INSERT INTO dependency_edges (from_file_id, raw_import_text, resolution_kind, syntax_unmodeled) \
              VALUES (?1, 'import kotlin.math.max', 'Unresolved', 0)",
             [kotlin_id],
         )
-        .expect("insert kotlin edge");
+        .check("insert kotlin edge")?;
 
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let tx = connection.transaction().check("begin transaction")?;
+    let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
     assert_eq!(
         response.unsupported_language_unresolved_count, 1,
@@ -182,6 +186,7 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         total_unresolved, 3,
         "all three edges must still count toward the general Unresolved bucket"
     );
+    Ok(())
 }
 
 /// Inbound and outbound edge totals are arithmetic over
@@ -189,10 +194,10 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
 /// point does not need SQL for the totals, and an edge that lands on no
 /// project file still counts outbound.
 #[test]
-fn dependency_edge_totals_count_edges_and_files_in_both_directions() {
-    let (_dir, mut connection) = database_with_one_revision();
+fn dependency_edge_totals_count_edges_and_files_in_both_directions() -> TestResult {
+    let (_dir, mut connection) = database_with_one_revision()?;
     for path in ["src/lib.rs", "src/main.rs"] {
-        insert_indexed_file(&connection, path, "Available", "Succeeded", None, "Full");
+        insert_indexed_file(&connection, path, "Available", "Succeeded", None, "Full")?;
     }
     connection
         .execute_batch(
@@ -202,16 +207,17 @@ fn dependency_edge_totals_count_edges_and_files_in_both_directions() {
              INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind) \
              SELECT (SELECT id FROM files WHERE path = 'src/lib.rs'), NULL, 'import ext', 'External';",
         )
-        .expect("insert one resolved and one targetless edge");
+        .check("insert one resolved and one targetless edge")?;
 
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let tx = connection.transaction().check("begin transaction")?;
+    let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
     let totals = response.dependency_edges;
     assert_eq!(totals.outbound_edge_count, 2, "both edges leave lib.rs");
     assert_eq!(totals.inbound_edge_count, 1, "only the resolved edge lands");
     assert_eq!(totals.outbound_file_count, 1, "one file imports anything");
     assert_eq!(totals.inbound_file_count, 1, "one file is imported");
+    Ok(())
 }
 
 /// The envelope carries where files came from as its own breakdown, so an
@@ -219,8 +225,8 @@ fn dependency_edge_totals_count_edges_and_files_in_both_directions() {
 /// rows can read the class counts off the report instead of re-deriving the
 /// classification in SQL.
 #[test]
-fn the_completeness_envelope_groups_files_by_class() {
-    let (_dir, mut connection) = database_with_one_revision();
+fn the_completeness_envelope_groups_files_by_class() -> TestResult {
+    let (_dir, mut connection) = database_with_one_revision()?;
     for (path, class) in [
         ("src/lib.rs", "authored"),
         ("src/generated/api.rs", "generated"),
@@ -236,11 +242,11 @@ fn the_completeness_envelope_groups_files_by_class() {
                          'Full', 1)",
                 rusqlite::params![path, class],
             )
-            .expect("insert file");
+            .check("insert file")?;
     }
 
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
+    let tx = connection.transaction().check("begin transaction")?;
+    let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
     let class_count = |class: &str| {
         response
@@ -253,33 +259,38 @@ fn the_completeness_envelope_groups_files_by_class() {
     assert_eq!(class_count("authored"), Some(1));
     assert_eq!(class_count("generated"), Some(1));
     assert_eq!(class_count("vendored"), Some(1));
+    Ok(())
 }
 
 #[test]
-fn malformed_language_value_is_reported_instead_of_dropped() {
+fn malformed_language_value_is_reported_instead_of_dropped() -> TestResult {
     use crate::store::open_read_write;
 
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     connection
         .execute_batch(
             "INSERT INTO revisions (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) VALUES ('r1', 'h', '1.0.0', 0, 1);\
              INSERT INTO files (path, file_kind, content, content_hash, hash_algorithm, byte_len, language, language_detected, parser_availability, parse_outcome, extraction_completeness, last_revision_id) \
              VALUES ('broken.bin', 'indexed', '', 'h', 'blake3', 0, CAST(X'FF' AS BLOB), 1, 'Unavailable', 'Failed', 'Unavailable', 1);"
         )
-        .expect("insert revision and file");
+        .check("insert revision and file")?;
 
-    let tx = connection.transaction().expect("begin transaction");
-    let error = build_report(&tx, "r1".to_owned()).expect_err("malformed language");
+    let tx = connection.transaction().check("begin transaction")?;
+    let error = build_report(&tx, "r1".to_owned()).check_err("malformed language")?;
     let rusqlite::Error::InvalidColumnType(_, column, _) = &error else {
-        panic!("the malformed language column is named, not dropped: {error:?}");
+        return Err(format!(
+            "the malformed language column is named, not dropped: {error:?}"
+        ))
+        .check("unexpected outcome");
     };
     assert_eq!(column, "language");
+    Ok(())
 }
 
 #[test]
-fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
-    let project = tempfile::tempdir().expect("project dir");
+fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
     let req = ReportRequest {
         path: project.path().to_string_lossy().into_owned(),
     };
@@ -289,16 +300,17 @@ fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() {
         &crate::sync::SourceSyncManager::default(),
     )
     .err()
-    .expect("report on inactive project must return ErrorData");
+    .check("report on inactive project must return ErrorData")?;
     assert!(
         err.message.contains("not enabled")
             || err.message.contains("inactive")
             || err.message.contains("activate")
     );
+    Ok(())
 }
 
 #[test]
-fn report_rejects_a_path_over_the_byte_cap() {
+fn report_rejects_a_path_over_the_byte_cap() -> TestResult {
     let request = Parameters(ReportRequest {
         path: "a".repeat(MAX_PATH_BYTES + 1),
     });
@@ -309,7 +321,7 @@ fn report_rejects_a_path_over_the_byte_cap() {
         &crate::sync::SourceSyncManager::default(),
     )
     .err()
-    .expect("an over-cap path is refused");
+    .check("an over-cap path is refused")?;
 
     assert_eq!(
         error.code,
@@ -317,26 +329,27 @@ fn report_rejects_a_path_over_the_byte_cap() {
         "{error:?}"
     );
     assert_eq!(error.message, "path exceeds 32768 bytes");
+    Ok(())
 }
 
 /// A section query that fails (here: a `files.language` value that is not
 /// text) fails the whole report with an internal error; the report is never
 /// returned with a section silently missing.
 #[test]
-fn report_maps_a_build_failure_to_an_internal_error() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+fn report_maps_a_build_failure_to_an_internal_error() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
     let path = project.path().to_string_lossy().into_owned();
     let manager = crate::sync::SourceSyncManager::default();
     manager
         .ensure_current(&path, &crate::progress::NoopProgressSink)
-        .expect("initial sync");
+        .check("initial sync")?;
     let database = project.path().join(".planning/slugaudit/project.db");
-    let connection = crate::store::open_read_write(&database).expect("open the database");
+    let connection = crate::store::open_read_write(&database).check("open the database")?;
     connection
         .execute("UPDATE files SET language = CAST(X'FF' AS BLOB)", [])
-        .expect("malform the language column");
+        .check("malform the language column")?;
     drop(connection);
 
     let error = report(
@@ -345,7 +358,7 @@ fn report_maps_a_build_failure_to_an_internal_error() {
         &manager,
     )
     .err()
-    .expect("a failed section query fails the report");
+    .check("a failed section query fails the report")?;
 
     assert_eq!(
         error.code,
@@ -360,6 +373,7 @@ fn report_maps_a_build_failure_to_an_internal_error() {
         "the operation, cause, retry hint and no caller-input code must survive: {}",
         error.message
     );
+    Ok(())
 }
 
 /// A discovered file whose name is not valid UTF-8 cannot have a `files`
@@ -369,13 +383,13 @@ fn report_maps_a_build_failure_to_an_internal_error() {
 /// otherwise unchanged and no new revision is published.
 #[cfg(unix)]
 #[test]
-fn non_utf8_paths_are_counted_from_sync_state_as_the_tree_changes() {
+fn non_utf8_paths_are_counted_from_sync_state_as_the_tree_changes() -> TestResult {
     use std::os::unix::ffi::OsStringExt;
 
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
-    let report_state = || {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
+    let report_state = || -> TestResult<_> {
         let response = report(
             &Parameters(ReportRequest {
                 path: project.path().to_string_lossy().into_owned(),
@@ -383,30 +397,32 @@ fn non_utf8_paths_are_counted_from_sync_state_as_the_tree_changes() {
             &crate::progress::NoopProgressSink,
             &crate::sync::SourceSyncManager::default(),
         )
-        .expect("report succeeds");
-        (
+        .check("report succeeds")?;
+        Ok((
             response.0.completeness.unrepresentable_path_count,
             response.0.completeness.index_partial,
-        )
+        ))
     };
 
-    assert_eq!(report_state(), (0, false), "nothing is unrepresentable");
+    assert_eq!(report_state()?, (0, false), "nothing is unrepresentable");
     let bad = project
         .path()
         .join(std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec()));
-    fs::write(&bad, b"fn b() {}\n").expect("write non-utf8 file");
-    assert_eq!(report_state(), (1, true), "the dropped path is counted");
-    fs::remove_file(&bad).expect("remove non-utf8 file");
-    assert_eq!(report_state(), (0, false), "removal updates the count");
+    fs::write(&bad, b"fn b() {}\n").check("write non-utf8 file")?;
+    assert_eq!(report_state()?, (1, true), "the dropped path is counted");
+    fs::remove_file(&bad).check("remove non-utf8 file")?;
+    assert_eq!(report_state()?, (0, false), "removal updates the count");
+    Ok(())
 }
 
 /// A project DB with one revision and no files, ready for direct `files`
 /// inserts — the report tests below assert SQL over hand-built rows rather
 /// than running the full sync pipeline.
-fn database_with_one_revision() -> (tempfile::TempDir, rusqlite::Connection) {
-    let db_dir = tempfile::tempdir().expect("db dir");
+pub(super) fn database_with_one_revision() -> TestResult<(tempfile::TempDir, rusqlite::Connection)>
+{
+    let db_dir = tempfile::tempdir().check("db dir")?;
     let connection =
-        crate::store::open_read_write(&db_dir.path().join("project.db")).expect("open db");
+        crate::store::open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     connection
         .execute(
             "INSERT INTO revisions \
@@ -414,20 +430,20 @@ fn database_with_one_revision() -> (tempfile::TempDir, rusqlite::Connection) {
              VALUES ('r1', 'h', '1.0.0', 0, 1)",
             [],
         )
-        .expect("insert revision");
-    (db_dir, connection)
+        .check("insert revision")?;
+    Ok((db_dir, connection))
 }
 
 /// Inserts one indexed text file with the given parser columns, so a test
 /// can reproduce a specific failure shape without a real parser.
-fn insert_indexed_file(
+pub(super) fn insert_indexed_file(
     connection: &rusqlite::Connection,
     path: &str,
     availability: &str,
     outcome: &str,
     error_reason: Option<&str>,
     completeness: &str,
-) {
+) -> TestResult {
     connection
         .execute(
             "INSERT INTO files \
@@ -437,194 +453,6 @@ fn insert_indexed_file(
              VALUES (?1, 'indexed', '', 'h', 'blake3', 0, NULL, 0, ?2, ?3, ?4, ?5, 1)",
             rusqlite::params![path, availability, outcome, error_reason, completeness],
         )
-        .expect("insert file");
-}
-
-/// A text file that is fully indexed but has no parser must appear in the
-/// report as `ContentOnly` — its content is present and readable — rather
-/// than as an indistinguishable `NotAttempted` failure; a parse that really
-/// ran and then failed must still read as `Failed`.
-#[test]
-fn parser_failure_rows_distinguish_content_only_from_a_failed_parse() {
-    let (_dir, mut connection) = database_with_one_revision();
-    insert_indexed_file(
-        &connection,
-        "notes.txt",
-        "Unavailable",
-        "NotAttempted",
-        None,
-        "ContentOnly",
-    );
-    insert_indexed_file(
-        &connection,
-        "broken.rs",
-        "Available",
-        "Failed",
-        Some("boom"),
-        "ContentOnly",
-    );
-
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
-
-    let notes = response
-        .parser_failure_files
-        .iter()
-        .find(|file| file.path == "notes.txt")
-        .expect("indexed-but-unparsed file is listed");
-    assert_eq!(notes.extraction_completeness, "ContentOnly");
-    assert_eq!(notes.parser_availability, "Unavailable");
-    assert_eq!(notes.parse_outcome, "NotAttempted");
-
-    let broken = response
-        .parser_failure_files
-        .iter()
-        .find(|file| file.path == "broken.rs")
-        .expect("genuinely failed parse is listed");
-    assert_eq!(broken.parse_outcome, "Failed");
-    assert_eq!(broken.parse_error_reason.as_deref(), Some("boom"));
-}
-
-#[test]
-fn parser_failure_files_total_equals_the_list_when_under_the_cap() {
-    let (_dir, mut connection) = database_with_one_revision();
-    for name in ["a.txt", "b.txt", "c.txt"] {
-        insert_indexed_file(
-            &connection,
-            name,
-            "Unavailable",
-            "NotAttempted",
-            None,
-            "ContentOnly",
-        );
-    }
-
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
-
-    assert_eq!(response.parser_failure_files.len(), 3);
-    assert_eq!(response.parser_failure_files_total, 3);
-}
-
-#[test]
-fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() {
-    let (_dir, mut connection) = database_with_one_revision();
-    let total = i64::try_from(MAX_PARSER_FAILURE_FILES).expect("cap fits in i64") + 5;
-    for index in 0..total {
-        insert_indexed_file(
-            &connection,
-            &format!("f{index:03}.txt"),
-            "Unavailable",
-            "NotAttempted",
-            None,
-            "ContentOnly",
-        );
-    }
-
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
-
-    assert_eq!(
-        response.parser_failure_files.len(),
-        MAX_PARSER_FAILURE_FILES
-    );
-    assert_eq!(response.parser_failure_files_total, total);
-}
-
-/// The envelope counts kinds, skip reasons, extraction completeness, and the
-/// two evidence gaps independently. Asserted over hand-built rows so each
-/// bucket is unambiguous: a `ContentOnly` row (text indexed, nothing parsed)
-/// must show up as `ContentOnly` and not as a parser failure, a skipped row
-/// must be counted as skipped rather than as either, and a row whose evidence
-/// was cut short by a cap must not read as a complete one.
-#[test]
-fn completeness_envelope_separates_kinds_reasons_and_completeness() {
-    let (_dir, mut connection) = database_with_one_revision();
-    insert_indexed_file(
-        &connection,
-        "notes.txt",
-        "Unavailable",
-        "NotAttempted",
-        None,
-        "ContentOnly",
-    );
-    insert_indexed_file(
-        &connection,
-        "capped.rs",
-        "Available",
-        "Succeeded",
-        None,
-        "Full",
-    );
-    let capped_id: i64 = connection
-        .query_row("SELECT id FROM files WHERE path = 'capped.rs'", [], |row| {
-            row.get(0)
-        })
-        .expect("capped.rs id");
-    connection
-        .execute(
-            "INSERT INTO evidence \
-             (file_id, key, kind, origin, span_availability, payload) \
-             VALUES (?1, 'evidence:truncated', 'Diagnostic', 'SourceContent', \
-                     'DerivedEvidence', '{}')",
-            [capped_id],
-        )
-        .expect("insert the evidence-cap marker");
-    connection
-        .execute(
-            "INSERT INTO files \
-             (path, file_kind, skip_reason, content, content_hash, hash_algorithm, byte_len, \
-              language_detected, parser_availability, parse_outcome, extraction_completeness, \
-              last_revision_id) \
-             VALUES ('huge.rs', 'skipped', 'oversize', NULL, 'stat', 'stat-identity', 100000, \
-                     0, 'Unavailable', 'NotAttempted', 'Unavailable', 1)",
-            [],
-        )
-        .expect("insert skipped row");
-
-    let tx = connection.transaction().expect("begin transaction");
-    let response = build_report(&tx, "r1".to_owned()).expect("build report");
-
-    let kind_count = |kind: &str| {
-        response
-            .completeness
-            .file_kind_counts
-            .iter()
-            .find(|entry| entry.kind == kind)
-            .map(|entry| entry.count)
-    };
-    assert_eq!(kind_count("indexed"), Some(2));
-    assert_eq!(kind_count("skipped"), Some(1));
-    assert_eq!(response.completeness.skipped_file_count, 1);
-    assert!(response.completeness.index_partial);
-    assert_eq!(response.completeness.skipped_by_reason.len(), 1);
-    assert_eq!(
-        response.completeness.skipped_by_reason[0].reason,
-        "oversize"
-    );
-    assert_eq!(response.completeness.skipped_by_reason[0].count, 1);
-    let completeness_for = |value: &str| {
-        response
-            .completeness
-            .extraction_completeness_counts
-            .iter()
-            .find(|entry| entry.extraction_completeness == value)
-            .map(|entry| entry.count)
-    };
-    assert_eq!(completeness_for("ContentOnly"), Some(1));
-    assert_eq!(completeness_for("Full"), Some(1));
-    assert_eq!(completeness_for("Unavailable"), Some(1));
-    assert_eq!(
-        response.completeness.indexed_files_without_evidence, 1,
-        "notes.txt has content but no structural evidence; capped.rs has evidence and the \
-         skipped row is not an indexed gap"
-    );
-    assert_eq!(
-        response.completeness.evidence_capped_file_count, 1,
-        "capped.rs carries the truncation marker"
-    );
-    assert_eq!(
-        response.parser_failure_count, 1,
-        "a skipped file is never parsed, so it is not a parser failure"
-    );
+        .check("insert file")?;
+    Ok(())
 }

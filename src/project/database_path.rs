@@ -18,13 +18,14 @@ pub fn database_path(root: &ProjectRoot) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     #[test]
-    fn database_path_stays_inside_the_activation_directory() {
-        let directory = tempfile::tempdir().expect("temp dir");
+    fn database_path_stays_inside_the_activation_directory() -> TestResult {
+        let directory = tempfile::tempdir().check("temp dir")?;
         std::fs::create_dir_all(directory.path().join(".planning").join("slugaudit"))
-            .expect("create activation dir");
-        let root = ProjectRoot::resolve(directory.path()).expect("valid root");
+            .check("create activation dir")?;
+        let root = ProjectRoot::resolve(directory.path()).check("valid root")?;
 
         let path = database_path(&root);
         assert_eq!(
@@ -32,10 +33,11 @@ mod tests {
             directory
                 .path()
                 .canonicalize()
-                .expect("tempdir canonicalizes")
+                .check("tempdir canonicalizes")?
                 .join(".planning")
                 .join("slugaudit")
                 .join("project.db")
         );
+        Ok(())
     }
 }

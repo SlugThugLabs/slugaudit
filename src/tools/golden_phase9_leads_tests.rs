@@ -7,10 +7,11 @@ use crate::tools::{
 };
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
+use slugaudit_test_check::{Check, TestResult};
 
-fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> LeadsRequest {
-    LeadsRequest {
-        path: Some(path_of(project)),
+fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> TestResult<LeadsRequest> {
+    Ok(LeadsRequest {
+        path: Some(path_of(project)?),
         mechanic: mechanic.map(str::to_owned),
         pattern: None,
         limit: None,
@@ -18,10 +19,10 @@ fn leads_request(project: &tempfile::TempDir, mechanic: Option<&str>) -> LeadsRe
         mode: LeadMode::Full,
         page_bytes: None,
         legacy_paging: LegacyPaging::default(),
-    }
+    })
 }
 
-fn run_leads(request: &LeadsRequest, manager: &SourceSyncManager) -> Value {
+fn run_leads(request: &LeadsRequest, manager: &SourceSyncManager) -> TestResult<Value> {
     let response = leads(
         &Parameters(LeadsRequest {
             path: request.path.clone(),
@@ -36,9 +37,9 @@ fn run_leads(request: &LeadsRequest, manager: &SourceSyncManager) -> Value {
         &NoopProgressSink,
         manager,
     )
-    .expect("leads succeeds")
+    .check("leads succeeds")?
     .0;
-    serde_json::to_value(response).expect("response serializes")
+    serde_json::to_value(response).check("response serializes")
 }
 
 fn leads_case(
@@ -46,44 +47,48 @@ fn leads_case(
     project: &tempfile::TempDir,
     request: &LeadsRequest,
     manager: &SourceSyncManager,
-) -> Value {
-    let response = run_leads(request, manager);
+) -> TestResult<Value> {
+    let response = run_leads(request, manager)?;
     let echoed = json!({
         "mechanic": request.mechanic, "limit": request.limit, "cursor": request.cursor,
         "compact": request.mode == LeadMode::Compact,
     });
-    check_case(name, project, &echoed, &response);
-    response
+    check_case(name, project, &echoed, &response)?;
+    Ok(response)
 }
 
 #[test]
-fn golden_phase9_leads_counts_rows_pages_and_compact() {
-    let project = rust_project();
+fn golden_phase9_leads_counts_rows_pages_and_compact() -> TestResult {
+    let project = rust_project()?;
     let manager = SourceSyncManager::default();
 
     leads_case(
         "leads_counts_only",
         &project,
-        &leads_request(&project, None),
+        &leads_request(&project, None)?,
         &manager,
-    );
-    let mut first = leads_request(&project, Some("unwrap_calls"));
+    )?;
+    let mut first = leads_request(&project, Some("unwrap_calls"))?;
     first.limit = Some(5);
-    let page_one = leads_case("leads_rows_page1", &project, &first, &manager);
-    let mut second = leads_request(&project, Some("unwrap_calls"));
+    let page_one = leads_case("leads_rows_page1", &project, &first, &manager)?;
+    let mut second = leads_request(&project, Some("unwrap_calls"))?;
     second.limit = Some(5);
     second.path = None;
     second.cursor = page_one["page"]["cursor"].as_str().map(str::to_owned);
-    leads_case("leads_rows_page2", &project, &second, &manager);
-    let mut compact = leads_request(&project, None);
+    leads_case("leads_rows_page2", &project, &second, &manager)?;
+    let mut compact = leads_request(&project, None)?;
     compact.mode = LeadMode::Compact;
     compact.limit = Some(8);
-    leads_case("leads_compact", &project, &compact, &manager);
+    leads_case("leads_compact", &project, &compact, &manager)?;
+    Ok(())
 }
 
-fn mechanic_request(project: &tempfile::TempDir, action: MechanicAction) -> MechanicRequest {
-    MechanicRequest {
-        path: Some(path_of(project)),
+fn mechanic_request(
+    project: &tempfile::TempDir,
+    action: MechanicAction,
+) -> TestResult<MechanicRequest> {
+    Ok(MechanicRequest {
+        path: Some(path_of(project)?),
         action,
         cursor: None,
         legacy_paging: LegacyPaging::default(),
@@ -93,14 +98,14 @@ fn mechanic_request(project: &tempfile::TempDir, action: MechanicAction) -> Mech
         note: None,
         limit: None,
         page_bytes: None,
-    }
+    })
 }
 
 fn add_println_mechanic(
     project: &tempfile::TempDir,
     manager: &SourceSyncManager,
-) -> (MechanicRequest, Value) {
-    let mut add = mechanic_request(project, MechanicAction::Add);
+) -> TestResult<(MechanicRequest, Value)> {
+    let mut add = mechanic_request(project, MechanicAction::Add)?;
     add.id = Some("println_calls".to_owned());
     add.language = Some("rust".to_owned());
     add.query = Some(r#"(macro_invocation macro: (identifier) @m (#eq? @m "println"))"#.to_owned());
@@ -111,12 +116,12 @@ fn add_println_mechanic(
         &NoopProgressSink,
         manager,
     )
-    .expect("mechanic add succeeds")
+    .check("mechanic add succeeds")?
     .0;
-    (
+    Ok((
         add,
-        serde_json::to_value(response).expect("response serializes"),
-    )
+        serde_json::to_value(response).check("response serializes")?,
+    ))
 }
 
 fn clone_mechanic(request: &MechanicRequest) -> MechanicRequest {
@@ -135,12 +140,13 @@ fn clone_mechanic(request: &MechanicRequest) -> MechanicRequest {
 }
 
 #[test]
-fn golden_phase9_leads_custom_mechanic_rows() {
-    let project = rust_project();
+fn golden_phase9_leads_custom_mechanic_rows() -> TestResult {
+    let project = rust_project()?;
     let manager = SourceSyncManager::default();
-    add_println_mechanic(&project, &manager);
+    add_println_mechanic(&project, &manager)?;
 
-    let mut request = leads_request(&project, Some("println_calls"));
+    let mut request = leads_request(&project, Some("println_calls"))?;
     request.limit = Some(2);
-    leads_case("leads_custom_mechanic", &project, &request, &manager);
+    leads_case("leads_custom_mechanic", &project, &request, &manager)?;
+    Ok(())
 }

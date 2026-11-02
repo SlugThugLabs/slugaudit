@@ -3,6 +3,7 @@ use super::analyze_results::{
     timeout_result, withheld_result,
 };
 use super::analyze_seam::run_extraction;
+use crate::evidence::ExtractError;
 use crate::model::ParseOutcome;
 use crate::util::Deadline;
 use std::time::Duration;
@@ -55,23 +56,28 @@ fn is_fetch_failure(error: &PackError) -> bool {
 /// with the `parse_timeout` reason (see [`timeout_result`]). If the per-file
 /// allowance was what ran out the sync goes on with the next file; if the
 /// sync's did, the caller's own deadline check ends the sync.
+///
+/// # Errors
+///
+/// Returns [`crate::util::LockPoisoned`] when the grammar fetch gate's state
+/// was poisoned.
 pub(super) fn analyze(
     relative_path: &str,
     content: Option<&str>,
     max_parse_bytes: u64,
     parse_wall_clock: Duration,
     deadline: &Deadline,
-) -> ParseResult {
+) -> Result<ParseResult, crate::util::LockPoisoned> {
     let Some(content) = content else {
         tracing::trace!(path = %relative_path, "no content; parser not invoked");
-        return ParseResult::without_content();
+        return Ok(ParseResult::without_content());
     };
     let Some(language) = crate::parse::detect_language(relative_path) else {
         tracing::trace!(
             path = %relative_path,
             "no language detected; parser not invoked"
         );
-        return ParseResult::content_only(None, false);
+        return Ok(ParseResult::content_only(None, false));
     };
     if language == crate::parse::PROSE_LANGUAGE {
         // Prose is stored and searchable but never parsed: no grammar is
@@ -80,7 +86,7 @@ pub(super) fn analyze(
             path = %relative_path,
             "prose file; parser not invoked"
         );
-        return ParseResult::content_only(Some(language), true);
+        return Ok(ParseResult::content_only(Some(language), true));
     }
     if !crate::parse::language_available(&language) {
         tracing::debug!(
@@ -88,33 +94,37 @@ pub(super) fn analyze(
             language = %language,
             "detected language is not known to the pack; recording ContentOnly",
         );
-        return ParseResult::content_only(Some(language), true);
+        return Ok(ParseResult::content_only(Some(language), true));
     }
     if content.len() as u64 > max_parse_bytes {
-        return withheld_result(relative_path, language, ParseOutcome::OVERSIZE_FOR_PARSE);
+        return Ok(withheld_result(
+            relative_path,
+            language,
+            ParseOutcome::OVERSIZE_FOR_PARSE,
+        ));
     }
-    if crate::parse::fetch_gate::blocks_fetch(&language) {
-        return cooldown_result(relative_path, language);
+    if crate::parse::fetch_gate::blocks_fetch(&language)? {
+        return Ok(cooldown_result(relative_path, language));
     }
     // One budget for every parse of this file: the per-file allowance, or the
     // sync's own remainder when that is sooner. `bound` says which it was.
     let (file_deadline, bound) = deadline.capped(parse_wall_clock);
-    match run_extraction(&language, content, &file_deadline) {
+    Ok(match run_extraction(&language, content, &file_deadline) {
         Ok(extraction) if extraction.timed_out => {
             timeout_result(relative_path, language, extraction.items, bound)
         }
         Ok(extraction) => succeeded_result(relative_path, language, extraction),
-        Err(error) if is_load_failure(&error) => {
+        Err(ExtractError::Pack(error)) if is_load_failure(&error) => {
             if is_fetch_failure(&error) {
-                crate::parse::fetch_gate::record_fetch_failure();
+                crate::parse::fetch_gate::record_fetch_failure()?;
             }
             load_failed_result(relative_path, language, &error)
         }
-        Err(PackError::ParseTimeout { .. }) => {
+        Err(ExtractError::Pack(PackError::ParseTimeout { .. })) => {
             timeout_result(relative_path, language, Vec::new(), bound)
         }
         Err(error) => parse_failed_result(relative_path, language, &error),
-    }
+    })
 }
 
 #[cfg(test)]

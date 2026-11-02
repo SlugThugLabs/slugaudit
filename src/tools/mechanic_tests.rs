@@ -4,6 +4,7 @@
 use super::*;
 use crate::progress::NoopProgressSink;
 use crate::tools::{LeadMode, LeadRows, LeadsRequest, LeadsResponse, ReportRequest};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 
 pub(super) const EVAL_QUERY: &str =
@@ -21,16 +22,16 @@ def run(code):
 eval(\"2\")
 ";
 
-pub(super) fn python_project() -> tempfile::TempDir {
-    let project = crate::tools::test_support::activated_project("app.py", APP_PY.as_bytes());
-    fs::create_dir_all(project.path().join("lib")).expect("create lib dir");
+pub(super) fn python_project() -> TestResult<tempfile::TempDir> {
+    let project = crate::tools::test_support::activated_project("app.py", APP_PY.as_bytes())?;
+    fs::create_dir_all(project.path().join("lib")).check("create lib dir")?;
     fs::write(project.path().join("lib").join("util.py"), "eval(\"3\")\n")
-        .expect("write second python file");
-    project
+        .check("write second python file")?;
+    Ok(project)
 }
 
-pub(super) fn path_of(project: &tempfile::TempDir) -> String {
-    project.path().to_str().expect("utf-8 path").to_owned()
+pub(super) fn path_of(project: &tempfile::TempDir) -> TestResult<String> {
+    Ok(project.path().to_str().check("utf-8 path")?.to_owned())
 }
 
 pub(super) fn add(path: &str, id: &str, language: &str, query: &str) -> MechanicRequest {
@@ -83,22 +84,29 @@ pub(super) fn leads_request(path: &str, mechanic: Option<&str>, mode: LeadMode) 
     }
 }
 
-pub(super) fn run_leads(manager: &sync::SourceSyncManager, request: LeadsRequest) -> LeadsResponse {
-    crate::tools::leads(&Parameters(request), &NoopProgressSink, manager)
-        .expect("leads succeeds")
-        .0
+pub(super) fn run_leads(
+    manager: &sync::SourceSyncManager,
+    request: LeadsRequest,
+) -> TestResult<LeadsResponse> {
+    Ok(
+        crate::tools::leads(&Parameters(request), &NoopProgressSink, manager)
+            .check("leads succeeds")?
+            .0,
+    )
 }
 
 pub(super) fn report_of(
     manager: &sync::SourceSyncManager,
     path: &str,
-) -> crate::tools::ReportResponse {
+) -> TestResult<crate::tools::ReportResponse> {
     let request = ReportRequest {
         path: path.to_owned(),
     };
-    crate::tools::report(&Parameters(request), &NoopProgressSink, manager)
-        .expect("report succeeds")
-        .0
+    Ok(
+        crate::tools::report(&Parameters(request), &NoopProgressSink, manager)
+            .check("report succeeds")?
+            .0,
+    )
 }
 
 pub(super) fn sources(response: &LeadsResponse) -> Vec<(String, MechanicSource)> {
@@ -109,11 +117,11 @@ pub(super) fn sources(response: &LeadsResponse) -> Vec<(String, MechanicSource)>
         .collect()
 }
 
-pub(super) fn refusal(manager: &sync::SourceSyncManager, request: MechanicRequest) -> ErrorData {
-    match call(manager, request) {
-        Ok(response) => panic!("the call must be refused, got {response:?}"),
-        Err(error) => error,
-    }
+pub(super) fn refusal(
+    manager: &sync::SourceSyncManager,
+    request: MechanicRequest,
+) -> TestResult<ErrorData> {
+    call(manager, request).check_err("the call must be refused")
 }
 
 pub(super) fn assert_refused(error: &ErrorData, needle: &str) {
@@ -130,19 +138,19 @@ pub(super) fn assert_refused(error: &ErrorData, needle: &str) {
 }
 
 #[test]
-fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() {
-    let project = python_project();
-    let path = path_of(&project);
+fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let added = call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+    let added = call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("add")?;
 
     assert_eq!(added.source, Some(MechanicSource::Session));
-    let first = added.first_count.expect("add carries the first count");
+    let first = added.first_count.check("add carries the first count")?;
     let entry = first
         .mechanic_counts
         .first()
-        .expect("the session entry is listed first");
+        .check("the session entry is listed first")?;
     assert_eq!(
         (entry.mechanic.as_str(), entry.count, entry.files),
         ("py_eval", 4, 2)
@@ -155,7 +163,7 @@ fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() {
     );
     assert_eq!(first.files_not_parsed, 0);
     let LeadRows::Full(rows) = &first.rows else {
-        panic!("a full page");
+        return Err("a full page".to_owned()).check("unexpected outcome");
     };
     let lines: Vec<(&str, i64)> = rows
         .iter()
@@ -176,10 +184,10 @@ fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() {
         &manager,
         action(&path, MechanicAction::Remove, Some("py_eval")),
     )
-    .expect("remove");
+    .check("remove")?;
 
     assert_eq!(removed.source, Some(MechanicSource::Session));
-    let after = run_leads(&manager, leads_request(&path, None, LeadMode::Full));
+    let after = run_leads(&manager, leads_request(&path, None, LeadMode::Full))?;
     assert!(
         after
             .mechanic_counts
@@ -190,25 +198,26 @@ fn adding_a_session_mechanic_returns_its_first_count_and_remove_drops_it() {
     let again = refusal(
         &manager,
         action(&path, MechanicAction::Remove, Some("py_eval")),
-    );
+    )?;
     assert_refused(&again, "no registered mechanic has id `py_eval`");
     let code = again.data.as_ref().and_then(|data| data.get("code"));
     assert_eq!(
         code.and_then(|code| code.as_str()),
         Some("unknown_mechanic")
     );
+    Ok(())
 }
 
 #[test]
-fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("add")?;
     let mut request = leads_request(&path, Some("py_eval"), LeadMode::Compact);
     request.limit = Some(3);
 
-    let first = run_leads(&manager, request);
+    let first = run_leads(&manager, request)?;
 
     assert_eq!(
         (first.page.returned, first.page.total, first.page.complete),
@@ -220,11 +229,11 @@ fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() {
     let mut next = leads_request(&path, Some("py_eval"), LeadMode::Compact);
     next.path = None;
     next.cursor = first.page.cursor.clone();
-    let second = run_leads(&manager, next);
+    let second = run_leads(&manager, next)?;
     assert_eq!((second.page.returned, second.page.complete), (1, true));
     assert_eq!(second.files_covered, 2);
     let LeadRows::Compact(rows) = &second.rows else {
-        panic!("a compact page");
+        return Err("a compact page".to_owned()).check("unexpected outcome");
     };
     assert_eq!(
         (
@@ -234,28 +243,29 @@ fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() {
         ),
         ("py_eval", "lib/util.py", 1)
     );
+    Ok(())
 }
 
 #[test]
-fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
-    let project = python_project();
-    fs::write(project.path().join("todo.py"), "# TODO: one\n").expect("write marker file");
-    let path = path_of(&project);
+fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() -> TestResult {
+    let project = python_project()?;
+    fs::write(project.path().join("todo.py"), "# TODO: one\n").check("write marker file")?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("add")?;
     let mut request = leads_request(&path, None, LeadMode::Compact);
     request.limit = Some(4);
 
-    let first = run_leads(&manager, request);
+    let first = run_leads(&manager, request)?;
 
     assert_eq!((first.page.returned, first.page.total), (4, Some(5)));
     assert_eq!((first.files_total, first.files_covered), (3, 2));
     let mut next = leads_request(&path, None, LeadMode::Compact);
     next.path = None;
     next.cursor = first.page.cursor.clone();
-    let second = run_leads(&manager, next);
+    let second = run_leads(&manager, next)?;
     let LeadRows::Compact(rows) = &second.rows else {
-        panic!("a compact page");
+        return Err("a compact page".to_owned()).check("unexpected outcome");
     };
     let tail: Vec<(&str, &str)> = rows
         .iter()
@@ -263,6 +273,7 @@ fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
         .collect();
     assert_eq!(tail, [("comment_markers", "todo.py")]);
     assert_eq!((second.page.complete, second.files_covered), (true, 3));
+    Ok(())
 }
 
 /// An added mechanic lives in memory only: no `persist` parameter exists, and
@@ -270,13 +281,13 @@ fn a_compact_whole_surface_page_lists_registered_rows_before_builtin_rows() {
 /// (and their WAL sidecars) and the stored pages of the paged answer `add`
 /// itself returns.
 #[test]
-fn add_writes_no_config_and_nothing_but_the_databases_and_stored_pages() {
-    let project = python_project();
-    let path = path_of(&project);
+fn add_writes_no_config_and_nothing_but_the_databases_and_stored_pages() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("add");
-    call(&manager, action(&path, MechanicAction::List, None)).expect("list");
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("add")?;
+    call(&manager, action(&path, MechanicAction::List, None)).check("list")?;
     crate::tools::finding(
         &Parameters(crate::tools::FindingRequest {
             path: path.clone(),
@@ -291,18 +302,16 @@ fn add_writes_no_config_and_nothing_but_the_databases_and_stored_pages() {
         &NoopProgressSink,
         &manager,
     )
-    .expect("finding");
+    .check("finding")?;
 
     let mut names: Vec<String> = fs::read_dir(project.path().join(".planning/slugaudit"))
-        .expect("activation dir")
+        .check("activation dir")?
         .map(|entry| {
             entry
-                .expect("directory entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
+                .check("directory entry")
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
         })
-        .collect();
+        .collect::<TestResult<_>>()?;
     names.sort();
     let allowed = ["project.db", "project.db-shm", "project.db-wal", "results"];
     assert!(
@@ -321,126 +330,136 @@ fn add_writes_no_config_and_nothing_but_the_databases_and_stored_pages() {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("db"))),
         "{names:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn adding_the_id_of_a_builtin_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn adding_the_id_of_a_builtin_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "unwrap_calls", "python", EVAL_QUERY));
+    let error = refusal(&manager, add(&path, "unwrap_calls", "python", EVAL_QUERY))?;
 
     assert_refused(&error, "can never remove, rename or override a built-in");
+    Ok(())
 }
 
 #[test]
-fn adding_an_id_already_registered_for_the_session_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn adding_an_id_already_registered_for_the_session_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("first add");
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("first add")?;
 
-    let error = refusal(&manager, add(&path, "py_eval", "python", EVAL_QUERY));
+    let error = refusal(&manager, add(&path, "py_eval", "python", EVAL_QUERY))?;
 
     assert_refused(&error, "already registered for this session");
+    Ok(())
 }
 
 #[test]
-fn a_query_that_does_not_compile_is_refused_with_the_compiler_message() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_query_that_does_not_compile_is_refused_with_the_compiler_message() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "broken", "python", "(call @callee"));
+    let error = refusal(&manager, add(&path, "broken", "python", "(call @callee"))?;
 
     assert_refused(&error, "query does not compile");
+    Ok(())
 }
 
 #[test]
-fn a_query_with_two_captures_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_query_with_two_captures_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
     let query = "(call function: (identifier) @callee arguments: (argument_list) @args)";
 
-    let error = refusal(&manager, add(&path, "two", "python", query));
+    let error = refusal(&manager, add(&path, "two", "python", query))?;
 
     assert_refused(&error, "exactly one capture; it names 2");
+    Ok(())
 }
 
 #[test]
-fn a_query_with_no_capture_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_query_with_no_capture_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "none", "python", "(call)"));
+    let error = refusal(&manager, add(&path, "none", "python", "(call)"))?;
 
     assert_refused(&error, "exactly one capture; it names 0");
+    Ok(())
 }
 
 #[test]
-fn a_mechanic_on_a_prose_language_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_mechanic_on_a_prose_language_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "docs", "markdown", "(paragraph) @p"));
+    let error = refusal(&manager, add(&path, "docs", "markdown", "(paragraph) @p"))?;
 
     assert_refused(&error, "is prose");
+    Ok(())
 }
 
 #[test]
-fn a_mechanic_on_an_unknown_language_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_mechanic_on_an_unknown_language_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "nope", "no_such_language", "(x) @x"));
+    let error = refusal(&manager, add(&path, "nope", "no_such_language", "(x) @x"))?;
 
     assert_refused(&error, "unknown language `no_such_language`");
+    Ok(())
 }
 
 #[test]
-fn an_id_outside_the_charset_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn an_id_outside_the_charset_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "Py-Eval", "python", EVAL_QUERY));
+    let error = refusal(&manager, add(&path, "Py-Eval", "python", EVAL_QUERY))?;
 
     assert_refused(&error, "a-z, 0-9 and _");
+    Ok(())
 }
 
 #[test]
-fn removing_a_builtin_is_refused() {
-    let project = python_project();
-    let path = path_of(&project);
+fn removing_a_builtin_is_refused() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
     let error = refusal(
         &manager,
         action(&path, MechanicAction::Remove, Some("diagnostics")),
-    );
+    )?;
 
     assert_refused(&error, "built-ins can never be removed");
+    Ok(())
 }
 
 #[test]
-fn the_mechanics_note_is_on_the_first_report_of_a_server_only() {
-    let project = python_project();
-    let path = path_of(&project);
+fn the_mechanics_note_is_on_the_first_report_of_a_server_only() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let first = report_of(&manager, &path);
-    let second = report_of(&manager, &path);
-    let other_server = report_of(&sync::SourceSyncManager::default(), &path);
+    let first = report_of(&manager, &path)?;
+    let second = report_of(&manager, &path)?;
+    let other_server = report_of(&sync::SourceSyncManager::default(), &path)?;
 
     let note = first
         .mechanics
         .note
-        .expect("the first report carries the note");
+        .check("the first report carries the note")?;
     assert!(
         note.contains("counting primitives, not a checklist"),
         "{note}"
@@ -457,12 +476,13 @@ fn the_mechanics_note_is_on_the_first_report_of_a_server_only() {
         other_server.mechanics.note.is_some(),
         "a new server instance starts a new session"
     );
+    Ok(())
 }
 
 #[test]
-fn leads_and_report_list_session_then_builtin() {
-    let project = python_project();
-    let path = path_of(&project);
+fn leads_and_report_list_session_then_builtin() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
     call(
         &manager,
@@ -473,11 +493,11 @@ fn leads_and_report_list_session_then_builtin() {
             &EVAL_QUERY.replace("eval", "exec"),
         ),
     )
-    .expect("first add");
-    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).expect("second add");
+    .check("first add")?;
+    call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("second add")?;
 
-    let leads = run_leads(&manager, leads_request(&path, None, LeadMode::Full));
-    let report = report_of(&manager, &path);
+    let leads = run_leads(&manager, leads_request(&path, None, LeadMode::Full))?;
+    let report = report_of(&manager, &path)?;
 
     let listed = sources(&leads);
     assert_eq!(listed[0], ("py_exec".to_owned(), MechanicSource::Session));
@@ -503,26 +523,29 @@ fn leads_and_report_list_session_then_builtin() {
         .map(|(id, source)| (id.as_str(), *source))
         .collect();
     assert_eq!(reported, expected, "report lists the same order as leads");
+    Ok(())
 }
 
 #[test]
-fn a_capitalised_language_is_refused_with_the_naming_convention() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_capitalised_language_is_refused_with_the_naming_convention() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "py_eval", "Python", EVAL_QUERY));
+    let error = refusal(&manager, add(&path, "py_eval", "Python", EVAL_QUERY))?;
 
     assert_refused(&error, "lowercase pack name the index stores");
+    Ok(())
 }
 
 #[test]
-fn a_pack_alias_language_is_refused_with_its_canonical_name() {
-    let project = python_project();
-    let path = path_of(&project);
+fn a_pack_alias_language_is_refused_with_its_canonical_name() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "sh_eval", "shell", "(command) @c"));
+    let error = refusal(&manager, add(&path, "sh_eval", "shell", "(command) @c"))?;
 
     assert_refused(&error, "use `bash`");
+    Ok(())
 }

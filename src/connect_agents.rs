@@ -113,19 +113,37 @@ impl AgentDef {
     }
 
     /// Returns true if this agent appears to be installed on the machine.
-    pub fn is_installed(&self, home: Option<&Path>) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// A config path that cannot be examined for a reason other than "not
+    /// found" (permissions, a path component that is a file) is returned as a
+    /// [`ProbeFailure`] with its source, never read as "absent".
+    pub fn is_installed(&self, home: Option<&Path>) -> Result<bool, ProbeFailure> {
         if self.executables().any(crate::probe::cli_on_path) {
-            return true;
+            return Ok(true);
         }
-        let Some(home) = home else { return false };
+        let Some(home) = home else { return Ok(false) };
         let Some(path) = self.config.resolve(home) else {
-            return false;
+            return Ok(false);
         };
-        if crate::probe::exists_or_warn(&path) {
-            return true;
+        if self.config_path_exists(&path)? {
+            return Ok(true);
         }
-        path.parent()
-            .is_some_and(|p| p != home && crate::probe::exists_or_warn(p))
+        match path.parent() {
+            Some(parent) if parent != home => self.config_path_exists(parent),
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether `path` exists; a stat failure is returned with this agent and
+    /// path attached.
+    fn config_path_exists(&self, path: &Path) -> Result<bool, ProbeFailure> {
+        path.try_exists().map_err(|source| ProbeFailure {
+            agent: self.id,
+            path: path.to_path_buf(),
+            source,
+        })
     }
 
     /// Returns true if this agent's local config file already has SlugAudit.
@@ -203,14 +221,68 @@ pub fn find_agent(name: &str) -> Option<AgentDef> {
         .find(|a| a.id == n || a.display_name.eq_ignore_ascii_case(n))
 }
 
+/// A client whose install could not be determined: the config path that could
+/// not be examined, and why.
+#[derive(Debug)]
+pub struct ProbeFailure {
+    /// The registry identifier of the client being probed.
+    pub agent: &'static str,
+    /// The path that could not be examined.
+    pub path: std::path::PathBuf,
+    /// The underlying I/O failure.
+    pub source: std::io::Error,
+}
+
+impl std::fmt::Display for ProbeFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "could not tell whether {} is installed: {}: {}",
+            self.agent,
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for ProbeFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+/// The result of scanning for installed clients.
+#[derive(Debug)]
+pub struct Detection {
+    /// Agents that appear to be installed on the machine.
+    pub agents: Vec<AgentDef>,
+    /// Agents that could not be checked; they are not in `agents`.
+    pub failures: Vec<ProbeFailure>,
+}
+
 /// Returns all agents in [`AGENTS`] that appear to be installed on the machine.
+/// An agent whose config path cannot be examined is left out of `agents`,
+/// logged once, and returned in `failures` so the caller can show it.
 #[must_use]
-pub fn detected_agents(home: Option<&Path>) -> Vec<AgentDef> {
-    AGENTS
-        .iter()
-        .copied()
-        .filter(|a| a.is_installed(home))
-        .collect()
+pub fn detected_agents(home: Option<&Path>) -> Detection {
+    let mut agents = Vec::new();
+    let mut failures = Vec::new();
+    for agent in AGENTS {
+        match agent.is_installed(home) {
+            Ok(true) => agents.push(*agent),
+            Ok(false) => {}
+            Err(failure) => {
+                tracing::warn!(
+                    agent = failure.agent,
+                    path = %crate::util::redacted_path(&failure.path),
+                    error = %failure.source,
+                    "could not examine a client config path; leaving the client out of detection",
+                );
+                failures.push(failure);
+            }
+        }
+    }
+    Detection { agents, failures }
 }
 
 #[cfg(test)]

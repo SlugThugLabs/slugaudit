@@ -4,14 +4,15 @@
 //! the requested state.
 
 use super::*;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::fs;
 
-fn temp_project_with_source() -> (tempfile::TempDir, String) {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::create_dir_all(project.path().join("src")).expect("create src dir");
-    fs::write(project.path().join("src/lib.rs"), b"pub fn a() {}\n").expect("write source");
+fn temp_project_with_source() -> TestResult<(tempfile::TempDir, String)> {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::create_dir_all(project.path().join("src")).check("create src dir")?;
+    fs::write(project.path().join("src/lib.rs"), b"pub fn a() {}\n").check("write source")?;
     let path = project.path().to_string_lossy().into_owned();
-    (project, path)
+    Ok((project, path))
 }
 
 fn request(path: &str, action: ProjectControlAction) -> Parameters<ProjectControlRequest> {
@@ -35,31 +36,34 @@ fn activation_dir(project: &tempfile::TempDir) -> std::path::PathBuf {
 }
 
 #[test]
-fn on_action_parses() {
+fn on_action_parses() -> TestResult {
     let json = r#"{"action":"on"}"#;
-    let req: ProjectControlRequest = serde_json::from_str(json).expect("request deserializes");
+    let req: ProjectControlRequest = serde_json::from_str(json).check("request deserializes")?;
     assert!(matches!(req.action, ProjectControlAction::On));
+    Ok(())
 }
 
 #[test]
-fn off_action_parses() {
+fn off_action_parses() -> TestResult {
     let json = r#"{"action":"off"}"#;
-    let req: ProjectControlRequest = serde_json::from_str(json).expect("request deserializes");
+    let req: ProjectControlRequest = serde_json::from_str(json).check("request deserializes")?;
     assert!(matches!(req.action, ProjectControlAction::Off));
+    Ok(())
 }
 
 #[test]
-fn path_defaults_to_none() {
+fn path_defaults_to_none() -> TestResult {
     let json = r#"{"action":"on"}"#;
-    let req: ProjectControlRequest = serde_json::from_str(json).expect("request deserializes");
+    let req: ProjectControlRequest = serde_json::from_str(json).check("request deserializes")?;
     assert!(req.path.is_none());
+    Ok(())
 }
 
 #[test]
-fn on_action_enables_the_project_and_runs_the_initial_import() {
-    let (project, path) = temp_project_with_source();
+fn on_action_enables_the_project_and_runs_the_initial_import() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("enable succeeds");
+        .check("enable succeeds")?;
 
     let inner = response.0;
     assert_eq!(inner.status, "enabled");
@@ -68,11 +72,11 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
         project
             .path()
             .canonicalize()
-            .expect("tempdir canonicalizes")
+            .check("tempdir canonicalizes")?
             .to_string_lossy(),
         "the response reports the canonical project root"
     );
-    let import = inner.import.expect("import report present");
+    let import = inner.import.check("import report present")?;
     assert!(
         import.added >= 1,
         "the initial import must index the source file"
@@ -87,6 +91,7 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
         activation_dir(&project).join("project.db").exists(),
         "the project database must exist after enable"
     );
+    Ok(())
 }
 
 /// A file discovery cannot include is a producer gap; the enable response
@@ -95,17 +100,17 @@ fn on_action_enables_the_project_and_runs_the_initial_import() {
 /// get a `files` row, so the publish report must list it in `skipped`.
 #[cfg(unix)]
 #[test]
-fn on_action_reports_files_the_initial_import_skipped() {
+fn on_action_reports_files_the_initial_import_skipped() -> TestResult {
     use std::os::unix::ffi::OsStrExt;
-    let (project, path) = temp_project_with_source();
+    let (project, path) = temp_project_with_source()?;
     let unrepresentable = std::ffi::OsStr::from_bytes(b"bad\xffname.rs");
     fs::write(project.path().join(unrepresentable), b"pub fn b() {}\n")
-        .expect("write non-UTF-8 file");
+        .check("write non-UTF-8 file")?;
 
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("enable succeeds");
+        .check("enable succeeds")?;
 
-    let import = response.0.import.expect("import report present");
+    let import = response.0.import.check("import report present")?;
     assert_eq!(
         import.skipped, 1,
         "the skipped file must be reported in the response, not dropped"
@@ -114,26 +119,29 @@ fn on_action_reports_files_the_initial_import_skipped() {
         import.added >= 1,
         "the representable source is still imported"
     );
+    Ok(())
 }
 
 #[test]
-fn on_action_is_idempotent_when_already_enabled() {
-    let (project, path) = temp_project_with_source();
+fn on_action_is_idempotent_when_already_enabled() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("first enable");
+        .check("first enable")?;
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("second enable");
+        .check("second enable")?;
     assert_eq!(response.0.status, "enabled");
     assert!(
         activation_dir(&project).is_dir(),
         "the directory stays in place across repeated enables"
     );
+    Ok(())
 }
 
 #[test]
-fn off_action_disables_the_project_and_deletes_the_directory() {
-    let (project, path) = temp_project_with_source();
-    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
+fn off_action_disables_the_project_and_deletes_the_directory() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
+    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .check("enable")?;
     assert!(activation_dir(&project).is_dir());
 
     let response = project_control(
@@ -141,31 +149,33 @@ fn off_action_disables_the_project_and_deletes_the_directory() {
         &crate::progress::NoopProgressSink,
         None,
     )
-    .expect("disable succeeds");
+    .check("disable succeeds")?;
     assert_eq!(response.0.status, "disabled");
     assert!(response.0.import.is_none());
     assert!(
         !activation_dir(&project).exists(),
         "disable must delete the whole activation directory"
     );
+    Ok(())
 }
 
 #[test]
-fn off_action_when_already_disabled_is_a_noop() {
-    let (project, path) = temp_project_with_source();
+fn off_action_when_already_disabled_is_a_noop() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let response = project_control(
         &off_request(&path),
         &crate::progress::NoopProgressSink,
         None,
     )
-    .expect("noop disable");
+    .check("noop disable")?;
     assert_eq!(response.0.status, "already_disabled");
     assert!(response.0.import.is_none());
     assert!(!activation_dir(&project).exists());
+    Ok(())
 }
 
 #[test]
-fn on_action_with_a_nonexistent_path_returns_invalid_params() {
+fn on_action_with_a_nonexistent_path_returns_invalid_params() -> TestResult {
     let missing = "/definitely/not/a/real/path/for/slugaudit-tests";
     let error = project_control(
         &on_request(missing),
@@ -173,7 +183,7 @@ fn on_action_with_a_nonexistent_path_returns_invalid_params() {
         None,
     )
     .err()
-    .expect("enable on a nonexistent path must surface an error, not silently create state");
+    .check("enable on a nonexistent path must surface an error, not silently create state")?;
 
     assert_eq!(
         error.code,
@@ -184,17 +194,18 @@ fn on_action_with_a_nonexistent_path_returns_invalid_params() {
         error.message,
         format!("project path `{missing}` does not exist; pass an existing directory")
     );
+    Ok(())
 }
 
 #[test]
-fn project_control_rejects_a_path_over_the_byte_cap() {
+fn project_control_rejects_a_path_over_the_byte_cap() -> TestResult {
     let error = project_control(
         &on_request(&"a".repeat(MAX_PATH_BYTES + 1)),
         &crate::progress::NoopProgressSink,
         None,
     )
     .err()
-    .expect("an over-cap path is refused");
+    .check("an over-cap path is refused")?;
 
     assert_eq!(
         error.code,
@@ -202,17 +213,18 @@ fn project_control_rejects_a_path_over_the_byte_cap() {
         "{error:?}"
     );
     assert_eq!(error.message, "path exceeds 32768 bytes");
+    Ok(())
 }
 
 #[test]
-fn project_control_rejects_a_profile_over_the_byte_cap() {
-    let (project, path) = temp_project_with_source();
+fn project_control_rejects_a_profile_over_the_byte_cap() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let mut request = on_request(&path);
     request.0.profile = Some("p".repeat(MAX_PROFILE_BYTES + 1));
 
     let error = project_control(&request, &crate::progress::NoopProgressSink, None)
         .err()
-        .expect("an over-cap profile is refused");
+        .check("an over-cap profile is refused")?;
 
     assert_eq!(
         error.code,
@@ -224,21 +236,22 @@ fn project_control_rejects_a_profile_over_the_byte_cap() {
         !activation_dir(&project).exists(),
         "the refused call must not enable the project"
     );
+    Ok(())
 }
 
 /// `project::enable` refuses to create the activation directory through a
 /// symlinked `.planning`, and that refusal reaches the caller as itself.
 #[cfg(unix)]
 #[test]
-fn on_action_reports_a_symlinked_planning_directory() {
-    let (project, path) = temp_project_with_source();
+fn on_action_reports_a_symlinked_planning_directory() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let elsewhere = project.path().join("elsewhere");
-    fs::create_dir_all(&elsewhere).expect("create link target");
-    std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning")).expect("symlink");
+    fs::create_dir_all(&elsewhere).check("create link target")?;
+    std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning")).check("symlink")?;
 
     let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .err()
-        .expect("enable through a symlinked .planning is refused");
+        .check("enable through a symlinked .planning is refused")?;
 
     assert!(
         error
@@ -247,27 +260,29 @@ fn on_action_reports_a_symlinked_planning_directory() {
         "{}",
         error.message
     );
+    Ok(())
 }
 
 /// The recovery path discards the corrupt database before reopening it. A
 /// directory at the database path cannot be unlinked, so the discard failure
 /// must reach the caller with the underlying cause intact.
 #[test]
-fn corrupt_database_recovery_reports_a_failed_discard() {
-    let directory = tempfile::tempdir().expect("db dir");
+fn corrupt_database_recovery_reports_a_failed_discard() -> TestResult {
+    let directory = tempfile::tempdir().check("db dir")?;
     let database = directory.path().join("project.db");
-    fs::create_dir(&database).expect("directory at the database path");
+    fs::create_dir(&database).check("directory at the database path")?;
 
     let error = recover_corrupt_database(&database)
-        .expect_err("a directory at the database path cannot be discarded");
+        .check_err("a directory at the database path cannot be discarded")?;
 
-    let discard_error =
-        fs::remove_file(&database).expect_err("the directory at the database path must not unlink");
+    let discard_error = fs::remove_file(&database)
+        .check_err("the directory at the database path must not unlink")?;
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert_eq!(
         error.message,
         format!("discarding outdated database: {discard_error}")
     );
+    Ok(())
 }
 
 /// After a successful discard the reopen must still fail closed with the
@@ -275,38 +290,39 @@ fn corrupt_database_recovery_reports_a_failed_discard() {
 /// reopen arm on every platform, including when the tests run as root.
 #[cfg(unix)]
 #[test]
-fn corrupt_database_recovery_reports_a_failed_reopen() {
-    let directory = tempfile::tempdir().expect("db dir");
+fn corrupt_database_recovery_reports_a_failed_reopen() -> TestResult {
+    let directory = tempfile::tempdir().check("db dir")?;
     let database = directory.path().join("missing-parent").join("project.db");
 
     let error = recover_corrupt_database(&database)
-        .expect_err("a database under a missing parent cannot be recreated");
+        .check_err("a database under a missing parent cannot be recreated")?;
 
     let open_error = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&database)
-        .expect_err("the parent directory is missing");
+        .check_err("the parent directory is missing")?;
     assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
     assert_eq!(
         error.message,
         format!("database: failed to create the database file: {open_error}")
     );
+    Ok(())
 }
 
 /// A database that cannot be opened for a reason other than corruption
 /// (here the path is a directory) is reported as a database failure, not
 /// misread as corruption to discard.
 #[test]
-fn on_action_reports_a_non_corruption_database_open_failure() {
-    let (project, path) = temp_project_with_source();
+fn on_action_reports_a_non_corruption_database_open_failure() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let activation = activation_dir(&project);
     let database = activation.join("project.db");
-    fs::create_dir_all(&database).expect("a directory where the database belongs");
+    fs::create_dir_all(&database).check("a directory where the database belongs")?;
 
     let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .err()
-        .expect("an unopenable database fails the enable");
+        .check("an unopenable database fails the enable")?;
 
     assert!(
         error.message.starts_with("database:"),
@@ -318,18 +334,20 @@ fn on_action_reports_a_non_corruption_database_open_failure() {
         "an I/O failure is not corruption: {}",
         error.message
     );
+    Ok(())
 }
 
 /// The initial import runs inside `project_control`; its failure is
 /// reported as an import failure rather than as success.
 #[test]
-fn on_action_reports_an_import_failure() {
-    let (_project, path) = temp_project_with_source();
-    let _config = crate::tools::test_support::use_global_config(r#"{"max_total_import_bytes": 1}"#);
+fn on_action_reports_an_import_failure() -> TestResult {
+    let (_project, path) = temp_project_with_source()?;
+    let _config =
+        crate::tools::test_support::use_global_config(r#"{"max_total_import_bytes": 1}"#)?;
 
     let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .err()
-        .expect("an import that exceeds the byte ceiling fails the enable");
+        .check("an import that exceeds the byte ceiling fails the enable")?;
 
     assert!(
         error.message.contains("import:"),
@@ -341,18 +359,19 @@ fn on_action_reports_an_import_failure() {
         "the underlying import error survives: {}",
         error.message
     );
+    Ok(())
 }
 
 /// `project::disable` refuses to remove through a symlinked `.planning`;
 /// that refusal reaches the caller instead of a reported success.
 #[cfg(unix)]
 #[test]
-fn off_action_reports_a_disable_failure() {
-    let (project, path) = temp_project_with_source();
+fn off_action_reports_a_disable_failure() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let elsewhere = project.path().join("elsewhere");
-    fs::create_dir_all(elsewhere.join("slugaudit")).expect("create link target");
+    fs::create_dir_all(elsewhere.join("slugaudit")).check("create link target")?;
     std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning"))
-        .expect("symlink .planning");
+        .check("symlink .planning")?;
 
     let error = project_control(
         &off_request(&path),
@@ -360,7 +379,7 @@ fn off_action_reports_a_disable_failure() {
         None,
     )
     .err()
-    .expect("disable through a symlinked .planning is refused");
+    .check("disable through a symlinked .planning is refused")?;
 
     assert!(
         error
@@ -370,22 +389,23 @@ fn off_action_reports_a_disable_failure() {
         error.message
     );
     assert!(elsewhere.join("slugaudit").is_dir(), "nothing was removed");
+    Ok(())
 }
 
 #[test]
-fn on_action_reports_the_gitignore_rule_it_added() {
-    let (project, path) = temp_project_with_source();
+fn on_action_reports_the_gitignore_rule_it_added() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("enable succeeds");
+        .check("enable succeeds")?;
 
     let report = response
         .0
         .gitignore
-        .expect("enable reports the gitignore guard");
+        .check("enable reports the gitignore guard")?;
     let expected = project
         .path()
         .canonicalize()
-        .expect("tempdir canonicalizes")
+        .check("tempdir canonicalizes")?
         .join(".gitignore");
     assert_eq!(report.status, GitignoreStatus::Added);
     assert_eq!(report.path, expected.to_string_lossy());
@@ -395,48 +415,50 @@ fn on_action_reports_the_gitignore_rule_it_added() {
     );
     assert!(
         fs::read_to_string(&expected)
-            .expect("read .gitignore")
+            .check("read .gitignore")?
             .contains(".planning/slugaudit/"),
         "the rule is on disk"
     );
+    Ok(())
 }
 
 #[test]
-fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() {
-    let (project, path) = temp_project_with_source();
+fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let gitignore = project.path().join(".gitignore");
     let original = b"/target\n/.planning/slugaudit/\n";
-    fs::write(&gitignore, original).expect("write .gitignore");
+    fs::write(&gitignore, original).check("write .gitignore")?;
 
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("enable succeeds");
+        .check("enable succeeds")?;
 
     let report = response
         .0
         .gitignore
-        .expect("enable reports the gitignore guard");
+        .check("enable reports the gitignore guard")?;
     assert_eq!(report.status, GitignoreStatus::AlreadyIgnored);
     assert_eq!(response.0.status, "enabled");
     assert!(response.0.import.is_some(), "the import still ran");
     assert_eq!(
-        fs::read(&gitignore).expect("read .gitignore"),
+        fs::read(&gitignore).check("read .gitignore")?,
         original.to_vec(),
         "an already-ignored project's file stays byte-identical"
     );
+    Ok(())
 }
 
 #[test]
-fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() {
-    let (project, path) = temp_project_with_source();
-    fs::create_dir(project.path().join(".gitignore")).expect("block the ignore file");
+fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
+    fs::create_dir(project.path().join(".gitignore")).check("block the ignore file")?;
 
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .expect("the convenience guard must not fail the enable");
+        .check("the convenience guard must not fail the enable")?;
 
     let report = response
         .0
         .gitignore
-        .expect("enable reports the gitignore guard");
+        .check("enable reports the gitignore guard")?;
     assert_eq!(report.status, GitignoreStatus::NotWritten);
     assert!(report.error.is_some(), "the reason is reported");
     assert_eq!(response.0.status, "enabled");
@@ -444,21 +466,23 @@ fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() {
         activation_dir(&project).join("project.db").exists(),
         "the project is enabled regardless of the ignore guard"
     );
+    Ok(())
 }
 
 #[test]
-fn off_action_does_not_touch_the_gitignore() {
-    let (project, path) = temp_project_with_source();
-    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None).expect("enable");
+fn off_action_does_not_touch_the_gitignore() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
+    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
+        .check("enable")?;
     let gitignore = project.path().join(".gitignore");
-    let after_enable = fs::read(&gitignore).expect("read .gitignore");
+    let after_enable = fs::read(&gitignore).check("read .gitignore")?;
 
     let response = project_control(
         &off_request(&path),
         &crate::progress::NoopProgressSink,
         None,
     )
-    .expect("disable succeeds");
+    .check("disable succeeds")?;
 
     assert_eq!(response.0.status, "disabled");
     assert!(
@@ -466,15 +490,16 @@ fn off_action_does_not_touch_the_gitignore() {
         "off omits the gitignore field"
     );
     assert_eq!(
-        fs::read(&gitignore).expect("read .gitignore"),
+        fs::read(&gitignore).check("read .gitignore")?,
         after_enable,
         "off leaves the user's ignore file alone"
     );
+    Ok(())
 }
 
 #[test]
-fn an_unknown_profile_is_refused_before_anything_is_enabled() {
-    let (project, path) = temp_project_with_source();
+fn an_unknown_profile_is_refused_before_anything_is_enabled() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
     let req = Parameters(ProjectControlRequest {
         path: Some(path),
         action: ProjectControlAction::On,
@@ -483,7 +508,7 @@ fn an_unknown_profile_is_refused_before_anything_is_enabled() {
 
     let error = project_control(&req, &crate::progress::NoopProgressSink, None)
         .err()
-        .expect("a profile that does not exist must not enable on the default");
+        .check("a profile that does not exist must not enable on the default")?;
 
     assert!(
         error.message.contains("unknown profile `strict`"),
@@ -494,4 +519,5 @@ fn an_unknown_profile_is_refused_before_anything_is_enabled() {
         !activation_dir(&project).exists(),
         "the refused call must leave the project disabled"
     );
+    Ok(())
 }

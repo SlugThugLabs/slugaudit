@@ -9,6 +9,7 @@ use crate::sync::SourceSyncManager;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
 use rusqlite::Connection;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 
 fn on_request(path: &str) -> Parameters<ProjectControlRequest> {
@@ -32,27 +33,27 @@ fn finding_request(project: &tempfile::TempDir) -> Parameters<FindingRequest> {
     })
 }
 
-fn source_project() -> (tempfile::TempDir, String) {
-    let project = tempfile::tempdir().expect("project dir");
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+fn source_project() -> TestResult<(tempfile::TempDir, String)> {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
     let path = project.path().to_string_lossy().into_owned();
-    (project, path)
+    Ok((project, path))
 }
 
 #[test]
-fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() {
-    let (project, path) = source_project();
-    project_control(&on_request(&path), &NoopProgressSink, None).expect("first enable succeeds");
+fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() -> TestResult {
+    let (project, path) = source_project()?;
+    project_control(&on_request(&path), &NoopProgressSink, None).check("first enable succeeds")?;
     fs::write(
         project.path().join(".planning/slugaudit/project.db"),
         b"this is not a sqlite database",
     )
-    .expect("corrupt the database");
+    .check("corrupt the database")?;
 
     let response =
-        project_control(&on_request(&path), &NoopProgressSink, None).expect("enable recovers");
+        project_control(&on_request(&path), &NoopProgressSink, None).check("enable recovers")?;
 
-    let value = serde_json::to_value(&response.0).expect("serialize response");
+    let value = serde_json::to_value(&response.0).check("serialize response")?;
     assert!(
         value["database_discard"]
             .get("findings_discarded")
@@ -62,51 +63,54 @@ fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() {
     assert!(
         value["database_discard"]["cause"]
             .as_str()
-            .expect("cause is text")
+            .check("cause is text")?
             .contains("corrupt or outdated"),
         "{value}"
     );
+    Ok(())
 }
 
 #[test]
-fn discard_surface_on_action_reports_nothing_for_a_healthy_database() {
-    let (_project, path) = source_project();
-    project_control(&on_request(&path), &NoopProgressSink, None).expect("first enable succeeds");
+fn discard_surface_on_action_reports_nothing_for_a_healthy_database() -> TestResult {
+    let (_project, path) = source_project()?;
+    project_control(&on_request(&path), &NoopProgressSink, None).check("first enable succeeds")?;
 
     let response = project_control(&on_request(&path), &NoopProgressSink, None)
-        .expect("second enable succeeds");
+        .check("second enable succeeds")?;
 
-    let value = serde_json::to_value(&response.0).expect("serialize response");
+    let value = serde_json::to_value(&response.0).check("serialize response")?;
     assert!(value.get("database_discard").is_none(), "{value}");
+    Ok(())
 }
 
 #[test]
-fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_finding() {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n");
+fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_finding() -> TestResult
+{
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let manager = SourceSyncManager::default();
     let first = finding(&finding_request(&project), &NoopProgressSink, &manager)
-        .expect("first finding succeeds");
+        .check("first finding succeeds")?;
     assert!(
         serde_json::to_value(&first.0)
-            .expect("serialize")
+            .check("serialize")?
             .get("database_discard")
             .is_none(),
         "a normal call reports no discard"
     );
     let database = project.path().join(".planning/slugaudit/project.db");
     Connection::open(&database)
-        .expect("raw open")
+        .check("raw open")?
         .execute_batch("PRAGMA user_version = 999;")
-        .expect("foreign schema version");
+        .check("foreign schema version")?;
 
-    let second =
-        finding(&finding_request(&project), &NoopProgressSink, &manager).expect("finding recovers");
+    let second = finding(&finding_request(&project), &NoopProgressSink, &manager)
+        .check("finding recovers")?;
 
-    let value = serde_json::to_value(&second.0).expect("serialize");
+    let value = serde_json::to_value(&second.0).check("serialize")?;
     assert!(
         value["database_discard"]["cause"]
             .as_str()
-            .expect("cause is text")
+            .check("cause is text")?
             .contains("corrupt or outdated"),
         "{value}"
     );
@@ -114,4 +118,5 @@ fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_find
         second.0.id, first.0.id,
         "the restated finding refreshes the one the rebuild left in the findings file"
     );
+    Ok(())
 }

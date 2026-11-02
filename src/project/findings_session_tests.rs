@@ -1,48 +1,58 @@
 use super::*;
 use crate::project::enable;
+use slugaudit_test_check::{Check, TestResult};
 use std::fs::OpenOptions;
 
-fn project() -> (tempfile::TempDir, ProjectRoot) {
-    let directory = tempfile::tempdir().expect("temp dir");
-    let root = ProjectRoot::resolve(directory.path()).expect("project root");
-    enable(&root).expect("enable");
-    (directory, root)
+fn project() -> TestResult<(tempfile::TempDir, ProjectRoot)> {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let root = ProjectRoot::resolve(directory.path()).check("project root")?;
+    enable(&root).check("enable")?;
+    Ok((directory, root))
 }
 
 /// Another process's sweep lists the new lock file and takes its lock before
 /// the owner does, then deletes it as a dead session's. The owner must notice
 /// and end up holding a lock on a file that exists.
 #[test]
-fn a_sweep_deleting_the_lock_file_before_it_is_locked_does_not_hide_the_session() {
-    let (_directory, root) = project();
+fn a_sweep_deleting_the_lock_file_before_it_is_locked_does_not_hide_the_session() -> TestResult {
+    let (_directory, root) = project()?;
     let dir = activation_dir(&root);
     set_window_hook_for_test(|lock_path| {
-        let dir = lock_path.parent().expect("lock dir");
+        let Some(dir) = lock_path.parent() else {
+            return Err(ActivationError::FindingsSession {
+                path: lock_path.to_path_buf(),
+                source: std::io::Error::other("the lock path has no parent directory"),
+            });
+        };
         sweep_dead_sessions(dir, "other")?;
         assert!(!lock_path.exists(), "the sweep deleted the unlocked file");
         Ok(())
     });
 
-    begin_process_session(&root).expect("the session starts anyway");
+    begin_process_session(&root).check("the session starts anyway")?;
 
-    let findings = session_findings_path(&dir).expect("session started");
+    let findings = session_findings_path(&dir)
+        .check("the session table")?
+        .check("session started")?;
     let lock_path = findings.with_extension("lock");
     assert!(lock_path.exists(), "the lock file was recreated");
     let probe = OpenOptions::new()
         .write(true)
         .open(&lock_path)
-        .expect("open the lock file");
+        .check("open the lock file")?;
     assert!(
         matches!(probe.try_lock(), Err(TryLockError::WouldBlock)),
         "the recreated file is locked by this process"
     );
+    Ok(())
 }
 
 /// A sweep in another process holds the new lock file for a moment while it
 /// decides about it; the owner waits for it instead of failing the call.
 #[test]
-fn a_lock_held_for_a_moment_by_another_process_delays_the_session_without_failing_it() {
-    let (_directory, root) = project();
+fn a_lock_held_for_a_moment_by_another_process_delays_the_session_without_failing_it() -> TestResult
+{
+    let (_directory, root) = project()?;
     let dir = activation_dir(&root);
     set_window_hook_for_test(|lock_path| {
         let other = OpenOptions::new()
@@ -59,7 +69,12 @@ fn a_lock_held_for_a_moment_by_another_process_delays_the_session_without_failin
         Ok(())
     });
 
-    begin_process_session(&root).expect("the session starts once the other holder lets go");
+    begin_process_session(&root).check("the session starts once the other holder lets go")?;
 
-    assert!(session_findings_path(&dir).is_some());
+    assert!(
+        session_findings_path(&dir)
+            .check("the session table")?
+            .is_some()
+    );
+    Ok(())
 }

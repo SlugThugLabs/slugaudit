@@ -13,6 +13,9 @@
 //! source files (so parser diagnostics are part of the workload), and the
 //! `.planning/slugaudit/` activation marker every real project has.
 
+pub(crate) mod failure;
+
+use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -64,16 +67,19 @@ fn sibling(k: usize, count: usize) -> usize {
 
 /// Generates the full fixture tree under `root`. Returns per-fixture stats.
 ///
+/// # Errors
+///
+/// Returns the first filesystem step that failed.
+///
 /// Layout cycle (i % 10): 0=markdown, 1/2/8=Rust, 3/4/9=Python,
 /// 5=JavaScript, 6=TypeScript, 7=JSON config. With `file_count` divisible
 /// by 10 the per-language counts are exact.
-#[must_use]
-pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
+pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> TestResult<FixtureStats> {
     let mut mix = Mix(0xC0FF_EE00_DEAD_BEEF);
     let mut total_bytes = 0_u64;
 
     let activation = root.join(".planning").join("slugaudit");
-    fs::create_dir_all(&activation).expect("activation dir");
+    fs::create_dir_all(&activation).check("create activation dir")?;
     // A project is active only when `project.db` exists as a regular file.
     fs::OpenOptions::new()
         .write(true)
@@ -81,13 +87,13 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
         .truncate(true)
         .mode(0o600)
         .open(activation.join("project.db"))
-        .expect("database marker");
-    fs::create_dir_all(root.join("src/rust")).expect("rust dir");
-    fs::create_dir_all(root.join("src/python")).expect("python dir");
-    fs::create_dir_all(root.join("src/js")).expect("js dir");
-    fs::create_dir_all(root.join("src/ts")).expect("ts dir");
-    fs::create_dir_all(root.join("docs")).expect("docs dir");
-    fs::create_dir_all(root.join("config")).expect("config dir");
+        .check("create database marker")?;
+    fs::create_dir_all(root.join("src/rust")).check("create rust dir")?;
+    fs::create_dir_all(root.join("src/python")).check("create python dir")?;
+    fs::create_dir_all(root.join("src/js")).check("create js dir")?;
+    fs::create_dir_all(root.join("src/ts")).check("create ts dir")?;
+    fs::create_dir_all(root.join("docs")).check("create docs dir")?;
+    fs::create_dir_all(root.join("config")).check("create config dir")?;
 
     let rust_count = file_count / 10 * 3;
     let python_count = file_count / 10 * 3;
@@ -99,13 +105,14 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
     let mut js_index = 0_usize;
     let mut ts_index = 0_usize;
 
-    let mut write = |relative: &str, content: &str| {
+    let mut write = |relative: &str, content: &str| -> TestResult {
         let path = root.join(relative);
-        fs::write(&path, content).expect("write fixture file");
+        fs::write(&path, content).check("write fixture file")?;
         total_bytes += content.len() as u64;
+        Ok(())
     };
 
-    write(".gitignore", "target/\nnode_modules/\n");
+    write(".gitignore", "target/\nnode_modules/\n")?;
 
     for i in 0..file_count {
         match i % 10 {
@@ -115,14 +122,14 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                     "# Doc {i}\n\nReference documentation mentioning shared_helper and needle_{i}.\n\
                      Some more prose to give the parser something to read.\n"
                 ),
-            ),
+            )?,
             1 | 2 | 8 => {
                 let k = rust_index;
                 rust_index += 1;
                 write(
                     &format!("src/rust/mod_{k}.rs"),
                     &rust_source(k, sibling(k, rust_count), mix.below(100)),
-                );
+                )?;
             }
             3 | 4 | 9 => {
                 let k = python_index;
@@ -130,7 +137,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 write(
                     &format!("src/python/mod_{k}.py"),
                     &python_source(k, sibling(k, python_count), mix.below(100)),
-                );
+                )?;
             }
             5 => {
                 let k = js_index;
@@ -138,7 +145,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 write(
                     &format!("src/js/mod_{k}.js"),
                     &js_source(k, sibling(k, js_count), mix.below(100)),
-                );
+                )?;
             }
             6 => {
                 let k = ts_index;
@@ -146,7 +153,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                 write(
                     &format!("src/ts/mod_{k}.ts"),
                     &ts_source(k, sibling(k, ts_count), mix.below(100)),
-                );
+                )?;
             }
             _ => write(
                 &format!("config/config_{i}.json"),
@@ -155,7 +162,7 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
                      \"retries\": 3,\n  \"needle\": \"needle_{i}\",\n  \
                      \"helper\": \"shared_helper\"\n}}\n"
                 ),
-            ),
+            )?,
         }
     }
 
@@ -164,16 +171,16 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> FixtureStats {
     write(
         "src/python/broken.py",
         "def broken(:\n    return 1\n\ndef fine():\n    return 2\n",
-    );
+    )?;
     write(
         "src/js/broken.js",
         "function broken( {\n  return 1;\n}\n\nexport function fine() {\n  return 2;\n}\n",
-    );
+    )?;
 
-    FixtureStats {
+    Ok(FixtureStats {
         file_count,
         total_bytes,
-    }
+    })
 }
 
 fn rust_source(k: usize, neighbor: usize, offset: u64) -> String {

@@ -11,15 +11,16 @@
 //! again.
 
 use super::{EnvConfigError, ResourceLimits};
-#[cfg(not(test))]
-use crate::util::lock_or_recover;
+use crate::util::{LockPoisoned, lock};
 use std::collections::BTreeSet;
-#[cfg(not(test))]
 use std::sync::Mutex;
+
+/// The ledger's contents: (setting, configured value) pairs.
+type Ledger = BTreeSet<(&'static str, u64)>;
 
 /// The (setting, configured value) pairs already warned about.
 #[cfg(not(test))]
-static REPORTED: Mutex<BTreeSet<(&'static str, u64)>> = Mutex::new(BTreeSet::new());
+static REPORTED: Mutex<Ledger> = Mutex::new(BTreeSet::new());
 
 // In tests the ledger is per thread. A process-wide ledger would let any
 // unrelated test that builds limits while another test's environment held a
@@ -27,26 +28,31 @@ static REPORTED: Mutex<BTreeSet<(&'static str, u64)>> = Mutex::new(BTreeSet::new
 // would then see no warning at all.
 #[cfg(test)]
 thread_local! {
-    static REPORTED: std::cell::RefCell<BTreeSet<(&'static str, u64)>> =
-        const { std::cell::RefCell::new(BTreeSet::new()) };
+    static REPORTED: Mutex<Ledger> = const { Mutex::new(BTreeSet::new()) };
+}
+
+/// Runs `change` on the process-wide ledger.
+#[cfg(not(test))]
+fn with_ledger<T>(change: impl FnOnce(&mut Ledger) -> T) -> Result<T, LockPoisoned> {
+    Ok(change(&mut *lock(&REPORTED, "limit_override_warnings")?))
+}
+
+/// Runs `change` on this thread's ledger.
+#[cfg(test)]
+fn with_ledger<T>(change: impl FnOnce(&mut Ledger) -> T) -> Result<T, LockPoisoned> {
+    REPORTED.with(|ledger| Ok(change(&mut *lock(ledger, "limit_override_warnings")?)))
 }
 
 /// Empties this thread's ledger so the calling test starts from a known state.
 #[cfg(test)]
-pub(super) fn fresh_ledger() {
-    REPORTED.with_borrow_mut(BTreeSet::clear);
+pub(super) fn fresh_ledger() -> Result<(), LockPoisoned> {
+    with_ledger(BTreeSet::clear)
 }
 
-/// `true` the first time this process sees `(setting, value)`.
-#[cfg(not(test))]
-fn first_report(setting: &'static str, value: u64) -> bool {
-    lock_or_recover(&REPORTED, "limit_override_warnings").insert((setting, value))
-}
-
-/// `true` the first time this thread sees `(setting, value)`.
-#[cfg(test)]
-fn first_report(setting: &'static str, value: u64) -> bool {
-    REPORTED.with_borrow_mut(|reported| reported.insert((setting, value)))
+/// `true` the first time the ledger sees `(setting, value)`. A poisoned
+/// ledger is an error: whether the warning is due is unknown.
+fn first_report(setting: &'static str, value: u64) -> Result<bool, LockPoisoned> {
+    with_ledger(|reported| reported.insert((setting, value)))
 }
 
 /// Passes `value` through unless it is zero. Zero is meaningless for the
@@ -54,17 +60,24 @@ fn first_report(setting: &'static str, value: u64) -> bool {
 /// out, every query too long), so it is refused with a warning naming
 /// `setting` (a `config.json` key), once per process, and the caller keeps the
 /// value already in place.
-pub(super) fn refuse_zero<T: Default + PartialEq>(setting: &'static str, value: T) -> Option<T> {
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the warning ledger was poisoned.
+pub(super) fn refuse_zero<T: Default + PartialEq>(
+    setting: &'static str,
+    value: T,
+) -> Result<Option<T>, LockPoisoned> {
     if value != T::default() {
-        return Some(value);
+        return Ok(Some(value));
     }
-    if first_report(setting, 0) {
+    if first_report(setting, 0)? {
         tracing::warn!(
             setting,
             "limit override is 0, which is not a usable limit; it was ignored and the current value applies",
         );
     }
-    None
+    Ok(None)
 }
 
 /// [`parse_override`] for a limit where zero is meaningless: a `0` is an
@@ -117,11 +130,18 @@ where
 
 impl ResourceLimits {
     /// [`refuse_zero`] for a `config.json` key; `None` stays `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the warning ledger was poisoned.
     pub(crate) fn config_nonzero<T: Default + PartialEq>(
         key: &'static str,
         value: Option<T>,
-    ) -> Option<T> {
-        refuse_zero(key, value?)
+    ) -> Result<Option<T>, LockPoisoned> {
+        match value {
+            Some(value) => refuse_zero(key, value),
+            None => Ok(None),
+        }
     }
 
     /// Clamps `max_parse_bytes` to `max_file_bytes` after every override.
@@ -130,9 +150,13 @@ impl ResourceLimits {
     /// never act; keeping it would report a limit that is not the one in
     /// force. Runs after the env overrides (`apply_env_overrides`), and says so
     /// when it acts (once per configured value), like the SQLite clamp.
-    pub(crate) fn clamp_parse_to_file_bytes(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the warning ledger was poisoned.
+    pub(crate) fn clamp_parse_to_file_bytes(&mut self) -> Result<(), LockPoisoned> {
         if self.max_parse_bytes > self.max_file_bytes {
-            if first_report("max_parse_bytes clamp", self.max_parse_bytes) {
+            if first_report("max_parse_bytes clamp", self.max_parse_bytes)? {
                 tracing::warn!(
                     limit = "max_parse_bytes",
                     requested = self.max_parse_bytes,
@@ -142,6 +166,7 @@ impl ResourceLimits {
             }
             self.max_parse_bytes = self.max_file_bytes;
         }
+        Ok(())
     }
 }
 

@@ -92,7 +92,7 @@ fn read_grouped_counts(connection: &Transaction<'_>) -> Result<GroupedCounts, ru
         )?,
         skipped_by_reason: grouped_counts(
             connection,
-            "SELECT skip_reason, count(*) FROM files WHERE file_kind = 'skipped' \
+            "SELECT COALESCE(skip_reason, ''), count(*) FROM files WHERE file_kind = 'skipped' \
              GROUP BY skip_reason ORDER BY skip_reason",
             |reason, count| SkipReasonCount { reason, count },
         )?,
@@ -128,9 +128,10 @@ fn read_gap_counts(connection: &Transaction<'_>) -> Result<(i64, i64), rusqlite:
 }
 
 /// Runs a `SELECT <value>, count(*) … GROUP BY <value>` and maps each row
-/// through `make`. A NULL group value (e.g. a skipped row with no recorded
-/// `skip_reason`) becomes the empty string rather than being dropped, so the
-/// counts always sum to the rows they group.
+/// through `make`. The SQL must not yield a NULL group value: a skipped row
+/// with no recorded `skip_reason` is selected as the empty string
+/// (`COALESCE`) rather than dropped, so the counts always sum to the rows
+/// they group.
 fn grouped_counts<T>(
     connection: &Transaction<'_>,
     sql: &str,
@@ -138,10 +139,7 @@ fn grouped_counts<T>(
 ) -> Result<Vec<T>, rusqlite::Error> {
     let mut statement = connection.prepare(sql)?;
     statement
-        .query_map([], |row| {
-            let value: Option<String> = row.get(0)?;
-            Ok(make(value.unwrap_or_default(), row.get(1)?))
-        })?
+        .query_map([], |row| Ok(make(row.get(0)?, row.get(1)?)))?
         .collect()
 }
 
@@ -149,12 +147,14 @@ fn grouped_counts<T>(
 mod tests {
     use crate::tools::{ReportRequest, report};
     use rmcp::handler::server::wrapper::Parameters;
+    use slugaudit_test_check::{Check, TestResult};
     use std::fs;
 
-    fn activate(root: &std::path::Path) {
+    fn activate(root: &std::path::Path) -> TestResult {
         fs::create_dir_all(root.join(".planning").join("slugaudit"))
-            .expect("create activation dir");
-        crate::project::write_database_marker(&root.join(".planning").join("slugaudit"));
+            .check("create activation dir")?;
+        crate::project::write_database_marker(&root.join(".planning").join("slugaudit"))?;
+        Ok(())
     }
 
     /// A file the walk discovers but deliberately does not index must be
@@ -163,13 +163,15 @@ mod tests {
     /// real publish path, so the oversize ceiling comes from the global
     /// config.
     #[test]
-    fn a_discovered_but_skipped_file_is_visible_as_a_skipped_row_and_a_partial_index() {
-        let project = tempfile::tempdir().expect("project dir");
-        activate(project.path());
-        let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 50000}"#);
-        fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").expect("write source");
+    fn a_discovered_but_skipped_file_is_visible_as_a_skipped_row_and_a_partial_index() -> TestResult
+    {
+        let project = tempfile::tempdir().check("project dir")?;
+        activate(project.path())?;
+        let _config =
+            crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 50000}"#)?;
+        fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
         fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
-            .expect("write oversize file");
+            .check("write oversize file")?;
 
         let response = report(
             &Parameters(ReportRequest {
@@ -178,7 +180,7 @@ mod tests {
             &crate::progress::NoopProgressSink,
             &crate::sync::SourceSyncManager::default(),
         )
-        .expect("report succeeds");
+        .check("report succeeds")?;
 
         assert_eq!(
             response.0.file_count, 2,
@@ -207,8 +209,8 @@ mod tests {
             .join(".planning")
             .join("slugaudit")
             .join("project.db");
-        let connection =
-            crate::store::open_existing(&database).expect("open the published database read-only");
+        let connection = crate::store::open_existing(&database)
+            .check("open the published database read-only")?;
         let (kind, reason, content, completeness, outcome, algorithm): (
             String,
             Option<String>,
@@ -233,7 +235,7 @@ mod tests {
                     ))
                 },
             )
-            .expect("the skipped file must have an existence row");
+            .check("the skipped file must have an existence row")?;
         assert_eq!(kind, "skipped");
         assert_eq!(reason.as_deref(), Some("oversize"));
         assert_eq!(content, None, "no content is retained for a skipped file");
@@ -243,5 +245,6 @@ mod tests {
             algorithm, "stat-identity",
             "the skipped row's identity is stat-derived, never a content hash"
         );
+        Ok(())
     }
 }

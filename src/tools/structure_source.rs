@@ -329,7 +329,11 @@ pub(super) fn truncate_text(text: &str) -> (String, bool) {
 }
 
 pub(super) fn truncate_snippet(text: &str, max_bytes: usize) -> (String, bool) {
-    let first_line = text.lines().next().unwrap_or("").trim();
+    // An empty text has no first line; that is not an error, the snippet is empty.
+    let first_line = match text.lines().next() {
+        Some(line) => line.trim(),
+        None => "",
+    };
     if first_line.len() <= max_bytes {
         (first_line.to_owned(), text.lines().nth(1).is_some())
     } else {

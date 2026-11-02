@@ -141,7 +141,7 @@ pub(super) fn list(
         &spec,
         which,
         |_tx, rows| {
-            let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits);
+            let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits)?;
             for listing in catalog.listings() {
                 rows.push(&listing)?;
             }

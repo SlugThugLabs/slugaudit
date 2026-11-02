@@ -8,8 +8,10 @@ use super::{
     CallSite, Input, call_item, callee_node, enclosing_caller, named_children, qualified_callee,
     simple_name,
 };
-use crate::evidence::{NoTree, TextRangeError, node_text, parse_tree};
-use crate::model::{EvidenceItem, EvidenceOrigin, LineIndex, Span, SpanAvailability};
+use crate::evidence::{NoTree, NodeError, node_text, parse_tree};
+use crate::model::{
+    EvidenceItem, EvidenceOrigin, LineIndex, PositionOverflow, Span, SpanAvailability,
+};
 use crate::util::Deadline;
 use std::rc::Rc;
 use tree_sitter_language_pack::Node;
@@ -62,11 +64,15 @@ struct Pending {
 }
 
 /// Recovers the calls in `macro_node`'s token tree; every fragment re-parse
-/// runs within what is left of `input.deadline`.
-pub(super) fn extract(macro_node: &Node, input: &Input<'_>) -> MacroCalls {
+/// runs within what is left of `input.deadline`. A position past `u32::MAX`
+/// is an error that fails the file's extraction.
+pub(super) fn extract(
+    macro_node: &Node,
+    input: &Input<'_>,
+) -> Result<MacroCalls, PositionOverflow> {
     let mut out = MacroCalls::default();
     let Some(tokens) = named_children(macro_node).find(|n| n.kind() == "token_tree") else {
-        return out;
+        return Ok(out);
     };
     let start = tokens.start_byte().saturating_add(1);
     let end = tokens.end_byte().saturating_sub(1);
@@ -75,7 +81,7 @@ pub(super) fn extract(macro_node: &Node, input: &Input<'_>) -> MacroCalls {
         Err(error) => {
             tracing::warn!(%error, "macro argument scan skipped; extraction is partial");
             out.capped = true;
-            return out;
+            return Ok(out);
         }
     };
     let context = Scan {
@@ -84,8 +90,8 @@ pub(super) fn extract(macro_node: &Node, input: &Input<'_>) -> MacroCalls {
         caller,
         deadline: input.deadline,
     };
-    scan(&context, (start, end), &mut out);
-    out
+    scan(&context, (start, end), &mut out)?;
+    Ok(out)
 }
 
 /// Scans the outermost fragment and every macro nested in it, depth-first, on
@@ -95,8 +101,13 @@ pub(super) fn extract(macro_node: &Node, input: &Input<'_>) -> MacroCalls {
 /// children, so rows come out in pre-order, as a recursive scan's would, and
 /// `calls::walk`'s first-wins dedup keeps the outermost row.
 /// Records in `out` whether the macro-nesting or tree-depth bound truncated
-/// the scan, or a fragment's re-parse timed out.
-fn scan(context: &Scan<'_>, range: (usize, usize), out: &mut MacroCalls) {
+/// the scan, or a fragment's re-parse timed out. A position past `u32::MAX`
+/// is an error that fails the file's extraction.
+fn scan(
+    context: &Scan<'_>,
+    range: (usize, usize),
+    out: &mut MacroCalls,
+) -> Result<(), PositionOverflow> {
     let mut pending = Vec::new();
     open_fragment(context, range, 0, &mut pending, out);
     while let Some(Pending {
@@ -116,10 +127,11 @@ fn scan(context: &Scan<'_>, range: (usize, usize), out: &mut MacroCalls) {
             match emit_call_row(&node, context, &fragment) {
                 Ok(Some(row)) => out.rows.push(row),
                 Ok(None) => {}
-                Err(error) => {
+                Err(NodeError::Text(error)) => {
                     tracing::warn!(%error, "macro argument call skipped; extraction is partial");
                     out.capped = true;
                 }
+                Err(NodeError::Position(error)) => return Err(error),
             }
         }
         crate::evidence::push_children(&mut pending, &node, |child| Pending {
@@ -131,6 +143,7 @@ fn scan(context: &Scan<'_>, range: (usize, usize), out: &mut MacroCalls) {
             open_fragment(context, nested, fragment.macro_depth + 1, &mut pending, out);
         }
     }
+    Ok(())
 }
 
 /// Reparses `source[start..end]` inside the synthetic frame and pushes its
@@ -187,12 +200,13 @@ fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
 /// Builds one call row for a `call_expression`/`macro_invocation` node mapped
 /// back to original-source coordinates, or `None` when the node is the probe
 /// wrapper itself, has no callee, or falls outside the fragment. An error
-/// means a node range did not slice the synthetic text.
+/// means a node range did not slice the synthetic text, or a position
+/// exceeds `u32::MAX`.
 fn emit_call_row(
     node: &Node,
     scan: &Scan<'_>,
     fragment: &Fragment,
-) -> Result<Option<(usize, usize, EvidenceItem)>, TextRangeError> {
+) -> Result<Option<(usize, usize, EvidenceItem)>, NodeError> {
     let wrapped = fragment.wrapped.as_str();
     let macro_call = node.kind() == "macro_invocation";
     let start = fragment.start + node.start_byte() - PREFIX.len();
@@ -204,18 +218,19 @@ fn emit_call_row(
         return Ok(None);
     };
     let callee_text = node_text(wrapped, callee.start_byte(), callee.end_byte())?;
-    let name = simple_name(callee.clone(), wrapped)?
-        .unwrap_or_else(|| callee_text.trim_end_matches('!').to_owned());
-    let call_span = Span::new(
+    let name = match simple_name(callee.clone(), wrapped)? {
+        Some(name) => name,
+        None => callee_text.trim_end_matches('!').to_owned(),
+    };
+    let call_span = match Span::new(
         start as u64,
         end as u64,
-        scan.lines.position(start),
-        scan.lines.position(end),
-    )
-    .map_or_else(
-        |error| crate::evidence::span_unavailable("macro argument call", &error),
-        SpanAvailability::Present,
-    );
+        scan.lines.position(start)?,
+        scan.lines.position(end)?,
+    ) {
+        Ok(valid) => SpanAvailability::Present(valid),
+        Err(error) => crate::evidence::span_unavailable("macro argument call", &error),
+    };
     let site = CallSite {
         language: "rust",
         origin: EvidenceOrigin::RustCallWalker,

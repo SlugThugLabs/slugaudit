@@ -104,6 +104,11 @@ clone_on_ref_ptr = "deny"
 todo = "deny"
 unimplemented = "deny"
 exit = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+disallowed_methods = "deny"
 cargo = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"

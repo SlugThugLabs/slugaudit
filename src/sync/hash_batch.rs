@@ -34,8 +34,12 @@ impl HashBatch<'_> {
         if self.error_flag.swap(true, Ordering::SeqCst) {
             error.warn_sampling_superseded();
         } else {
-            let mut guard = crate::util::lock_or_recover(&self.error_slot, "hash_batch::abort");
-            *guard = Some(error);
+            match crate::util::lock(&self.error_slot, "hash_batch::abort") {
+                Ok(mut guard) => *guard = Some(error),
+                // The batch still fails: `collect` locks the same slot and
+                // returns the poisoned-lock error.
+                Err(poisoned) => error.warn_unrecorded(&poisoned),
+            }
         }
     }
 
@@ -130,7 +134,7 @@ impl HashBatch<'_> {
         while let Ok((idx, outcome)) = rx.recv() {
             results.push((idx, outcome));
         }
-        let error = crate::util::lock_or_recover(&self.error_slot, "hash_batch::collect").take();
+        let error = crate::util::lock(&self.error_slot, "hash_batch::collect")?.take();
         if let Some(error) = error {
             return Err(error);
         }

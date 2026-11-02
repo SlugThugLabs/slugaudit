@@ -5,6 +5,7 @@ use super::*;
 use crate::tools::finding::{FindingRequest, finding};
 use crate::tools::query::{QueryRequest, query};
 use crate::tools::structure::{StructureRequest, structure};
+use slugaudit_test_check::{Check, TestResult};
 
 /// The lines `cat -n` shows: `x.unwrap()` on 3, the TODO comment on 4,
 /// `fn helper` on 6.
@@ -13,16 +14,16 @@ const FIXTURE: &str =
 
 /// The 1-based line of the first fixture line containing `needle`, found by
 /// scanning the text rather than trusting a hardcoded number.
-fn scanned_line(needle: &str) -> i64 {
+fn scanned_line(needle: &str) -> TestResult<i64> {
     let index = FIXTURE
         .lines()
         .position(|line| line.contains(needle))
-        .expect("needle is in the fixture");
-    i64::try_from(index).expect("small index") + 1
+        .check("needle is in the fixture")?;
+    Ok(i64::try_from(index).check("small index")? + 1)
 }
 
-fn sql_rows(project: &tempfile::TempDir, sql: &str) -> Vec<serde_json::Value> {
-    query(
+fn sql_rows(project: &tempfile::TempDir, sql: &str) -> TestResult<Vec<serde_json::Value>> {
+    Ok(query(
         &Parameters(QueryRequest {
             path: Some(project.path().to_string_lossy().into_owned()),
             sql: sql.to_owned(),
@@ -33,12 +34,12 @@ fn sql_rows(project: &tempfile::TempDir, sql: &str) -> Vec<serde_json::Value> {
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("query succeeds")
+    .check("query succeeds")?
     .0
-    .rows
+    .rows)
 }
 
-fn structure_lines(project: &tempfile::TempDir, name: &str) -> (u32, u32) {
+fn structure_lines(project: &tempfile::TempDir, name: &str) -> TestResult<(u32, u32)> {
     let response = structure(
         &Parameters(StructureRequest {
             path: project.path().to_string_lossy().into_owned(),
@@ -49,29 +50,29 @@ fn structure_lines(project: &tempfile::TempDir, name: &str) -> (u32, u32) {
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("structure succeeds")
+    .check("structure succeeds")?
     .0;
     let found = response
         .matches
         .iter()
         .find(|m| m.text.contains(name))
-        .expect("function matched");
-    (found.start_line, found.end_line)
+        .check("function matched")?;
+    Ok((found.start_line, found.end_line))
 }
 
 #[test]
-fn every_surface_reports_the_same_one_based_inclusive_lines() {
-    let project = tempfile::tempdir().expect("project dir");
-    activate(project.path());
-    fs::write(project.path().join("main.rs"), FIXTURE).expect("write fixture");
-    assert_eq!((scanned_line("unwrap"), scanned_line("TODO")), (3, 4));
-    assert_eq!(scanned_line("fn helper"), 6);
+fn every_surface_reports_the_same_one_based_inclusive_lines() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    activate(project.path())?;
+    fs::write(project.path().join("main.rs"), FIXTURE).check("write fixture")?;
+    assert_eq!((scanned_line("unwrap")?, scanned_line("TODO")?), (3, 4));
+    assert_eq!(scanned_line("fn helper")?, 6);
 
     // leads
-    let unwrap = run(request(project.path(), Some("unwrap_calls")));
-    let todo = run(request(project.path(), Some("comment_markers")));
-    let unwrap = full_rows(&unwrap);
-    let todo = full_rows(&todo);
+    let unwrap = run(request(project.path(), Some("unwrap_calls")))?;
+    let todo = run(request(project.path(), Some("comment_markers")))?;
+    let unwrap = full_rows(&unwrap)?;
+    let todo = full_rows(&todo)?;
     assert_eq!(unwrap.len(), 1);
     assert_eq!(unwrap[0].line, 3);
     assert_eq!(todo.len(), 1);
@@ -82,7 +83,7 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() {
         &project,
         "SELECT start_line, end_line FROM evidence WHERE kind = 'Call' \
          AND json_extract(payload, '$.callee_name') = 'unwrap'",
-    );
+    )?;
     assert_eq!(call.len(), 1);
     assert_eq!(
         (call[0]["start_line"].as_i64(), call[0]["end_line"].as_i64()),
@@ -92,14 +93,14 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() {
         &project,
         "SELECT start_line, end_line FROM evidence WHERE kind = 'Comment' \
          AND json_extract(payload, '$.text') LIKE '%TODO%'",
-    );
+    )?;
     assert_eq!(comment.len(), 1);
     assert_eq!(comment[0]["start_line"].as_i64(), Some(4));
     assert_eq!(comment[0]["end_line"].as_i64(), Some(4));
 
     // structure
-    assert_eq!(structure_lines(&project, "fn main"), (1, 5));
-    assert_eq!(structure_lines(&project, "fn helper"), (6, 6));
+    assert_eq!(structure_lines(&project, "fn main")?, (1, 5));
+    assert_eq!(structure_lines(&project, "fn helper")?, (6, 6));
 
     // finding echo: the stored range is exactly the submitted one
     finding(
@@ -116,23 +117,24 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() {
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     )
-    .expect("finding succeeds");
-    let findings_db = crate::tools::test_support::own_findings_path(&project);
-    let connection = crate::store::open_findings(&findings_db).expect("open findings db");
+    .check("finding succeeds")?;
+    let findings_db = crate::tools::test_support::own_findings_path(&project)?;
+    let connection = crate::store::open_findings(&findings_db).check("open findings db")?;
     let stored: (i64, i64) = connection
         .query_row("SELECT line_start, line_end FROM findings", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })
-        .expect("read finding range");
+        .check("read finding range")?;
     assert_eq!(stored, (3, 4));
 
     // line_range over the same range
     let ranged = sql_rows(
         &project,
         "SELECT line_range(content, 3, 4) AS r FROM files WHERE path = 'main.rs'",
-    );
+    )?;
     assert_eq!(
         ranged[0]["r"].as_str(),
         Some("    x.unwrap();\n    // TODO: fix")
     );
+    Ok(())
 }

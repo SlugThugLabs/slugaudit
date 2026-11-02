@@ -3,15 +3,16 @@
 
 use super::*;
 use rusqlite::{Connection, params};
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 fn deadline() -> Deadline {
     Deadline::after(std::time::Duration::from_mins(1))
 }
 
-fn seeded_connection() -> (tempfile::TempDir, Connection) {
-    let dir = tempfile::tempdir().expect("db dir");
+fn seeded_connection() -> TestResult<(tempfile::TempDir, Connection)> {
+    let dir = tempfile::tempdir().check("db dir")?;
     let connection =
-        crate::store::open_read_write(&dir.path().join("project.db")).expect("open db");
+        crate::store::open_read_write(&dir.path().join("project.db")).check("open db")?;
     connection
         .execute(
             "INSERT INTO revisions \
@@ -19,11 +20,11 @@ fn seeded_connection() -> (tempfile::TempDir, Connection) {
              VALUES ('rev-1', 'manifest', '1.0', 0, 1)",
             [],
         )
-        .expect("seed revision");
-    (dir, connection)
+        .check("seed revision")?;
+    Ok((dir, connection))
 }
 
-fn insert_file(connection: &Connection, path: &str, content: &str, hash: &str) {
+fn insert_file(connection: &Connection, path: &str, content: &str, hash: &str) -> TestResult {
     connection
         .execute(
             "INSERT INTO files (path, content, content_hash, hash_algorithm, \
@@ -31,43 +32,46 @@ fn insert_file(connection: &Connection, path: &str, content: &str, hash: &str) {
              VALUES (?1, ?2, ?3, 'blake3-v1', 'Available', 'Succeeded', 'Full', 1)",
             params![path, content, hash],
         )
-        .expect("insert file row");
+        .check("insert file row")?;
+    Ok(())
 }
 
 #[test]
-fn matching_content_is_not_reported() {
-    let (_dir, connection) = seeded_connection();
+fn matching_content_is_not_reported() -> TestResult {
+    let (_dir, connection) = seeded_connection()?;
     let content = "fn a() {}\n";
     let hash = blake3::hash(content.as_bytes()).to_string();
-    insert_file(&connection, "a.rs", content, &hash);
+    insert_file(&connection, "a.rs", content, &hash)?;
 
-    let mismatched = content_mismatches(&connection, &deadline()).expect("check");
+    let mismatched = content_mismatches(&connection, &deadline()).check("check")?;
     assert!(mismatched.is_empty(), "{mismatched:?}");
+    Ok(())
 }
 
 #[test]
-fn edited_content_with_an_untouched_hash_is_reported() {
-    let (_dir, connection) = seeded_connection();
+fn edited_content_with_an_untouched_hash_is_reported() -> TestResult {
+    let (_dir, connection) = seeded_connection()?;
     let original = "fn a() {}\n";
     let hash = blake3::hash(original.as_bytes()).to_string();
-    insert_file(&connection, "a.rs", original, &hash);
+    insert_file(&connection, "a.rs", original, &hash)?;
     connection
         .execute(
             "UPDATE files SET content = 'fn a() { changed(); }\n' WHERE path = 'a.rs'",
             [],
         )
-        .expect("tamper with the stored content");
+        .check("tamper with the stored content")?;
 
     let mismatched: Vec<String> = content_mismatches(&connection, &deadline())
-        .expect("check")
+        .check("check")?
         .into_iter()
         .collect();
     assert_eq!(mismatched, ["a.rs"]);
+    Ok(())
 }
 
 #[test]
-fn rows_without_content_are_not_checked() {
-    let (_dir, connection) = seeded_connection();
+fn rows_without_content_are_not_checked() -> TestResult {
+    let (_dir, connection) = seeded_connection()?;
     connection
         .execute(
             "INSERT INTO files \
@@ -77,20 +81,22 @@ fn rows_without_content_are_not_checked() {
                      'stat-identity', 'Unavailable', 'NotAttempted', 'Unavailable', 1)",
             [],
         )
-        .expect("skipped row");
+        .check("skipped row")?;
 
-    let mismatched = content_mismatches(&connection, &deadline()).expect("check");
+    let mismatched = content_mismatches(&connection, &deadline()).check("check")?;
     assert!(mismatched.is_empty(), "{mismatched:?}");
+    Ok(())
 }
 
 #[test]
-fn a_spent_deadline_fails_the_check_before_comparing() {
-    let (_dir, connection) = seeded_connection();
+fn a_spent_deadline_fails_the_check_before_comparing() -> TestResult {
+    let (_dir, connection) = seeded_connection()?;
     let content = "fn a() {}\n";
     let hash = blake3::hash(content.as_bytes()).to_string();
-    insert_file(&connection, "a.rs", content, &hash);
+    insert_file(&connection, "a.rs", content, &hash)?;
 
     let error = content_mismatches(&connection, &Deadline::after(std::time::Duration::ZERO))
-        .expect_err("a spent budget must fail the check");
+        .check_err("a spent budget must fail the check")?;
     assert!(matches!(error, PublishError::TimeBudgetExceeded { .. }));
+    Ok(())
 }

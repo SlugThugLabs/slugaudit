@@ -2,7 +2,6 @@
 #![allow(clippy::print_stdout)]
 // Same production panic ban as the library root; see `lib.rs` for why
 // `expect` is denied alongside `unwrap`.
-#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 //! No-duplicates gate.
@@ -46,16 +45,18 @@ fn main() -> ExitCode {
     let mut sorted_names: Vec<_> = names.iter().filter(|(_, files)| files.len() > 1).collect();
     sorted_names.sort_by_key(|(name, _)| *name);
     for (name, files) in sorted_names {
-        let joined = files
-            .iter()
-            .map(|p| {
-                p.strip_prefix(&project_root)
-                    .unwrap_or(p)
-                    .display()
-                    .to_string()
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let mut relative_files: Vec<String> = Vec::new();
+        for p in files {
+            match p.strip_prefix(&project_root) {
+                Ok(relative) => relative_files.push(relative.display().to_string()),
+                Err(error) => failures.push(format!(
+                    "{} is not under the project root {}: {error}",
+                    p.display(),
+                    project_root.display()
+                )),
+            }
+        }
+        let joined = relative_files.join(", ");
         let msg = format!("test {name:?} defined in {} files: {joined}", files.len());
         println!("no-duplicates: {msg}");
         failures.push(msg);

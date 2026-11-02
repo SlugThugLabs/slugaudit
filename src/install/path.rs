@@ -61,21 +61,20 @@ fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
         Err(std::env::VarError::NotPresent) => String::new(),
         Err(std::env::VarError::NotUnicode(_)) => return Err(InstallError::ShellNotUnicode),
     };
-    let name = Path::new(&shell)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    // No file name (an unset or empty $SHELL) matches no shell and is
+    // refused below.
+    let name = Path::new(&shell).file_name().and_then(|s| s.to_str());
     let directory = bin_dir.display().to_string();
     match name {
-        "fish" => Ok((
+        Some("fish") => Ok((
             home.join(".config/fish/config.fish"),
             format!("fish_add_path {}", fish_word(&directory)),
         )),
-        "zsh" => Ok((
+        Some("zsh") => Ok((
             home.join(".zshrc"),
             format!("export PATH=\"{}:$PATH\"", double_quoted(&directory)),
         )),
-        "bash" => Ok((
+        Some("bash") => Ok((
             home.join(".bashrc"),
             format!("export PATH=\"{}:$PATH\"", double_quoted(&directory)),
         )),

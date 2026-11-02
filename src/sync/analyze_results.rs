@@ -1,7 +1,7 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=One responsibility: the ParseResult a file's analysis ends in and one constructor per outcome (without content, content-only, withheld, timeout, cool-down, succeeded, load-failed, parse-failed), each setting availability, outcome and completeness together so the combination stays valid.
 //! The outcomes `analyze` can end in. Each constructor sets availability,
 //! outcome and completeness together (see `ParserRun::validate`).
-use crate::evidence::Extraction;
+use crate::evidence::{ExtractError, Extraction};
 use crate::model::{
     EvidenceItem, EvidenceKind, ExtractionCompleteness, ParseOutcome, ParserAvailability, ParserRun,
 };
@@ -197,19 +197,34 @@ pub(super) fn succeeded_result(
         .count();
     let outcome = if diagnostic_count > 0 {
         ParseOutcome::SyntaxErrors {
-            // A per-file diagnostic count past `u32::MAX` would need more
-            // than 100 GB of in-memory evidence items, so it cannot occur
-            // within any configured limit; if it ever did, the saturation is
-            // logged with the cause rather than reported as an exact count.
-            count: u32::try_from(diagnostic_count).unwrap_or_else(|error| {
-                tracing::warn!(
-                    path = %relative_path,
-                    diagnostic_count,
-                    error = %error,
-                    "diagnostic count exceeds u32; the recorded syntax-error count saturates",
-                );
-                u32::MAX
-            }),
+            count: match u32::try_from(diagnostic_count) {
+                Ok(count) => count,
+                Err(error) => {
+                    // A per-file diagnostic count past `u32::MAX` would need
+                    // more than 100 GB of in-memory evidence items, so it
+                    // cannot occur within any configured limit. If it did,
+                    // the file is recorded as `Failed` with the cause rather
+                    // than with a wrong count.
+                    tracing::warn!(
+                        path = %relative_path,
+                        diagnostic_count,
+                        error = %error,
+                        "diagnostic count exceeds u32; recording Failed",
+                    );
+                    return ParseResult {
+                        language: Some(language),
+                        language_detected: true,
+                        run: ParserRun {
+                            availability: ParserAvailability::Available,
+                            outcome: ParseOutcome::Failed {
+                                reason: format!("diagnostic count exceeds u32: {error}"),
+                            },
+                            completeness: ExtractionCompleteness::ContentOnly,
+                        },
+                        evidence: Vec::new(),
+                    };
+                }
+            },
         }
     } else {
         ParseOutcome::Succeeded
@@ -272,13 +287,17 @@ pub(super) fn load_failed_result(
 pub(super) fn parse_failed_result(
     relative_path: &str,
     language: String,
-    error: &PackError,
+    error: &ExtractError,
 ) -> ParseResult {
+    let error_kind = match error {
+        ExtractError::Pack(pack) => pack_error_kind(pack),
+        ExtractError::Position(_) => "position_overflow",
+    };
     tracing::debug!(
         operation = "parser_extract",
         path = %relative_path,
         language = %language,
-        error_kind = pack_error_kind(error),
+        error_kind,
         "parser ran but extraction failed; recording Failed",
     );
     ParseResult {

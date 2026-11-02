@@ -1,20 +1,44 @@
-//! Clock and duration conversions whose failure modes are logged or saturate
-//! explicitly instead of being discarded.
+//! Clock and duration conversions whose failure modes are returned, logged or
+//! saturate explicitly instead of being discarded.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Whole seconds since the Unix epoch for `time`. A time before the epoch
-/// yields `0` and one past the `i64` range yields `i64::MAX`; both are
-/// deliberate recoveries, logged once with the source error.
-pub(crate) fn unix_seconds(time: SystemTime) -> i64 {
-    let elapsed = time.duration_since(UNIX_EPOCH).unwrap_or_else(|error| {
-        tracing::warn!(error = %error, "system clock is before the Unix epoch; using 0");
-        Duration::ZERO
-    });
-    i64::try_from(elapsed.as_secs()).unwrap_or_else(|error| {
-        tracing::warn!(error = %error, "system clock is past the i64 range; using the maximum");
-        i64::MAX
-    })
+/// A system clock that cannot be stated in Unix seconds, so no timestamp is
+/// written from it.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ClockError {
+    /// The clock reads a time before the Unix epoch.
+    #[error("the system clock is before the Unix epoch: {0}")]
+    BeforeEpoch(#[source] std::time::SystemTimeError),
+    /// The clock reads a time past the `i64` range of Unix seconds.
+    #[error("the system clock is past the i64 range of Unix seconds: {0}")]
+    OutOfRange(#[source] std::num::TryFromIntError),
+}
+
+/// Whole seconds since the Unix epoch for `time`.
+///
+/// # Errors
+///
+/// Returns [`ClockError`] for a time before the epoch or past the `i64`
+/// range.
+pub(crate) fn unix_seconds(time: SystemTime) -> Result<i64, ClockError> {
+    let elapsed = time
+        .duration_since(UNIX_EPOCH)
+        .map_err(ClockError::BeforeEpoch)?;
+    whole_seconds(elapsed)
+}
+
+/// Whole seconds in `elapsed`, or an error when they exceed the `i64` range.
+fn whole_seconds(elapsed: Duration) -> Result<i64, ClockError> {
+    i64::try_from(elapsed.as_secs()).map_err(ClockError::OutOfRange)
+}
+
+/// A clock error becomes an internal tool error: nothing the caller sends can
+/// fix the host clock.
+impl From<ClockError> for rmcp::ErrorData {
+    fn from(error: ClockError) -> Self {
+        Self::internal_error(format!("{error}; fix the system clock"), None)
+    }
 }
 
 /// Unix-epoch seconds for a file's mtime, or `None` when the platform cannot
@@ -60,12 +84,55 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_epoch_clock_yields_zero_and_warns() {
-        let (seconds, logs) =
-            crate::store::test_capture::capture_warns(|| unix_seconds(before_epoch()));
+    fn a_pre_epoch_clock_is_an_error() -> slugaudit_test_check::TestResult {
+        use slugaudit_test_check::CheckErr;
 
-        assert_eq!(seconds, 0);
-        assert!(logs.contains("before the Unix epoch"), "{logs}");
+        let error = unix_seconds(before_epoch()).check_err("a pre-epoch clock is an error")?;
+
+        assert!(matches!(error, ClockError::BeforeEpoch(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .starts_with("the system clock is before the Unix epoch: "),
+            "{error}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_clock_past_the_i64_range_is_an_error() -> slugaudit_test_check::TestResult {
+        use slugaudit_test_check::CheckErr;
+
+        let error = whole_seconds(Duration::from_secs(i64::MAX.unsigned_abs() + 1))
+            .check_err("a duration past i64 is an error")?;
+
+        assert!(matches!(error, ClockError::OutOfRange(_)), "{error:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_clock_after_the_epoch_converts_to_whole_seconds() -> slugaudit_test_check::TestResult {
+        use slugaudit_test_check::Check;
+        let at = UNIX_EPOCH + Duration::from_millis(42_999);
+
+        assert_eq!(unix_seconds(at).check("convert")?, 42);
+        Ok(())
+    }
+
+    #[test]
+    fn a_clock_error_becomes_an_internal_tool_error() -> slugaudit_test_check::TestResult {
+        use slugaudit_test_check::CheckErr;
+        let error: rmcp::ErrorData = unix_seconds(before_epoch())
+            .check_err("a pre-epoch clock is an error")?
+            .into();
+
+        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert!(
+            error.message.ends_with("; fix the system clock"),
+            "{}",
+            error.message
+        );
+        Ok(())
     }
 
     #[test]

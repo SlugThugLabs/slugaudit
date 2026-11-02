@@ -53,10 +53,14 @@ impl SyncedProject {
 /// Returns `project_not_enabled` when this process has no session for the
 /// project.
 pub(crate) fn session_findings_for(database_path: &Path) -> Result<PathBuf, ErrorData> {
-    database_path
-        .parent()
-        .and_then(crate::project::session_findings_path)
-        .ok_or_else(|| map_activation_error(&crate::project::ActivationError::NotActive))
+    let not_active = || map_activation_error(&crate::project::ActivationError::NotActive);
+    let Some(dir) = database_path.parent() else {
+        return Err(not_active());
+    };
+    match crate::project::session_findings_path(dir)? {
+        Some(findings) => Ok(findings),
+        None => Err(not_active()),
+    }
 }
 
 /// Owns the tool-facing per-server state and provides the sync entry point.
@@ -143,11 +147,17 @@ impl SourceSyncManager {
         self.last_sync_duration_ms.load(Ordering::Relaxed)
     }
 
-    fn stamp_last_sync(&self, duration_ms: u64) {
+    /// Records a successful sync's time and duration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::util::ClockError`] when the system clock is unusable.
+    fn stamp_last_sync(&self, duration_ms: u64) -> Result<(), crate::util::ClockError> {
         self.last_sync_unix_seconds
-            .store(crate::util::now_unix(), Ordering::Relaxed);
+            .store(crate::util::now_unix()?, Ordering::Relaxed);
         self.last_sync_duration_ms
             .store(duration_ms, Ordering::Relaxed);
+        Ok(())
     }
 }
 
@@ -155,25 +165,26 @@ impl SourceSyncManager {
 mod recovery_tests {
     use super::*;
     use crate::progress::NoopProgressSink;
+    use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     /// A valid database whose metadata names a different project root is
     /// stale, and the recovery path discards it. When the database path is a
     /// directory the discard cannot unlink it, so the failure must reach the
     /// caller with the underlying discard error intact.
     #[test]
-    fn a_failed_stale_database_discard_reports_the_exact_error() {
-        let project = crate::sync::test_support::create_project();
-        let root = crate::project::ProjectRoot::resolve(project.path()).expect("project root");
+    fn a_failed_stale_database_discard_reports_the_exact_error() -> TestResult {
+        let project = crate::sync::test_support::create_project()?;
+        let root = crate::project::ProjectRoot::resolve(project.path()).check("project root")?;
         let database_path = crate::project::database_path(&root);
-        let connection = crate::store::open_read_write(&database_path).expect("open database");
+        let connection = crate::store::open_read_write(&database_path).check("open database")?;
         connection
             .execute(
                 "INSERT INTO project VALUES (1, 'default', '/elsewhere', 1, 1, 0)",
                 [],
             )
-            .expect("stale metadata row");
-        std::fs::remove_file(&database_path).expect("unlink the database file");
-        std::fs::create_dir(&database_path).expect("directory at the database path");
+            .check("stale metadata row")?;
+        std::fs::remove_file(&database_path).check("unlink the database file")?;
+        std::fs::create_dir(&database_path).check("directory at the database path")?;
         let manager = SourceSyncManager::default();
 
         let Err(error) = manager.verify_metadata_or_rebuild(
@@ -183,16 +194,18 @@ mod recovery_tests {
             std::time::Instant::now(),
             &NoopProgressSink,
         ) else {
-            panic!("the directory at the database path cannot be discarded");
+            return Err("the directory at the database path cannot be discarded".to_owned())
+                .check("unexpected outcome");
         };
 
         let discard_error = std::fs::remove_file(&database_path)
-            .expect_err("the directory at the database path must not unlink");
+            .check_err("the directory at the database path must not unlink")?;
         assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
         assert_eq!(
             error.message,
             format!("discarding the stale project database: {discard_error}")
         );
+        Ok(())
     }
 }
 

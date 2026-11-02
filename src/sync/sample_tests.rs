@@ -1,6 +1,7 @@
 use super::*;
 use crate::model::{EvidenceLimits, ExtractionCompleteness};
 use crate::sync::publish::PublishError;
+use slugaudit_test_check::{Check, CheckErr, TestResult};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -23,16 +24,14 @@ fn has_truncation_marker(items: &[EvidenceItem]) -> bool {
     items.iter().any(|item| item.key == "evidence:truncated")
 }
 
-fn total_payload_bytes(items: &[EvidenceItem]) -> usize {
-    items
-        .iter()
-        .filter(|item| item.key != "evidence:truncated")
-        .map(|item| {
-            serde_json::to_vec(&item.payload)
-                .expect("encode payload")
-                .len()
-        })
-        .sum()
+fn total_payload_bytes(items: &[EvidenceItem]) -> TestResult<usize> {
+    let mut total = 0;
+    for item in items.iter().filter(|item| item.key != "evidence:truncated") {
+        total += serde_json::to_vec(&item.payload)
+            .check("encode payload")?
+            .len();
+    }
+    Ok(total)
 }
 
 /// 82 items each individually well under the 64 KiB per-item cap, and 82
@@ -41,7 +40,7 @@ fn total_payload_bytes(items: &[EvidenceItem]) -> usize {
 /// per-file cap. A check of count and per-item size only would let the whole
 /// oversized set through, so the cumulative cap must catch it.
 #[test]
-fn reproduces_the_5_326_990_byte_cumulative_overflow() {
+fn reproduces_the_5_326_990_byte_cumulative_overflow() -> TestResult {
     let limits = ResourceLimits {
         evidence: EvidenceLimits {
             max_payload_bytes_per_file: 4 * 1024 * 1024,
@@ -53,27 +52,28 @@ fn reproduces_the_5_326_990_byte_cumulative_overflow() {
         .map(|i| item_with_content_bytes(i, 65_000))
         .collect();
     items.push(item_with_content_bytes(81, 61_826));
+    let mut serialized = 0;
+    for item in &items {
+        serialized += serde_json::to_vec(&item.payload)
+            .check("payload serializes")?
+            .len();
+    }
     assert_eq!(
-        items
-            .iter()
-            .map(|item| serde_json::to_vec(&item.payload)
-                .expect("payload serializes")
-                .len())
-            .sum::<usize>(),
-        5_326_990,
+        serialized, 5_326_990,
         "fixture must reproduce the exact reported overflow size"
     );
 
     let _ = apply_evidence_limits(&mut items, &limits);
 
     assert!(
-        total_payload_bytes(&items) <= limits.evidence.max_payload_bytes_per_file,
+        total_payload_bytes(&items)? <= limits.evidence.max_payload_bytes_per_file,
         "cumulative payload must never exceed the per-file cap"
     );
     assert!(
         has_truncation_marker(&items),
         "truncation must be recorded as evidence"
     );
+    Ok(())
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn item_count_cap_truncates_and_reserves_room_for_the_marker() {
 }
 
 #[test]
-fn cumulative_byte_cap_stops_before_the_file_cap_not_after() {
+fn cumulative_byte_cap_stops_before_the_file_cap_not_after() -> TestResult {
     let limits = ResourceLimits {
         evidence: EvidenceLimits {
             max_items_per_file: 1000,
@@ -147,9 +147,10 @@ fn cumulative_byte_cap_stops_before_the_file_cap_not_after() {
 
     let _ = apply_evidence_limits(&mut items, &limits);
 
-    assert!(total_payload_bytes(&items) <= limits.evidence.max_payload_bytes_per_file);
+    assert!(total_payload_bytes(&items)? <= limits.evidence.max_payload_bytes_per_file);
     assert!(items.len() < 10, "later items must have been dropped");
     assert!(has_truncation_marker(&items));
+    Ok(())
 }
 
 /// A file that parsed cleanly is `Full` — the completeness the evidence caps
@@ -157,7 +158,7 @@ fn cumulative_byte_cap_stops_before_the_file_cap_not_after() {
 /// downgrade to `Partial` rather than assert `Full` beside its own truncation
 /// marker.
 #[test]
-fn evidence_limit_truncation_downgrades_a_full_run_to_partial() {
+fn evidence_limit_truncation_downgrades_a_full_run_to_partial() -> TestResult {
     let limits = ResourceLimits {
         evidence: EvidenceLimits {
             max_items_per_file: 1,
@@ -175,16 +176,18 @@ fn evidence_limit_truncation_downgrades_a_full_run_to_partial() {
         modified_unix_seconds: None,
     };
 
-    let record = to_file_record(sample, &limits, &generous_deadline());
+    let record =
+        to_file_record(sample, &limits, &generous_deadline()).check("build the file record")?;
 
     assert!(has_truncation_marker(&record.evidence));
     assert_eq!(record.run.completeness, ExtractionCompleteness::Partial);
+    Ok(())
 }
 
 /// The downgrade must be conditional: a clean parse with room for every item
 /// stays `Full`, so the downgrade cannot simply erase `Full` everywhere.
 #[test]
-fn a_full_run_within_every_evidence_cap_stays_full() {
+fn a_full_run_within_every_evidence_cap_stays_full() -> TestResult {
     let content = "pub fn a() {}\npub fn b() {}\n";
     let sample = Sample {
         relative_path: "lib.rs".to_owned(),
@@ -195,18 +198,20 @@ fn a_full_run_within_every_evidence_cap_stays_full() {
         modified_unix_seconds: None,
     };
 
-    let record = to_file_record(sample, &ResourceLimits::default(), &generous_deadline());
+    let record = to_file_record(sample, &ResourceLimits::default(), &generous_deadline())
+        .check("build the file record")?;
 
     assert!(!has_truncation_marker(&record.evidence));
     assert_eq!(record.run.completeness, ExtractionCompleteness::Full);
+    Ok(())
 }
 
 #[test]
-fn sample_file_accepts_a_file_exactly_at_the_cap() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn sample_file_accepts_a_file_exactly_at_the_cap() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let path = dir.path().join("at-cap.rs");
     let body = b"fn at_cap() {}";
-    std::fs::write(&path, body).expect("write fixture file");
+    std::fs::write(&path, body).check("write fixture file")?;
     let file = DiscoveredFile {
         relative_path: "at-cap.rs".to_owned(),
         absolute_path: path,
@@ -217,18 +222,19 @@ fn sample_file_accepts_a_file_exactly_at_the_cap() {
         ..ResourceLimits::default()
     };
 
-    let sample = sample_file(&file, &limits).expect("the per-file cap is inclusive");
+    let sample = sample_file(&file, &limits).check("the per-file cap is inclusive")?;
 
     assert_eq!(sample.byte_len, body.len() as u64);
     assert_eq!(sample.identity, hash::hash_bytes("at-cap.rs", body));
     assert_eq!(sample.content.as_deref(), Some("fn at_cap() {}"));
+    Ok(())
 }
 
 #[test]
-fn sample_file_reports_a_file_over_the_cap_as_too_large() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn sample_file_reports_a_file_over_the_cap_as_too_large() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let path = dir.path().join("over.rs");
-    std::fs::write(&path, vec![b'x'; 17]).expect("write fixture file");
+    std::fs::write(&path, vec![b'x'; 17]).check("write fixture file")?;
     let file = DiscoveredFile {
         relative_path: "over.rs".to_owned(),
         absolute_path: path,
@@ -239,7 +245,7 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() {
         ..ResourceLimits::default()
     };
 
-    let error = sample_file(&file, &limits).expect_err("an over-cap file is refused");
+    let error = sample_file(&file, &limits).check_err("an over-cap file is refused")?;
 
     match error {
         SampleError::TooLarge {
@@ -251,8 +257,12 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() {
             );
             assert_eq!(limit, 16);
         }
-        other => panic!("expected SampleError::TooLarge, got {other:?}"),
+        other => {
+            return Err(format!("expected SampleError::TooLarge, got {other:?}"))
+                .check("unexpected outcome");
+        }
     }
+    Ok(())
 }
 
 /// A file can grow between `sample_file`'s stat and its bounded read. The
@@ -263,7 +273,7 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() {
 /// deterministically without a race.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size() {
+fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size() -> TestResult {
     let file = DiscoveredFile {
         relative_path: "status".to_owned(),
         absolute_path: std::path::PathBuf::from("/proc/self/status"),
@@ -274,7 +284,7 @@ fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size
         ..ResourceLimits::default()
     };
 
-    let error = sample_file(&file, &limits).expect_err("proc status exceeds the cap");
+    let error = sample_file(&file, &limits).check_err("proc status exceeds the cap")?;
     let message = error.to_string();
 
     match error {
@@ -284,7 +294,10 @@ fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size
             assert_eq!(observed, 11, "the bounded read stops at the cap + 1");
             assert_eq!(limit, 10);
         }
-        other => panic!("expected SampleError::TooLarge, got {other:?}"),
+        other => {
+            return Err(format!("expected SampleError::TooLarge, got {other:?}"))
+                .check("unexpected outcome");
+        }
     }
     assert!(
         message.contains("at least 11 bytes"),
@@ -294,6 +307,7 @@ fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size
         !message.contains("is 11 bytes"),
         "the bounded read length is not the file's size: {message}"
     );
+    Ok(())
 }
 
 /// Parallel-sampling tests below. They construct `DiscoveredFile`s
@@ -306,25 +320,27 @@ fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size
 /// Writes 100 KB files under a fresh temp directory and returns the
 /// directory guard alongside the discovered entries. The caller must keep
 /// the guard alive while it uses the paths: dropping it removes the files.
-fn write_files_relative(relative_paths: &[&str]) -> (tempfile::TempDir, Vec<DiscoveredFile>) {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn write_files_relative(
+    relative_paths: &[&str],
+) -> TestResult<(tempfile::TempDir, Vec<DiscoveredFile>)> {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let root = dir.path().to_path_buf();
     let mut out = Vec::new();
     for rel in relative_paths {
         let abs = root.join(rel);
         if let Some(parent) = abs.parent() {
-            std::fs::create_dir_all(parent).expect("mkdir");
+            std::fs::create_dir_all(parent).check("mkdir")?;
         }
         // 100 KB body so the byte-cap test has something concrete to add up.
         let body = vec![b'a'; 100_000];
-        std::fs::write(&abs, &body).expect("write body");
+        std::fs::write(&abs, &body).check("write body")?;
         out.push(DiscoveredFile {
             relative_path: (*rel).to_owned(),
             absolute_path: abs,
             kind: FileKind::Indexed,
         });
     }
-    (dir, out)
+    Ok((dir, out))
 }
 
 /// Pins that the worker pool still hands back samples indexed by
@@ -332,16 +348,16 @@ fn write_files_relative(relative_paths: &[&str]) -> (tempfile::TempDir, Vec<Disc
 /// Downstream manifest hashing relies on this; without it, concurrent
 /// publishes produce different hashes per run.
 #[test]
-fn parallel_sampling_preserves_discovered_index_ordering() {
+fn parallel_sampling_preserves_discovered_index_ordering() -> TestResult {
     let (_dir, discovered) = write_files_relative(&[
         "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
-    ]);
+    ])?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
     let (samples, _skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
-        .expect("tight deadline should not fire here");
+        .check("tight deadline should not fire here")?;
 
     let actual: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
     let expected: Vec<&str> = discovered
@@ -349,6 +365,7 @@ fn parallel_sampling_preserves_discovered_index_ordering() {
         .map(|d| d.relative_path.as_str())
         .collect();
     assert_eq!(actual, expected, "sample indices mirror discovered indices");
+    Ok(())
 }
 
 /// Pins that the concurrent byte-cap check uses CAS, not load+store —
@@ -357,13 +374,13 @@ fn parallel_sampling_preserves_discovered_index_ordering() {
 /// the CAS the test would occasionally observe two errors or a
 /// race-dependence on worker scheduling.
 #[test]
-fn parallel_sampling_total_byte_cap_is_enforced_atomically() {
+fn parallel_sampling_total_byte_cap_is_enforced_atomically() -> TestResult {
     // 11 files x 100 KB = 1.1 MB body total; set cap to 300 KB so the
     // first 3 workers succeed and the 4th fails the CAS on the total.
     let (_dir, discovered) = write_files_relative(&[
         "f1.rs", "f2.rs", "f3.rs", "f4.rs", "f5.rs", "f6.rs", "f7.rs", "f8.rs", "f9.rs", "f10.rs",
         "f11.rs",
-    ]);
+    ])?;
     let limits = ResourceLimits {
         max_total_import_bytes: 300_000,
         ..ResourceLimits::default()
@@ -372,7 +389,7 @@ fn parallel_sampling_total_byte_cap_is_enforced_atomically() {
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
     let err = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
-        .expect_err("total-byte cap must fire under this many large files");
+        .check_err("total-byte cap must fire under this many large files")?;
     match err {
         PublishError::ImportTooLarge { total, limit } => {
             assert!(
@@ -380,20 +397,26 @@ fn parallel_sampling_total_byte_cap_is_enforced_atomically() {
                 "observed total {total} must exceed limit {limit}"
             );
         }
-        _ => panic!("expected PublishError::ImportTooLarge, got a different variant"),
+        _ => {
+            return Err(
+                "expected PublishError::ImportTooLarge, got a different variant".to_owned(),
+            )
+            .check("unexpected outcome");
+        }
     }
+    Ok(())
 }
 
 /// An oversized file (over `limits.max_file_bytes`) must be skipped with a
 /// recorded reason — not fatal to the rest of the batch — and the surviving
 /// samples must stay in discovered order.
 #[test]
-fn oversized_files_are_skipped_and_returned_not_fatal() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn oversized_files_are_skipped_and_returned_not_fatal() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let big = dir.path().join("big.rs");
     let small = dir.path().join("small.rs");
-    std::fs::write(&big, vec![b'x'; 100_000]).expect("write big file");
-    std::fs::write(&small, b"fn small() {}").expect("write small file");
+    std::fs::write(&big, vec![b'x'; 100_000]).check("write big file")?;
+    std::fs::write(&small, b"fn small() {}").check("write small file")?;
     let discovered = vec![
         DiscoveredFile {
             relative_path: "big.rs".to_owned(),
@@ -414,7 +437,7 @@ fn oversized_files_are_skipped_and_returned_not_fatal() {
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
     let (samples, skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
-        .expect("an oversized file must be skipped, not fatal");
+        .check("an oversized file must be skipped, not fatal")?;
 
     assert_eq!(samples.len(), 1, "only the in-cap file is sampled");
     assert_eq!(samples[0].relative_path, "small.rs");
@@ -429,6 +452,7 @@ fn oversized_files_are_skipped_and_returned_not_fatal() {
         "skip reason names the ceiling: {}",
         skipped[0].reason
     );
+    Ok(())
 }
 
 /// A deadline that's already spent (exceeded before the first file is
@@ -436,8 +460,8 @@ fn oversized_files_are_skipped_and_returned_not_fatal() {
 /// rather than completing the work — the wall-clock guard's whole
 /// reason to exist is to bound a pathological repo.
 #[test]
-fn expired_deadline_returns_time_budget_exceeded() {
-    let (_dir, discovered) = write_files_relative(&["only.rs"]);
+fn expired_deadline_returns_time_budget_exceeded() -> TestResult {
+    let (_dir, discovered) = write_files_relative(&["only.rs"])?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_millis(1));
@@ -446,18 +470,24 @@ fn expired_deadline_returns_time_budget_exceeded() {
     thread::sleep(Duration::from_millis(20));
 
     let err = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
-        .expect_err("deadline must fire before first sample completes");
+        .check_err("deadline must fire before first sample completes")?;
     match err {
         PublishError::TimeBudgetExceeded { .. } => {}
-        _ => panic!("expected PublishError::TimeBudgetExceeded, got a different variant"),
+        _ => {
+            return Err(
+                "expected PublishError::TimeBudgetExceeded, got a different variant".to_owned(),
+            )
+            .check("unexpected outcome");
+        }
     }
+    Ok(())
 }
 
 /// Progress events arrive at the sink at least once per sampled file
 /// (the exact ordering is racy by design). We just pin the count — parallel
 /// sampling must keep the progress channel honest during an initial import.
 #[test]
-fn parallel_sampling_emits_one_progress_event_per_file() {
+fn parallel_sampling_emits_one_progress_event_per_file() -> TestResult {
     #[derive(Default)]
     struct Counter(Arc<std::sync::atomic::AtomicUsize>);
     impl crate::progress::ProgressSink for Counter {
@@ -466,24 +496,25 @@ fn parallel_sampling_emits_one_progress_event_per_file() {
         }
     }
 
-    let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"]);
+    let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"])?;
     let limits = ResourceLimits::default();
 
     let counter = Counter::default();
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
     let _ = sample_all_with_deadline(&discovered, &limits, &counter, &deadline)
-        .expect("samples should succeed");
+        .check("samples should succeed")?;
 
     assert_eq!(
         counter.0.load(std::sync::atomic::Ordering::Relaxed),
         discovered.len(),
         "one Sampling event per file"
     );
+    Ok(())
 }
 
 #[test]
-fn a_failed_stat_records_an_unknown_size_and_the_stat_failed_reason() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_failed_stat_records_an_unknown_size_and_the_stat_failed_reason() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let vanished = dir.path().join("vanished.rs");
 
     let record = skipped_record("vanished.rs", &vanished, "oversize");
@@ -491,13 +522,14 @@ fn a_failed_stat_records_an_unknown_size_and_the_stat_failed_reason() {
     assert_eq!(record.byte_len, None, "an unknown size is not 0");
     assert_eq!(record.modified_unix_seconds, None);
     assert_eq!(record.reason, "stat_failed");
+    Ok(())
 }
 
 #[test]
-fn a_real_empty_skipped_file_records_zero_bytes_and_keeps_its_reason() {
-    let dir = tempfile::tempdir().expect("tempdir");
+fn a_real_empty_skipped_file_records_zero_bytes_and_keeps_its_reason() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
     let empty = dir.path().join("empty.rs");
-    std::fs::write(&empty, b"").expect("write empty file");
+    std::fs::write(&empty, b"").check("write empty file")?;
 
     let record = skipped_record("empty.rs", &empty, "unreadable");
 
@@ -508,13 +540,14 @@ fn a_real_empty_skipped_file_records_zero_bytes_and_keeps_its_reason() {
         record.identity.content_hash, unknown.identity.content_hash,
         "empty and unknown-size files must not share an identity"
     );
+    Ok(())
 }
 
 #[test]
-fn a_skipped_record_for_a_statable_file_does_not_warn() {
-    let directory = tempfile::tempdir().expect("temp dir");
+fn a_skipped_record_for_a_statable_file_does_not_warn() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
     let present = directory.path().join("present-skip-probe.bin");
-    std::fs::write(&present, b"12345").expect("write fixture");
+    std::fs::write(&present, b"12345").check("write fixture")?;
 
     let (record, logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-probe-skipped-record");
@@ -530,25 +563,33 @@ fn a_skipped_record_for_a_statable_file_does_not_warn() {
         !logs.contains("stat failed for a skipped file"),
         "a readable file must not warn:\n{logs}"
     );
+    Ok(())
 }
 
 #[test]
-fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_were_some() {
+fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_were_some()
+-> TestResult {
     let without = truncation_evidence(5, 3, 1, 0);
     let with = truncation_evidence(5, 2, 1, 2);
 
-    let message = |item: &EvidenceItem| item.payload["message"].as_str().unwrap_or("").to_owned();
-    assert!(!message(&without).contains("failed to serialize"));
+    let message = |item: &EvidenceItem| -> TestResult<String> {
+        Ok(item.payload["message"]
+            .as_str()
+            .check("the truncation marker has a text message")?
+            .to_owned())
+    };
+    assert!(!message(&without)?.contains("failed to serialize"));
     assert!(
-        message(&with).contains("2 item(s) failed to serialize"),
+        message(&with)?.contains("2 item(s) failed to serialize"),
         "{}",
-        message(&with)
+        message(&with)?
     );
     assert!(
-        message(&with).contains("0 item(s) dropped by the item-count"),
+        message(&with)?.contains("0 item(s) dropped by the item-count"),
         "unmeasurable items must not be double-counted as cap drops: {}",
-        message(&with)
+        message(&with)?
     );
+    Ok(())
 }
 
 /// A sync deadline no test parse comes near.

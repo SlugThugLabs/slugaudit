@@ -5,7 +5,9 @@
 //! `publish_race_tests.rs` to keep both under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
+use crate::store::test_join::join_checked;
 use crate::sync::test_support::{stored_paths, write};
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {
@@ -32,10 +34,10 @@ fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {
 }
 
 #[test]
-fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"12345");
-    let (discovered, _skipped) = discovery::discover(project.path()).expect("discover");
+fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"12345")?;
+    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
 
     let generous = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let exact = ResourceLimits {
@@ -48,7 +50,7 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
         &crate::progress::NoopProgressSink,
         &generous,
     )
-    .expect("a total exactly at the limit must be accepted, not rejected");
+    .check("a total exactly at the limit must be accepted, not rejected")?;
 
     let one_under_needed = ResourceLimits {
         max_total_import_bytes: 4,
@@ -66,6 +68,7 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() {
         ),
         "one byte over the limit must be rejected"
     );
+    Ok(())
 }
 
 /// A racer that wins the CAS race *every single time*, re-arming itself
@@ -78,38 +81,38 @@ fn arm_permanent_racer(
     root: std::path::PathBuf,
     db_path: std::path::PathBuf,
     attempts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-) {
+) -> TestResult {
     let hook_root = root.clone();
     race_hook::set(&hook_root, move || {
         let count = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-        write(&root, &format!("racer-{count}.rs"), b"fn racer() {}\n");
-        let mut racer = open_read_write(&db_path).expect("open racer db");
+        write(&root, &format!("racer-{count}.rs"), b"fn racer() {}\n")?;
+        let mut racer = open_read_write(&db_path).check("open racer db")?;
         publish(
             &mut racer,
             &root,
             "1.0.0",
             &crate::progress::NoopProgressSink,
         )
-        .expect("racer publish");
-        arm_permanent_racer(root, db_path, attempts);
-    });
+        .check("racer publish")?;
+        arm_permanent_racer(root, db_path, attempts)
+    })
 }
 
 #[test]
-fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "a.rs", b"fn a() {}\n");
-    let db_dir = tempfile::tempdir().expect("db dir");
+fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"fn a() {}\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
     let db_path = db_dir.path().join("project.db");
     {
-        let mut setup = open_read_write(&db_path).expect("open db");
+        let mut setup = open_read_write(&db_path).check("open db")?;
         publish(
             &mut setup,
             project.path(),
             "1.0.0",
             &crate::progress::NoopProgressSink,
         )
-        .expect("bootstrap publish");
+        .check("bootstrap publish")?;
     }
 
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -117,30 +120,31 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
         project.path().to_path_buf(),
         db_path.clone(),
         std::sync::Arc::clone(&attempts),
-    );
+    )?;
 
     let (tx, rx) = std::sync::mpsc::channel();
     let root = project.path().to_path_buf();
-    std::thread::spawn(move || {
-        let mut connection_a = open_read_write(&db_path).expect("open db (A)");
+    let worker = std::thread::spawn(move || -> TestResult {
+        let mut connection_a = open_read_write(&db_path).check("open db (A)")?;
         tx.send(publish(
             &mut connection_a,
             &root,
             "1.0.0",
             &crate::progress::NoopProgressSink,
         ))
-        .expect("the test thread holds the receiver until the publish result arrives");
+        .check("the test thread holds the receiver until the publish result arrives")
     });
 
     // A generous bound: a correct implementation returns almost instantly.
     // If the retry counter's own increment were broken (e.g. never
     // advancing), this call would never return at all — a hang here is
     // itself the failure this test exists to catch, not a flake to retry.
-    let result = rx.recv_timeout(std::time::Duration::from_secs(10)).expect(
+    let result = rx.recv_timeout(std::time::Duration::from_secs(10)).check(
         "publish() must return within a bounded time even when every attempt \
          loses the CAS race — a hang means the retry counter stopped advancing",
-    );
+    )?;
 
+    join_checked(worker, "the publishing thread")??;
     assert_eq!(
         attempts.load(std::sync::atomic::Ordering::SeqCst),
         MAX_CAS_RETRIES + 1,
@@ -154,6 +158,7 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
         ),
         "must give up with a StaleBaseline error after exhausting retries, got {result:?}"
     );
+    Ok(())
 }
 
 /// A single bad file anywhere in the project (here: a non-UTF8 filename,
@@ -168,25 +173,25 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() {
 // so this input cannot arise there and the test cannot construct it.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
-fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
+fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() -> TestResult {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
 
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "good.rs", b"fn good() {}\n");
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "good.rs", b"fn good() {}\n")?;
     let bad_name = OsString::from_vec(vec![b'b', b'a', 0xFF, b'd', b'.', b'r', b's']);
     std::fs::write(project.path().join(&bad_name), b"fn bad() {}\n")
-        .expect("write non-UTF-8-named file");
+        .check("write non-UTF-8-named file")?;
 
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let report = publish(
         &mut connection,
         project.path(),
         "1.0.0",
         &crate::progress::NoopProgressSink,
     )
-    .expect("publish must succeed despite one bad file");
+    .check("publish must succeed despite one bad file")?;
 
     assert_eq!(
         report.added, 1,
@@ -197,6 +202,7 @@ fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
         1,
         "the bad file must be recorded as skipped, not silently dropped or fatal"
     );
+    Ok(())
 }
 
 /// The per-file ceiling mirror of the non-UTF8-name test above: one
@@ -205,14 +211,14 @@ fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() {
 /// recorded in `PublishReport::skipped` (reason naming the ceiling)
 /// instead of aborting the publish outright.
 #[test]
-fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "good.rs", b"fn good() {}\n");
+fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "good.rs", b"fn good() {}\n")?;
     std::fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
-        .expect("write oversized file");
+        .check("write oversized file")?;
 
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let limits = ResourceLimits {
         max_file_bytes: 50_000,
         ..ResourceLimits::default()
@@ -224,7 +230,7 @@ fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
         &crate::progress::NoopProgressSink,
         &limits,
     )
-    .expect("publish must succeed despite one oversized file");
+    .check("publish must succeed despite one oversized file")?;
 
     assert_eq!(
         report.added, 2,
@@ -241,6 +247,7 @@ fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
         "skip reason names the ceiling: {}",
         report.skipped[0].reason
     );
+    Ok(())
 }
 
 /// A skipped file is on disk, so it must keep its existence row and must
@@ -250,14 +257,14 @@ fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() {
 /// look `Deleted` and be re-inserted on each publish; without the stat
 /// identity being stable, every publish would churn a revision.
 #[test]
-fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "good.rs", b"fn good() {}\n");
+fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "good.rs", b"fn good() {}\n")?;
     std::fs::write(project.path().join("huge.rs"), vec![b'x'; 100_000])
-        .expect("write oversized file");
+        .check("write oversized file")?;
 
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     let limits = ResourceLimits {
         max_file_bytes: 50_000,
         ..ResourceLimits::default()
@@ -270,14 +277,14 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() {
         &crate::progress::NoopProgressSink,
         &limits,
     )
-    .expect("first publish");
+    .check("first publish")?;
     assert_eq!(
         first.added, 2,
         "the indexed file and the skipped file's existence row are both new"
     );
     assert_eq!(first.deleted, 0);
     assert_eq!(
-        stored_paths(&connection),
+        stored_paths(&connection)?,
         ["good.rs", "huge.rs"],
         "the skipped file must have an existence row"
     );
@@ -289,7 +296,7 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() {
         &crate::progress::NoopProgressSink,
         &limits,
     )
-    .expect("second publish");
+    .check("second publish")?;
 
     assert_eq!(
         second.revision_id, first.revision_id,
@@ -299,16 +306,17 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() {
         second.deleted, 0,
         "a skipped file exists on disk and must never be classified as deleted"
     );
-    assert_eq!(stored_paths(&connection), ["good.rs", "huge.rs"]);
+    assert_eq!(stored_paths(&connection)?, ["good.rs", "huge.rs"]);
     let (kind, reason): (String, Option<String>) = connection
         .query_row(
             "SELECT file_kind, skip_reason FROM files WHERE path = 'huge.rs'",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .expect("skipped row survives");
+        .check("skipped row survives")?;
     assert_eq!(kind, "skipped");
     assert_eq!(reason.as_deref(), Some("oversize"));
+    Ok(())
 }
 
 /// A file that was indexed and then grows past the ceiling must *become* a
@@ -318,13 +326,13 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() {
 /// `extraction_completeness` says `Unavailable` sitting beside live `Symbol`
 /// rows would contradict itself.
 #[test]
-fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
-    let project = tempfile::tempdir().expect("project dir");
-    write(project.path(), "lib.rs", b"pub fn a() {}\n");
-    write(project.path(), "grow.rs", b"fn a() {}\n");
+fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "lib.rs", b"pub fn a() {}\n")?;
+    write(project.path(), "grow.rs", b"fn a() {}\n")?;
 
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     crate::sync::publish_with_limits(
         &mut connection,
         project.path(),
@@ -332,7 +340,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
         &crate::progress::NoopProgressSink,
         &ResourceLimits::default(),
     )
-    .expect("first publish indexes grow.rs");
+    .check("first publish indexes grow.rs")?;
     let evidence_before: i64 = connection
         .query_row(
             "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
@@ -340,11 +348,11 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
             [],
             |row| row.get(0),
         )
-        .expect("count evidence before");
+        .check("count evidence before")?;
     assert!(evidence_before > 0, "an indexed file carries evidence");
 
     std::fs::write(project.path().join("grow.rs"), vec![b'x'; 100_000])
-        .expect("grow the file past the ceiling");
+        .check("grow the file past the ceiling")?;
     let second = crate::sync::publish_with_limits(
         &mut connection,
         project.path(),
@@ -355,7 +363,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
             ..ResourceLimits::default()
         },
     )
-    .expect("second publish");
+    .check("second publish")?;
 
     assert_eq!(second.modified, 1, "grow.rs changed on disk");
     let (kind, reason, content, completeness, outcome): (
@@ -379,7 +387,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
                 ))
             },
         )
-        .expect("grow.rs row");
+        .check("grow.rs row")?;
     assert_eq!(kind, "skipped");
     assert_eq!(reason.as_deref(), Some("oversize"));
     assert_eq!(content, None, "no content survives the flip to skipped");
@@ -392,7 +400,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
             [],
             |row| row.get(0),
         )
-        .expect("count evidence after");
+        .check("count evidence after")?;
     assert_eq!(
         evidence_after, 0,
         "the evidence of content nobody retained must be deleted"
@@ -403,8 +411,9 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() {
             [],
             |row| row.get(0),
         )
-        .expect("lib.rs row");
+        .check("lib.rs row")?;
     assert_eq!(lib_kind, "indexed", "the untouched file is unaffected");
+    Ok(())
 }
 
 #[test]
@@ -555,32 +564,33 @@ fn publish_error_budget_elapsed_and_categories_and_logging_paths() {
 }
 
 #[test]
-fn unrepresentable_paths_storage_and_replacement_roundtrip() {
-    let db_dir = tempfile::tempdir().expect("db dir");
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).expect("open db");
+fn unrepresentable_paths_storage_and_replacement_roundtrip() -> TestResult {
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
-    let initial = stored_unrepresentable_paths(&connection).expect("read empty stored");
+    let initial = stored_unrepresentable_paths(&connection).check("read empty stored")?;
     assert!(initial.is_empty());
 
     let mut set_a = HashSet::new();
     set_a.insert(vec![0xFF, 0xFE]);
-    replace_unrepresentable_paths(&mut connection, &set_a).expect("insert unrepresentable");
+    replace_unrepresentable_paths(&mut connection, &set_a).check("insert unrepresentable")?;
     assert_eq!(
-        stored_unrepresentable_paths(&connection).expect("read unrepresentable"),
+        stored_unrepresentable_paths(&connection).check("read unrepresentable")?,
         set_a
     );
 
-    replace_unrepresentable_paths(&mut connection, &set_a).expect("no-op unrepresentable");
+    replace_unrepresentable_paths(&mut connection, &set_a).check("no-op unrepresentable")?;
     assert_eq!(
-        stored_unrepresentable_paths(&connection).expect("read unrepresentable"),
+        stored_unrepresentable_paths(&connection).check("read unrepresentable")?,
         set_a
     );
 
     let empty = HashSet::new();
-    replace_unrepresentable_paths(&mut connection, &empty).expect("clear unrepresentable");
+    replace_unrepresentable_paths(&mut connection, &empty).check("clear unrepresentable")?;
     assert!(
         stored_unrepresentable_paths(&connection)
-            .expect("read cleared")
+            .check("read cleared")?
             .is_empty()
     );
+    Ok(())
 }

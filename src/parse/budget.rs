@@ -24,7 +24,12 @@ pub(crate) enum Parsed {
 /// (`binding_rust/lib.rs`), 2026-10-25.
 pub(crate) fn parse_within(parser: &mut Parser, content: &str, spent: impl Fn() -> bool) -> Parsed {
     let bytes = content.as_bytes();
-    let mut read = |offset: usize, _| bytes.get(offset..).unwrap_or_default();
+    // tree-sitter reads until it gets an empty chunk, so an offset at or past
+    // the end is the normal end-of-input signal, not an error.
+    let mut read = |offset: usize, _| match bytes.get(offset..) {
+        Some(rest) => rest,
+        None => &[],
+    };
     let mut cancelled = false;
     let mut check_budget = |_state: &ParseState| -> ControlFlow<()> {
         if spent() {

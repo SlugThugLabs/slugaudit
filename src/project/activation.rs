@@ -43,6 +43,9 @@ pub enum ActivationError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
+    /// This process's table of findings sessions was poisoned by a panic.
+    #[error(transparent)]
+    Lock(#[from] crate::util::LockPoisoned),
 }
 
 /// The SlugAudit-owned runtime directory under a resolved user project:
@@ -205,7 +208,7 @@ pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     // Close this process's lock handle first: on Windows a locked file can't
     // be deleted. Another process's live session on Windows makes the removal
     // below fail, and that error is returned, not skipped.
-    super::findings_session::end_process_session(root);
+    super::findings_session::end_process_session(root)?;
     let mut report = DisableReport::default();
     let metadata = match activation.symlink_metadata() {
         Ok(metadata) => metadata,

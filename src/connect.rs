@@ -138,7 +138,13 @@ fn disconnect_one(agent: AgentDef) -> Result<(), ConnectError> {
 /// fails.
 pub fn run_connect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
-    let detected = detected_agents(home.as_deref());
+    let crate::connect_agents::Detection {
+        agents: detected,
+        failures,
+    } = detected_agents(home.as_deref());
+    for failure in &failures {
+        cli::err(format_args!("Note: {failure}\n"))?;
+    }
     if detected.is_empty() {
         cli::out(format_args!(
             "No supported AI agents or editors were detected on this machine.\n"

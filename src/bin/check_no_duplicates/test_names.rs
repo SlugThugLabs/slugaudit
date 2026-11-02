@@ -55,11 +55,12 @@ fn walk_rs(
     for entry in read_dir_entries(dir, failures) {
         let path = entry.path();
         if path.is_dir() {
-            let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
             // ignore_rules.rs and ignore_rules_tests.rs etc. we keep;
             // there's no per-test file we need to single out by name.
-            // Caller-supplied skip-substr is honored if any.
+            // Caller-supplied skip-substr is honored if any. A directory
+            // without a UTF-8 name cannot match a substring and is walked.
             if let Some(skip) = skip_substr
+                && let Some(name) = path.file_name().and_then(|s| s.to_str())
                 && name.contains(skip)
             {
                 continue;
@@ -165,9 +166,10 @@ fn same_line_fn_name(after_attr: &str) -> Option<&str> {
     } else {
         trimmed.strip_prefix("fn")?.trim_start()
     };
-    let end = name
-        .find(|c: char| !is_path_seg_char(c))
-        .unwrap_or(name.len());
+    let end = match name.find(|c: char| !is_path_seg_char(c)) {
+        Some(index) => index,
+        None => name.len(),
+    };
     if end == 0 {
         return None;
     }

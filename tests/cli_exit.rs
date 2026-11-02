@@ -106,7 +106,8 @@ fn cli_exit_sigterm_to_a_serving_process_exits_0() -> TestResult {
     let Some(status) = status else {
         child.kill().check("kill hung slugaudit")?;
         child.wait().check("reap hung slugaudit")?;
-        panic!("slugaudit did not exit within 5 s of SIGTERM with stdin open");
+        return Err("slugaudit did not exit within 5 s of SIGTERM with stdin open".to_owned())
+            .check("unexpected outcome");
     };
     let mut stderr = String::new();
     child

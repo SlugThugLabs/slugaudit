@@ -153,14 +153,22 @@ fn resolve(
     }
 
     if text == "self" || text.starts_with("self::") {
-        let rest = text.strip_prefix("self::").unwrap_or("");
+        // `text` is `self` or `self::<rest>`; bare `self` has no remaining path.
+        let rest = match text.split_once("::") {
+            Some((_, rest)) => rest,
+            None => "",
+        };
         let strict = rust_module_dir(importing_relative_path);
         let legacy = parent_dir(importing_relative_path);
         return first_resolved(rest, &[strict, legacy], known_paths);
     }
 
     if text == "super" || text.starts_with("super::") {
-        let mut rest = text.strip_prefix("super::").unwrap_or("");
+        // `text` is `super` or `super::<rest>`; bare `super` has no remaining path.
+        let mut rest = match text.split_once("::") {
+            Some((_, rest)) => rest,
+            None => "",
+        };
         let mut strict = parent_dir(&rust_module_dir(importing_relative_path));
         let mut legacy = parent_dir(&parent_dir(importing_relative_path));
         while let Some(next) = rest.strip_prefix("super::") {

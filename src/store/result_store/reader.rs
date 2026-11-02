@@ -49,13 +49,16 @@ impl ResultStore {
             return Err(self.unknown_cursor());
         }
         let (rows, next_ord) = {
-            let conn = crate::util::lock_or_recover(&entry.conn, "result_entry_connection");
+            let conn =
+                crate::util::lock(&entry.conn, "result_entry_connection").map_err(|error| {
+                    ResultStoreError::unavailable("the result's connection is poisoned", error)
+                })?;
             if !is_complete(&conn)? {
                 return Err(self.unknown_cursor());
             }
             read_rows(&conn, entry.meta.columns.len(), from_ord, &mut accept)?
         };
-        entry.served(self.now(), next_ord.is_none());
+        entry.served(self.now()?, next_ord.is_none());
         Ok(PageRead {
             rows,
             next_ord,

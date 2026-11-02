@@ -138,9 +138,9 @@ pub struct MechanicCacheState {
 }
 
 impl MechanicCacheState {
-    fn snapshot(manager: &sync::SourceSyncManager) -> Self {
-        let stats = manager.mechanic_scan_cache().stats();
-        Self {
+    fn snapshot(manager: &sync::SourceSyncManager) -> Result<Self, crate::util::LockPoisoned> {
+        let stats = manager.mechanic_scan_cache().stats()?;
+        Ok(Self {
             entries: stats.entries,
             bytes: stats.bytes,
             budget: stats.budget,
@@ -148,7 +148,7 @@ impl MechanicCacheState {
             skipped_too_large: stats.skipped_too_large,
             hits: stats.hits,
             misses: stats.misses,
-        }
+        })
     }
 }
 
@@ -337,12 +337,12 @@ pub fn health(
         Some(p) => compute_project_state(p)?,
         None => compute_global_only_state(),
     };
-    let detail = verbose.then(|| {
+    let detail = if *verbose {
         let (system_memory, system_memory_error) = match crate::model::detect_system_memory() {
             Ok(info) => (Some(info), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        HealthDetail {
+        Some(HealthDetail {
             database: fields.database.as_ref().map(|database| DatabaseDetail {
                 parser_pack_version: database.parser_pack_version.clone(),
                 skipped_file_count: database.skipped_file_count,
@@ -351,10 +351,12 @@ pub fn health(
             server: server_counters(manager),
             system_memory,
             system_memory_error,
-            mechanic_cache: MechanicCacheState::snapshot(manager),
-            result_store: super::health_result_store::snapshot(manager),
-        }
-    });
+            mechanic_cache: MechanicCacheState::snapshot(manager)?,
+            result_store: super::health_result_store::snapshot(manager)?,
+        })
+    } else {
+        None
+    };
 
     Ok(Json(HealthResponse {
         phase: fields.phase,

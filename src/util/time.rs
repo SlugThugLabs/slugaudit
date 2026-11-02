@@ -6,12 +6,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 static LAST_UNIX_TIME: AtomicI64 = AtomicI64::new(0);
 
-/// The current Unix timestamp in seconds. A clock before the epoch (or past
-/// the `i64` range) is a documented, deliberate recovery: it yields `0`
-/// (respectively `i64::MAX`), logged with the source error, and the monotonic
-/// guard below keeps stored timestamps from moving backwards.
-pub(crate) fn now_unix() -> i64 {
-    let observed = crate::clock::unix_seconds(SystemTime::now());
+/// The current Unix timestamp in seconds. The monotonic guard below keeps
+/// stored timestamps from moving backwards.
+///
+/// # Errors
+///
+/// Returns [`crate::clock::ClockError`] when the system clock is before the
+/// epoch or past the `i64` range.
+pub(crate) fn now_unix() -> Result<i64, crate::clock::ClockError> {
+    let observed = crate::clock::unix_seconds(SystemTime::now())?;
     let mut previous = LAST_UNIX_TIME.load(Ordering::Relaxed);
     loop {
         let next = observed.max(previous);
@@ -21,7 +24,7 @@ pub(crate) fn now_unix() -> i64 {
             Ordering::Relaxed,
             Ordering::Relaxed,
         ) {
-            Ok(_) => return next,
+            Ok(_) => return Ok(next),
             Err(actual) => previous = actual,
         }
     }
@@ -31,7 +34,10 @@ pub(crate) fn now_unix() -> i64 {
 /// SQLite row IDs remain the canonical ordering key; this only prevents the
 /// human-readable timestamps from moving backwards across restarts.
 pub(crate) fn at_least_timestamp(observed: i64, persisted: Option<i64>) -> i64 {
-    observed.max(persisted.unwrap_or(0))
+    match persisted {
+        Some(persisted) => observed.max(persisted),
+        None => observed,
+    }
 }
 
 /// A cooperative wall-clock deadline for one sync operation.
@@ -115,6 +121,7 @@ pub(crate) enum BudgetBound {
 #[cfg(test)]
 mod deadline_tests {
     use super::*;
+    use slugaudit_test_check::{Check, TestResult};
 
     #[test]
     fn a_zero_budget_is_exceeded_immediately() {
@@ -143,37 +150,40 @@ mod deadline_tests {
     }
 
     #[test]
-    fn a_live_budget_reports_its_whole_remaining_milliseconds() {
+    fn a_live_budget_reports_its_whole_remaining_milliseconds() -> TestResult {
         let deadline = Deadline::after(Duration::from_mins(1));
 
-        let remaining = deadline.remaining_millis().expect("time is left");
+        let remaining = deadline.remaining_millis().check("time is left")?;
 
         assert!(
             remaining.get() > 59_000 && remaining.get() <= 60_000,
             "{remaining}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_cap_below_the_remaining_budget_is_a_unit_bound() {
+    fn a_cap_below_the_remaining_budget_is_a_unit_bound() -> TestResult {
         let operation = Deadline::after(Duration::from_mins(1));
 
         let (unit, bound) = operation.capped(Duration::from_secs(5));
 
         assert_eq!(bound, BudgetBound::Unit);
-        let remaining = unit.remaining_millis().expect("time is left").get();
+        let remaining = unit.remaining_millis().check("time is left")?.get();
         assert!((4_000..=5_000).contains(&remaining), "{remaining}");
+        Ok(())
     }
 
     #[test]
-    fn a_cap_above_the_remaining_budget_is_an_operation_bound() {
+    fn a_cap_above_the_remaining_budget_is_an_operation_bound() -> TestResult {
         let operation = Deadline::after(Duration::from_secs(5));
 
         let (unit, bound) = operation.capped(Duration::from_mins(1));
 
         assert_eq!(bound, BudgetBound::Operation);
-        let remaining = unit.remaining_millis().expect("time is left").get();
+        let remaining = unit.remaining_millis().check("time is left")?.get();
         assert!(remaining <= 5_000, "{remaining}");
+        Ok(())
     }
 
     #[test]

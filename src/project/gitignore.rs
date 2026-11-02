@@ -253,7 +253,11 @@ fn ignores_activation_dir(contents: &[u8]) -> bool {
         if rule.starts_with('#') || rule.starts_with('!') {
             return false;
         }
-        rule.strip_prefix('/').unwrap_or(rule).trim_end_matches('/') == ACTIVATION_RELATIVE_DIR
+        let anchored = match rule.strip_prefix('/') {
+            Some(rest) => rest,
+            None => rule,
+        };
+        anchored.trim_end_matches('/') == ACTIVATION_RELATIVE_DIR
     })
 }
 

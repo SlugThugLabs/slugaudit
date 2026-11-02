@@ -14,8 +14,20 @@
 use slugaudit_mcp_rust::progress::NoopProgressSink;
 use slugaudit_mcp_rust::sync::SourceSyncManager;
 use slugaudit_mcp_rust::tools::ensure_synced;
+use std::fmt::Display;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+
+/// Turns a failed setup step into an error string naming the caller's
+/// `file:line`, the step, and the cause. The fuzz crate is its own workspace
+/// and cannot use the product's `slugaudit-test-check` helper, so this is the
+/// same shape in a few lines.
+#[track_caller]
+fn step<T, E: Display>(result: Result<T, E>, what: &str) -> Result<T, String> {
+    let location = Location::caller();
+    result.map_err(|error| format!("{}:{}: {what}: {error}", location.file(), location.line()))
+}
 
 /// Source files seeded into the fixture, one per grammar, so one query corpus
 /// exercises several of the language pack's parsers (and `Query::new`'s
@@ -172,11 +184,11 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
-        let project = tempfile::Builder::new()
-            .prefix("slugaudit-fuzz-")
-            .tempdir()
-            .expect("create fixture temp dir");
+    fn new() -> Result<Self, String> {
+        let project = step(
+            tempfile::Builder::new().prefix("slugaudit-fuzz-").tempdir(),
+            "create fixture temp dir",
+        )?;
         let root = project.path().to_path_buf();
 
         // A project is active only when `project.db` exists as a regular file
@@ -184,38 +196,46 @@ impl Fixture {
         // walks ancestors for; without it every tool call fails before
         // reaching the code under test.
         let activation = root.join(".planning").join("slugaudit");
-        std::fs::create_dir_all(&activation).expect("create activation dir");
+        step(
+            std::fs::create_dir_all(&activation),
+            "create activation dir",
+        )?;
         {
             use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(activation.join("project.db"))
-                .expect("create database marker");
+            step(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(activation.join("project.db")),
+                "create database marker",
+            )?;
         }
         for (relative, content) in FILES {
             let path = root.join(relative);
-            std::fs::create_dir_all(path.parent().expect("fixture file has a parent"))
-                .expect("create fixture dir");
-            std::fs::write(&path, content).expect("write fixture file");
+            let Some(parent) = path.parent() else {
+                return Err(format!("fixture file {relative} has no parent directory"));
+            };
+            step(std::fs::create_dir_all(parent), "create fixture dir")?;
+            step(std::fs::write(&path, content), "write fixture file")?;
         }
 
         let manager = SourceSyncManager::default();
         let path = path_str(&root);
         // Index once, before fuzzing starts, so the first iteration measures
         // the tool rather than the initial publish. A failed fixture sync
-        // would make every fuzz input return an error and the run would pass
-        // green while exercising nothing, so it aborts the fuzz process here.
-        ensure_synced(&path, &NoopProgressSink, &manager)
-            .expect("fixture sync must succeed or the fuzz run exercises nothing");
+        // is returned to `fixture()`, which reports it once on stderr.
+        step(
+            ensure_synced(&path, &NoopProgressSink, &manager),
+            "sync the fixture project",
+        )?;
 
-        Self {
+        Ok(Self {
             _project: project,
             root,
             manager,
-        }
+        })
     }
 
     /// A path inside the active project, as the tools take it.
@@ -232,4 +252,17 @@ fn path_str(path: &Path) -> String {
 /// server holds it across the blocking pool), so a plain `LazyLock` is
 /// enough; that also keeps the targets valid if libFuzzer is ever run with
 /// threads rather than `-jobs` processes.
-pub static FIXTURE: LazyLock<Fixture> = LazyLock::new(Fixture::new);
+static FIXTURE: LazyLock<Option<Fixture>> = LazyLock::new(|| match Fixture::new() {
+    Ok(fixture) => Some(fixture),
+    Err(error) => {
+        eprintln!("Error: fuzz fixture setup failed, no input is exercised: {error}");
+        None
+    }
+});
+
+/// The process-wide fixture, or `None` when its setup failed (reported once on
+/// stderr). A target ends the input's run cleanly on `None`: the setup failure
+/// is not a finding about the code under test.
+pub fn fixture() -> Option<&'static Fixture> {
+    FIXTURE.as_ref()
+}

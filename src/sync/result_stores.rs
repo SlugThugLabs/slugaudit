@@ -12,7 +12,7 @@
 
 use crate::model::process_limits;
 use crate::store::{ResultStore, ResultStoreError, ResultStoreLimits};
-use crate::util::lock_or_recover;
+use crate::util::{LockPoisoned, lock};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -46,7 +46,9 @@ impl ResultStoreSlot {
         // The slot lock is held across the open on purpose: two first calls
         // must not both open (and lock) the same directory. The open touches
         // only the results directory, never a result's rows.
-        let mut slot = lock_or_recover(&self.current, "result_store_slot");
+        let mut slot = lock(&self.current, "result_store_slot").map_err(|error| {
+            ResultStoreError::unavailable("the result store slot is poisoned", error)
+        })?;
         if let Some((dir, store)) = slot.as_ref()
             && dir == runtime_dir
         {
@@ -80,19 +82,27 @@ impl ResultStoreSlot {
     /// Called when a project is enabled: a disable removed the results
     /// directory under the slot, and the held store would keep pointing at
     /// it. A store held for another directory is left alone.
-    pub fn release_dir(&self, runtime_dir: &Path) {
-        let mut slot = lock_or_recover(&self.current, "result_store_slot");
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the slot was poisoned.
+    pub fn release_dir(&self, runtime_dir: &Path) -> Result<(), LockPoisoned> {
+        let mut slot = lock(&self.current, "result_store_slot")?;
         if slot.as_ref().is_some_and(|(dir, _)| dir == runtime_dir) {
             *slot = None;
         }
+        Ok(())
     }
 
     /// The open store, if any result was ever materialised in this process.
-    #[must_use]
-    pub fn current(&self) -> Option<Arc<ResultStore>> {
-        lock_or_recover(&self.current, "result_store_slot")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the slot was poisoned.
+    pub fn current(&self) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
+        Ok(lock(&self.current, "result_store_slot")?
             .as_ref()
-            .map(|(_, store)| Arc::clone(store))
+            .map(|(_, store)| Arc::clone(store)))
     }
 }
 

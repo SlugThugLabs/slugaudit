@@ -2,6 +2,7 @@
 //! verdict on this repository's own enums.
 
 use super::*;
+use slugaudit_test_check::{Check, TestResult};
 
 #[test]
 fn enum_variants_come_from_the_declaration() {
@@ -106,9 +107,9 @@ fn production_code_drops_a_line_comment_that_names_a_variant() {
 }
 
 #[test]
-fn the_gate_finds_every_variant_of_this_projects_enums_produced() {
+fn the_gate_finds_every_variant_of_this_projects_enums_produced() -> TestResult {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let reports = check(root).expect("the project's own evidence enums parse");
+    let reports = check(root).check("the project's own evidence enums parse")?;
     assert_eq!(reports.len(), 2, "one report per gated enum");
     for report in &reports {
         assert!(report.declared > 0, "{} has variants", report.name);
@@ -120,4 +121,5 @@ fn the_gate_finds_every_variant_of_this_projects_enums_produced() {
         );
         assert_eq!(report.covered, report.declared);
     }
+    Ok(())
 }
