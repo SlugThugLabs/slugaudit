@@ -60,7 +60,7 @@ fn on_creates_the_directory_the_database_and_the_gitignore_entry_and_a_call_work
 
     let on = control(&path, ProjectControlAction::On)?;
 
-    assert_eq!(on.status, "enabled");
+    assert_eq!(on.status, ProjectControlStatus::Enabled);
     assert!(activation.is_dir());
     assert!(activation.join("project.db").is_file());
     let gitignore = fs::read_to_string(project.path().join(".gitignore")).check("gitignore")?;
@@ -81,7 +81,7 @@ fn off_deletes_the_directory_with_config_and_extra_files_then_an_empty_planning_
 
     let off = control(&path, ProjectControlAction::Off)?;
 
-    assert_eq!(off.status, "disabled");
+    assert_eq!(off.status, ProjectControlStatus::Disabled);
     assert_eq!(off.removed.len(), 2, "{:?}", off.removed);
     assert!(!project.path().join(".planning").exists());
     Ok(())
@@ -175,7 +175,7 @@ fn a_symlinked_activation_directory_is_off_and_off_removes_only_the_link() -> Te
 
     let off = control(&path, ProjectControlAction::Off)?;
 
-    assert_eq!(off.status, "disabled");
+    assert_eq!(off.status, ProjectControlStatus::Disabled);
     assert!(link.symlink_metadata().is_err(), "the link is gone");
     assert_eq!(fs::read(target.join("keep.txt")).check("kept")?, b"keep");
     Ok(())

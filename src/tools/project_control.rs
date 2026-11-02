@@ -50,7 +50,7 @@ pub enum ProjectControlAction {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ProjectControlResponse {
     /// One of `"enabled"`, `"disabled"`, or `"already_disabled"` (no-op).
-    pub status: String,
+    pub status: ProjectControlStatus,
     /// Absolute path of the project root that was affected.
     pub path: String,
     /// Absolute paths `"off"` removed. Empty when nothing existed to remove.
@@ -96,6 +96,18 @@ pub enum GitignoreStatus {
     /// Nothing was written and the project is enabled anyway; the
     /// report's `error` field says why.
     NotWritten,
+}
+
+/// Outcome of an enable/disable call, as a closed set.
+#[derive(Debug, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectControlStatus {
+    /// The project was enabled by this call.
+    Enabled,
+    /// The project was disabled by this call.
+    Disabled,
+    /// The project was already disabled; nothing was removed.
+    AlreadyDisabled,
 }
 
 /// Summary of an initial import that ran on enable.
@@ -294,7 +306,7 @@ fn enable(
             ))
         })?;
     Ok(Json(ProjectControlResponse {
-        status: "enabled".into(),
+        status: ProjectControlStatus::Enabled,
         path: root.as_path().to_string_lossy().to_string(),
         removed: Vec::new(),
         import: Some(ImportReport {
@@ -327,12 +339,12 @@ fn disable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData
     let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
     // Nothing removed means there was no activation directory: already off.
     let status = if report.removed.is_empty() {
-        "already_disabled"
+        ProjectControlStatus::AlreadyDisabled
     } else {
-        "disabled"
+        ProjectControlStatus::Disabled
     };
     Ok(Json(ProjectControlResponse {
-        status: status.into(),
+        status,
         path: root.as_path().to_string_lossy().to_string(),
         removed: report
             .removed

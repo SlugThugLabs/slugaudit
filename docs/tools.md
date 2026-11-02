@@ -97,7 +97,7 @@ Key response fields:
 | `languages` | `[{language, file_count, tested}]`. Files with no detected language are not listed. |
 | `notices` | Untested-language lines. |
 | `evidence_counts` | `[{kind, count}]` for Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Call. |
-| `parser_failure_count`, `parser_failure_files`, `parser_failure_files_total` | Files whose parser was unavailable or failed. The list holds up to 20 files. |
+| `parser_failure_count`, `parser_failure_files` | Files whose parser was unavailable or failed. The list holds up to 20 files. |
 | `open_finding_count` | Findings with status `current`. |
 | `import_resolution` | `[{kind, count}]`, kinds `Resolved`, `Unresolved`, `External`. |
 | `dependency_edges` | `outbound_edge_count`, `inbound_edge_count`, `outbound_file_count`, `inbound_file_count`. |

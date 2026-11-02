@@ -56,9 +56,9 @@ pub struct InvalidMechanic {
     /// `session`: the entry was registered on this server.
     pub source: MechanicSource,
     /// Position in the session list (oldest first).
-    pub index: Option<usize>,
-    /// The entry's id, when it has one.
-    pub id: Option<String>,
+    pub index: usize,
+    /// The entry's id; every entry has one.
+    pub id: String,
     /// Why it was not loaded: a compile error, a broken field rule, or an id
     /// collision.
     pub error: String,

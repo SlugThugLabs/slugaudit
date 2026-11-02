@@ -52,7 +52,7 @@ fn parser_failure_rows_distinguish_content_only_from_a_failed_parse() -> TestRes
 }
 
 #[test]
-fn parser_failure_files_total_equals_the_list_when_under_the_cap() -> TestResult {
+fn parser_failure_count_equals_the_list_when_under_the_cap() -> TestResult {
     let (_dir, mut connection) = database_with_one_revision()?;
     for name in ["a.txt", "b.txt", "c.txt"] {
         insert_indexed_file(
@@ -69,12 +69,12 @@ fn parser_failure_files_total_equals_the_list_when_under_the_cap() -> TestResult
     let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
     assert_eq!(response.parser_failure_files.len(), 3);
-    assert_eq!(response.parser_failure_files_total, 3);
+    assert_eq!(response.parser_failure_count, 3);
     Ok(())
 }
 
 #[test]
-fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() -> TestResult {
+fn parser_failure_count_exceeds_the_capped_list_when_over_the_cap() -> TestResult {
     let (_dir, mut connection) = database_with_one_revision()?;
     let total = i64::try_from(MAX_PARSER_FAILURE_FILES).check("cap fits in i64")? + 5;
     for index in 0..total {
@@ -95,7 +95,7 @@ fn parser_failure_files_total_exceeds_the_capped_list_when_over_the_cap() -> Tes
         response.parser_failure_files.len(),
         MAX_PARSER_FAILURE_FILES
     );
-    assert_eq!(response.parser_failure_files_total, total);
+    assert_eq!(response.parser_failure_count, total);
     Ok(())
 }
 

@@ -10,7 +10,7 @@ use crate::store::{Cell, Materialize, ResultStoreError, ResultStoreLimits, Store
 use crate::sync::SourceSyncManager;
 use crate::tools::{
     Completeness, PageRequest, PageSpec, Produced, ProjectControlAction, ProjectControlRequest,
-    Served, decode_rows, paginate, project_control,
+    ProjectControlStatus, Served, decode_rows, paginate, project_control,
 };
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Parameters;
@@ -283,7 +283,7 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() -> Te
     )
     .check("project_control off succeeds with a result open")?;
 
-    assert_eq!(response.0.status, "disabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Disabled);
     assert!(!open.database().exists(), "project.db is gone");
     assert!(
         !activation.join("results").exists(),
@@ -313,8 +313,14 @@ fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor()
         )
         .check("project_control succeeds")
     };
-    assert_eq!(control(ProjectControlAction::Off)?.0.status, "disabled");
-    assert_eq!(control(ProjectControlAction::On)?.0.status, "enabled");
+    assert_eq!(
+        control(ProjectControlAction::Off)?.0.status,
+        ProjectControlStatus::Disabled
+    );
+    assert_eq!(
+        control(ProjectControlAction::On)?.0.status,
+        ProjectControlStatus::Enabled
+    );
 
     let first = open_first_page(&open.manager, &open.path)?;
     assert_eq!(seen(&first)?.rows, (0..10).collect::<Vec<_>>());

@@ -277,16 +277,14 @@ pub struct ReportResponse {
     pub notices: Vec<String>,
     /// Evidence rows by `kind` across the current revision, ordered by kind.
     pub evidence_counts: Vec<EvidenceKindCount>,
-    /// Indexed files whose parser was unavailable or whose parse failed — the
-    /// same predicate `parser_failure_files` lists, without the list cap.
+    /// Uncapped total of files whose parser was unavailable or whose parse
+    /// failed — the same predicate `parser_failure_files` lists. Larger than
+    /// the returned list's length means the list was truncated at
+    /// `MAX_PARSER_FAILURE_FILES`; equal means the list is complete.
     pub parser_failure_count: i64,
     /// Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, ordered
     /// by path.
     pub parser_failure_files: Vec<ParserFailureFile>,
-    /// Uncapped total of files matching the `parser_failure_files` predicate.
-    /// Larger than the returned list's length means the list was truncated at
-    /// `MAX_PARSER_FAILURE_FILES`; equal means the list is complete.
-    pub parser_failure_files_total: i64,
     /// This session's findings that are `current`: findings whose file
     /// content hash still matches the hash they were written against.
     /// Findings invalidated by a later content change are `stale` and are not

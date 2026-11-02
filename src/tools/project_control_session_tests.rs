@@ -70,7 +70,7 @@ fn a_per_repo_config_json_is_ignored_when_turning_on() -> TestResult {
 
     let response = control(&path, ProjectControlAction::On)?.0;
 
-    assert_eq!(response.status, "enabled");
+    assert_eq!(response.status, ProjectControlStatus::Enabled);
     assert!(
         response.import.is_some(),
         "the 1-byte ceiling in the old file was not applied"
@@ -107,7 +107,7 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
 
     let off = control(&path, ProjectControlAction::Off)?.0;
 
-    assert_eq!(off.status, "disabled");
+    assert_eq!(off.status, ProjectControlStatus::Disabled);
     assert!(!activation.exists(), "off deletes the whole directory");
     assert!(!project.path().join(".planning").exists());
     let error = crate::tools::report(
@@ -128,7 +128,7 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
     );
     assert_eq!(
         control(&path, ProjectControlAction::Off)?.0.status,
-        "already_disabled",
+        ProjectControlStatus::AlreadyDisabled,
         "a second off has nothing left to remove"
     );
     Ok(())

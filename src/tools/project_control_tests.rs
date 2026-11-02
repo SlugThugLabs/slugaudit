@@ -66,7 +66,7 @@ fn on_action_enables_the_project_and_runs_the_initial_import() -> TestResult {
         .check("enable succeeds")?;
 
     let inner = response.0;
-    assert_eq!(inner.status, "enabled");
+    assert_eq!(inner.status, ProjectControlStatus::Enabled);
     assert_eq!(
         inner.path,
         project
@@ -129,7 +129,7 @@ fn on_action_is_idempotent_when_already_enabled() -> TestResult {
         .check("first enable")?;
     let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
         .check("second enable")?;
-    assert_eq!(response.0.status, "enabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Enabled);
     assert!(
         activation_dir(&project).is_dir(),
         "the directory stays in place across repeated enables"
@@ -150,7 +150,7 @@ fn off_action_disables_the_project_and_deletes_the_directory() -> TestResult {
         None,
     )
     .check("disable succeeds")?;
-    assert_eq!(response.0.status, "disabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Disabled);
     assert!(response.0.import.is_none());
     assert!(
         !activation_dir(&project).exists(),
@@ -168,7 +168,7 @@ fn off_action_when_already_disabled_is_a_noop() -> TestResult {
         None,
     )
     .check("noop disable")?;
-    assert_eq!(response.0.status, "already_disabled");
+    assert_eq!(response.0.status, ProjectControlStatus::AlreadyDisabled);
     assert!(response.0.import.is_none());
     assert!(!activation_dir(&project).exists());
     Ok(())
@@ -437,7 +437,7 @@ fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() -
         .gitignore
         .check("enable reports the gitignore guard")?;
     assert_eq!(report.status, GitignoreStatus::AlreadyIgnored);
-    assert_eq!(response.0.status, "enabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Enabled);
     assert!(response.0.import.is_some(), "the import still ran");
     assert_eq!(
         fs::read(&gitignore).check("read .gitignore")?,
@@ -461,7 +461,7 @@ fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() -> 
         .check("enable reports the gitignore guard")?;
     assert_eq!(report.status, GitignoreStatus::NotWritten);
     assert!(report.error.is_some(), "the reason is reported");
-    assert_eq!(response.0.status, "enabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Enabled);
     assert!(
         activation_dir(&project).join("project.db").exists(),
         "the project is enabled regardless of the ignore guard"
@@ -484,7 +484,7 @@ fn off_action_does_not_touch_the_gitignore() -> TestResult {
     )
     .check("disable succeeds")?;
 
-    assert_eq!(response.0.status, "disabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Disabled);
     assert!(
         response.0.gitignore.is_none(),
         "off omits the gitignore field"

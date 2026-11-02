@@ -32,7 +32,7 @@ fn on_action_corrupt_database_discard_warn_logs_the_real_path() -> TestResult {
     })?;
 
     let response = result.check("the corrupt database must be discarded and rebuilt")?;
-    assert_eq!(response.0.status, "enabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Enabled);
     let record = logs
         .lines()
         .find(|line| line.contains("operation=\"enable_project\""))

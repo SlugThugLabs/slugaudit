@@ -1352,19 +1352,13 @@
               },
               "index": {
                 "description": "Position in the session list (oldest first).",
-                "type": [
-                  "integer",
-                  "null"
-                ],
+                "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "id": {
-                "description": "The entry's id, when it has one.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "description": "The entry's id; every entry has one.",
+                "type": "string"
               },
               "error": {
                 "description": "Why it was not loaded: a compile error, a broken field rule, or an id\ncollision.",
@@ -1373,6 +1367,8 @@
             },
             "required": [
               "source",
+              "index",
+              "id",
               "error"
             ]
           },
@@ -1905,6 +1901,26 @@
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
+          "ProjectControlStatus": {
+            "description": "Outcome of an enable/disable call, as a closed set.",
+            "oneOf": [
+              {
+                "description": "The project was enabled by this call.",
+                "type": "string",
+                "const": "enabled"
+              },
+              {
+                "description": "The project was disabled by this call.",
+                "type": "string",
+                "const": "disabled"
+              },
+              {
+                "description": "The project was already disabled; nothing was removed.",
+                "type": "string",
+                "const": "already_disabled"
+              }
+            ]
+          },
           "ImportReport": {
             "description": "Summary of an initial import that ran on enable.\n\nThe counts describe the project's discovered file set, not only the\nfiles that produced indexed content: a file skipped as oversize or\nunreadable still counts in `added`, and `skipped` reports how many such\nfiles the import could not include.",
             "type": "object",
@@ -2020,7 +2036,7 @@
         "properties": {
           "status": {
             "description": "One of `\"enabled\"`, `\"disabled\"`, or `\"already_disabled\"` (no-op).",
-            "type": "string"
+            "$ref": "#/$defs/ProjectControlStatus"
           },
           "path": {
             "description": "Absolute path of the project root that was affected.",
@@ -2838,19 +2854,13 @@
               },
               "index": {
                 "description": "Position in the session list (oldest first).",
-                "type": [
-                  "integer",
-                  "null"
-                ],
+                "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "id": {
-                "description": "The entry's id, when it has one.",
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "description": "The entry's id; every entry has one.",
+                "type": "string"
               },
               "error": {
                 "description": "Why it was not loaded: a compile error, a broken field rule, or an id\ncollision.",
@@ -2859,6 +2869,8 @@
             },
             "required": [
               "source",
+              "index",
+              "id",
               "error"
             ]
           }
@@ -2872,7 +2884,6 @@
           "evidence_counts",
           "parser_failure_count",
           "parser_failure_files",
-          "parser_failure_files_total",
           "open_finding_count",
           "import_resolution",
           "dependency_edges",
@@ -2930,7 +2941,7 @@
             }
           },
           "parser_failure_count": {
-            "description": "Indexed files whose parser was unavailable or whose parse failed — the\nsame predicate `parser_failure_files` lists, without the list cap.",
+            "description": "Uncapped total of files whose parser was unavailable or whose parse\nfailed — the same predicate `parser_failure_files` lists. Larger than\nthe returned list's length means the list was truncated at\n`MAX_PARSER_FAILURE_FILES`; equal means the list is complete.",
             "type": "integer",
             "format": "int64"
           },
@@ -2940,11 +2951,6 @@
             "items": {
               "$ref": "#/$defs/ParserFailureFile"
             }
-          },
-          "parser_failure_files_total": {
-            "description": "Uncapped total of files matching the `parser_failure_files` predicate.\nLarger than the returned list's length means the list was truncated at\n`MAX_PARSER_FAILURE_FILES`; equal means the list is complete.",
-            "type": "integer",
-            "format": "int64"
           },
           "open_finding_count": {
             "description": "This session's findings that are `current`: findings whose file\ncontent hash still matches the hash they were written against.\nFindings invalidated by a later content change are `stale` and are not\ncounted.",

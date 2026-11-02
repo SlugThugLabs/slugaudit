@@ -98,7 +98,6 @@ impl ReportSections {
             evidence_counts: scope.evidence_counts,
             parser_failure_count: scope.parser_failure_count,
             parser_failure_files: scope.parser_failure_files,
-            parser_failure_files_total: scope.parser_failure_count,
             open_finding_count,
             import_resolution: graph.import_resolution,
             dependency_edges: graph.dependency_edges,

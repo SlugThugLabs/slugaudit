@@ -32,7 +32,6 @@ fn prose_files_are_counted_but_never_listed_as_parser_failures() -> TestResult {
         .collect();
     assert_eq!(listed, ["c.zzunknown"]);
     assert_eq!(response.parser_failure_count, 1);
-    assert_eq!(response.parser_failure_files_total, 1);
     assert_eq!(response.completeness.prose_files_not_parsed, 2);
     Ok(())
 }

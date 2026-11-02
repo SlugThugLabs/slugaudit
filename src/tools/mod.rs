@@ -105,7 +105,7 @@ pub use mechanic::{
 pub use page::{Completeness, LegacyPaging, Page, PageLimit};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
-    ProjectControlResponse, project_control,
+    ProjectControlResponse, ProjectControlStatus, project_control,
 };
 pub use query::{QueryRequest, QueryResponse, query};
 pub use query_clip::ClippedCell;

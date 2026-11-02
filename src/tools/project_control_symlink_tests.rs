@@ -106,7 +106,7 @@ fn off_deletes_the_directory_without_following_a_symlinked_project_db() -> TestR
     )
     .check("off deletes the directory, link included")?;
 
-    assert_eq!(response.0.status, "disabled");
+    assert_eq!(response.0.status, ProjectControlStatus::Disabled);
     assert!(
         !project.path().join(".planning/slugaudit").exists(),
         "the whole directory is gone"

@@ -196,8 +196,8 @@ pub(super) fn load(
             }),
             Err(error) => catalog.invalid.push(InvalidMechanic {
                 source: MechanicSource::Session,
-                index: Some(index),
-                id: Some(entry.id),
+                index,
+                id: entry.id,
                 error,
             }),
         }
