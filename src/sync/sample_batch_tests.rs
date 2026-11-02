@@ -172,3 +172,34 @@ fn honest_log_a_later_distinct_sampling_error_is_logged_with_its_path_and_cause(
         logged[0]
     );
 }
+
+#[test]
+fn skip_code_maps_each_per_file_failure_to_its_reason_and_leaves_read_errors_fatal() {
+    let too_large = SampleError::TooLarge {
+        path: "a".into(),
+        observed: 2,
+        limit: 1,
+    };
+    let not_utf8 = SampleError::NotUtf8 { path: "b".into() };
+    let read = SampleError::Read {
+        path: "c".into(),
+        source: std::io::Error::other("boom"),
+    };
+
+    assert_eq!(skip_code(&too_large), Some(SKIP_REASON_OVERSIZE));
+    assert_eq!(skip_code(&not_utf8), Some(SKIP_REASON_NOT_UTF8));
+    assert_eq!(skip_code(&read), None);
+}
+
+#[test]
+fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() {
+    let error = time_budget_error("src/lib.rs", Duration::from_millis(1500));
+
+    match error {
+        PublishError::TimeBudgetExceeded { path, elapsed_ms } => {
+            assert_eq!(path, " while processing src/lib.rs");
+            assert_eq!(elapsed_ms, 1500);
+        }
+        other => panic!("expected TimeBudgetExceeded, got {other:?}"),
+    }
+}

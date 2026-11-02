@@ -125,3 +125,22 @@ fn every_live_tool_matches_the_documented_annotation_table() {
         );
     }
 }
+
+#[test]
+fn one_sided_lines_for_keys_and_named_entries_read_the_same_way() {
+    let committed = json!({"a": 1, "tools": [{"name": "x"}]});
+    let live = json!({"b": 1, "tools": [{"name": "y"}]});
+
+    let mut found = differences(&committed, &live);
+    found.sort();
+
+    assert_eq!(
+        found,
+        vec![
+            "a: in the snapshot, absent now",
+            "b: absent from the snapshot, present now",
+            "tools[x]: in the snapshot, absent now",
+            "tools[y]: absent from the snapshot, present now",
+        ]
+    );
+}

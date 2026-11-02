@@ -1,7 +1,7 @@
 // slugaudit-line-exception: approved-by=slugthug; reason=the project-metadata row, the revision read and the publish error mapping form one cohesive helper set
 //! Project-metadata helpers used by `SourceSyncManager`.
 //!
-//! Split out from `manager.rs` so the sync orchestrator's hot path is
+//! Kept apart from `manager.rs` so the sync orchestrator's hot path is
 //! shorter than the small-file rule cap. These helpers are not part
 //! of the orchestrator's runtime concerns — they mediate the project's
 //! SQLite metadata row and the revision lookup that always succeeds or
@@ -10,28 +10,14 @@
 use super::SyncedProject;
 use super::publish;
 use super::publish_log;
+use super::revision::current_revision_id;
 use crate::error_codes::{self, ErrorCode};
 use crate::parse;
 use crate::project;
 use crate::store;
 use rmcp::ErrorData;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-
-/// Returns the `revision_id` of the current revision, or `None` if no
-/// revision has been published yet. `ensure_current` reads it after every
-/// sync, so a successful pass always names the revision it converged on.
-pub(crate) fn current_revision_id(
-    connection: &Connection,
-) -> Result<Option<String>, rusqlite::Error> {
-    connection
-        .query_row(
-            "SELECT revision_id FROM revisions WHERE is_current = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-}
 
 /// Errors from verifying a project's metadata row.
 /// Reads the revision id the database holds after a sync. Every field is

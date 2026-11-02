@@ -5,7 +5,7 @@
 //! Every sync is a full pass: the project is walked, every indexable file
 //! is hashed, and only the files whose content differs from the stored row
 //! are re-parsed and rewritten. The built-in content check
-//! ([`verify_stored`]) additionally proves that each stored `content` still
+//! (`verify_stored`) additionally proves that each stored `content` still
 //! hashes to its stored `content_hash`, so an edit made directly to the
 //! database is repaired from the source on the next call.
 
@@ -26,6 +26,7 @@ mod publish_attempt;
 mod publish_cas;
 mod publish_diff;
 mod publish_log;
+mod publish_sample;
 mod race_hook;
 mod recovery_log;
 mod result_stores;
@@ -47,6 +48,7 @@ pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
 pub use result_stores::ResultStoreSlot;
 pub use revision::{FileRecord, RevisionError};
+pub(crate) use revision::{current_revision_id, current_revision_row};
 
 #[cfg(test)]
 #[path = "timeout_tests.rs"]

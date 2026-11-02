@@ -266,17 +266,40 @@ fn flip_current_revision(
     Ok(())
 }
 
-fn assert_baseline(
-    tx: &rusqlite::Transaction<'_>,
-    expected_current: Option<&str>,
-) -> Result<(), RevisionError> {
-    let actual: Option<String> = tx
+/// Returns the `revision_id` of the current revision, or `None` if no
+/// revision has been published yet. This is the one reader of the
+/// `is_current` pointer; `flip_current_revision` is its writer.
+pub(crate) fn current_revision_id(
+    connection: &Connection,
+) -> Result<Option<String>, rusqlite::Error> {
+    connection
         .query_row(
             "SELECT revision_id FROM revisions WHERE is_current = 1",
             [],
             |row| row.get(0),
         )
-        .optional()?;
+        .optional()
+}
+
+/// Like [`current_revision_id`], but also returns the current revision's
+/// `parser_pack_version`, as `(revision_id, parser_pack_version)`.
+pub(crate) fn current_revision_row(
+    connection: &Connection,
+) -> Result<Option<(String, String)>, rusqlite::Error> {
+    connection
+        .query_row(
+            "SELECT revision_id, parser_pack_version FROM revisions WHERE is_current = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+}
+
+fn assert_baseline(
+    tx: &rusqlite::Transaction<'_>,
+    expected_current: Option<&str>,
+) -> Result<(), RevisionError> {
+    let actual = current_revision_id(tx)?;
     match (expected_current, actual.as_deref()) {
         (None, None) => Ok(()),
         (Some(expected), Some(found)) if expected == found => Ok(()),

@@ -8,6 +8,7 @@ use super::hash_batch;
 use super::manifest::{ChangeStatus, FileChange};
 use super::publish::{PublishError, PublishReport};
 use super::publish_diff::{self, build_upserts_and_deletions};
+use super::publish_sample::{check_samples_match_pass1, files_to_sample};
 use super::race_hook;
 use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
@@ -123,22 +124,44 @@ struct CurrentRevision {
 }
 
 fn current_revision(connection: &Connection) -> Result<Option<CurrentRevision>, PublishError> {
-    connection
-        .query_row(
-            "SELECT revision_id, parser_pack_version FROM revisions WHERE is_current = 1",
-            [],
-            |row| {
-                Ok(CurrentRevision {
-                    revision_id: row.get(0)?,
-                    parser_pack_version: row.get(1)?,
-                })
+    let row = revision::current_revision_row(connection).map_err(PublishError::Database)?;
+    Ok(
+        row.map(|(revision_id, parser_pack_version)| CurrentRevision {
+            revision_id,
+            parser_pack_version,
+        }),
+    )
+}
+
+/// The no-change fast path: re-reads the current revision after the race
+/// hook, fails with `StaleBaseline` if another writer moved it, and otherwise
+/// reports the baseline revision with zero changes.
+fn unchanged_report(
+    connection: &Connection,
+    root: &Path,
+    baseline: &CurrentRevision,
+    unchanged: usize,
+    skipped: Vec<discovery::SkippedFile>,
+) -> Result<PublishReport, PublishError> {
+    race_hook::fire(root);
+    let current_now = current_revision(connection)?;
+    let current_id_now = current_now.as_ref().map(|r| r.revision_id.as_str());
+    if current_id_now != Some(baseline.revision_id.as_str()) {
+        return Err(PublishError::Revision(
+            revision::RevisionError::StaleBaseline {
+                expected: baseline.revision_id.clone(),
+                found: current_id_now.unwrap_or("").to_owned(),
             },
-        )
-        .map(Some)
-        .or_else(|error| match error {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(PublishError::Database(other)),
-        })
+        ));
+    }
+    Ok(PublishReport {
+        revision_id: baseline.revision_id.clone(),
+        added: 0,
+        modified: 0,
+        deleted: 0,
+        unchanged,
+        skipped,
+    })
 }
 
 /// One publish attempt: discovers, stream-hashes, and diffs the project's current
@@ -168,79 +191,24 @@ pub(super) fn try_publish(
         && !parser_version_changed
         && let Some(current) = &baseline
     {
-        race_hook::fire(root);
-        let current_now = current_revision(connection)?;
-        let current_id_now = current_now.as_ref().map(|r| r.revision_id.as_str());
-        if current_id_now != expected_current {
-            return Err(PublishError::Revision(
-                revision::RevisionError::StaleBaseline {
-                    expected: expected_current.unwrap_or("").to_owned(),
-                    found: current_id_now.unwrap_or("").to_owned(),
-                },
-            ));
-        }
-        return Ok(PublishReport {
-            revision_id: current.revision_id.clone(),
-            added: 0,
-            modified: 0,
-            deleted: 0,
-            unchanged: state.diff.unchanged,
-            skipped: state.skipped,
-        });
+        return unchanged_report(
+            connection,
+            root,
+            current,
+            state.diff.unchanged,
+            state.skipped,
+        );
     }
 
-    let hashed_paths: HashSet<&str> = state
-        .identities
-        .iter()
-        .map(|id| id.relative_path.as_str())
-        .collect();
-
-    let files_to_sample: Vec<discovery::DiscoveredFile> = if parser_version_changed {
-        state
-            .discovered
-            .iter()
-            .filter(|f| hashed_paths.contains(f.relative_path.as_str()))
-            .cloned()
-            .collect()
-    } else {
-        let changed_set: HashSet<&str> = state
-            .diff
-            .changes
-            .iter()
-            .filter(|c| c.status != ChangeStatus::Deleted)
-            .map(|c| c.relative_path.as_str())
-            .collect();
-        state
-            .discovered
-            .iter()
-            .filter(|f| {
-                changed_set.contains(f.relative_path.as_str())
-                    && hashed_paths.contains(f.relative_path.as_str())
-            })
-            .cloned()
-            .collect()
-    };
-
+    let files_to_sample = files_to_sample(
+        &state.discovered,
+        &state.identities,
+        &state.diff.changes,
+        parser_version_changed,
+    );
     let (samples, sampling_skips) =
         sample_all_with_deadline(&files_to_sample, limits, sink, deadline)?;
-
-    // Validate that no sampled file was modified between Pass 1 stream-hashing
-    // and Pass 2 selective sampling. If content changed, abort this attempt
-    // so `publish_cas` retries rather than commit a mismatched manifest hash.
-    let pass1_hashes: std::collections::HashMap<&str, &str> = state
-        .identities
-        .iter()
-        .map(|id| (id.relative_path.as_str(), id.content_hash.as_str()))
-        .collect();
-    for sample in &samples {
-        if let Some(&p1_hash) = pass1_hashes.get(sample.relative_path.as_str())
-            && sample.identity.content_hash != p1_hash
-        {
-            return Err(PublishError::ChangedDuringSample {
-                path: sample.relative_path.clone(),
-            });
-        }
-    }
+    check_samples_match_pass1(&samples, &state.identities)?;
 
     let mut discovered_paths = state.discovered_paths;
     let mut skipped_records = state.skipped_records;

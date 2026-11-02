@@ -11,7 +11,9 @@
 //! that is not per-page (the counts, the file denominators) comes back from
 //! the extras stored with the result, so every page of one result agrees.
 
-use super::context::{PageRequest, PageSpec, Produced, RowSink, decode_rows, internal_error};
+use super::context::{
+    PageRequest, PageSpec, Produced, RowSink, current_revision, decode_rows, internal_error,
+};
 use super::language_notices::untested_language_notices;
 use super::leads::{FileCount, LeadMode, LeadRows, LeadsResponse, MechanicCount};
 use super::leads_compact;
@@ -20,10 +22,10 @@ use super::leads_custom;
 use super::leads_mechanics::Selected;
 use super::leads_query::{self, compile_pattern, count_all, page_file_counts};
 use super::mechanic_catalog::Catalog;
-use super::mechanic_scan_cached::{self, CacheScope};
+use super::mechanic_scan_cached::{self, CacheScope, Scanned};
 use super::page::{Completeness, PageLimit};
 use super::page_size::PageSize;
-use super::paginate::paginate;
+use super::paginate::{Served, paginate};
 use crate::error_codes::store_error;
 use crate::project::MechanicScanCache;
 use crate::store::{Materialize, StoredRow, Take};
@@ -113,22 +115,42 @@ pub(super) fn page(
     if let Some(error) = cutting.failure.take() {
         return Err(error);
     }
+    respond(served, &cutting, cut)
+}
+
+/// What limited a page. A complete page has no limit; a page the caller's
+/// `limit` stopped says so; any other incomplete page was cut by the byte
+/// budget `size`, which reports the ceiling when it is the ceiling.
+fn limited_by(complete: bool, stopped_by: Option<PageLimit>, size: PageSize) -> PageLimit {
+    match (complete, stopped_by) {
+        (true, _) => PageLimit::None,
+        (false, Some(PageLimit::Limit)) => PageLimit::Limit,
+        (false, _) => size.byte_cut(),
+    }
+}
+
+/// Builds the response from the served page and what the cut measured. A
+/// request that asked for a byte budget cuts at its own; a continuation that
+/// did not cuts at the one stored with the result.
+fn respond(
+    served: Served<Extras>,
+    cutting: &Cutting,
+    cut: Cut,
+) -> Result<LeadsResponse, ErrorData> {
     let rows: Vec<StoredLead> = decode_rows(&served.rows)?;
     let extras = served.meta;
     let mut page = served.page;
     let bytes_used = cutting.bytes_used;
     page.bytes_used = bytes_used;
-    let at_ceiling = if cut.explicit_bytes {
-        cut.size.at_ceiling
-    } else {
-        extras.at_ceiling
+    let size = PageSize {
+        bytes: page.page_bytes,
+        at_ceiling: if cut.explicit_bytes {
+            cut.size.at_ceiling
+        } else {
+            extras.at_ceiling
+        },
     };
-    page.limited_by = match (page.complete, cutting.stopped_by) {
-        (true, _) => PageLimit::None,
-        (false, Some(PageLimit::Limit)) => PageLimit::Limit,
-        (false, _) if at_ceiling => PageLimit::Ceiling,
-        (false, _) => PageLimit::PageBytes,
-    };
+    page.limited_by = limited_by(page.complete, cutting.stopped_by, size);
     let oversized_row = bytes_used > page.page_bytes;
     let files_covered = if page.complete {
         extras.files_total
@@ -199,13 +221,7 @@ fn produce(
 ) -> Result<Produced<Extras>, ErrorData> {
     let glob = compile_pattern(scope.pattern);
     let read = languages_read(tx, glob.as_deref())?;
-    let revision: String = tx
-        .query_row(
-            "SELECT revision_id FROM revisions WHERE is_current = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| internal_error("reading the current revision", error))?;
+    let revision = current_revision(tx)?;
     let project = tx
         .path()
         .ok_or_else(|| internal_error("locating the project database", "no file path"))?;
@@ -228,26 +244,7 @@ fn produce(
     let notices = notices_for(scope, &counts);
     let files_not_parsed = leads_query::files_not_parsed(tx, scope.pattern)?;
     let mut feed = Feed::new(sink);
-    match (scope.mode, scope.selected) {
-        (LeadMode::Full, None) => {}
-        (LeadMode::Full, Some(Selected::Builtin(mechanic))) => {
-            leads_query::stream_rows(tx, mechanic, scope.pattern, &mut |row| feed.full(row))?;
-        }
-        (LeadMode::Compact, Some(Selected::Builtin(mechanic))) => {
-            let only = leads_compact::scope(Some(mechanic));
-            leads_compact::stream(tx, &only, scope.pattern, &mut |row| feed.compact(row))?;
-        }
-        (LeadMode::Compact, None) => {
-            for index in 0..scope.catalog.custom.len() {
-                leads_custom::rows(tx, scope, index, &found, &mut feed)?;
-            }
-            let all = leads_compact::scope(None);
-            leads_compact::stream(tx, &all, scope.pattern, &mut |row| feed.compact(row))?;
-        }
-        (_, Some(Selected::Registered(index))) => {
-            leads_custom::rows(tx, scope, index, &found, &mut feed)?;
-        }
-    }
+    stream_selected(tx, scope, &found, &mut feed)?;
     let completeness = match found.stop {
         None => Completeness::Complete,
         Some(stop) => Completeness::Partial {
@@ -270,6 +267,39 @@ fn produce(
             limit: cut.limit,
         },
     })
+}
+
+/// Streams the rows the call asked for into `feed`: nothing for a full-mode
+/// call with no mechanic (counts only), the selected built-in's or registered
+/// mechanic's rows, or, in compact mode with no mechanic, every registered
+/// entry's rows and then the built-ins'.
+fn stream_selected(
+    tx: &Transaction<'_>,
+    scope: &Scope<'_>,
+    found: &Scanned,
+    feed: &mut Feed<'_, '_, '_>,
+) -> Result<(), ErrorData> {
+    match (scope.mode, scope.selected) {
+        (LeadMode::Full, None) => {}
+        (LeadMode::Full, Some(Selected::Builtin(mechanic))) => {
+            leads_query::stream_rows(tx, mechanic, scope.pattern, &mut |row| feed.full(row))?;
+        }
+        (LeadMode::Compact, Some(Selected::Builtin(mechanic))) => {
+            let only = leads_compact::scope(Some(mechanic));
+            leads_compact::stream(tx, &only, scope.pattern, &mut |row| feed.compact(row))?;
+        }
+        (LeadMode::Compact, None) => {
+            for index in 0..scope.catalog.custom.len() {
+                leads_custom::rows(tx, scope, index, found, feed)?;
+            }
+            let all = leads_compact::scope(None);
+            leads_compact::stream(tx, &all, scope.pattern, &mut |row| feed.compact(row))?;
+        }
+        (_, Some(Selected::Registered(index))) => {
+            leads_custom::rows(tx, scope, index, found, feed)?;
+        }
+    }
+    Ok(())
 }
 
 /// The untested-language notices for the languages the answer covers: every
@@ -304,3 +334,7 @@ fn scanned_entries(scope: &Scope<'_>) -> Vec<usize> {
         Some(Selected::Registered(index)) => vec![index],
     }
 }
+
+#[cfg(test)]
+#[path = "leads_page_limit_tests.rs"]
+mod limit_tests;

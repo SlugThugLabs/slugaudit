@@ -28,7 +28,7 @@ pub(crate) fn with_verified_read<T>(
     Ok(result)
 }
 
-/// Starts the read transaction `with_verified_read` runs in. Split out so
+/// Starts the read transaction `with_verified_read` runs in. Kept separate so
 /// the start-failure mapping is testable with a connection that already
 /// has a transaction open — the one state in which SQLite refuses a second
 /// `BEGIN DEFERRED`.
@@ -87,8 +87,8 @@ pub fn ensure_synced(
     manager.ensure_current(path, sink)
 }
 
-/// Backwards-compatible shim that calls [`ensure_synced`] with a no-op
-/// sink. Tests and CLI paths that predate progress sinks use this so they
+/// Shim that calls [`ensure_synced`] with a no-op
+/// sink. Tests and CLI paths without a progress sink use this so they
 /// don't have to thread `&NoopProgressSink` by hand. Exposed under the
 /// `cfg(test)` gate so production callers must take a real progress
 /// sink and commit to the wire-point contract.
@@ -100,17 +100,19 @@ pub(crate) fn ensure_synced_no_progress(
     ensure_synced(path, &crate::progress::NoopProgressSink, manager)
 }
 
+/// The current revision id; no current revision is an error, as a read
+/// transaction must always find one.
+pub(super) fn current_revision(connection: &rusqlite::Connection) -> Result<String, ErrorData> {
+    sync::current_revision_id(connection)
+        .and_then(|found| found.ok_or(rusqlite::Error::QueryReturnedNoRows))
+        .map_err(|error| internal_error("reading the current revision", error))
+}
+
 fn verify_revision_matches(
     connection: &rusqlite::Connection,
     expected_revision_id: &str,
 ) -> Result<(), ErrorData> {
-    let current: String = connection
-        .query_row(
-            "SELECT revision_id FROM revisions WHERE is_current = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| internal_error("reading the current revision", error))?;
+    let current = current_revision(connection)?;
     if current != expected_revision_id {
         return Err(ErrorData::internal_error(
             format!(

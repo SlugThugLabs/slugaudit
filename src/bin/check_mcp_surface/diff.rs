@@ -26,15 +26,12 @@ fn walk(committed: &Value, live: &Value, path: &str, found: &mut Vec<String>) {
                 let child = join(path, key);
                 match live.get(key) {
                     Some(other) => walk(value, other, &child, found),
-                    None => found.push(format!("{child}: in the snapshot, absent now")),
+                    None => report_one_sided(found, &child, Side::Snapshot),
                 }
             }
             for key in live.keys() {
                 if !committed.contains_key(key) {
-                    found.push(format!(
-                        "{}: absent from the snapshot, present now",
-                        join(path, key)
-                    ));
+                    report_one_sided(found, &join(path, key), Side::Live);
                 }
             }
         }
@@ -56,15 +53,13 @@ fn walk(committed: &Value, live: &Value, path: &str, found: &mut Vec<String>) {
                 let Some(name) = name_of(entry) else { continue };
                 match live.iter().find(|other| name_of(other) == Some(name)) {
                     Some(other) => walk(entry, other, &format!("{path}[{name}]"), found),
-                    None => found.push(format!("{path}[{name}]: in the snapshot, absent now")),
+                    None => report_one_sided(found, &format!("{path}[{name}]"), Side::Snapshot),
                 }
             }
             for entry in live {
                 let Some(name) = name_of(entry) else { continue };
                 if !committed.iter().any(|other| name_of(other) == Some(name)) {
-                    found.push(format!(
-                        "{path}[{name}]: absent from the snapshot, present now"
-                    ));
+                    report_one_sided(found, &format!("{path}[{name}]"), Side::Live);
                 }
             }
         }
@@ -75,6 +70,22 @@ fn walk(committed: &Value, live: &Value, path: &str, found: &mut Vec<String>) {
         )),
         _ => {}
     }
+}
+
+/// The one surface an entry appears on when the other lacks it.
+enum Side {
+    /// Only the committed snapshot has it.
+    Snapshot,
+    /// Only the live surface has it.
+    Live,
+}
+
+/// Records that `label` exists on one side only.
+fn report_one_sided(found: &mut Vec<String>, label: &str, only_on: Side) {
+    found.push(match only_on {
+        Side::Snapshot => format!("{label}: in the snapshot, absent now"),
+        Side::Live => format!("{label}: absent from the snapshot, present now"),
+    });
 }
 
 /// True when the array is non-empty and every entry is an object with a

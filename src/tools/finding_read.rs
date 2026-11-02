@@ -14,8 +14,10 @@
 //! makes progress and nothing is silently dropped.
 
 use super::page::{LegacyPaging, Page, PageLimit};
-use super::page_size;
-use super::paginate::{PageRequest, PageSpec, Produced, decode_rows, page_request, paginate};
+use super::page_size::{self, PageSize};
+use super::paginate::{
+    PageRequest, PageSpec, Produced, Served, decode_rows, page_request, paginate,
+};
 use super::resolve_limits;
 use crate::store::StoredRow;
 use crate::sync;
@@ -50,7 +52,7 @@ pub struct FindingReadRequest {
     )]
     #[serde(default)]
     pub cursor: Option<String>,
-    /// The removed `offset` / `expected_revision`, kept only to refuse them.
+    /// The `offset` / `expected_revision` parameters, accepted only to refuse them.
     #[serde(flatten, default)]
     #[schemars(skip)]
     pub legacy_paging: LegacyPaging,
@@ -106,7 +108,7 @@ pub struct FindingReadResponse {
 
 /// # Errors
 ///
-/// Returns an error if the request carries the removed `offset` or
+/// Returns an error if the request carries `offset` or
 /// `expected_revision` (`paging_parameter_removed`), has neither `cursor`
 /// nor `path`, `path` isn't inside an active project, the `cursor` is
 /// unknown or expired, or syncing, storing or reading the result fails.
@@ -148,6 +150,13 @@ pub fn finding_read(
         },
     )?;
     cut.finish()?;
+    respond(served)
+}
+
+/// Builds the response from the served page: decodes the findings, clips the
+/// first one when it alone exceeds the page budget, measures the bytes used,
+/// and names what limited the page.
+fn respond(served: Served<FindingExtra>) -> Result<Json<FindingReadResponse>, ErrorData> {
     let budget = served.page.page_bytes;
     let mut findings: Vec<FindingReadEntry> = decode_rows::<StoredFinding>(&served.rows)?
         .into_iter()
@@ -166,10 +175,12 @@ pub fn finding_read(
     page.bytes_used = bytes_used;
     page.limited_by = if page.complete {
         PageLimit::None
-    } else if served.meta.at_ceiling {
-        PageLimit::Ceiling
     } else {
-        PageLimit::PageBytes
+        PageSize {
+            bytes: budget,
+            at_ceiling: served.meta.at_ceiling,
+        }
+        .byte_cut()
     };
     tracing::info!(
         revision_id = page.revision_id,

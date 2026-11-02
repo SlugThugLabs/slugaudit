@@ -7,6 +7,7 @@ use super::discovery::DiscoveredFile;
 use super::publish::PublishError;
 use super::revision::FileRecord;
 use super::sample::{SampleError, sample_file};
+use super::sample_batch::time_budget_error;
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use std::collections::HashMap;
@@ -35,10 +36,7 @@ pub(super) fn revalidate_unchanged_since_sample(
         .collect();
     for upsert in upserts {
         if let Some(elapsed) = deadline.exceeded() {
-            return Err(PublishError::TimeBudgetExceeded {
-                path: format!(" while processing {}", upsert.relative_path),
-                elapsed_ms: elapsed.as_millis(),
-            });
+            return Err(time_budget_error(&upsert.relative_path, elapsed));
         }
         let unchanged = match by_path.get(upsert.relative_path.as_str()) {
             Some(file) => still_matches(file, upsert, limits)?,

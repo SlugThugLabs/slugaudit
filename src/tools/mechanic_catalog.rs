@@ -89,14 +89,16 @@ pub(super) fn is_builtin(id: &str) -> bool {
     MECHANICS.iter().any(|mechanic| mechanic.id == id)
 }
 
+/// True when every byte of `text` is one of `a-z`, `0-9` or `_`: the
+/// character rule shared by an entry's id and its language.
+fn is_lower_snake(text: &str) -> bool {
+    text.bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
 /// The field rules every entry obeys, checked before anything is compiled.
 fn check_shape(entry: &MechanicEntry, limits: &ResourceLimits) -> Result<(), String> {
-    let id_ok = !entry.id.is_empty()
-        && entry.id.len() <= MAX_ID_BYTES
-        && entry
-            .id
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    let id_ok = !entry.id.is_empty() && entry.id.len() <= MAX_ID_BYTES && is_lower_snake(&entry.id);
     if !id_ok {
         return Err(format!(
             "id must be 1 to {MAX_ID_BYTES} characters of a-z, 0-9 and _"
@@ -107,11 +109,10 @@ fn check_shape(entry: &MechanicEntry, limits: &ResourceLimits) -> Result<(), Str
             "note must be non-empty and at most {MAX_NOTE_BYTES} bytes"
         ));
     }
-    let stored_shape = entry
-        .language
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
-    if entry.language.is_empty() || entry.language.len() > MAX_LANGUAGE_BYTES || !stored_shape {
+    if entry.language.is_empty()
+        || entry.language.len() > MAX_LANGUAGE_BYTES
+        || !is_lower_snake(&entry.language)
+    {
         return Err(format!(
             "language must be 1 to {MAX_LANGUAGE_BYTES} characters of a-z, 0-9 and _: the \
              lowercase pack name the index stores for a file (python, rust, javascript, tsx, \
@@ -206,5 +207,28 @@ fn collision(catalog: &Catalog, id: &str) -> Result<(), String> {
     match catalog.position(id) {
         Some(_) => Err(format!("id `{id}` is already registered for this session")),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_lower_snake;
+
+    #[test]
+    fn lowercase_digits_and_underscore_are_allowed() {
+        assert!(is_lower_snake("abc_123"));
+        assert!(is_lower_snake("_"));
+    }
+
+    #[test]
+    fn uppercase_punctuation_space_and_non_ascii_are_refused() {
+        for text in ["Abc", "a-b", "a b", "a.b", "caf\u{e9}"] {
+            assert!(!is_lower_snake(text), "{text:?} must be refused");
+        }
+    }
+
+    #[test]
+    fn the_empty_string_has_no_offending_byte() {
+        assert!(is_lower_snake(""));
     }
 }

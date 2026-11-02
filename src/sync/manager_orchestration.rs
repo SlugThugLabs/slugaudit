@@ -1,4 +1,4 @@
-// slugaudit-line-exception: approved-by=slugthug; reason=the ensure_current recovery workflow: resolve, open, verify or discard, rebuild and one full publish
+// slugaudit-line-exception: approved-by=slugthug; reason=the sync recovery workflow: ensure_current plus the open, verify and publish steps that each discard and rebuild a bad database, with their error shaping
 //! Project synchronization orchestration for [`super::SourceSyncManager`].
 //!
 //! This module owns the `ensure_current` workflow: resolving the project,
@@ -12,7 +12,7 @@ use super::super::manager_meta::{
     ProjectMetaError, ensure_project_row, map_publish_error, publish_from_scratch,
     revision_after_sync,
 };
-use super::super::publish::publish;
+use super::super::publish::{PublishReport, publish};
 use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
 use super::{SourceSyncManager, SyncedProject};
 use crate::error_codes::{self, ErrorCode};
@@ -21,6 +21,14 @@ use crate::project;
 use crate::store;
 use rmcp::ErrorData;
 use std::path::{Path, PathBuf};
+
+/// A bad database to delete before rebuilding, with the notice that tells
+/// the model why and the wording of the discard failure message.
+struct Discard {
+    notice: DatabaseDiscard,
+    /// Fills `discarding the <what> project database: ...`.
+    what: &'static str,
+}
 
 fn elapsed_ms(start: std::time::Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or_else(|error| {
@@ -65,7 +73,7 @@ impl SourceSyncManager {
             Err(synced) => return Ok(synced),
         };
 
-        let mut connection = match self.verify_metadata_or_rebuild(
+        let connection = match self.verify_metadata_or_rebuild(
             &root,
             &database_path,
             connection,
@@ -76,37 +84,11 @@ impl SourceSyncManager {
             Err(synced) => return Ok(synced),
         };
 
-        let report = match publish(
-            &mut connection,
-            root.as_path(),
-            crate::parse::PACK_VERSION,
-            sink,
-        ) {
-            Ok(report) => report,
-            Err(error) if error.is_corruption() => {
-                let notice = DatabaseDiscard {
-                    cause: format!("the project database became corrupt during sync: {error}"),
-                };
-                log_database_recovery(
-                    &database_path,
-                    DatabaseRecovery::PublishCorrupt { error: &error },
-                );
-                drop(connection);
-                store::discard_corrupt_database(&database_path).map_err(|discard| {
-                    ErrorData::internal_error(
-                        format!("discarding the corrupt project database: {discard}"),
-                        None,
-                    )
-                })?;
-                return self.rebuild_and_finish(&root, database_path, start, sink, Some(notice));
-            }
-            Err(error) => {
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
-                return Err(map_publish_error(root.as_path(), error, "publish failed"));
-            }
-        };
+        let (connection, report) =
+            match self.publish_or_rebuild(&root, &database_path, connection, start, sink)? {
+                Ok(published) => published,
+                Err(synced) => return Ok(synced),
+            };
         let revision_id = revision_after_sync(&connection, &database_path)?;
 
         let duration_ms = elapsed_ms(start);
@@ -156,18 +138,15 @@ impl SourceSyncManager {
                     database_path,
                     DatabaseRecovery::OpenCorrupt { error: &error },
                 );
-                store::discard_corrupt_database(database_path).map_err(|err| {
-                    ErrorData::internal_error(
-                        format!("discarding the corrupt or outdated project database: {err}"),
-                        None,
-                    )
-                })?;
                 self.rebuild_and_finish(
                     root,
                     database_path.to_path_buf(),
                     start,
                     sink,
-                    Some(notice),
+                    Some(Discard {
+                        notice,
+                        what: "corrupt or outdated",
+                    }),
                 )
                 .map(Err)
             }
@@ -183,6 +162,54 @@ impl SourceSyncManager {
                     format!("opening the project database for sync: {error}"),
                     None,
                 ))
+            }
+        }
+    }
+
+    /// Runs the one full publish. Corruption found mid-publish discards the
+    /// database and rebuilds it (`Err(SyncedProject)` carries that result);
+    /// any other publish failure ends the call with the mapped error.
+    fn publish_or_rebuild(
+        &self,
+        root: &project::ProjectRoot,
+        database_path: &Path,
+        mut connection: rusqlite::Connection,
+        start: std::time::Instant,
+        sink: &dyn ProgressSink,
+    ) -> Result<Result<(rusqlite::Connection, PublishReport), SyncedProject>, ErrorData> {
+        match publish(
+            &mut connection,
+            root.as_path(),
+            crate::parse::PACK_VERSION,
+            sink,
+        ) {
+            Ok(report) => Ok(Ok((connection, report))),
+            Err(error) if error.is_corruption() => {
+                let notice = DatabaseDiscard {
+                    cause: format!("the project database became corrupt during sync: {error}"),
+                };
+                log_database_recovery(
+                    database_path,
+                    DatabaseRecovery::PublishCorrupt { error: &error },
+                );
+                drop(connection);
+                self.rebuild_and_finish(
+                    root,
+                    database_path.to_path_buf(),
+                    start,
+                    sink,
+                    Some(Discard {
+                        notice,
+                        what: "corrupt",
+                    }),
+                )
+                .map(Err)
+            }
+            Err(error) => {
+                sink.emit(ProgressEvent::Completed {
+                    phase: "ensuring_current",
+                });
+                Err(map_publish_error(root.as_path(), error, "publish failed"))
             }
         }
     }
@@ -230,37 +257,54 @@ impl SourceSyncManager {
                 ProjectMetaError::Other(_) => {}
             }
             drop(connection);
-            store::discard_corrupt_database(database_path).map_err(|discard| {
-                ErrorData::internal_error(
-                    format!("discarding the stale project database: {discard}"),
-                    None,
-                )
-            })?;
             return self
-                .rebuild_and_finish(root, database_path.to_path_buf(), start, sink, Some(notice))
+                .rebuild_and_finish(
+                    root,
+                    database_path.to_path_buf(),
+                    start,
+                    sink,
+                    Some(Discard {
+                        notice,
+                        what: "stale",
+                    }),
+                )
                 .map(Err);
         }
         Ok(Ok(connection))
     }
 
     /// Shared tail for the missing, corruption and stale-database paths:
+    /// with `Some(discard)` it first deletes the bad database (a failure
+    /// ends the call as `discarding the <what> project database: ...`), then
     /// rebuilds the database from scratch, stamps the sync time, and emits
-    /// the completion signal. Extracted so the recovery paths cannot drift
-    /// apart.
+    /// the completion signal. `None` is the missing-database path, which
+    /// discards nothing. Extracted so the recovery paths cannot drift apart.
     fn rebuild_and_finish(
         &self,
         root: &project::ProjectRoot,
         database_path: PathBuf,
         start: std::time::Instant,
         sink: &dyn ProgressSink,
-        discard: Option<DatabaseDiscard>,
+        discard: Option<Discard>,
     ) -> Result<SyncedProject, ErrorData> {
+        let notice = match discard {
+            Some(Discard { notice, what }) => {
+                store::discard_corrupt_database(&database_path).map_err(|error| {
+                    ErrorData::internal_error(
+                        format!("discarding the {what} project database: {error}"),
+                        None,
+                    )
+                })?;
+                Some(notice)
+            }
+            None => None,
+        };
         let mut synced = publish_from_scratch(root, database_path, sink).inspect_err(|_| {
             sink.emit(ProgressEvent::Completed {
                 phase: "ensuring_current",
             });
         })?;
-        synced.discard = discard;
+        synced.discard = notice;
         let duration_ms = elapsed_ms(start);
         self.stamp_last_sync(duration_ms);
         sink.emit(ProgressEvent::Completed {

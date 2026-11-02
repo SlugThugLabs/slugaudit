@@ -6,13 +6,13 @@
 
 //! Line coverage gate.
 //!
-//! Replaces `tools/check_coverage.sh`. Reads the merged JSON line
+//! Reads the merged JSON line
 //! coverage — the same metric `cargo llvm-cov --fail-under-lines`
 //! compares (`totals.lines.percent`) — and fails the run if it is
 //! below the threshold. The measured number is printed so the gated
 //! value is never ambiguous: the `--summary-only` text table prints
-//! region-weighted columns that have been misread as line coverage
-//! before, and that printed table is not what the exit check compares
+//! region-weighted columns that are easily misread as line coverage,
+//! and that printed table is not what the exit check compares
 //! against.
 //!
 //! Scope: the gate measures the shipped product runtime. The dev-only
@@ -20,12 +20,11 @@
 //! `--ignore-filename-regex`: a coverage audit must not count
 //! development-only check binaries as end-user runtime code, and
 //! measuring them here while their own test files are excluded from the
-//! report left six gate mains permanently at 0% inside the denominator
-//! (892 lines, ~8 points of measured coverage). Measured product
-//! coverage at the 2026-10-16 scope change: 87.89%; the 83 floor is
-//! unchanged (measured-minus-margin).
+//! report would leave six gate mains permanently at 0% inside the
+//! denominator (~8 points of measured coverage). The floor is measured
+//! product coverage minus a margin.
 //!
-//! Pure-Rust replacement: no Python interpreter, no shell. `cargo
+//! Pure Rust: no Python interpreter, no shell. `cargo
 //! llvm-cov` is invoked through `std::process::Command`; the JSON
 //! report is parsed with `serde_json` (already a dependency).
 
@@ -35,8 +34,7 @@ fn main() -> ExitCode {
     let mut args = std::env::args_os()
         .skip(1)
         .map(|arg| arg.to_string_lossy().into_owned());
-    // Default threshold is the measured line coverage as of the
-    // 2026-08-12 /coverage-gate-recalibrated decision. The gate's intent
+    // Default threshold tracks the measured line coverage. The gate's intent
     // is "catch coverage regressions, not block on them", so it tracks
     // measurement rather than an aspirational number. Use `cargo run
     // --quiet --bin check_coverage -- <threshold>` to override for a
@@ -64,6 +62,35 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
 
+    // Every exit from here on has run (or tried to run) cargo, so every
+    // exit removes the report exactly once.
+    match measure(&report_path) {
+        Err(message) => {
+            eprintln!("{message}");
+            cleanup_then(&report_path, ExitCode::from(1))
+        }
+        Ok((covered, count)) => {
+            let (percent, passed) = gate(covered, count, threshold);
+            println!(
+                "line coverage: {:.2}% ({} / {} lines, gate {}%)",
+                percent, covered, count, threshold
+            );
+            if passed {
+                return cleanup_then(&report_path, ExitCode::SUCCESS);
+            }
+            println!(
+                "FAIL: line coverage {:.2}% is below the {}% gate",
+                percent, threshold
+            );
+            cleanup_then(&report_path, ExitCode::from(1))
+        }
+    }
+}
+
+/// Run `cargo llvm-cov`, read the JSON report it writes to `report_path`,
+/// and return the merged `(covered, count)` line totals. The error is the
+/// complete `FAIL: ...` message to print.
+fn measure(report_path: &std::path::Path) -> Result<(u64, u64), String> {
     let status = Command::new("cargo")
         .args([
             "llvm-cov",
@@ -74,65 +101,34 @@ fn main() -> ExitCode {
         ])
         .arg("--ignore-filename-regex=.*src/bin/.*")
         .arg(format!("--output-path={}", report_path.display()))
-        .status();
-    let status = match status {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!("FAIL: failed to invoke cargo llvm-cov: {err}");
-            return ExitCode::from(1);
-        }
-    };
+        .status()
+        .map_err(|err| format!("FAIL: failed to invoke cargo llvm-cov: {err}"))?;
     if !status.success() {
-        eprintln!("FAIL: cargo llvm-cov --json did not complete: {status}");
-        return ExitCode::from(1);
+        return Err(format!(
+            "FAIL: cargo llvm-cov --json did not complete: {status}"
+        ));
     }
+    let raw = std::fs::read_to_string(report_path).map_err(|err| {
+        format!(
+            "FAIL: coverage report at {} was not written: {err}",
+            report_path.display()
+        )
+    })?;
+    let cov: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("FAIL: could not parse coverage JSON: {err}"))?;
+    merge_line_totals(&cov)
+        .ok_or_else(|| "FAIL: coverage JSON missing data[*].totals.lines".to_string())
+}
 
-    let raw = match std::fs::read_to_string(&report_path) {
-        Ok(s) => s,
-        Err(err) => {
-            eprintln!(
-                "FAIL: coverage report at {} was not written: {err}",
-                report_path.display()
-            );
-            return ExitCode::from(1);
-        }
-    };
-    let cov: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("FAIL: could not parse coverage JSON: {err}");
-            return cleanup_then(&report_path, ExitCode::from(1));
-        }
-    };
-    let (covered, count) = match merge_line_totals(&cov) {
-        Some(v) => v,
-        None => {
-            eprintln!("FAIL: coverage JSON missing data[*].totals.lines");
-            return cleanup_then(&report_path, ExitCode::from(1));
-        }
-    };
+/// The line-coverage percent (0.0 when nothing was counted) and whether
+/// it meets the threshold.
+fn gate(covered: u64, count: u64, threshold: f64) -> (f64, bool) {
     let percent = if count == 0 {
         0.0
     } else {
         (covered as f64) / (count as f64) * 100.0
     };
-    println!(
-        "line coverage: {:.2}% ({} / {} lines, gate {}%)",
-        percent, covered, count, threshold
-    );
-    let verdict = if percent < threshold {
-        Some(ExitCode::from(1))
-    } else {
-        None
-    };
-    if let Some(code) = verdict {
-        println!(
-            "FAIL: line coverage {:.2}% is below the {}% gate",
-            percent, threshold
-        );
-        return cleanup_then(&report_path, code);
-    }
-    cleanup_then(&report_path, ExitCode::SUCCESS)
+    (percent, percent >= threshold)
 }
 
 /// Parse the gate threshold. `f64::from_str` accepts `NaN` and `inf`,
@@ -236,6 +232,23 @@ mod tests {
     fn returns_none_when_totals_missing() {
         let cov = json!({"data": [{"files": []}]});
         assert_eq!(merge_line_totals(&cov), None);
+    }
+
+    #[test]
+    fn gate_passes_at_or_above_the_threshold() {
+        assert_eq!(gate(83, 100, 83.0), (83.0, true));
+        assert_eq!(gate(90, 100, 83.0), (90.0, true));
+    }
+
+    #[test]
+    fn gate_fails_below_the_threshold() {
+        assert_eq!(gate(82, 100, 83.0), (82.0, false));
+    }
+
+    #[test]
+    fn gate_with_no_counted_lines_is_zero_percent() {
+        assert_eq!(gate(0, 0, 83.0), (0.0, false));
+        assert_eq!(gate(0, 0, 0.0), (0.0, true));
     }
 
     #[test]

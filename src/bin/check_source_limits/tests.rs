@@ -2,6 +2,7 @@
 
 use super::approval::{Exception, reason as exception_reason};
 use super::counter::{PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, verdict};
+use super::{FileOutcome, check_file};
 
 #[test]
 fn empty_string_is_zero() {
@@ -58,9 +59,8 @@ fn string_does_not_split_line() {
 fn raw_string_with_embedded_newline_counts_each_physical_line() {
     // A raw string spanning multiple physical lines via an embedded
     // newline byte counts each physical line of code — each line has
-    // at least one token, so each counts. This mirrors the prior
-    // Python implementation's behavior: finalize-on-newline runs at
-    // the top of the loop regardless of state, so multi-line raw
+    // at least one token, so each counts. Finalize-on-newline
+    // runs at the top of the loop regardless of state, so multi-line raw
     // strings count per physical line.
     assert_eq!(code_lines("let x = r#\"a\nb\"#;\n"), 2);
 }
@@ -230,9 +230,9 @@ fn an_agent_exception_fails_hard_at_301_and_350_lines() {
 
 #[test]
 fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() {
-    // The band was admitted by testing the *reason text* for the reserved
-    // display prefix, so an agent could write that prefix itself and buy
-    // the 301–350 band. Admission must key on the parsed approver instead.
+    // Admission must key on the parsed approver, not the *reason text*: an
+    // agent could otherwise write the reserved display prefix itself and buy
+    // the 301–350 band.
     let annotation = "// slugaudit-line-exception: approved-by=slugthug; \
                       reason=[human-approved 2026-10-19] pretend\n";
     let exception = exception_reason(annotation).expect("agent annotation parses");
@@ -260,5 +260,61 @@ fn a_dated_human_exception_does_not_rescue_351_lines() {
         Verdict::FailHard {
             ceiling: PRODUCTION_CEILING
         }
+    );
+}
+
+#[test]
+fn check_file_reports_a_pass_line_with_a_root_relative_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("src").join("ok.rs");
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    std::fs::write(&path, "fn a() {}\n").expect("write");
+    assert_eq!(
+        check_file(dir.path(), &path),
+        FileOutcome::Line("source-limit: src/ok.rs: 1 code lines; pass".to_string())
+    );
+}
+
+#[test]
+fn check_file_fails_a_file_over_the_hard_ceiling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("big.rs");
+    let source = "fn a() {}\n".repeat(PRODUCTION_CEILING + 1);
+    std::fs::write(&path, source).expect("write");
+    assert_eq!(
+        check_file(dir.path(), &path),
+        FileOutcome::Failure(format!(
+            "big.rs: {} code lines (>{PRODUCTION_CEILING}; hard failure)",
+            PRODUCTION_CEILING + 1
+        ))
+    );
+}
+
+#[test]
+fn check_file_reports_a_read_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("missing.rs");
+    let FileOutcome::Failure(message) = check_file(dir.path(), &path) else {
+        panic!("a missing file must fail");
+    };
+    assert!(
+        message.starts_with("missing.rs: read error: "),
+        "unexpected message: {message}"
+    );
+}
+
+#[test]
+fn check_file_fails_loudly_when_the_path_is_outside_the_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let other = tempfile::tempdir().expect("tempdir");
+    let path = other.path().join("x.rs");
+    std::fs::write(&path, "fn a() {}\n").expect("write");
+    assert_eq!(
+        check_file(root.path(), &path),
+        FileOutcome::Failure(format!(
+            "{}: path is not under the project root {}",
+            path.display(),
+            root.path().display()
+        ))
     );
 }

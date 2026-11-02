@@ -6,7 +6,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 //!
-//! Replaces `tools/check_source_limits.sh`. Counts the number of lines
+//! Counts the number of lines
 //! containing Rust tokens *outside* comments, strings, char literals,
 //! and raw-string literals per file under `src/`. Production files at
 //! 0–199 lines auto-pass; 200–300 requires a `slugaudit-line-exception:`
@@ -16,12 +16,11 @@
 //! named behavior per `#[test]` — repetition that cannot be DRY'd without
 //! losing failure diagnostics — so they auto-pass up to 500 lines; >500
 //! is a hard failure with no exception path. Output format is
-//! intentionally identical to the prior shell script so existing log
-//! scrapers and CI greps keep working.
+//! stable so existing log scrapers and CI greps keep working.
 //!
-//! Pure-Rust replacement: no Python interpreter, no shell. The state
+//! Pure Rust: no Python interpreter, no shell. The state
 //! machine lives in the sibling [`counter`] module and the unit tests
-//! in the sibling [`tests`] module.
+//! in the sibling `tests` module.
 
 mod approval;
 mod counter;
@@ -45,6 +44,47 @@ fn is_test_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with("_tests.rs") || name == "tests.rs")
+}
+
+/// What checking one file produced: a line to print, or a failure to
+/// collect for the summary.
+#[derive(Debug, PartialEq, Eq)]
+enum FileOutcome {
+    Line(String),
+    Failure(String),
+}
+
+/// Read one file, count its code lines, and turn the verdict into its
+/// output line or failure line.
+fn check_file(project_root: &Path, path: &Path) -> FileOutcome {
+    let Ok(relative) = path.strip_prefix(project_root) else {
+        return FileOutcome::Failure(format!(
+            "{}: path is not under the project root {}",
+            path.display(),
+            project_root.display()
+        ));
+    };
+    let rel = relative.display().to_string();
+    let source = match std::fs::read_to_string(path) {
+        Ok(src) => src,
+        Err(err) => return FileOutcome::Failure(format!("{rel}: read error: {err}")),
+    };
+    let n = counter::code_lines(&source);
+    match counter::verdict(n, approval::reason(&source), is_test_file(path)) {
+        counter::Verdict::Pass => {
+            FileOutcome::Line(format!("source-limit: {rel}: {n} code lines; pass"))
+        }
+        counter::Verdict::PassWithException { reason } => FileOutcome::Line(format!(
+            "source-limit: {rel}: {n} lines; exception: {reason}"
+        )),
+        counter::Verdict::FailHard { ceiling } => {
+            FileOutcome::Failure(format!("{rel}: {n} code lines (>{ceiling}; hard failure)"))
+        }
+        counter::Verdict::FailNeedsException => FileOutcome::Failure(format!(
+            "{rel}: {n} code lines (>= {} requires an approved exception)",
+            counter::PRODUCTION_EXCEPTION_FLOOR
+        )),
+    }
 }
 
 fn main() -> ExitCode {
@@ -82,35 +122,9 @@ fn main() -> ExitCode {
 
     let mut failures: Vec<String> = Vec::new();
     for path in &files {
-        let rel = path
-            .strip_prefix(&project_root)
-            .unwrap_or(path)
-            .display()
-            .to_string();
-        let source = match std::fs::read_to_string(path) {
-            Ok(src) => src,
-            Err(err) => {
-                failures.push(format!("{rel}: read error: {err}"));
-                continue;
-            }
-        };
-        let n = counter::code_lines(&source);
-        match counter::verdict(n, approval::reason(&source), is_test_file(path)) {
-            counter::Verdict::Pass => {
-                println!("source-limit: {rel}: {n} code lines; pass");
-            }
-            counter::Verdict::PassWithException { reason } => {
-                println!("source-limit: {rel}: {n} lines; exception: {reason}");
-            }
-            counter::Verdict::FailHard { ceiling } => {
-                failures.push(format!("{rel}: {n} code lines (>{ceiling}; hard failure)"));
-            }
-            counter::Verdict::FailNeedsException => {
-                failures.push(format!(
-                    "{rel}: {n} code lines (>= {} requires an approved exception)",
-                    counter::PRODUCTION_EXCEPTION_FLOOR
-                ));
-            }
+        match check_file(&project_root, path) {
+            FileOutcome::Line(line) => println!("{line}"),
+            FileOutcome::Failure(failure) => failures.push(failure),
         }
     }
 

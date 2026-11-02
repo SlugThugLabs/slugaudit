@@ -19,7 +19,6 @@ use crate::store;
 use crate::sync;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rusqlite::OptionalExtension;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -243,14 +242,10 @@ fn query_database_state(connection: &mut rusqlite::Connection) -> rusqlite::Resu
 pub(super) fn read_revision_fields(
     connection: &mut rusqlite::Connection,
 ) -> rusqlite::Result<(Option<String>, Option<String>)> {
-    Ok(connection
-        .query_row(
-            "SELECT revision_id, parser_pack_version FROM revisions WHERE is_current = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?
-        .unwrap_or((None, None)))
+    Ok(match sync::current_revision_row(connection)? {
+        Some((revision_id, parser_pack_version)) => (Some(revision_id), Some(parser_pack_version)),
+        None => (None, None),
+    })
 }
 
 pub(super) fn count_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {

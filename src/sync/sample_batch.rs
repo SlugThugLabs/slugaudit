@@ -2,7 +2,7 @@
 //! Parallel batch sampling for a full publish.
 //!
 //! `sample_all_with_deadline` is the bounded worker-pool loop that feeds
-//! `super::sample::to_file_record` — split out of `sample.rs` so the
+//! `super::sample::to_file_record`. It is kept apart from `sample.rs` so the
 //! per-file API (read/hash/classify, evidence capping) and the batch loop
 //! each stay under the source-size cap. The loop is a sampling concern,
 //! not an orchestration one; `publish_attempt` calls it directly.
@@ -26,6 +26,7 @@ use crate::util::{Deadline, lock_or_recover};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 /// Samples every discovered file, accumulating the total byte count and
 /// failing closed if the project-wide import ceiling is exceeded — or if
@@ -39,14 +40,13 @@ use std::thread;
 /// are documented at the module level.
 ///
 /// Parallelized across a bounded worker pool (`min(N,
-/// available_parallelism)`) since the synchronous per-file loop was the
-/// C3 audit's flagship bottleneck: a 60 s sync deadline compounded with
-/// fully serialized sampling meant a 60 k-file first import was the
-/// single most likely production failure mode. The atomic
+/// available_parallelism)`): a 60 s sync deadline compounded with fully
+/// serialized sampling would make a 60 k-file first import the single most
+/// likely production failure mode. The atomic
 /// counter/dispatcher preserves the original index in `samples[idx]`,
 /// so downstream consumers (`manifest::compare`, `aggregate_manifest_hash`,
-/// `build_upserts_and_deletions`) see the same byte-for-byte ordering
-/// they always saw — `aggregate_manifest_hash` sorts internally too, so
+/// `build_upserts_and_deletions`) see the discovered file order —
+/// `aggregate_manifest_hash` sorts internally too, so
 /// the manifest hash stays deterministic. Per-file `Sampling` events
 /// arrive at the sink in worker-completion order rather than file-index
 /// order; the receiving sink (`McpProgressSink` / `NoopProgressSink`)
@@ -150,6 +150,26 @@ struct Batch<'a> {
     error_slot: Mutex<Option<PublishError>>,
 }
 
+/// The skip-reason code for a sampling failure that skips just that file, or
+/// `None` when the failure is fatal to the whole run.
+fn skip_code(error: &SampleError) -> Option<&'static str> {
+    match error {
+        SampleError::TooLarge { .. } => Some(SKIP_REASON_OVERSIZE),
+        SampleError::NotUtf8 { .. } => Some(SKIP_REASON_NOT_UTF8),
+        SampleError::Read { .. } => None,
+    }
+}
+
+/// The error for a spent time budget while `relative_path` was next in line.
+/// Shared by batch sampling and revalidation so both name the file and report
+/// the elapsed time the same way.
+pub(super) fn time_budget_error(relative_path: &str, elapsed: Duration) -> PublishError {
+    PublishError::TimeBudgetExceeded {
+        path: format!(" while processing {relative_path}"),
+        elapsed_ms: elapsed.as_millis(),
+    }
+}
+
 impl Batch<'_> {
     /// One worker's loop: claim indices, sample, do byte-cap bookkeeping,
     /// and send results in arrival order. Exits on the shared error flag,
@@ -166,13 +186,13 @@ impl Batch<'_> {
             }
             // The deadline is checked after claiming the index so the
             // budget-exceeded error can name the file that was next in
-            // line — the same "once per file" semantics as before, just
-            // with a nameable victim.
+            // line: the deadline is still checked once per file, with a
+            // nameable victim.
             if let Some(elapsed) = self.deadline.exceeded() {
-                self.abort(PublishError::TimeBudgetExceeded {
-                    path: format!(" while processing {}", self.discovered[idx].relative_path),
-                    elapsed_ms: elapsed.as_millis(),
-                });
+                self.abort(time_budget_error(
+                    &self.discovered[idx].relative_path,
+                    elapsed,
+                ));
                 return;
             }
             match sample_file(&self.discovered[idx], self.limits) {
@@ -187,34 +207,26 @@ impl Batch<'_> {
                         return;
                     }
                 }
-                // Per-file import ceiling: this file cannot be indexed at
-                // all. Skip it like discovery skips an unreadable file —
-                // record the reason through the channel, keep every other
-                // file going.
-                Err(error @ SampleError::TooLarge { .. }) => {
-                    self.emit_sampling(sink, idx);
-                    let skip = SkipReason {
-                        message: error.to_string(),
-                        code: SKIP_REASON_OVERSIZE,
-                    };
-                    if !self.deliver(&tx, idx, Err(skip)) {
+                // Per-file skip (import ceiling, or bytes that are not
+                // UTF-8): this file cannot be indexed at all. Skip it like
+                // discovery skips an unreadable file — record the reason
+                // through the channel, keep every other file going.
+                Err(error) => match skip_code(&error) {
+                    Some(code) => {
+                        self.emit_sampling(sink, idx);
+                        let skip = SkipReason {
+                            message: error.to_string(),
+                            code,
+                        };
+                        if !self.deliver(&tx, idx, Err(skip)) {
+                            return;
+                        }
+                    }
+                    None => {
+                        self.abort(PublishError::Sample(error));
                         return;
                     }
-                }
-                Err(error @ SampleError::NotUtf8 { .. }) => {
-                    self.emit_sampling(sink, idx);
-                    let skip = SkipReason {
-                        message: error.to_string(),
-                        code: SKIP_REASON_NOT_UTF8,
-                    };
-                    if !self.deliver(&tx, idx, Err(skip)) {
-                        return;
-                    }
-                }
-                Err(error) => {
-                    self.abort(PublishError::Sample(error));
-                    return;
-                }
+                },
             }
         }
     }
