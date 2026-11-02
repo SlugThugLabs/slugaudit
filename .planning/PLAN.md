@@ -11,6 +11,9 @@ files) on a normal laptop. Nothing else gets built until that is true.
 
 ## Committed on main (2026-11-02)
 
+- `cfaf1ce` — the three response contracts: `project_control.status` is
+  a closed enum, `InvalidMechanic.index`/`id` are required, and
+  `report.parser_failure_files_total` is gone.
 - `04f3c8c` — close the review's 180 findings and bound tool reads.
   Two-pass bounded sync (hash every file, sample only the changed ones),
   shared input caps, result-store/evidence/leads limits, errors fail closed
@@ -27,7 +30,7 @@ Also committed earlier and still standing: the activation switch
 (`.planning/slugaudit/` exists = on; `on` creates, `off` deletes, a missing
 or broken DB rebuilds) and session-only findings/mechanics/profile.
 
-## Gate on `04f3c8c`
+## Gate on `cfaf1ce`
 
 - `cargo fmt --all --check` — pass
 - `cargo clippy --workspace --all-targets -- -D warnings` — pass
@@ -38,19 +41,7 @@ or broken DB rebuilds) and session-only findings/mechanics/profile.
 - `check_performance` — 12 benches within 0.75x–1.02x of `b1ddbb2`
   (20% threshold)
 
-## In flight
-
-Three tool-response contract changes, then the full gate and a commit:
-
-- `project_control.status` becomes a closed enum (`enabled`, `disabled`,
-  `already_disabled`). Wire values unchanged; the schema declares them.
-- `InvalidMechanic.index` and `InvalidMechanic.id` become required. Wire
-  values unchanged.
-- `report.parser_failure_files_total` is removed; `parser_failure_count`
-  stays. A count larger than `parser_failure_files.len()` means the list
-  was truncated.
-
-## Engineering work still open (checked against `04f3c8c`)
+## Engineering work still open (checked against `cfaf1ce`)
 
 - **C5, slimmed:** the mechanic result cache (`mechanic_scan_cached`)
   still exists; `check_performance` and the `criterion` dependency are
