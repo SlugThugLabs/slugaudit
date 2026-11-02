@@ -1,6 +1,6 @@
 # SlugAudit plan
 
-Last updated: 2026-10-31. The owner approves every step before it is
+Last updated: 2026-11-02. The owner approves every step before it is
 committed. AGENTS.md is the product definition; this file is the work order.
 
 ## Goal
@@ -9,107 +9,90 @@ Make the tool accurate and fast for Rust: every answer matches the code on
 disk at the moment of the call, safely, on repos up to Photoshop size (~40k
 files) on a normal laptop. Nothing else gets built until that is true.
 
-## Done (uncommitted, gate green)
+## Committed on main (2026-11-02)
 
-| Step | What |
-|---|---|
-| C1 | Deleted the docs-drift, governance and version-consistency gates. The `PACK_VERSION` ↔ `Cargo.toml` pin check is kept as a unit test in `src/parse/mod.rs`. |
-| C2 + C3 | Every call re-hashes every file and repairs stored text whose hash no longer matches (`src/sync/verify_stored.rs`). Deleted the watcher, sweep, reconcile, barrier and health-state layers, and the `notify` dependency. |
-| C4 | Deleted the DB guards: SQL authorizer, permission checks, network-filesystem refusal, discard and activation locks. Kept bounded opens, symlink refusal, and the query step and time budgets. |
-| Notices | Rust is the only tested language. `report`, `structure` and `leads` carry `notices` for other languages; the server instructions say so. |
-| Repo text | `README.md`, `AGENTS.md`, and the `lhm.plugin.json` listing text corrected. |
+- `04f3c8c` — close the review's 180 findings and bound tool reads.
+  Two-pass bounded sync (hash every file, sample only the changed ones),
+  shared input caps, result-store/evidence/leads limits, errors fail closed
+  and keep their cause (logged once), PRAGMA refused before preparation.
+  The source-limit agent approval tag is `approved-by=slugthuglabs`.
+- `b1ddbb2` — no `unwrap`, `expect`, `unwrap_or*`, `panic!` or
+  `unreachable!` anywhere; errors are returned instead.
+- `3805ca2` — the `check()` test helper crate; one workspace lint table.
+- `5763281` — deny `clippy::pedantic`, `missing_docs` and indexing.
+- Earlier: pedantic findings cleared, comment cleanup, function splits,
+  error-handling fixes, docs build in CI.
 
-## In progress
+Also committed earlier and still standing: the activation switch
+(`.planning/slugaudit/` exists = on; `on` creates, `off` deletes, a missing
+or broken DB rebuilds) and session-only findings/mechanics/profile.
 
-- `docs/`: end-user documentation.
-- Two comment-alignment passes over all source files: the second follows the
-  first and catches misses.
-- After both: full gate, then the owner reviews the commits.
+## Gate on `04f3c8c`
 
-## Next, in order
+- `cargo fmt --all --check` — pass
+- `cargo clippy --workspace --all-targets -- -D warnings` — pass
+- `cargo test --workspace --all-targets` three times — 1619 passed, 0 failed
+- `check_mcp_surface`, `check_no_duplicates`, `check_producer_coverage`,
+  `check_source_limits` — pass
+- `check_coverage` — 92.63% lines (gate 83%)
+- `check_performance` — 12 benches within 0.75x–1.02x of `b1ddbb2`
+  (20% threshold)
 
-1. **Commit** (owner OK needed), three commits on main, no push:
-   C1 with the gate deletions; C2–C4; notices + docs + README/AGENTS/listing
-   + comment alignment.
-2. **Decide the activation gate** (owner). Option A, Fable's pick: no on/off.
-   Root is the nearest `.git`; DB in the user cache dir. Option B: keep
-   on/off as create/remove only.
-3. **Rust invariant tests through the real tools** (`query`, `structure`,
-   `leads`, `report`, `finding_read`): edit, add, delete, rename, file
-   becomes non-UTF-8, file replaced by a directory, `.gitignore` change,
-   DB deleted mid-session, FIFO in the tree (must not hang). These are the
-   safety net for everything after.
-4. **Correctness fixes:**
-   - Corruption hit mid-sync must delete and rebuild the DB, not fail every
-     call after (today only open-time corruption rebuilds).
-   - Non-UTF-8 files keep their real content hash instead of a size+mtime
-     identity (they are already read in full). Delete the unused
-     `hash_io::hash_file`.
-5. **Speed and memory fixes:**
-   - Two-pass sync: stream-hash every file, then read only changed files.
-     Today every call holds the whole repo's text in RAM. Add a test that
-     pins peak memory on a no-change call.
-   - Hash on about 4 threads (check what the code does today).
-   - Per-call time limit cut from 120 s / 1200 s to tens of seconds.
-6. **C5, slimmed:** delete the mechanic result cache; reduce config to the
-   few knobs a user needs. Delete `check_performance`, the criterion benches
-   and the `criterion` dependency.
-7. **Soak test timing:** time a second call on an unchanged 10k-file tree,
-   and a call after one edit, with a hard limit. This replaces
-   `check_performance`.
-8. **Cursor freshness:** a cursor call re-checks the files, and the page says
-   which revision it came from and what disk is at now. Don't fail the page:
-   agents edit while they read.
-9. **Test cleanup:** delete tests for removed security and old design, and
-   low-value wording tests (list in the test audit).
-10. **Release:** pick the version, tag it, update every listing the same day.
-    The last release is v1.0.10; `Cargo.toml` says 1.1.0, which was never
-    released.
+## In flight
 
-## Decided 2026-10-31
+Three tool-response contract changes, then the full gate and a commit:
 
-- **On/off:** the `.planning/slugaudit/` directory is the switch. `on`
-  creates it, `off` deletes it. A missing or broken DB inside rebuilds.
-  Built; awaiting gate and commit.
-- **Session-only model state:** findings move to their own
-  `findings.db`, wiped when SlugAudit starts, with a `clear` action for
-  model switches mid-session. `finding_sessions` is deleted. The per-repo
-  `config.json` and `persist: true` are deleted; mechanics and profile are
-  session-only.
-- **Human defaults:** a global `~/.slugthug/slugaudit/config.json`, read
-  only, plus `SLUGAUDIT_*` env vars. Not mentioned in the model-facing
-  instructions.
+- `project_control.status` becomes a closed enum (`enabled`, `disabled`,
+  `already_disabled`). Wire values unchanged; the schema declares them.
+- `InvalidMechanic.index` and `InvalidMechanic.id` become required. Wire
+  values unchanged.
+- `report.parser_failure_files_total` is removed; `parser_failure_count`
+  stays. A count larger than `parser_failure_files.len()` means the list
+  was truncated.
 
-## Found while writing docs (fold into the steps above)
+## Engineering work still open (checked against `04f3c8c`)
 
-- Deleting `project.db` turns the project off instead of rebuilding it
-  (`open_or_rebuild` → `NotActive`). Settle it with step 2: the DB is
-  scratch, so a missing DB should rebuild.
-- Leftover permission tightening and locks: 0700 activation dir
-  (`src/project/activation.rs:174`), 0700 result-store dir and owner lock
-  (`src/store/result_store/`), `config.lock` (`src/project/config_store.rs`).
-  Result-store lock goes with step 8, `config.lock` with step 6.
-- Findings live in the scratch DB and are lost on a rebuild. Decide whether
-  findings move out of the DB.
-- `.github/workflows/release.yml` links `docs/RELEASING.md` from every
-  release body; the file was deleted. `docs/about.toml` and
-  `docs/third-party-notices.hbs` (release build inputs) are restored.
+- **C5, slimmed:** the mechanic result cache (`mechanic_scan_cached`)
+  still exists; `check_performance` and the `criterion` dependency are
+  still present. Reduce config to the knobs a user needs, delete the rest.
+- **Per-call time limit:** defaults are still 120 s / 1200 s
+  (`max_sync_wall_clock`); cut them to tens of seconds.
+- **Cursor freshness:** a page reports the revision it was stored from
+  (`page.revision_id`); it does not yet report the revision on disk at
+  continuation time. Do not fail the page — agents edit while they read.
+- **Test cleanup:** tests for removed security layers and the old design,
+  and low-value wording tests, are still in the suite.
+- **Invariant coverage:** some real-path cases exist (deleted DB rebuild,
+  non-UTF-8 paths, deleted files). The remaining edit/add/rename,
+  file-becomes-directory and FIFO cases from the old list still need the
+  same treatment.
+- **Soak timing:** `tests/large_repo_soak.rs` covers a 10k-file import
+  inside the wall clock. The unchanged-tree second call and the
+  one-edit call timing are not pinned yet.
 
 ## Open decisions (owner)
 
-- Activation gate: A or B (step 2).
+- Coverage gate: keep or drop the CI check on line coverage.
 - File-size cap: today 32 MiB. 4 MiB keeps the worst case per file around
   10 ms on a spinning disk.
-- Is the per-call DB tamper check (re-hashing stored text) worth roughly
+- Per-call DB tamper check: is re-hashing stored text worth roughly
   doubling the check cost?
 - `mechanic` is missing from the `lhm.plugin.json` tool list.
 - Three other directories list SlugAudit: what does each one promise?
+
+## Deferred by the owner
+
+- Reinstall SlugAudit and restart the client once the current work is
+  worth using; the running server is stale until then.
+- Release: `Cargo.toml` says 1.1.0; the last released tag is v1.0.10. Take
+  a version up only when there is something worth releasing, then update
+  every listing the same day.
 
 ## Not doing
 
 - No file watcher.
 - No security guards against threats nobody reported.
-- No derived-row digest (Fable: it can't catch the bugs that matter).
+- No derived-row digest (it cannot catch the bugs that matter).
 - No removing other languages or the installer/connect/update/menu surface.
 - No new features until the goal above is met.
 
