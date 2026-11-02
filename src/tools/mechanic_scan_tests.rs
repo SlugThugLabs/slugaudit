@@ -455,5 +455,38 @@ fn many_uncached_entries_in_one_call_over_a_tiny_budget_are_all_counted_exactly(
     );
 }
 
+#[test]
+fn a_selected_index_outside_the_catalogue_fails_the_call_instead_of_being_skipped() {
+    let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
+    let tx = connection.unchecked_transaction().expect("transaction");
+    let cache = crate::project::MechanicScanCache::with_budget(1024);
+    let scope = crate::tools::mechanic_scan_cached::CacheScope {
+        cache: &cache,
+        project: "p",
+        revision: "r",
+    };
+
+    let error = match crate::tools::mechanic_scan_cached::tally_cached(
+        &tx,
+        &[],
+        &[0],
+        None,
+        None,
+        &scope,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("an out-of-range index must fail the call"),
+    };
+
+    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    assert!(
+        error.message.starts_with(
+            "counting mechanics: entry index 0 is out of range for custom of length 0."
+        ),
+        "{}",
+        error.message
+    );
+}
+
 #[path = "mechanic_scan_stop_tests.rs"]
 mod stop_tests;

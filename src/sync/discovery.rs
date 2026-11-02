@@ -192,7 +192,11 @@ fn collect_file_entry(
 /// publish report's `skipped` list and the stderr log, never in the index.
 #[must_use]
 pub(super) fn representable_relative_path(root: &Path, absolute_path: &Path) -> Option<String> {
-    let relative = absolute_path.strip_prefix(root).ok()?;
+    // A path outside the root is documented above as `None`; the prefix error
+    // carries no detail beyond that.
+    let Ok(relative) = absolute_path.strip_prefix(root) else {
+        return None;
+    };
     let relative = relative.to_str()?;
     if relative.is_empty() {
         return None;
@@ -207,7 +211,10 @@ pub(super) fn representable_relative_path(root: &Path, absolute_path: &Path) -> 
 /// persisted set this feeds is the only place the index can count them.
 #[must_use]
 pub(super) fn unrepresentable_relative_bytes(root: &Path, absolute_path: &Path) -> Option<Vec<u8>> {
-    let relative = absolute_path.strip_prefix(root).ok()?;
+    // A path outside the root is documented above as `None`.
+    let Ok(relative) = absolute_path.strip_prefix(root) else {
+        return None;
+    };
     if relative.as_os_str().is_empty() || relative.to_str().is_some() {
         return None;
     }
@@ -260,7 +267,7 @@ pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
 ///
 /// The walk runs under the default sync wall-clock budget
 /// ([`ResourceLimits::default`]); callers that hold the effective limits use
-/// [`discover_with_deadline`].
+/// `discover_with_deadline`.
 ///
 /// # Errors
 ///

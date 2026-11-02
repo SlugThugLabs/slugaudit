@@ -11,7 +11,7 @@
 //!   or the docs date) and the vendor `Docs:` page to re-check.
 //!
 //! The functions are string builders: callers own the I/O so the exact
-//! wording stays testable without capturing stdout. [`print_lines`] is the
+//! wording stays testable without capturing stdout. `print_lines` is the
 //! one writer, and it only emits lines the builders produced.
 
 use crate::cli::ConnectError;

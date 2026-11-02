@@ -41,7 +41,7 @@ const IGNORE_FILE_NAMES: [&str; 7] = [
 #[must_use]
 /// True when `name` is the stored prose language or a pack grammar name that
 /// the prose table shadows (the pack names `.md` `markdown`, `.txt`
-/// `vimdoc`, ...). Derived from [`PROSE_EXTENSIONS`], so there is no second
+/// `vimdoc`, ...). Derived from `PROSE_EXTENSIONS`, so there is no second
 /// list: a request for such a language can never match an indexed file
 /// because [`detect_language`] stores those files as [`PROSE_LANGUAGE`].
 pub fn is_prose_language_name(name: &str) -> bool {
@@ -55,7 +55,7 @@ pub fn is_prose_language_name(name: &str) -> bool {
 /// Maps a file path to the language its extension indicates, or `None` when
 /// the pack does not name it. Prose files map to [`PROSE_LANGUAGE`], whatever
 /// grammar the pack would assign (it maps `.txt` to `vimdoc`), and so do the
-/// ignore-pattern lists named by [`IGNORE_FILE_NAMES`] (`.gitignore`, ...).
+/// ignore-pattern lists named by `IGNORE_FILE_NAMES` (`.gitignore`, ...).
 /// Other extensionless names such as `README` get no language from the pack
 /// today and stay so.
 pub fn detect_language(path: &str) -> Option<String> {

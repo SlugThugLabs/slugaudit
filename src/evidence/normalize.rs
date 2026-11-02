@@ -15,7 +15,7 @@ use super::normalize_builders::{
 /// place a pack type crosses into SlugAudit's model — payloads are built
 /// field-by-field so our evidence contract never silently follows
 /// upstream's own wire format. Unbounded in time; the sync path uses
-/// [`extract_within`].
+/// `extract_within`.
 ///
 /// # Errors
 ///
@@ -100,14 +100,10 @@ pub(crate) fn extract_within(
     // dependency edges. Gated on `imports.is_empty()` so pack-covered
     // languages never double-report and never pay an extra parse.
     //
-    // Both walkers now share a single parse via `extract_extra_walkers`
-    // rather than each calling `get_parser().parse` independently. The
-    // prior shape triple-parsed every file (`process` internally +
-    // `extract_bindings` + `extract_generic_imports`); the second parse
-    // was redundant because both walkers want the same `Tree`. The
-    // pack's `process` parse is unavoidable — `tree-sitter-language-pack`
-    // exposes no `process_with_tree(source, tree)` overload — but the
-    // two extra ones collapse to one.
+    // Both walkers share a single parse via `extract_extra_walkers`, because
+    // both want the same `Tree`. The pack's `process` parse is unavoidable —
+    // `tree-sitter-language-pack` exposes no `process_with_tree(source, tree)`
+    // overload — so a file costs the pack's parse plus one shared walker parse.
     let mut extraction = Extraction {
         items,
         ..Extraction::default()
@@ -132,7 +128,7 @@ pub(crate) fn extract_within(
 /// leaves that parser to resume the cancelled document on its next use unless
 /// `reset()` is called, which `process()` does not do: the next file parsed on
 /// that thread would then be read against the wrong source (a slice-out-of-
-/// bounds panic inside the pack, in the field). The cache is thread-local, so
+/// bounds panic inside the pack). The cache is thread-local, so
 /// a thread that ends takes any poisoned parser with it; the cost is one
 /// short-lived thread and one parser setup per file, small beside the parse.
 /// An unbounded `process()` cannot be cancelled and so needs no isolation.

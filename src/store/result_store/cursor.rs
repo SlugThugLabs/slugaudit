@@ -73,7 +73,10 @@ impl Cursor {
 
 /// Only the lowercase hyphenated form is accepted.
 fn canonical_uuid(text: &str) -> Option<Uuid> {
-    let id = Uuid::parse_str(text).ok()?;
+    // Not a UUID means not a cursor; the caller answers `unknown_cursor`.
+    let Ok(id) = Uuid::parse_str(text) else {
+        return None;
+    };
     (id.hyphenated().to_string() == text).then_some(id)
 }
 
@@ -82,5 +85,13 @@ fn canonical_ord(text: &str) -> Option<u64> {
     let plain = !text.is_empty()
         && text.bytes().all(|b| b.is_ascii_digit())
         && (text == "0" || !text.starts_with('0'));
-    if plain { text.parse().ok() } else { None }
+    if !plain {
+        return None;
+    }
+    // Digits that overflow `u64` are not a cursor; the caller answers
+    // `unknown_cursor`.
+    let Ok(ord) = text.parse() else {
+        return None;
+    };
+    Some(ord)
 }

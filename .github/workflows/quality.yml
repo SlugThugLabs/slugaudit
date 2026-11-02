@@ -14,10 +14,8 @@ on:
   pull_request:
 
 permissions:
-  # Least privilege for what this job actually does: it checks out the
-  # repository and runs commands. The `checks: write` this block used to carry
-  # existed for `rustsec/audit-check`'s check run, and went with that step
-  # (2026-09-30) — nothing else here writes a check, a comment, or a release.
+  # Least privilege for what this job does: it checks out the repository and
+  # runs commands. Nothing here writes a check, a comment, or a release.
   contents: read
 
 jobs:
@@ -37,11 +35,10 @@ jobs:
           fetch-depth: 0
 
       # dtolnay/rust-toolchain publishes no release tags — the action's versions
-      # *are* its branches (`stable`, `nightly`, `master`) — so `master` was the
-      # moving ref this repository tracked before the pin. The SHA below is the
-      # commit that ref resolved to on 2026-09-30. That also means Dependabot
-      # cannot bump this one: there is no release tag to compare against, so
-      # re-pinning it is a deliberate manual act.
+      # *are* its branches (`stable`, `nightly`, `master`). The SHA below is the
+      # commit `master` resolved to on 2026-09-30. Dependabot cannot bump this
+      # one: there is no release tag to compare against, so re-pinning it is a
+      # deliberate manual act.
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (branch; no releases)
         with:
@@ -79,9 +76,8 @@ jobs:
         run: cargo run --quiet --bin check_no_duplicates --locked
 
       # Fails when an `EvidenceKind` variant has no producer, or an
-      # `ExtractionCompleteness` variant is unreachable — the class found
-      # by hand once (three dead evidence kinds, `ContentOnly` never
-      # constructed) and deleted ad hoc.
+      # `ExtractionCompleteness` variant is unreachable — the class of defect
+      # by hand (a dead evidence kind, or `ContentOnly` never constructed).
       - name: Check producer coverage (every evidence kind is constructed)
         run: cargo run --quiet --bin check_producer_coverage --locked
 
@@ -99,6 +95,13 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
+      # Broken intra-doc links only surface in rustdoc, which neither check nor
+      # clippy runs, so the docs build is its own gate.
+      - name: Build API docs (warnings denied)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --locked
+
       # --lib --bins --tests excludes the criterion bench binaries
       # (harness = false) on purpose: `check_performance` is a LOCAL-ONLY gate
       # and CI does not run it, so no bench executes here or anywhere else in
@@ -115,9 +118,6 @@ jobs:
       # one. The gate's value is a same-machine before/after comparison, which is
       # exactly what running it locally gives you — see AGENTS.md and README.md
       # for the command.
-      #
-      # (An earlier revision of this comment referred to "the dedicated
-      # performance gate below". There was no such gate; it was never added.)
       - name: Run tests
         run: cargo test --lib --bins --tests --all-features --locked
 
@@ -136,7 +136,7 @@ jobs:
 
       # Linux-only: cargo-deny-action is a container action, and GitHub runs
       # container actions only on Linux runners (macOS fails with "Container
-      # action is only supported on Linux", run 38987902197, 2026-10-17). The
+      # action is only supported on Linux"). The
       # verdict is about Cargo.lock and deny.toml, which are the same on every
       # OS, so the Linux job's run covers the macOS job too.
       - name: Check dependency advisories, bans, sources, and licenses
@@ -148,8 +148,7 @@ jobs:
       # The fuzz/ directory is a separate cargo workspace with its own
       # lockfile, so the root check above cannot see it. Without this step a
       # rustsec-pinned version can sit in fuzz/Cargo.lock unnoticed while the
-      # dependency gate reports green — exactly how rustls 0.23.45 (RUSTSEC-2026-0349)
-      # survived there. Same deny.toml policy, second workspace.
+      # dependency gate reports green. Same deny.toml policy, second workspace.
       - name: Check fuzz workspace dependencies
         if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
@@ -172,15 +171,14 @@ jobs:
       # RustSec advisories are covered by the `cargo-deny` step above: both read
       # the same RustSec advisory-database, and `deny.toml`'s
       # `[advisories] ignore = []` suppresses nothing, so the two verdicts could
-      # not disagree. The `rustsec/audit-check` step that used to sit here was
-      # removed on 2026-09-30 rather than left in place, because it could not
-      # run: its newest release (v2.0.0, still the tip of the upstream `v2`
-      # branch) declares `runs.using: node20`, Node 20 was removed from
-      # GitHub-hosted runners on 2026-09-23, and the
-      # `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION` escape hatch was deactivated at
-      # the same time. A security step that cannot execute is worse than no step,
-      # because it still reads as coverage. Re-add it here (with
-      # `checks: write` back on the job) when upstream ships a node24 release.
+      # not disagree. `rustsec/audit-check` is not used because it cannot run:
+      # its newest release (v2.0.0, the tip of the upstream `v2` branch)
+      # declares `runs.using: node20`, Node 20 was removed from GitHub-hosted
+      # runners on 2026-09-23, and the `ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION`
+      # escape hatch was deactivated at the same time. A security step that
+      # cannot execute is worse than no step, because it still reads as
+      # coverage. Use it (with `checks: write` on the job) once upstream ships
+      # a node24 release.
       # Scheduled advisory runs live in `.github/workflows/advisories.yml`.
 
       - name: Install coverage tooling
@@ -192,8 +190,8 @@ jobs:
       # merged JSON line coverage (totals.lines.percent — the metric
       # --fail-under-lines compares) and prints it, so the gated number is
       # never ambiguous. The --summary-only text table prints region-
-      # weighted columns that have been misread as line coverage before;
-      # the bin reads the JSON report instead. Recalibrate the threshold
+      # weighted columns that are easily misread as line coverage; the bin
+      # reads the JSON report instead. Recalibrate the threshold
       # in the bin deliberately as real coverage moves — it is not an
       # aspirational target picked in advance.
       - name: Coverage (cargo llvm-cov)
@@ -210,32 +208,29 @@ jobs:
       # What the five are: `src/sync/revision.rs` and `src/sync/publish.rs`
       # decide revision identity and atomic publication, `src/sync/hash.rs`
       # owns the hash types and in-memory digests, `src/sync/hash_io.rs`
-      # carries the streaming `hash_file` and `stat_identity` that moved out
-      # of `hash.rs` in a size split (2026-10-19), and
+      # carries the streaming `hash_file` and `stat_identity`, and
       # `src/tools/context.rs` is the freshness-verification entry point
       # every state-bearing tool handler shares. A mutant that survives in
       # any of them means a revision was published wrong or a stale one was
       # served — the one class of defect no other file can produce, which is
       # why these five and not the whole crate.
       #
-      # What widening would cost, measured with `cargo mutants --list` on
-      # 2026-09-30: the original four files hold 23 of the crate's 2323
-      # mutants (~1 percent). All of `src/sync/**` is 310 and all of
-      # `src/tools/**` is 484, so widening to either is a 13x / 21x
-      # multiplier on this step — cargo-mutants rebuilds the crate and
-      # re-runs the whole test suite once per mutant, so the step costs
-      # mutant count x suite time, not a one-off. The mutants a wider scope
-      # adds are in code the existing suites already drive end to end
+      # What widening costs (`cargo mutants --list`, 2026-09-30): the original
+      # four files hold 23 of the crate's 2323 mutants (~1 percent). All of
+      # `src/sync/**` is 310 and all of `src/tools/**` is 484, so widening to
+      # either is a 13x / 21x multiplier on this step — cargo-mutants rebuilds
+      # the crate and re-runs the whole test suite once per mutant, so the step
+      # costs mutant count x suite time, not a one-off. The mutants a wider
+      # scope adds are in code the existing suites already drive end to end
       # (`discovery_tests`, `sample_tests`, `publish_*_tests`,
       # the `tools/*_tests` suites), so that multiplier buys verdicts on
       # behavior the tests pin directly, while the five files above are
       # where a mutation can slip past a green suite.
       #
-      # This step FAILS CLOSED: the 2026-08-12 baseline recorded zero
-      # surviving mutants on the pre-split four-file surface (17 caught, 0
-      # missed, 3 unviable). The split
-      # moved the hash functions to hash_io.rs without changing them, so a survivor in the five-file scope is a real
-      # regression, not an un-triaged baseline.
+      # This step FAILS CLOSED: any surviving mutant in the five-file scope is
+      # a real regression, because the recorded four-file baseline has zero
+      # survivors (17 caught, 0 missed, 3 unviable on 2026-08-12) and
+      # `hash_io.rs` holds the same functions as `hash.rs` did then.
       #
       # Linux-only: cargo-mutants has platform-specific behavior and the
       # baseline was recorded on Linux.

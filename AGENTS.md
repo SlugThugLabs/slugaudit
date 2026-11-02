@@ -63,6 +63,13 @@ history conflicts with the owner, the owner wins.
   the environment.
 - Existing code is not a reason to keep code. Before fixing something, check
   whether it should exist.
+- No mocks, stubs, placeholder returns or fake data outside tests. Product
+  code does the real work or fails with an error.
+- Don't rewrite working code without a reason: a bug, a broken rule, or the
+  owner's request. A function or file that mixes separate responsibilities is
+  a broken rule; length alone is not. Never split code only to meet a line
+  count.
+  <!-- Owner decision (2026-11-02): over 200 lines per file or 50 per function is fine when the code does one job. The limits exist to stop god files, not to force splits. -->
 - Never write a judgment about the code (for example, "module X is fine")
   into a file that outlives the session.
 - Errors fail the operation and are logged once. No `let _ =` on a Result,

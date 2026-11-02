@@ -107,7 +107,11 @@ fn parse_db(name: &str) -> Option<Uuid> {
 }
 
 fn parse_hyphenated(text: &str) -> Option<Uuid> {
-    let id = Uuid::parse_str(text).ok()?;
+    // A name that is not a UUID is a foreign file in the results directory,
+    // which the sweep leaves alone.
+    let Ok(id) = Uuid::parse_str(text) else {
+        return None;
+    };
     (id.hyphenated().to_string() == text).then_some(id)
 }
 

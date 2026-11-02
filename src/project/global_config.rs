@@ -235,7 +235,7 @@ impl GlobalConfig {
 
 /// The limits every tool call and sync for the project at `project_root`
 /// runs under: the global file, the validated `SLUGAUDIT_*` environment and
-/// this project's session profile, combined by [`resolve_limits`], which
+/// this project's session profile, combined by `resolve_limits`, which
 /// documents the precedence.
 ///
 /// # Errors

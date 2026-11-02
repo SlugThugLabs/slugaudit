@@ -151,10 +151,13 @@ fn compile_ignore_matcher(dir: &Path, files: &[PathBuf]) -> Option<Gitignore> {
     }
     let mut builder = GitignoreBuilder::new(dir);
     add_files(&mut builder, files, Source::ProjectIgnore);
-    builder
-        .build()
-        .map_err(|err| log_build_failure(Source::ProjectIgnore, Some(dir), &err))
-        .ok()
+    match builder.build() {
+        Ok(matcher) => Some(matcher),
+        Err(err) => {
+            log_build_failure(Source::ProjectIgnore, Some(dir), &err);
+            None
+        }
+    }
 }
 
 /// Compiles the `.gitignore` matcher for one directory. The root's matcher
@@ -180,10 +183,13 @@ fn compile_gitignore_matcher(root: &Path, dir: &Path, files: &[PathBuf]) -> Opti
         }
     }
     add_files(&mut builder, files, Source::ProjectGitignore);
-    builder
-        .build()
-        .map_err(|err| log_build_failure(Source::ProjectGitignore, Some(dir), &err))
-        .ok()
+    match builder.build() {
+        Ok(matcher) => Some(matcher),
+        Err(err) => {
+            log_build_failure(Source::ProjectGitignore, Some(dir), &err);
+            None
+        }
+    }
 }
 
 /// Adds each file to the builder, warning on per-file failures (a malformed

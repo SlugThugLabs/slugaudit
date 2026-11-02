@@ -12,7 +12,7 @@
 //! still use the rows it holds. Rows are retained while the pass runs only up to the
 //! cache budget in total across the pass's entries; an entry whose rows outgrow it is counted (`skipped_too_large`
 //! in `health`), not cached, and its pages stream from the database as they
-//! did before the cache existed.
+//! would without the cache.
 
 use super::leads_query::MAX_DETAIL_CHARS;
 use super::mechanic::MechanicSource;
@@ -147,13 +147,30 @@ impl Pass {
     }
 }
 
+/// The internal error for a selected entry index that names no slot of
+/// `collection` (length `len`): an invariant violation, logged once here and
+/// failing the call.
+fn index_out_of_range(collection: &str, index: usize, len: usize) -> ErrorData {
+    tracing::error!(
+        index,
+        len,
+        collection,
+        "a selected mechanic index is out of range"
+    );
+    super::context::internal_error(
+        "counting mechanics",
+        format!("entry index {index} is out of range for {collection} of length {len}"),
+    )
+}
+
 /// Counts the entries of `custom` listed in `selected` under `glob`, serving
 /// each from the cache when it can and scanning the rest in one pass.
 ///
 /// # Errors
 ///
 /// Fails like [`mechanic_scan::scan`]: a database read error or a grammar
-/// that no longer loads. Nothing is cached on failure or when the deadline
+/// that no longer loads, or an internal error when `selected` names an
+/// index outside `custom`. Nothing is cached on failure or when the deadline
 /// stopped the pass.
 pub(super) fn tally_cached(
     tx: &Transaction<'_>,
@@ -170,17 +187,22 @@ pub(super) fn tally_cached(
     };
     let mut missed = Vec::new();
     for index in selected {
-        let Some(registered) = custom.get(*index) else {
-            continue;
-        };
+        let registered = custom
+            .get(*index)
+            .ok_or_else(|| index_out_of_range("custom", *index, custom.len()))?;
         match scope.cache.get(&key_of(scope, registered, glob)) {
             Some(rows) => {
-                if let Some(slot) = scanned.tallies.get_mut(*index) {
-                    *slot = tally_of(&rows);
-                }
-                if let Some(slot) = scanned.rows.get_mut(*index) {
-                    *slot = Some(rows);
-                }
+                let tallies_len = scanned.tallies.len();
+                *scanned
+                    .tallies
+                    .get_mut(*index)
+                    .ok_or_else(|| index_out_of_range("tallies", *index, tallies_len))? =
+                    tally_of(&rows);
+                let rows_len = scanned.rows.len();
+                *scanned
+                    .rows
+                    .get_mut(*index)
+                    .ok_or_else(|| index_out_of_range("rows", *index, rows_len))? = Some(rows);
             }
             None => missed.push(*index),
         }
@@ -213,9 +235,9 @@ pub(super) fn tally_cached(
         }
     };
     for index in missed {
-        let Some(registered) = custom.get(index) else {
-            continue;
-        };
+        let registered = custom
+            .get(index)
+            .ok_or_else(|| index_out_of_range("custom", index, custom.len()))?;
         let Some(rows) = pass.take(index) else {
             if !stopped {
                 scope.cache.note_too_large();
@@ -228,9 +250,11 @@ pub(super) fn tally_cached(
                 .cache
                 .insert(key_of(scope, registered, glob), Arc::clone(&rows));
         }
-        if let Some(slot) = scanned.rows.get_mut(index) {
-            *slot = Some(rows);
-        }
+        let rows_len = scanned.rows.len();
+        *scanned
+            .rows
+            .get_mut(index)
+            .ok_or_else(|| index_out_of_range("rows", index, rows_len))? = Some(rows);
     }
     Ok(scanned)
 }
