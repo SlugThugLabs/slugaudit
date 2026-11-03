@@ -5,11 +5,20 @@
 //! actual protocol. This spawns the real binary as a subprocess.
 
 use serde_json::json;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// Follows the JSON pointer `pointer` into `value`; a missing path is an error
+/// naming the pointer and the value it was looked up in.
+#[track_caller]
+fn at<'a>(value: &'a serde_json::Value, pointer: &str) -> TestResult<&'a serde_json::Value> {
+    value
+        .pointer(pointer)
+        .check(&format!("`{pointer}` is present in {value}"))
+}
 
 struct ServerProcess {
     /// Keeps the server's home directory alive: it points at an empty temp
@@ -105,7 +114,7 @@ impl ServerProcess {
             let line = self.recv_stdout_line()?;
             let parsed: serde_json::Value =
                 serde_json::from_str(&line).check("stdout line is valid JSON")?;
-            if parsed["id"] == expected_id {
+            if parsed.get("id").is_some_and(|id| *id == expected_id) {
                 return Ok((parsed, notifications));
             }
             // A line without an `id` matching the expected one is a
@@ -130,7 +139,11 @@ impl ServerProcess {
         self.send(&request.to_string())?;
         let response: serde_json::Value = serde_json::from_str(&self.recv_stdout_line()?)
             .check(&format!("{name} response is valid JSON"))?;
-        assert_eq!(response["id"], id, "{name} response carries its request id");
+        ensure_eq(
+            at(&response, "/id")?,
+            &id,
+            format!("{name} response carries its request id"),
+        )?;
         Ok(response)
     }
 
@@ -142,7 +155,7 @@ impl ServerProcess {
         arguments: &serde_json::Value,
     ) -> TestResult<serde_json::Value> {
         let response = self.tool_response(id, name, arguments)?;
-        let content = response["result"]["content"][0]["text"]
+        let content = at(&response, "/result/content/0/text")?
             .as_str()
             .check(&format!("{name} result has text content: {response}"))?;
         serde_json::from_str(content).check(&format!("{name} result text is JSON"))
@@ -206,70 +219,13 @@ impl Drop for ServerProcess {
     }
 }
 
-// One continuous live server process exercising a real sequence of calls
-// is the point of this test — splitting it into several #[test] fns would
-// each need to re-spawn and re-initialize a fresh process, losing exactly
-// the "state carries correctly across a real session" property this test
-// exists to prove.
-#[test]
-fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
-    let (project, project_path) = ServerProcess::init_project()?;
-
-    let mut server = ServerProcess::spawn()?;
-    server.handshake()?;
-
-    let report = server.tool_json(2, "report", &json!({ "path": project_path }))?;
-    assert_eq!(report["file_count"], 1);
-    let languages = report["languages"].as_array().check("languages array")?;
-    assert!(languages.iter().any(|entry| entry["language"] == "rust"));
-
-    let query_result = server.tool_json(
-        3,
-        "query",
-        &json!({ "path": project_path, "sql": "SELECT path, language FROM files" }),
-    )?;
-    assert_eq!(query_result["rows"][0]["path"], "lib.rs");
-    assert_eq!(query_result["rows"][0]["language"], "rust");
-
-    let write_response = server.tool_response(
-        4,
-        "query",
-        &json!({ "path": project_path, "sql": "DELETE FROM files" }),
-    )?;
-    assert!(
-        write_response["error"]["code"].is_number(),
-        "a write attempt through query must come back as a typed protocol error, not succeed: {write_response}"
-    );
-
-    let structure_result = server.tool_json(
-        5,
-        "structure",
-        &json!({
-            "path": project_path,
-            "file": "lib.rs",
-            "query": "(function_item name: (identifier) @name)",
-        }),
-    )?;
-    assert_eq!(structure_result["matches"][0]["text"], "a");
-    assert_eq!(structure_result["matches"][0]["capture_name"], "name");
-
-    let finding_result = server.tool_json(
-        6,
-        "finding",
-        &json!({
-            "path": project_path,
-            "file": "lib.rs",
-            "line_start": 1,
-            "line_end": 1,
-            "severity": "low",
-            "category": "style",
-            "title": "t",
-            "description": "d",
-        }),
-    )?;
-    assert_eq!(finding_result["status"], "current");
-    assert!(finding_result["id"].as_i64().is_some_and(|id| id > 0));
-
+/// Workflow act 2: the finding bound to `lib.rs` must read stale once the
+/// source changes, across a real sync on the live `server`.
+fn check_finding_reads_stale_after_the_source_changes(
+    server: &mut ServerProcess,
+    project: &tempfile::TempDir,
+    project_path: &str,
+) -> TestResult {
     // --- Workflow act 2: the finding must read stale the moment the source
     // it was bound to changes, across a real sync on a live server. ---
     std::fs::write(
@@ -288,7 +244,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
             "query",
             &json!({ "path": project_path, "sql": "SELECT count(*) AS n FROM revisions" }),
         )?;
-        revision_count = sync_result["rows"][0]["n"]
+        revision_count = at(&sync_result, "/rows/0/n")?
             .as_i64()
             .check("revision count is a number")?;
         if revision_count == 2 {
@@ -296,17 +252,23 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
         }
         std::thread::sleep(Duration::from_millis(300));
     }
-    assert_eq!(
-        revision_count, 2,
-        "the modification must publish a second revision"
-    );
+    ensure_eq(
+        &revision_count,
+        &2,
+        "the modification must publish a second revision",
+    )?;
 
     let stale_result = server.tool_json(8, "finding_read", &json!({ "path": project_path }))?;
-    assert_eq!(
-        stale_result["findings"][0]["status"], "stale",
-        "the finding must read stale once its source changed"
-    );
+    ensure_eq(
+        at(&stale_result, "/findings/0/status")?,
+        &"stale",
+        "the finding must read stale once its source changed",
+    )?;
+    Ok(())
+}
 
+/// Structured tracing must reach stderr and nothing of the protocol may.
+fn check_stderr_carries_tracing_not_protocol(server: &ServerProcess) -> TestResult {
     // Structured tracing (src/server.rs's `run_blocking`, src/tools/*.rs)
     // must actually reach stderr with the fields it claims to record, and
     // — the point of this whole test file — none of that can leak onto
@@ -315,22 +277,132 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
     // a stdout line would fail parsing), but assert it explicitly
     // for the tracing content specifically.
     let stderr = server.stderr_snapshot();
-    assert!(
+    ensure(
         !stderr.is_empty(),
-        "startup diagnostics should reach stderr"
-    );
-    assert!(
+        "startup diagnostics should reach stderr",
+    )?;
+    ensure(
         stderr.contains("tool_call") && stderr.contains(r#"tool="report""#),
-        "expected a report tool_call span in stderr, got:\n{stderr}"
-    );
-    assert!(
+        format!("expected a report tool_call span in stderr, got:\n{stderr}"),
+    )?;
+    ensure(
         stderr.contains("report built") && stderr.contains("revision_id"),
-        "expected report's per-tool tracing fields in stderr, got:\n{stderr}"
-    );
-    assert!(
+        format!("expected report's per-tool tracing fields in stderr, got:\n{stderr}"),
+    )?;
+    ensure(
         !stderr.contains("\"jsonrpc\""),
-        "stderr must never carry JSON-RPC protocol content: {stderr}"
-    );
+        format!("stderr must never carry JSON-RPC protocol content: {stderr}"),
+    )?;
+    Ok(())
+}
+
+// One continuous live server process exercising a real sequence of calls
+// is the point of this test — splitting it into several #[test] fns would
+// each need to re-spawn and re-initialize a fresh process, losing exactly
+// the "state carries correctly across a real session" property this test
+// exists to prove.
+#[test]
+fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
+    let (project, project_path) = ServerProcess::init_project()?;
+
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+
+    let report = server.tool_json(2, "report", &json!({ "path": project_path }))?;
+    ensure_eq(
+        at(&report, "/file_count")?,
+        &1,
+        "report[\"file_count\"] == 1",
+    )?;
+    let languages = at(&report, "/languages")?
+        .as_array()
+        .check("languages array")?;
+    ensure(
+        languages.iter().any(|entry| {
+            entry
+                .get("language")
+                .is_some_and(|language| language == "rust")
+        }),
+        "languages.iter().any(|entry| entry[\"language\"] == \"rust\")",
+    )?;
+
+    let query_result = server.tool_json(
+        3,
+        "query",
+        &json!({ "path": project_path, "sql": "SELECT path, language FROM files" }),
+    )?;
+    ensure_eq(
+        at(&query_result, "/rows/0/path")?,
+        &"lib.rs",
+        "query_result[\"rows\"][0][\"path\"] == \"lib.rs\"",
+    )?;
+    ensure_eq(
+        at(&query_result, "/rows/0/language")?,
+        &"rust",
+        "query_result[\"rows\"][0][\"language\"] == \"rust\"",
+    )?;
+
+    let write_response = server.tool_response(
+        4,
+        "query",
+        &json!({ "path": project_path, "sql": "DELETE FROM files" }),
+    )?;
+    ensure(
+        at(&write_response, "/error/code")?.is_number(),
+        format!(
+            "a write attempt through query must come back as a typed protocol error, not succeed: {write_response}"
+        ),
+    )?;
+
+    let structure_result = server.tool_json(
+        5,
+        "structure",
+        &json!({
+            "path": project_path,
+            "file": "lib.rs",
+            "query": "(function_item name: (identifier) @name)",
+        }),
+    )?;
+    ensure_eq(
+        at(&structure_result, "/matches/0/text")?,
+        &"a",
+        "structure_result[\"matches\"][0][\"text\"] == \"a\"",
+    )?;
+    ensure_eq(
+        at(&structure_result, "/matches/0/capture_name")?,
+        &"name",
+        "structure_result[\"matches\"][0][\"capture_name\"] == \"name\"",
+    )?;
+
+    let finding_result = server.tool_json(
+        6,
+        "finding",
+        &json!({
+            "path": project_path,
+            "file": "lib.rs",
+            "line_start": 1,
+            "line_end": 1,
+            "severity": "low",
+            "category": "style",
+            "title": "t",
+            "description": "d",
+        }),
+    )?;
+    ensure_eq(
+        at(&finding_result, "/status")?,
+        &"current",
+        "finding_result[\"status\"] == \"current\"",
+    )?;
+    ensure(
+        at(&finding_result, "/id")?
+            .as_i64()
+            .is_some_and(|id| id > 0),
+        "finding_result[\"id\"].as_i64().is_some_and(|id| id > 0)",
+    )?;
+
+    check_finding_reads_stale_after_the_source_changes(&mut server, &project, &project_path)?;
+
+    check_stderr_carries_tracing_not_protocol(&server)?;
     Ok(())
 }
 
@@ -351,11 +423,11 @@ fn restart_serves_the_same_revision_from_disk() -> TestResult {
         server.send(&call)?;
         let response: serde_json::Value =
             serde_json::from_str(&server.recv_stdout_line()?).check("report response")?;
-        let content = response["result"]["content"][0]["text"]
+        let content = at(&response, "/result/content/0/text")?
             .as_str()
             .check("report text")?;
         let report: serde_json::Value = serde_json::from_str(content).check("report JSON")?;
-        Ok(report["revision_id"]
+        Ok(at(&report, "/revision_id")?
             .as_str()
             .check("revision id")?
             .to_owned())
@@ -367,10 +439,11 @@ fn restart_serves_the_same_revision_from_disk() -> TestResult {
 
     let mut second = ServerProcess::spawn()?;
     let second_revision = report_revision(&mut second)?;
-    assert_eq!(
-        second_revision, first_revision,
-        "a fresh server must serve the same revision from the persisted database"
-    );
+    ensure_eq(
+        &second_revision,
+        &first_revision,
+        "a fresh server must serve the same revision from the persisted database",
+    )?;
     Ok(())
 }
 
@@ -395,20 +468,24 @@ fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() -> Te
     first.handshake()?;
     first.tool_json(2, "finding", &finding)?;
     let read = first.tool_json(3, "finding_read", &json!({ "path": project_path }))?;
-    assert_eq!(read["findings"].as_array().map(Vec::len), Some(1));
+    ensure_eq(
+        &at(&read, "/findings")?.as_array().map(Vec::len),
+        &Some(1),
+        "read[\"findings\"].as_array().map(Vec::len) == Some(1)",
+    )?;
     let cleared = first.tool_json(4, "finding_clear", &json!({ "path": project_path }))?;
-    assert_eq!(cleared["removed"], 1);
+    ensure_eq(at(&cleared, "/removed")?, &1, "cleared[\"removed\"] == 1")?;
     first.tool_json(5, "finding", &finding)?;
     drop(first);
 
     let mut second = ServerProcess::spawn()?;
     second.handshake()?;
     let read = second.tool_json(2, "finding_read", &json!({ "path": project_path }))?;
-    assert_eq!(
-        read["findings"].as_array().map(Vec::len),
-        Some(0),
-        "a new server process starts with no findings: {read}"
-    );
+    ensure_eq(
+        &at(&read, "/findings")?.as_array().map(Vec::len),
+        &Some(0),
+        format!("a new server process starts with no findings: {read}"),
+    )?;
     Ok(())
 }
 
@@ -432,11 +509,11 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() -> TestResult {
     };
     let titles = |server: &mut ServerProcess, id: u64| -> TestResult<Vec<String>> {
         let read = server.tool_json(id, "finding_read", &json!({ "path": project_path }))?;
-        read["findings"]
+        at(&read, "/findings")?
             .as_array()
             .check("findings array")?
             .iter()
-            .map(|entry| Ok(entry["title"].as_str().check("title")?.to_owned()))
+            .map(|entry| Ok(at(entry, "/title")?.as_str().check("title")?.to_owned()))
             .collect::<TestResult<Vec<String>>>()
     };
 
@@ -446,17 +523,29 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() -> TestResult {
 
     let mut second = ServerProcess::spawn()?;
     second.handshake()?;
-    assert!(
+    ensure(
         titles(&mut second, 2)?.is_empty(),
-        "the second server starts with none of its own"
-    );
+        "the second server starts with none of its own",
+    )?;
     second.tool_json(3, "finding", &finding("from second"))?;
 
-    assert_eq!(titles(&mut first, 3)?, ["from first"]);
-    assert_eq!(titles(&mut second, 4)?, ["from second"]);
+    ensure_eq(
+        &titles(&mut first, 3)?,
+        &["from first"],
+        "titles(&mut first, 3)? == [\"from first\"]",
+    )?;
+    ensure_eq(
+        &titles(&mut second, 4)?,
+        &["from second"],
+        "titles(&mut second, 4)? == [\"from second\"]",
+    )?;
     let cleared = second.tool_json(5, "finding_clear", &json!({ "path": project_path }))?;
-    assert_eq!(cleared["removed"], 1);
-    assert_eq!(titles(&mut first, 4)?, ["from first"]);
+    ensure_eq(at(&cleared, "/removed")?, &1, "cleared[\"removed\"] == 1")?;
+    ensure_eq(
+        &titles(&mut first, 4)?,
+        &["from first"],
+        "titles(&mut first, 4)? == [\"from first\"]",
+    )?;
     Ok(())
 }
 
@@ -468,16 +557,16 @@ fn the_tool_list_has_finding_clear_and_no_finding_sessions() -> TestResult {
     server.send(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#)?;
     let (response, _) = server.recv_response(2)?;
 
-    let names = response["result"]["tools"]
+    let names = at(&response, "/result/tools")?
         .as_array()
         .check("tools array")?
         .iter()
-        .map(|tool| tool["name"].as_str().check("tool name"))
+        .map(|tool| at(tool, "/name")?.as_str().check("tool name"))
         .collect::<TestResult<Vec<&str>>>()?;
 
-    assert_eq!(names.len(), 10, "{names:?}");
-    assert!(names.contains(&"finding_clear"), "{names:?}");
-    assert!(!names.contains(&"finding_sessions"), "{names:?}");
+    ensure_eq(&names.len(), &10, format!("{names:?}"))?;
+    ensure(names.contains(&"finding_clear"), format!("{names:?}"))?;
+    ensure(!names.contains(&"finding_sessions"), format!("{names:?}"))?;
     Ok(())
 }
 
@@ -503,10 +592,10 @@ fn progress_notifications_flow_over_stdio() -> TestResult {
     );
     server.send(&sync_call)?;
     let (sync_response, _) = server.recv_response(2)?;
-    assert!(
-        sync_response["result"].is_object(),
-        "initial sync must succeed: {sync_response}"
-    );
+    ensure(
+        at(&sync_response, "/result")?.is_object(),
+        format!("initial sync must succeed: {sync_response}"),
+    )?;
 
     // Phase 2 — query *with* a progress token inside `params._meta`
     // (the MCP tool-call convention). The project is already synced;
@@ -518,30 +607,34 @@ fn progress_notifications_flow_over_stdio() -> TestResult {
     server.send(&query_call)?;
     let (response, notifications) = server.recv_response(3)?;
 
-    assert!(
-        response["result"].is_object(),
-        "query must succeed: {response}"
-    );
+    ensure(
+        at(&response, "/result")?.is_object(),
+        format!("query must succeed: {response}"),
+    )?;
 
-    assert!(
+    ensure(
         !notifications.is_empty(),
-        "at least one progress notification must arrive when progressToken is set"
-    );
+        "at least one progress notification must arrive when progressToken is set",
+    )?;
 
     for (i, notification) in notifications.iter().enumerate() {
-        assert!(
-            notification["id"].is_null(),
-            "progress notification {i} must have no 'id': {notification}"
-        );
-        assert_eq!(
-            notification["method"], "notifications/progress",
-            "stdout line {i} must be a progress notification: {notification}"
-        );
-        assert_eq!(
-            notification["params"]["progressToken"], "pt-q",
-            "progress token must round-trip: {notification}"
-        );
-        notification["params"]["progress"]
+        ensure(
+            notification
+                .get("id")
+                .is_none_or(serde_json::Value::is_null),
+            format!("progress notification {i} must have no 'id': {notification}"),
+        )?;
+        ensure_eq(
+            at(notification, "/method")?,
+            &"notifications/progress",
+            format!("stdout line {i} must be a progress notification: {notification}"),
+        )?;
+        ensure_eq(
+            at(notification, "/params/progressToken")?,
+            &"pt-q",
+            format!("progress token must round-trip: {notification}"),
+        )?;
+        at(notification, "/params/progress")?
             .as_f64()
             .check("`notification['params']['progress'].as_f64()` is present")?;
     }
@@ -550,10 +643,11 @@ fn progress_notifications_flow_over_stdio() -> TestResult {
     let last = notifications
         .last()
         .check("at least one progress notification")?;
-    assert_eq!(
-        last["params"]["progress"], 1.0,
-        "final progress notification must report completion at 1.0: {last}"
-    );
+    ensure_eq(
+        at(last, "/params/progress")?,
+        &1.0,
+        format!("final progress notification must report completion at 1.0: {last}"),
+    )?;
     Ok(())
 }
 
@@ -592,26 +686,53 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() -> TestResult 
     let leads = server.tool_json(4, "leads", &json!({ "path": project_path }))?;
     let second_report = server.tool_json(5, "report", &json!({ "path": project_path }))?;
 
-    assert!(
-        first_report["mechanics"]["note"]
+    ensure(
+        at(&first_report, "/mechanics/note")?
             .as_str()
             .is_some_and(|note| note.contains("not a checklist")),
-        "the first report carries the note: {first_report}"
-    );
-    assert_eq!(added["source"], "session");
-    assert_eq!(added["first_count"]["page"]["total"], 1, "{added}");
-    assert_eq!(added["first_count"]["rows"][0]["line"], 2, "{added}");
-    assert_eq!(
-        leads["mechanic_counts"][0]["mechanic"], "py_eval",
-        "{leads}"
-    );
-    assert_eq!(leads["mechanic_counts"][0]["source"], "session", "{leads}");
-    assert_eq!(leads["mechanic_counts"][0]["count"], 1, "{leads}");
-    assert_eq!(leads["mechanic_counts"][0]["covers"], json!(["python"]));
-    assert!(
-        second_report["mechanics"]["note"].is_null(),
-        "only the first report carries the note: {second_report}"
-    );
+        format!("the first report carries the note: {first_report}"),
+    )?;
+    ensure_eq(
+        at(&added, "/source")?,
+        &"session",
+        "added[\"source\"] == \"session\"",
+    )?;
+    ensure_eq(
+        at(&added, "/first_count/page/total")?,
+        &1,
+        format!("{added}"),
+    )?;
+    ensure_eq(
+        at(&added, "/first_count/rows/0/line")?,
+        &2,
+        format!("{added}"),
+    )?;
+    ensure_eq(
+        at(&leads, "/mechanic_counts/0/mechanic")?,
+        &"py_eval",
+        format!("{leads}"),
+    )?;
+    ensure_eq(
+        at(&leads, "/mechanic_counts/0/source")?,
+        &"session",
+        format!("{leads}"),
+    )?;
+    ensure_eq(
+        at(&leads, "/mechanic_counts/0/count")?,
+        &1,
+        format!("{leads}"),
+    )?;
+    ensure_eq(
+        at(&leads, "/mechanic_counts/0/covers")?,
+        &json!(["python"]),
+        "leads[\"mechanic_counts\"][0][\"covers\"] == json!([\"python\"])",
+    )?;
+    ensure(
+        second_report
+            .pointer("/mechanics/note")
+            .is_none_or(serde_json::Value::is_null),
+        format!("only the first report carries the note: {second_report}"),
+    )?;
     Ok(())
 }
 

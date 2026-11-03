@@ -83,6 +83,12 @@ pub fn run_bounded(cli: &str, args: &[String], timeout: Duration) -> Result<Outp
         cli: cli.to_string(),
         inner,
     };
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        command_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the timeout is too large to schedule a deadline",
+        ))
+    })?;
     let mut child = Command::new(cli)
         .args(args)
         .stdin(Stdio::null())
@@ -92,7 +98,6 @@ pub fn run_bounded(cli: &str, args: &[String], timeout: Duration) -> Result<Outp
         .map_err(command_error)?;
     let stdout = child.stdout.take().map(capture);
     let stderr = child.stderr.take().map(capture);
-    let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -140,7 +145,7 @@ fn kill_and_reap(cli: &str, child: &mut std::process::Child) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
     use std::os::unix::fs::PermissionsExt as _;
 
     /// Writes an executable script. Callers hold `TEST_ENV_LOCK` so no other
@@ -173,17 +178,19 @@ mod tests {
             return Err(format!("expected AgentTimeout, got {result:?}"))
                 .check("unexpected outcome");
         };
-        assert_eq!(named, cli);
-        assert!((timeout_secs - 0.4).abs() < 0.01, "{timeout_secs}");
-        assert!(started.elapsed() < Duration::from_secs(10));
+        ensure_eq(&named, &cli, "named == cli")?;
+        ensure((timeout_secs - 0.4).abs() < 0.01, format!("{timeout_secs}"))?;
+        ensure(
+            started.elapsed() < Duration::from_secs(10),
+            "started.elapsed() < Duration::from_secs(10)",
+        )?;
         let pid = std::fs::read_to_string(&pid_file).check("pid file")?;
         // A reaped child has no /proc entry; a killed-but-unreaped one would
         // linger as a zombie.
-        assert!(
+        ensure(
             !std::path::Path::new("/proc").join(pid.trim()).exists(),
-            "child {} must be gone",
-            pid.trim()
-        );
+            format!("child {} must be gone", pid.trim()),
+        )?;
         Ok(())
     }
 
@@ -201,11 +208,11 @@ mod tests {
             return Err(format!("expected AgentTimeout, got {result:?}"))
                 .check("unexpected outcome");
         };
-        assert_eq!(named, cli);
-        assert!(
+        ensure_eq(&named, &cli, "named == cli")?;
+        ensure(
             started.elapsed() < Duration::from_secs(10),
-            "must not wait for the sleeper"
-        );
+            "must not wait for the sleeper",
+        )?;
         Ok(())
     }
 
@@ -217,9 +224,13 @@ mod tests {
 
         let output = run_bounded(&cli, &[], CLIENT_CLI_TIMEOUT).check("runs")?;
 
-        assert_eq!(output.status.code(), Some(3));
-        assert_eq!(output.stdout, b"out\n");
-        assert_eq!(output.stderr, b"err\n");
+        ensure_eq(
+            &output.status.code(),
+            &Some(3),
+            "output.status.code() == Some(3)",
+        )?;
+        ensure_eq(&output.stdout, &b"out\n", "output.stdout == b\"out\\n\"")?;
+        ensure_eq(&output.stderr, &b"err\n", "output.stderr == b\"err\\n\"")?;
         Ok(())
     }
 
@@ -231,8 +242,12 @@ mod tests {
 
         let output = run_bounded(&cli, &[], CLIENT_CLI_TIMEOUT).check("runs")?;
 
-        assert!(output.status.success());
-        assert_eq!(output.stdout.len() as u64, MAX_CAPTURED_BYTES);
+        ensure(output.status.success(), "output.status.success()")?;
+        ensure_eq(
+            &(output.stdout.len() as u64),
+            &MAX_CAPTURED_BYTES,
+            "output.stdout.len() as u64 == MAX_CAPTURED_BYTES",
+        )?;
         Ok(())
     }
 }

@@ -95,7 +95,18 @@ fn bench_memory(c: &mut Criterion) -> TestResult {
             let mut total = std::time::Duration::ZERO;
             for _ in 0..iters {
                 match timed_full_sync(project.path()) {
-                    Ok(elapsed) => total += elapsed,
+                    Ok(elapsed) => match total
+                        .checked_add(elapsed)
+                        .check("the summed sync time overflowed")
+                    {
+                        Ok(sum) => total = sum,
+                        Err(error) => {
+                            // Stop this sample; the error is reported once at
+                            // the bench entry point.
+                            failure.record::<()>(Err(error));
+                            break;
+                        }
+                    },
                     Err(error) => {
                         // Stop this sample; the error is reported once at
                         // the bench entry point.

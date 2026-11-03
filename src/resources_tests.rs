@@ -1,30 +1,48 @@
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn lists_every_served_resource_with_a_distinct_uri() -> TestResult {
     let resources = list();
-    assert_eq!(
-        resources.len(),
-        10,
-        "catalog is the cookbook, the payload-key reference, seven recipes, and the schema"
-    );
+    ensure_eq(
+        &resources.len(),
+        &10,
+        "catalog is the cookbook, the payload-key reference, seven recipes, and the schema",
+    )?;
 
     let mut uris: Vec<&str> = resources
         .iter()
         .map(|resource| resource.uri.as_str())
         .collect();
-    assert!(uris.contains(&"slugaudit://queries/README.md"));
-    assert!(uris.contains(&"slugaudit://queries/evidence_payload_keys.md"));
-    assert!(uris.contains(&"slugaudit://queries/blast_radius_inbound.sql"));
-    assert!(uris.contains(&"slugaudit://queries/blast_radius_outbound.sql"));
-    assert!(uris.contains(&"slugaudit://queries/blast_radius_closure.sql"));
-    assert!(uris.contains(&"slugaudit://schema.sql"));
+    ensure(
+        uris.contains(&"slugaudit://queries/README.md"),
+        "uris.contains(&\"slugaudit://queries/README.md\")",
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://queries/evidence_payload_keys.md"),
+        "uris.contains(&\"slugaudit://queries/evidence_payload_keys.md\")",
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://queries/blast_radius_inbound.sql"),
+        "uris.contains(&\"slugaudit://queries/blast_radius_inbound.sql\")",
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://queries/blast_radius_outbound.sql"),
+        "uris.contains(&\"slugaudit://queries/blast_radius_outbound.sql\")",
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://queries/blast_radius_closure.sql"),
+        "uris.contains(&\"slugaudit://queries/blast_radius_closure.sql\")",
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://schema.sql"),
+        "uris.contains(&\"slugaudit://schema.sql\")",
+    )?;
 
     uris.sort_unstable();
     let count = uris.len();
     uris.dedup();
-    assert_eq!(uris.len(), count, "uris are unique");
+    ensure_eq(&uris.len(), &count, "uris are unique")?;
     Ok(())
 }
 
@@ -52,10 +70,10 @@ fn serves_the_payload_key_reference_with_every_evidence_kind() -> TestResult {
         "Diagnostic",
         "Call",
     ] {
-        assert!(
+        ensure(
             text.contains(&format!("## {kind}")),
-            "the reference has no section for the `{kind}` kind"
-        );
+            format!("the reference has no section for the `{kind}` kind"),
+        )?;
     }
     Ok(())
 }
@@ -91,7 +109,7 @@ fn every_sql_recipe_compiles_and_runs_against_the_schema() -> TestResult {
             executed += 1;
         }
     }
-    assert!(executed >= 5, "the cookbook ships SQL recipes to run");
+    ensure(executed >= 5, "the cookbook ships SQL recipes to run")?;
     Ok(())
 }
 
@@ -122,12 +140,14 @@ fn read_contents_carry_the_mime_type_the_catalogue_declares() -> TestResult {
             return Err(format!("{} is not served as text", resource.uri))
                 .check("unexpected outcome");
         };
-        assert_eq!(
-            mime_type.as_deref(),
-            resource.mime_type.as_deref(),
-            "{} is advertised with one MIME type and read as another",
-            resource.uri
-        );
+        ensure_eq(
+            &mime_type.as_deref(),
+            &resource.mime_type.as_deref(),
+            format!(
+                "{} is advertised with one MIME type and read as another",
+                resource.uri
+            ),
+        )?;
     }
     Ok(())
 }
@@ -142,17 +162,23 @@ fn reads_the_schema_resource() -> TestResult {
                 .check("unexpected outcome");
         }
     };
-    assert!(
+    ensure(
         text.starts_with("-- SlugAudit per-project schema"),
-        "schema resource serves the canonical schema, not an empty stub"
-    );
+        "schema resource serves the canonical schema, not an empty stub",
+    )?;
     Ok(())
 }
 
 #[test]
 fn unknown_uris_are_not_served() -> TestResult {
-    assert!(read("slugaudit://nope").is_none());
-    assert!(read("file:///etc/passwd").is_none());
+    ensure(
+        read("slugaudit://nope").is_none(),
+        "read(\"slugaudit://nope\").is_none()",
+    )?;
+    ensure(
+        read("file:///etc/passwd").is_none(),
+        "read(\"file:///etc/passwd\").is_none()",
+    )?;
     Ok(())
 }
 
@@ -232,11 +258,11 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() -> TestResult
         .collect::<rusqlite::Result<_>>()
         .check("recipe rows")?;
 
-    assert_eq!(
-        matched,
-        vec![1, 2, 3],
-        "the recipe must match the three callee rows and not the caller-only `handle_expect` row"
-    );
+    ensure_eq(
+        &matched,
+        &vec![1, 2, 3],
+        "the recipe must match the three callee rows and not the caller-only `handle_expect` row",
+    )?;
     Ok(())
 }
 
@@ -292,20 +318,27 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() -> TestResult {
             &manager,
         )
         .check(&format!("{name} runs through query"))?;
-        assert!(
+        ensure(
             served.contains(&format!("slugaudit://queries/{name}")),
-            "{name} is a recipe but is not served as a resource"
-        );
+            format!("{name} is a recipe but is not served as a resource"),
+        )?;
         rows_by_recipe.push((name.to_owned(), response.0.rows.len()));
     }
 
-    assert_eq!(recipes.len(), 6, "the six SQL recipes: {rows_by_recipe:?}");
+    ensure_eq(
+        &recipes.len(),
+        &6,
+        format!("the six SQL recipes: {rows_by_recipe:?}"),
+    )?;
     // The fixture has an expect call, auth/session/token names and one
     // resolved import from src/main.rs, so every recipe but the diagnostics
     // one (the fixture parses cleanly) has something to return.
     for (name, rows) in &rows_by_recipe {
         if name != "syntax_diagnostics.sql" {
-            assert!(*rows > 0, "{name} matched nothing: {rows_by_recipe:?}");
+            ensure(
+                *rows > 0,
+                format!("{name} matched nothing: {rows_by_recipe:?}"),
+            )?;
         }
     }
     Ok(())

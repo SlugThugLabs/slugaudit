@@ -4,39 +4,45 @@
 //! invariants; wired from `connect_agents.rs` the same way.
 
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn registry_entries_cite_a_reference_and_a_docs_page() -> TestResult {
     for a in AGENTS {
-        assert!(
+        ensure(
             !a.reference.trim().is_empty(),
-            "{}: every entry must say what version its facts come from",
-            a.id
-        );
-        assert!(
+            format!(
+                "{}: every entry must say what version its facts come from",
+                a.id
+            ),
+        )?;
+        ensure(
             a.docs_url.starts_with("https://"),
-            "{}: docs link must be an https vendor page, got {:?}",
-            a.id,
-            a.docs_url
-        );
-        assert!(
+            format!(
+                "{}: docs link must be an https vendor page, got {:?}",
+                a.id, a.docs_url
+            ),
+        )?;
+        ensure(
             a.docs_url.len() > "https://".len() + 4,
-            "{}: docs link must point at a page, not a bare scheme",
-            a.id
-        );
+            format!(
+                "{}: docs link must point at a page, not a bare scheme",
+                a.id
+            ),
+        )?;
     }
     // A probed version and a documentation date must not be confused.
     for a in AGENTS
         .iter()
         .filter(|a| a.evidence != Evidence::VerifiedByProbe)
     {
-        assert!(
+        ensure(
             a.reference.contains("docs") || a.reference.contains("source"),
-            "{}: non-probed entries must say the information is documentary, got {:?}",
-            a.id,
-            a.reference
-        );
+            format!(
+                "{}: non-probed entries must say the information is documentary, got {:?}",
+                a.id, a.reference
+            ),
+        )?;
     }
     Ok(())
 }
@@ -54,31 +60,33 @@ fn refusal_text(agent: &crate::connect_agents::AgentDef) -> String {
 fn every_refusal_carries_a_remedy_and_the_source_it_came_from() -> TestResult {
     for a in AGENTS {
         let text = refusal_text(a);
-        assert!(
+        ensure(
             text.contains("Reference: ") && text.contains(a.reference),
-            "{}: refusal must cite its reference: {text}",
-            a.id
-        );
-        assert!(
+            format!("{}: refusal must cite its reference: {text}", a.id),
+        )?;
+        ensure(
             text.contains(a.docs_url),
-            "{}: refusal must link the vendor docs: {text}",
-            a.id
-        );
-        assert!(
+            format!("{}: refusal must link the vendor docs: {text}", a.id),
+        )?;
+        ensure(
             text.ends_with(a.docs_url) || text.contains(&format!("Docs: {}", a.docs_url)),
-            "{}: the docs link belongs on its own trailing line: {text}",
-            a.id
-        );
+            format!(
+                "{}: the docs link belongs on its own trailing line: {text}",
+                a.id
+            ),
+        )?;
     }
     // The clients we refuse outright must also carry the paste-ready snippet.
     for a in AGENTS.iter().filter(|a| a.manual_steps) {
         let text = refusal_text(a);
         let remedy = a.guidance(Path::new("/bin/slugaudit")).check("remedy")?;
-        assert!(
+        ensure(
             text.contains(&remedy),
-            "{}: refusal must carry the paste-ready remedy: {text}",
-            a.id
-        );
+            format!(
+                "{}: refusal must carry the paste-ready remedy: {text}",
+                a.id
+            ),
+        )?;
     }
     Ok(())
 }
@@ -87,20 +95,26 @@ fn every_refusal_carries_a_remedy_and_the_source_it_came_from() -> TestResult {
 fn success_and_failure_reports_always_name_their_source() -> TestResult {
     for a in AGENTS {
         let ok = crate::connect_guidance::success_lines(a, "Wrote mcpServers.slugaudit to /tmp/x");
-        assert_eq!(ok[0], "Wrote mcpServers.slugaudit to /tmp/x");
-        assert!(
+        ensure_eq(
+            ok.first()
+                .check("the success lines start with the wrote line")?,
+            &"Wrote mcpServers.slugaudit to /tmp/x",
+            "ok[0] == \"Wrote mcpServers.slugaudit to /tmp/x\"",
+        )?;
+        ensure(
             ok.iter()
                 .any(|l| l == &format!("Reference: {}", a.reference)),
-            "{}: a success must cite its reference: {ok:?}",
-            a.id
-        );
+            format!("{}: a success must cite its reference: {ok:?}", a.id),
+        )?;
         let documented = a.evidence != Evidence::VerifiedByProbe;
-        assert_eq!(
-            ok.iter().any(|l| l.starts_with("Docs: ")),
-            documented,
-            "{}: the docs link is printed exactly when we acted on documentation",
-            a.id
-        );
+        ensure_eq(
+            &ok.iter().any(|l| l.starts_with("Docs: ")),
+            &documented,
+            format!(
+                "{}: the docs link is printed exactly when we acted on documentation",
+                a.id
+            ),
+        )?;
 
         let failed = crate::connect_guidance::failure_lines(
             a,
@@ -109,23 +123,23 @@ fn success_and_failure_reports_always_name_their_source() -> TestResult {
             Some("claude mcp add slugaudit -- /bin/slugaudit"),
             "exit status 1",
         );
-        assert!(
+        ensure(
             failed
                 .iter()
                 .any(|l| l == &format!("Reference: {}", a.reference)),
-            "{}: a failure must cite its reference: {failed:?}",
-            a.id
-        );
-        assert!(
+            format!("{}: a failure must cite its reference: {failed:?}", a.id),
+        )?;
+        ensure(
             failed.iter().any(|l| l.starts_with("  Do it by hand: ")),
-            "{}: a failure must say how to finish by hand: {failed:?}",
-            a.id
-        );
-        assert!(
+            format!(
+                "{}: a failure must say how to finish by hand: {failed:?}",
+                a.id
+            ),
+        )?;
+        ensure(
             failed.iter().all(|l| !l.trim().is_empty()),
-            "{}: no line of a failure report may be empty",
-            a.id
-        );
+            format!("{}: no line of a failure report may be empty", a.id),
+        )?;
     }
     Ok(())
 }
@@ -139,13 +153,17 @@ fn a_malformed_client_config_is_an_error_that_keeps_the_json_cause() -> TestResu
     let error = crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
         .check_err("a malformed config cannot be judged")?;
 
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-    assert!(
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "error.kind() == std::io::ErrorKind::InvalidData",
+    )?;
+    ensure(
         error
             .get_ref()
             .is_some_and(<dyn std::error::Error + Send + Sync + 'static>::is::<serde_json::Error>),
-        "the JSON error is kept as the source: {error:?}"
-    );
+        format!("the JSON error is kept as the source: {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -160,9 +178,15 @@ fn a_well_formed_client_config_with_the_entry_is_registered_silently() -> TestRe
         crate::connect_exec::has_slugaudit(&config, &["mcpServers"])
     })?;
 
-    assert!(registered.check("probe config")?);
-    assert!(logs.contains("control-line-probe-has-slugaudit"));
-    assert!(!logs.contains("not valid JSON"), "{logs}");
+    ensure(
+        registered.check("probe config")?,
+        "registered.check(\"probe config\")?",
+    )?;
+    ensure(
+        logs.contains("control-line-probe-has-slugaudit"),
+        "logs.contains(\"control-line-probe-has-slugaudit\")",
+    )?;
+    ensure(!logs.contains("not valid JSON"), &logs)?;
     Ok(())
 }
 
@@ -197,12 +221,15 @@ fn non_json_client_configs_are_detected_without_a_format_warning() -> TestResult
             agent.config_has_slugaudit(home.path())
         })?;
 
-        assert!(
+        ensure(
             connected.check("probe config")?,
-            "{id}: the entry must be detected"
-        );
-        assert!(logs.contains("control-line-probe-non-json"), "{id}: {logs}");
-        assert!(!logs.contains("not valid JSON"), "{id}: {logs}");
+            format!("{id}: the entry must be detected"),
+        )?;
+        ensure(
+            logs.contains("control-line-probe-non-json"),
+            format!("{id}: {logs}"),
+        )?;
+        ensure(!logs.contains("not valid JSON"), format!("{id}: {logs}"))?;
     }
     Ok(())
 }
@@ -219,20 +246,28 @@ fn a_malformed_json_config_for_a_json_client_is_a_probe_failure_not_connected() 
         crate::store::test_capture::capture_warns(|| cursor.is_connected(Some(home.path())))?;
 
     let failure = result.check_err("a malformed config cannot be judged")?;
-    assert_eq!(failure.agent, "cursor");
-    assert_eq!(failure.check, "connected");
-    assert_eq!(failure.path, config);
-    assert_eq!(failure.source.kind(), std::io::ErrorKind::InvalidData);
-    assert!(
+    ensure_eq(&failure.agent, &"cursor", "failure.agent == \"cursor\"")?;
+    ensure_eq(
+        &failure.check,
+        &"connected",
+        "failure.check == \"connected\"",
+    )?;
+    ensure_eq(&failure.path, &config, "failure.path == config")?;
+    ensure_eq(
+        &failure.source.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "failure.source.kind() == std::io::ErrorKind::InvalidData",
+    )?;
+    ensure(
         failure
             .to_string()
             .starts_with("could not tell whether cursor is connected: "),
-        "{failure}"
-    );
-    assert!(
+        format!("{failure}"),
+    )?;
+    ensure(
         !logs.contains("could not"),
-        "the failure is returned, not logged: {logs}"
-    );
+        format!("the failure is returned, not logged: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -252,11 +287,11 @@ fn an_unreadable_goose_config_is_a_probe_failure_that_says_why() -> TestResult {
         .is_connected(Some(home.path()))
         .check_err("an oversized config cannot be judged")?;
 
-    assert_eq!(failure.path, config);
-    assert!(
+    ensure_eq(&failure.path, &config, "failure.path == config")?;
+    ensure(
         failure.source.to_string().contains("-byte cap"),
-        "{failure}"
-    );
+        format!("{failure}"),
+    )?;
     Ok(())
 }
 
@@ -273,11 +308,11 @@ fn disconnect_fails_when_the_client_config_cannot_be_stat_ed() -> TestResult {
     let Err(crate::cli::ConnectError::Io(error)) = result else {
         return Err(format!("expected Io, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(
-        error.kind(),
-        std::io::ErrorKind::NotADirectory,
-        "the stat failure's cause must reach the caller: {error}"
-    );
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::NotADirectory,
+        format!("the stat failure's cause must reach the caller: {error}"),
+    )?;
     Ok(())
 }
 
@@ -293,6 +328,6 @@ fn the_installed_binary_check_fails_on_a_stat_error_instead_of_using_the_current
         crate::connect::prefer_slugthug_binary(std::path::Path::new("/build/artifacts/slugaudit"))
     });
 
-    assert!(result.is_err(), "{result:?}");
+    ensure(result.is_err(), format!("{result:?}"))?;
     Ok(())
 }

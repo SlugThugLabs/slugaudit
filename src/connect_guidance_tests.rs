@@ -1,6 +1,6 @@
 use super::*;
 use crate::connect_agents::find_agent;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn a_rejected_add_points_at_the_client_output_instead_of_an_install() -> TestResult {
@@ -16,12 +16,12 @@ fn a_rejected_add_points_at_the_client_output_instead_of_an_install() -> TestRes
     );
     let text = lines.join("\n");
 
-    assert!(text.contains("rejected the registration"), "{text}");
-    assert!(text.contains("read the failure above"), "{text}");
-    assert!(
+    ensure(text.contains("rejected the registration"), &text)?;
+    ensure(text.contains("read the failure above"), &text)?;
+    ensure(
         !text.contains("install `pi`"),
-        "an installed CLI must not be described as missing: {text}"
-    );
+        format!("an installed CLI must not be described as missing: {text}"),
+    )?;
     Ok(())
 }
 
@@ -37,9 +37,9 @@ fn only_an_absent_cli_is_advised_to_install() -> TestResult {
     );
     let text = error.to_string();
 
-    assert!(text.contains("`pi` was not found on PATH"), "{text}");
-    assert!(text.contains("install `pi`"), "{text}");
-    assert!(!text.contains("rejected the registration"), "{text}");
+    ensure(text.contains("`pi` was not found on PATH"), &text)?;
+    ensure(text.contains("install `pi`"), &text)?;
+    ensure(!text.contains("rejected the registration"), &text)?;
     Ok(())
 }
 
@@ -57,16 +57,18 @@ fn the_fallback_note_reads_as_one_sentence_for_each_reason() -> TestResult {
         "rejected `mcp add` (`pi mcp add` exited with exit status: 1)",
     );
 
-    assert_eq!(
-        absent,
-        format!("`pi` was not found on PATH, so slugaudit wrote {written} instead.")
-    );
-    assert_eq!(
-        rejected,
-        format!(
+    ensure_eq(
+        &absent,
+        &format!("`pi` was not found on PATH, so slugaudit wrote {written} instead."),
+        "absent == format!(\"`pi` was not found on PATH, so slugaudit wrote {written} instead.\")",
+    )?;
+    ensure_eq(
+        &rejected,
+        &format!(
             "`pi` rejected `mcp add` (`pi mcp add` exited with exit status: 1), \
              so slugaudit wrote {written} instead."
-        )
-    );
+        ),
+        "rejected == format!( \"`pi` rejected `mcp add` (`pi mcp add` exited with exit status: 1), \\ so slugaudit wro...",
+    )?;
     Ok(())
 }

@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[tokio::test]
@@ -12,7 +12,7 @@ async fn run_blocking_propagates_a_successful_result() -> TestResult {
         None,
     )
     .await;
-    assert_eq!(result.check("ok")?, 42);
+    ensure_eq(&result.check("ok")?, &42, "result.check(\"ok\")? == 42")?;
     Ok(())
 }
 
@@ -27,7 +27,10 @@ async fn run_blocking_propagates_the_tools_own_typed_error() -> TestResult {
     )
     .await;
     let error = result.check_err("must propagate the tool's error, not swallow it")?;
-    assert!(error.message.contains("bad request"));
+    ensure(
+        error.message.contains("bad request"),
+        "error.message.contains(\"bad request\")",
+    )?;
     Ok(())
 }
 
@@ -44,17 +47,25 @@ async fn a_panic_inside_the_blocking_closure_surfaces_as_a_typed_error_not_a_cra
 
     let error =
         result.check_err("a panicking tool must fail the call, not take down the process")?;
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.starts_with("tool task failed: "),
-        "the call must carry the runner's wrapper, not a bare join error: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the call must carry the runner's wrapper, not a bare join error: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         error.message.contains("panicked with message \"boom\""),
-        "the join error's cause must be preserved: {}",
-        error.message
-    );
+        format!(
+            "the join error's cause must be preserved: {}",
+            error.message
+        ),
+    )?;
     Ok(())
 }
 
@@ -80,12 +91,20 @@ async fn a_closed_semaphore_fails_the_call_with_its_own_typed_error_before_runni
     .await;
 
     let error = result.check_err("a closed semaphore must fail the call")?;
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert_eq!(error.message, "semaphore closed");
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure_eq(
+        &error.message,
+        &"semaphore closed",
+        "error.message == \"semaphore closed\"",
+    )?;
+    ensure(
         !ran.load(Ordering::SeqCst),
-        "the work must not run without a permit"
-    );
+        "the work must not run without a permit",
+    )?;
     Ok(())
 }
 
@@ -127,11 +146,13 @@ async fn the_semaphore_bounds_concurrent_blocking_work() -> TestResult {
         handle.await.check("task joins")?.check("work succeeds")?;
     }
 
-    assert!(
+    ensure(
         peak.load(Ordering::SeqCst) <= PERMITS,
-        "observed {} concurrent blocking operations against a {}-permit semaphore",
-        peak.load(Ordering::SeqCst),
-        PERMITS
-    );
+        format!(
+            "observed {} concurrent blocking operations against a {}-permit semaphore",
+            peak.load(Ordering::SeqCst),
+            PERMITS
+        ),
+    )?;
     Ok(())
 }

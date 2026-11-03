@@ -121,7 +121,7 @@ pub(crate) enum BudgetBound {
 #[cfg(test)]
 mod deadline_tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
     #[test]
     fn a_zero_budget_is_exceeded_immediately() -> TestResult {
@@ -135,7 +135,10 @@ mod deadline_tests {
     #[test]
     fn a_generous_budget_is_not_exceeded_immediately() -> TestResult {
         let deadline = Deadline::after(Duration::from_mins(1));
-        assert!(deadline.exceeded().is_none());
+        ensure(
+            deadline.exceeded().is_none(),
+            "deadline.exceeded().is_none()",
+        )?;
         Ok(())
     }
 
@@ -143,7 +146,11 @@ mod deadline_tests {
     fn a_spent_budget_has_no_milliseconds_remaining() -> TestResult {
         let deadline = Deadline::after(Duration::ZERO);
 
-        assert_eq!(deadline.remaining_millis(), None);
+        ensure_eq(
+            &deadline.remaining_millis(),
+            &None,
+            "deadline.remaining_millis() == None",
+        )?;
         Ok(())
     }
 
@@ -151,7 +158,11 @@ mod deadline_tests {
     fn a_sub_millisecond_remainder_counts_as_spent() -> TestResult {
         let deadline = Deadline::after(Duration::from_micros(999));
 
-        assert_eq!(deadline.remaining_millis(), None);
+        ensure_eq(
+            &deadline.remaining_millis(),
+            &None,
+            "deadline.remaining_millis() == None",
+        )?;
         Ok(())
     }
 
@@ -161,10 +172,10 @@ mod deadline_tests {
 
         let remaining = deadline.remaining_millis().check("time is left")?;
 
-        assert!(
+        ensure(
             remaining.get() > 59_000 && remaining.get() <= 60_000,
-            "{remaining}"
-        );
+            format!("{remaining}"),
+        )?;
         Ok(())
     }
 
@@ -174,9 +185,9 @@ mod deadline_tests {
 
         let (unit, bound) = operation.capped(Duration::from_secs(5));
 
-        assert_eq!(bound, BudgetBound::Unit);
+        ensure_eq(&bound, &BudgetBound::Unit, "bound == BudgetBound::Unit")?;
         let remaining = unit.remaining_millis().check("time is left")?.get();
-        assert!((4_000..=5_000).contains(&remaining), "{remaining}");
+        ensure((4_000..=5_000).contains(&remaining), format!("{remaining}"))?;
         Ok(())
     }
 
@@ -186,9 +197,13 @@ mod deadline_tests {
 
         let (unit, bound) = operation.capped(Duration::from_mins(1));
 
-        assert_eq!(bound, BudgetBound::Operation);
+        ensure_eq(
+            &bound,
+            &BudgetBound::Operation,
+            "bound == BudgetBound::Operation",
+        )?;
         let remaining = unit.remaining_millis().check("time is left")?.get();
-        assert!(remaining <= 5_000, "{remaining}");
+        ensure(remaining <= 5_000, format!("{remaining}"))?;
         Ok(())
     }
 
@@ -198,7 +213,11 @@ mod deadline_tests {
 
         let (unit, bound) = operation.capped(Duration::from_secs(5));
 
-        assert_eq!(bound, BudgetBound::Operation);
+        ensure_eq(
+            &bound,
+            &BudgetBound::Operation,
+            "bound == BudgetBound::Operation",
+        )?;
         unit.exceeded().check("`unit.exceeded()` is present")?;
         Ok(())
     }
@@ -209,7 +228,7 @@ mod deadline_tests {
 
         let (unit, bound) = operation.capped(Duration::ZERO);
 
-        assert_eq!(bound, BudgetBound::Unit);
+        ensure_eq(&bound, &BudgetBound::Unit, "bound == BudgetBound::Unit")?;
         unit.exceeded().check("`unit.exceeded()` is present")?;
         Ok(())
     }

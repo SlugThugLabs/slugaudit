@@ -46,9 +46,11 @@ pub(crate) fn render_menu(style: &Style) -> String {
     if !style.enabled() {
         return MENU.to_owned();
     }
-    let mut out = String::with_capacity(MENU.len() + 96);
-    let line_count = MENU.lines().count();
-    for (index, line) in MENU.lines().enumerate() {
+    let mut out = String::with_capacity(MENU.len());
+    // Room for the escape codes the styled lines add.
+    out.reserve(96);
+    let mut lines = MENU.lines().peekable();
+    while let Some(line) = lines.next() {
         let trimmed = line.trim();
         if let Some(label) = section_label(trimmed) {
             // `label` is a substring of `line`, so both splits succeed; a line
@@ -78,7 +80,7 @@ pub(crate) fn render_menu(style: &Style) -> String {
             out.push_str(line);
         }
         // The last line is the prompt: the cursor stays on it, as in the plain menu.
-        if index + 1 < line_count {
+        if lines.peek().is_some() {
             out.push('\n');
         }
     }

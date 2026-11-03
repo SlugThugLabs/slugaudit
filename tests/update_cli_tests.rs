@@ -19,7 +19,7 @@
 //! (`linux/x86_64`). On any other platform `run_update` refuses before these
 //! branches; that refusal is the compile-gated test in `src/update_tests.rs`.
 
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -144,37 +144,37 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() -> TestRes
 
     let output = sandbox.run()?;
 
-    assert!(
+    ensure(
         output.status.success(),
-        "update failed: {}",
-        text(&output.stderr)
-    );
-    assert_eq!(
-        text(&output.stdout),
-        format!("slugaudit is already up to date (v{CURRENT_VERSION}).\n")
-    );
-    assert_eq!(
-        fs::read(&sandbox.target).check("read the installed binary")?,
-        OLD_BINARY.as_bytes(),
-        "the up-to-date branch must not replace the binary"
-    );
-    assert!(
+        format!("update failed: {}", text(&output.stderr)),
+    )?;
+    ensure_eq(
+        &text(&output.stdout),
+        &format!("slugaudit is already up to date (v{CURRENT_VERSION}).\n"),
+        "text(&output.stdout) == format!(\"slugaudit is already up to date (v{CURRENT_VERSION}).\\n\")",
+    )?;
+    ensure_eq(
+        &fs::read(&sandbox.target).check("read the installed binary")?,
+        &OLD_BINARY.as_bytes(),
+        "the up-to-date branch must not replace the binary",
+    )?;
+    ensure(
         !sandbox.previous().exists(),
-        "nothing may be retained when nothing is replaced"
-    );
+        "nothing may be retained when nothing is replaced",
+    )?;
     let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
-    assert!(
+    ensure(
         curl.contains(API_URL),
-        "the release metadata must be fetched: {curl}"
-    );
-    assert!(
+        format!("the release metadata must be fetched: {curl}"),
+    )?;
+    ensure(
         !curl.contains("/releases/download/"),
-        "the up-to-date branch must not download an asset: {curl}"
-    );
-    assert!(
+        format!("the up-to-date branch must not download an asset: {curl}"),
+    )?;
+    ensure(
         !sandbox.sha_log.exists(),
-        "the up-to-date branch must not verify a download"
-    );
+        "the up-to-date branch must not verify a download",
+    )?;
     Ok(())
 }
 
@@ -188,37 +188,40 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
 
     let output = sandbox.run()?;
 
-    assert!(
+    ensure(
         output.status.success(),
-        "update failed: {}",
-        text(&output.stderr)
-    );
-    assert_eq!(
-        text(&output.stdout),
-        format!(
+        format!("update failed: {}", text(&output.stderr)),
+    )?;
+    ensure_eq(
+        &text(&output.stdout),
+        &format!(
             "A newer release (tag v1.2.0) is available; fetching...\n\
              Updating slugaudit v{CURRENT_VERSION} -> 1.2.0 at {}...\n\
              Done. Restart any running AI sessions so they launch the new binary.\n",
             sandbox.target.display()
-        )
-    );
-    assert_eq!(
-        fs::read(&sandbox.target).check("read the updated binary")?,
-        NEW_BINARY.as_bytes(),
-        "the verified release asset must be placed at the target"
-    );
-    assert_eq!(
-        fs::read(sandbox.previous()).check("read the retained binary")?,
-        OLD_BINARY.as_bytes(),
-        "the displaced binary must be retained for a revert"
-    );
+        ),
+        "text(&output.stdout) == format!( \"A newer release (tag v1.2.0) is available; fetching...\\n\\ Updating slugau...",
+    )?;
+    ensure_eq(
+        &fs::read(&sandbox.target).check("read the updated binary")?,
+        &NEW_BINARY.as_bytes(),
+        "the verified release asset must be placed at the target",
+    )?;
+    ensure_eq(
+        &fs::read(sandbox.previous()).check("read the retained binary")?,
+        &OLD_BINARY.as_bytes(),
+        "the displaced binary must be retained for a revert",
+    )?;
     let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
     let asset_url =
         format!("https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0/{ASSET}");
     let sums_url = "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0/SHA256SUMS";
-    assert!(curl.contains(API_URL), "metadata fetch: {curl}");
-    assert!(curl.contains(&asset_url), "asset download: {curl}");
-    assert!(curl.contains(sums_url), "checksum download: {curl}");
+    ensure(curl.contains(API_URL), format!("metadata fetch: {curl}"))?;
+    ensure(curl.contains(&asset_url), format!("asset download: {curl}"))?;
+    ensure(
+        curl.contains(sums_url),
+        format!("checksum download: {curl}"),
+    )?;
     Ok(())
 }
 
@@ -235,45 +238,47 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() -> Test
 
     let output = sandbox.run()?;
 
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "a failed checksum must exit nonzero: {}",
-        text(&output.stderr)
-    );
-    assert_eq!(
-        text(&output.stdout),
+    ensure_eq(
+        &output.status.code(),
+        &Some(1),
         format!(
+            "a failed checksum must exit nonzero: {}",
+            text(&output.stderr)
+        ),
+    )?;
+    ensure_eq(
+        &text(&output.stdout),
+        &format!(
             "This build's version ({CURRENT_VERSION}) could not be compared with the \
              published v1.2.0-rc1; fetching it as though it were newer.\n\
              Updating slugaudit v{CURRENT_VERSION} -> 1.2.0-rc1 at {}...\n",
             sandbox.target.display()
         ),
-        "the incomparable message must not claim a comparison happened"
-    );
+        "the incomparable message must not claim a comparison happened",
+    )?;
     let stderr = text(&output.stderr);
-    assert!(
+    ensure(
         stderr.contains(&format!(
             "Error: checksum verification failed: checksum mismatch for {ASSET}: \
              expected {MATCHING_DIGEST}, got {MISMATCHING_DIGEST}"
         )),
-        "the checksum failure must be reported: {stderr}"
-    );
-    assert_eq!(
-        fs::read(&sandbox.target).check("read the installed binary")?,
-        OLD_BINARY.as_bytes(),
-        "a failed verification must leave the target untouched"
-    );
-    assert!(
+        format!("the checksum failure must be reported: {stderr}"),
+    )?;
+    ensure_eq(
+        &fs::read(&sandbox.target).check("read the installed binary")?,
+        &OLD_BINARY.as_bytes(),
+        "a failed verification must leave the target untouched",
+    )?;
+    ensure(
         !sandbox.previous().exists(),
-        "nothing may be retained when nothing is replaced"
-    );
+        "nothing may be retained when nothing is replaced",
+    )?;
     let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
-    assert!(
+    ensure(
         curl.contains(&format!(
             "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0-rc1/{ASSET}"
         )),
-        "the incomparable branch must still fetch the release: {curl}"
-    );
+        format!("the incomparable branch must still fetch the release: {curl}"),
+    )?;
     Ok(())
 }

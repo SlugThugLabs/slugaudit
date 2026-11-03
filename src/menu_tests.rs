@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::menu_render::{MENU, section_label};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::path::Path;
 
 #[test]
@@ -18,7 +18,11 @@ fn each_listed_number_selects_its_step_and_end_of_input_exits() -> TestResult {
     ];
 
     for (line, expected) in cases {
-        assert_eq!(menu_choice(line), Some(expected), "line {line:?}");
+        ensure_eq(
+            &menu_choice(line),
+            &Some(expected),
+            format!("line {line:?}"),
+        )?;
     }
     Ok(())
 }
@@ -36,23 +40,27 @@ fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() ->
     let choice = next_choice(&mut || Ok(answers.next().flatten()), &mut out)
         .check("reads and writes succeed")?;
 
-    assert_eq!(choice, MenuChoice::Exit);
+    ensure_eq(&choice, &MenuChoice::Exit, "choice == MenuChoice::Exit")?;
     let text = String::from_utf8(out).check("utf8 output")?;
-    assert_eq!(text.matches("Invalid choice;").count(), 2, "{text}");
-    assert_eq!(
-        text.matches("Choose an option [1-6]: ").count(),
-        2,
-        "{text}"
-    );
-    assert!(!text.contains("Install"), "no banner redraw: {text}");
-    assert_eq!(text, INVALID_CHOICE.repeat(2));
+    ensure_eq(&text.matches("Invalid choice;").count(), &2, &text)?;
+    ensure_eq(&text.matches("Choose an option [1-6]: ").count(), &2, &text)?;
+    ensure(
+        !text.contains("Install"),
+        format!("no banner redraw: {text}"),
+    )?;
+    ensure_eq(
+        &text,
+        &INVALID_CHOICE.repeat(2),
+        "text == INVALID_CHOICE.repeat(2)",
+    )?;
     // The banner is rendered only by `run_menu`'s outer loop, once per menu.
-    assert_eq!(
-        render_menu(&Style::plain())
+    ensure_eq(
+        &render_menu(&Style::plain())
             .matches("Choose an option")
             .count(),
-        1
-    );
+        &1,
+        "render_menu(&Style::plain()) .matches(\"Choose an option\") .count() == 1",
+    )?;
     Ok(())
 }
 
@@ -61,7 +69,7 @@ fn an_unlisted_or_non_numeric_menu_answer_is_invalid() -> TestResult {
     let answers = ["0", "7", "", "install", "-1"];
 
     for answer in answers {
-        assert_eq!(menu_choice(Some(answer)), None, "{answer:?}");
+        ensure_eq(&menu_choice(Some(answer)), &None, format!("{answer:?}"))?;
     }
     Ok(())
 }
@@ -69,25 +77,44 @@ fn an_unlisted_or_non_numeric_menu_answer_is_invalid() -> TestResult {
 #[test]
 fn plain_style_renders_the_byte_exact_plain_menu() -> TestResult {
     let plain = render_menu(&Style::plain());
-    assert_eq!(plain, MENU);
-    assert!(!plain.contains('\x1b'));
+    ensure_eq(&plain, &MENU, "plain == MENU")?;
+    ensure(!plain.contains('\x1b'), "!plain.contains('\\x1b')")?;
     Ok(())
 }
 
 #[test]
 fn colored_style_renders_ansi_escapes() -> TestResult {
     let colored = render_menu(&Style::colored());
-    assert!(colored.contains('\x1b'));
-    assert!(colored.contains("SlugAudit setup"));
+    ensure(colored.contains('\x1b'), "colored.contains('\\x1b')")?;
+    ensure(
+        colored.contains("SlugAudit setup"),
+        "colored.contains(\"SlugAudit setup\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn section_label_extracts_the_rule_label_and_nothing_else() -> TestResult {
-    assert_eq!(section_label("── Setup ──"), Some("Setup"));
-    assert_eq!(section_label("── Advanced ──"), Some("Advanced"));
-    assert_eq!(section_label("── Exit ────"), Some("Exit"));
-    assert_eq!(section_label("not a rule"), None);
+    ensure_eq(
+        &section_label("── Setup ──"),
+        &Some("Setup"),
+        "section_label(\"── Setup ──\") == Some(\"Setup\")",
+    )?;
+    ensure_eq(
+        &section_label("── Advanced ──"),
+        &Some("Advanced"),
+        "section_label(\"── Advanced ──\") == Some(\"Advanced\")",
+    )?;
+    ensure_eq(
+        &section_label("── Exit ────"),
+        &Some("Exit"),
+        "section_label(\"── Exit ────\") == Some(\"Exit\")",
+    )?;
+    ensure_eq(
+        &section_label("not a rule"),
+        &None,
+        "section_label(\"not a rule\") == None",
+    )?;
     Ok(())
 }
 
@@ -95,9 +122,9 @@ fn section_label_extracts_the_rule_label_and_nothing_else() -> TestResult {
 fn other_agent_instructions_name_the_server_and_command() -> TestResult {
     let text =
         other_agent_instructions(Path::new("/opt/slugaudit"), None).check("instructions render")?;
-    assert!(text.contains("  Command:      /opt/slugaudit\n"), "{text}");
-    assert!(text.contains("\"command\": \"/opt/slugaudit\""), "{text}");
-    assert!(text.contains("\"args\": []"), "{text}");
+    ensure(text.contains("  Command:      /opt/slugaudit\n"), &text)?;
+    ensure(text.contains("\"command\": \"/opt/slugaudit\""), &text)?;
+    ensure(text.contains("\"args\": []"), &text)?;
     Ok(())
 }
 
@@ -108,11 +135,11 @@ fn other_agent_instructions_print_the_resolved_install_location() -> TestResult 
         Some(Path::new("/custom/home/slugaudit")),
     )
     .check("instructions render")?;
-    assert!(
+    ensure(
         text.ends_with("Stable command path after install: /custom/home/slugaudit/slugaudit\n"),
-        "{text}"
-    );
-    assert!(!text.contains(".slugthug"), "{text}");
+        &text,
+    )?;
+    ensure(!text.contains(".slugthug"), &text)?;
     Ok(())
 }
 
@@ -122,12 +149,18 @@ fn other_agent_instructions_snippet_is_valid_json_for_awkward_paths() -> TestRes
     let text = other_agent_instructions(Path::new(binary), None).check("instructions render")?;
     let start = text.find('{').check("snippet start")?;
     let end = text.rfind('}').check("snippet end")?;
-    let value: serde_json::Value =
-        serde_json::from_str(&text[start..=end]).check("snippet parses")?;
-    assert_eq!(
-        value["mcpServers"]["slugaudit"]["command"].as_str(),
-        Some(binary)
-    );
+    let value: serde_json::Value = serde_json::from_str(
+        text.get(start..=end)
+            .check("snippet range is in the text")?,
+    )
+    .check("snippet parses")?;
+    ensure_eq(
+        &value
+            .pointer("/mcpServers/slugaudit/command")
+            .and_then(serde_json::Value::as_str),
+        &Some(binary),
+        "value[\"mcpServers\"][\"slugaudit\"][\"command\"].as_str() == Some(binary)",
+    )?;
     Ok(())
 }
 
@@ -137,18 +170,25 @@ fn other_agent_instructions_refuse_a_non_utf8_binary_path() -> TestResult {
     use std::os::unix::ffi::OsStrExt as _;
     let binary = Path::new(std::ffi::OsStr::from_bytes(b"/opt/\xff/slugaudit"));
     let result = other_agent_instructions(binary, None);
-    assert!(
+    ensure(
         matches!(result, Err(crate::cli::ConnectError::BinaryPath(_))),
-        "{result:?}"
-    );
+        format!("{result:?}"),
+    )?;
     Ok(())
 }
 
 #[test]
 fn colored_menu_ends_on_the_prompt_without_a_trailing_newline() -> TestResult {
     let colored = render_menu(&Style::colored());
-    assert!(!colored.ends_with('\n'), "{colored:?}");
-    assert!(colored.contains("Choose an option [1-6]: "));
-    assert_eq!(colored.lines().count(), MENU.lines().count());
+    ensure(!colored.ends_with('\n'), format!("{colored:?}"))?;
+    ensure(
+        colored.contains("Choose an option [1-6]: "),
+        "colored.contains(\"Choose an option [1-6]: \")",
+    )?;
+    ensure_eq(
+        &colored.lines().count(),
+        &MENU.lines().count(),
+        "colored.lines().count() == MENU.lines().count()",
+    )?;
     Ok(())
 }

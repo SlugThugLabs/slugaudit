@@ -5,7 +5,7 @@
 //! code — so a gate whose verdict never reaches its status cannot pass a
 //! broken tree, and a gate pointed at the wrong directory cannot pass at all.
 
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -57,12 +57,14 @@ fn every_gate_rejects_an_unknown_argument_as_a_usage_error() -> TestResult {
     for (name, binary) in ROOTED_GATES.iter().chain(UNROOTED_GATES) {
         let output = run(binary, &["--no-such-flag"], cwd.path())?;
 
-        assert_eq!(
-            output.status.code(),
-            Some(USAGE_EXIT),
-            "{name} must reject an unknown argument, stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        ensure_eq(
+            &output.status.code(),
+            &Some(USAGE_EXIT),
+            format!(
+                "{name} must reject an unknown argument, stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )?;
     }
     Ok(())
 }
@@ -75,11 +77,13 @@ fn every_rooted_gate_fails_closed_on_a_root_with_nothing_to_check() -> TestResul
     for (name, binary) in ROOTED_GATES {
         let output = run(binary, &["--root", root], empty.path())?;
 
-        assert!(
+        ensure(
             !output.status.success(),
-            "{name} must not pass an empty root, stdout: {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
+            format!(
+                "{name} must not pass an empty root, stdout: {}",
+                String::from_utf8_lossy(&output.stdout)
+            ),
+        )?;
     }
     Ok(())
 }
@@ -99,20 +103,24 @@ fn the_source_limit_gate_passes_a_small_file_and_fails_an_oversized_one() -> Tes
     write(project.path(), "src/big.rs", &body)?;
     let big = run(gate, &["--root", root], project.path())?;
 
-    assert!(
+    ensure(
         small.status.success(),
-        "a 1-line file must pass, stdout: {}",
-        String::from_utf8_lossy(&small.stdout)
-    );
-    assert_eq!(
-        big.status.code(),
-        Some(1),
-        "a file past 350 code lines must fail"
-    );
-    assert!(
+        format!(
+            "a 1-line file must pass, stdout: {}",
+            String::from_utf8_lossy(&small.stdout)
+        ),
+    )?;
+    ensure_eq(
+        &big.status.code(),
+        &Some(1),
+        "a file past 350 code lines must fail",
+    )?;
+    ensure(
         String::from_utf8_lossy(&big.stdout).contains("big.rs"),
-        "the failure must name the file, stdout: {}",
-        String::from_utf8_lossy(&big.stdout)
-    );
+        format!(
+            "the failure must name the file, stdout: {}",
+            String::from_utf8_lossy(&big.stdout)
+        ),
+    )?;
     Ok(())
 }

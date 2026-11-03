@@ -2,7 +2,7 @@
 
 //! Smoke tests for the `menu` command.
 
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::io::Read as _;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::mpsc;
@@ -69,7 +69,9 @@ fn run_menu(
         }
     });
 
-    let deadline = Instant::now() + MENU_TIMEOUT;
+    let deadline = Instant::now()
+        .checked_add(MENU_TIMEOUT)
+        .check("the menu deadline overflowed")?;
     let status = loop {
         if let Some(status) = child.try_wait().check("poll menu exit status")? {
             break status;
@@ -97,52 +99,52 @@ fn run_menu(
 #[test]
 fn menu_renders_and_exits_cleanly_on_the_quit_option() -> TestResult {
     let (status, stdout, stderr) = run_menu("6", None)?;
-    assert!(
+    ensure(
         status.success(),
-        "choosing 6 (Exit) must exit 0; stderr: {stderr}"
-    );
-    assert!(
+        format!("choosing 6 (Exit) must exit 0; stderr: {stderr}"),
+    )?;
+    ensure(
         stdout.contains("SlugAudit setup"),
-        "menu must render its title"
-    );
-    assert!(
+        "menu must render its title",
+    )?;
+    ensure(
         stdout.contains("Choose an option"),
-        "menu must show the prompt"
-    );
-    assert!(
+        "menu must show the prompt",
+    )?;
+    ensure(
         !stdout.contains('\u{1b}'),
-        "piped stdin means output must be plain"
-    );
+        "piped stdin means output must be plain",
+    )?;
     Ok(())
 }
 
 #[test]
 fn menu_rejects_invalid_input_then_continues_to_exit() -> TestResult {
     let (status, stdout, stderr) = run_menu("999\n6", None)?;
-    assert!(
+    ensure(
         status.success(),
-        "an invalid choice followed by quit must exit 0; stderr: {stderr}"
-    );
-    assert!(
+        format!("an invalid choice followed by quit must exit 0; stderr: {stderr}"),
+    )?;
+    ensure(
         stdout.contains("Invalid choice"),
-        "a bad choice must be surfaced"
-    );
-    assert!(stdout.contains("Choose an option"), "menu must re-prompt");
+        "a bad choice must be surfaced",
+    )?;
+    ensure(stdout.contains("Choose an option"), "menu must re-prompt")?;
     Ok(())
 }
 
 #[test]
 fn menu_dispatches_the_other_client_instructions_step() -> TestResult {
     let (status, stdout, _stderr) = run_menu("4\n6", None)?;
-    assert!(status.success(), "option 4 then quit must exit 0");
-    assert!(
+    ensure(status.success(), "option 4 then quit must exit 0")?;
+    ensure(
         stdout.contains("mcpServers"),
-        "option 4 must print config snippet"
-    );
-    assert!(
+        "option 4 must print config snippet",
+    )?;
+    ensure(
         stdout.contains("slugaudit"),
-        "snippet must name server 'slugaudit'"
-    );
+        "snippet must name server 'slugaudit'",
+    )?;
     Ok(())
 }
 
@@ -171,15 +173,15 @@ fn menu_reports_a_stdin_read_failure() -> TestResult {
         .check("spawn slugaudit menu")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "a propagated I/O error must exit 1, not panic: {stderr}"
-    );
-    assert!(
+    ensure_eq(
+        &output.status.code(),
+        &Some(1),
+        format!("a propagated I/O error must exit 1, not panic: {stderr}"),
+    )?;
+    ensure(
         stderr.contains("Is a directory") || stderr.contains("IsADirectory"),
-        "the I/O cause must be reported: {stderr}"
-    );
+        format!("the I/O cause must be reported: {stderr}"),
+    )?;
     Ok(())
 }
 
@@ -188,19 +190,21 @@ fn menu_runs_the_install_step_into_the_slugthug_home() -> TestResult {
     let temp = tempfile::tempdir().check("create temp dir")?;
     let home = temp.path().to_str().check("temp path is utf-8")?;
     let (status, stdout, stderr) = run_menu("1\n6", Some(("SLUGTHUG_HOME", home)))?;
-    assert!(
+    ensure(
         status.success(),
-        "option 1 (install) then quit must exit 0; stderr: {stderr}"
-    );
-    assert!(
+        format!("option 1 (install) then quit must exit 0; stderr: {stderr}"),
+    )?;
+    ensure(
         stdout.contains("Installed slugaudit to"),
-        "install step must confirm destination"
-    );
+        "install step must confirm destination",
+    )?;
     let installed = temp.path().join("slugaudit").join("slugaudit");
-    assert!(
+    ensure(
         installed.exists(),
-        "option 1 must have written binary at {}",
-        installed.display()
-    );
+        format!(
+            "option 1 must have written binary at {}",
+            installed.display()
+        ),
+    )?;
     Ok(())
 }

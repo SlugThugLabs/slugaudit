@@ -7,7 +7,7 @@ use crate::store::test_capture::capture_at_level;
 use crate::tools::QueryRequest;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use tracing::Level;
 
 // The run_blocking instrument is a log line, so it is pinned like one. These
@@ -40,16 +40,26 @@ fn current_thread_runtime() -> TestResult<tokio::runtime::Runtime> {
 /// the field is absent, so a regression names the line it lost the field on.
 fn logged_field(line: &str, key: &str) -> TestResult<String> {
     let needle = format!("{key}=");
-    let found = line
-        .find(&needle)
+    let (_, rest) = line
+        .split_once(&needle)
         .check(&format!("field `{key}` is in log line: {line}"))?;
-    let start = found + needle.len();
-    let rest = &line[start..];
-    let end = match rest.find([' ', '}', ',']) {
-        Some(end) => end,
-        None => rest.len(),
+    let value = rest
+        .split([' ', '}', ','])
+        .next()
+        .check("splitting a string always yields a first segment")?;
+    Ok(value.trim_matches('"').to_owned())
+}
+
+/// The two lines of a two-call test, or an error naming how many were captured.
+fn line_pair<'a>(lines: &[&'a str], what: &str) -> TestResult<(&'a str, &'a str)> {
+    let &[first, second] = lines else {
+        return Err(format!(
+            "expected exactly two {what} lines, got {}",
+            lines.len()
+        ))
+        .check("two lines were captured");
     };
-    Ok(rest[..end].trim_matches('"').to_owned())
+    Ok((first, second))
 }
 
 /// The captured lines belonging to one tool literal. Each capturing test
@@ -83,15 +93,17 @@ fn captured_text_carries_no_ansi_escapes() -> TestResult {
         || tracing::info!(tool = "probe_ansi_escapes", "tool call completed"),
         Level::INFO,
     )?;
-    assert!(
+    ensure(
         logs.contains("tool=\"probe_ansi_escapes\""),
-        "the field must be probeable as a plain substring, or every capture \
+        format!(
+            "the field must be probeable as a plain substring, or every capture \
          assertion in this file is blind:\n{logs:?}"
-    );
-    assert!(
+        ),
+    )?;
+    ensure(
         !logs.contains('\u{1b}'),
-        "an escape sequence anywhere defeats substring probes:\n{logs:?}"
-    );
+        format!("an escape sequence anywhere defeats substring probes:\n{logs:?}"),
+    )?;
     Ok(())
 }
 
@@ -127,38 +139,43 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
     calls?;
 
     let completions = completion_lines(&logs, TOOL);
-    assert_eq!(
-        completions.len(),
-        2,
-        "expected exactly one completion line per call:\n{logs}"
-    );
+    ensure_eq(
+        &completions.len(),
+        &2,
+        format!("expected exactly one completion line per call:\n{logs}"),
+    )?;
 
-    let session = logged_field(completions[0], "session_id")?;
+    let (first_completion, second_completion) = line_pair(&completions, "completion")?;
+    let session = logged_field(first_completion, "session_id")?;
     uuid::Uuid::parse_str(&session).check("the completion line carries a real session id")?;
-    assert_eq!(
-        session,
-        logged_field(completions[1], "session_id")?,
-        "both calls ran in one process, so they share one session id:\n{logs}"
-    );
+    ensure_eq(
+        &session,
+        &logged_field(second_completion, "session_id")?,
+        format!("both calls ran in one process, so they share one session id:\n{logs}"),
+    )?;
 
     for line in &completions {
-        assert!(
+        ensure(
             line.contains(&format!("tool=\"{TOOL}\"")),
-            "tool name missing: {line}"
-        );
-        assert!(
+            format!("tool name missing: {line}"),
+        )?;
+        ensure(
             line.contains("outcome=\"success\""),
-            "outcome missing: {line}"
-        );
-        assert!(!logged_field(line, "elapsed_ms")?.is_empty(), "{line}");
+            format!("outcome missing: {line}"),
+        )?;
+        ensure(
+            !logged_field(line, "elapsed_ms")?.is_empty(),
+            line.to_string(),
+        )?;
     }
 
-    let first = logged_field(completions[0], "call_id")?;
-    let second = logged_field(completions[1], "call_id")?;
-    assert_ne!(
-        first, second,
-        "two consecutive calls to one tool must not share a call id:\n{logs}"
-    );
+    let first = logged_field(first_completion, "call_id")?;
+    let second = logged_field(second_completion, "call_id")?;
+    ensure_ne(
+        &first,
+        &second,
+        format!("two consecutive calls to one tool must not share a call id:\n{logs}"),
+    )?;
 
     // The start line of each call carries the same correlation pair as its
     // completion line, in call order: that is what makes the sequence — not
@@ -167,9 +184,22 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
         .into_iter()
         .filter(|line| line.contains("tool call started"))
         .collect();
-    assert_eq!(started.len(), 2, "one start line per call:\n{logs}");
-    assert_eq!(logged_field(started[0], "call_id")?, first);
-    assert_eq!(logged_field(started[1], "call_id")?, second);
+    ensure_eq(
+        &started.len(),
+        &2,
+        format!("one start line per call:\n{logs}"),
+    )?;
+    let (first_start, second_start) = line_pair(&started, "start")?;
+    ensure_eq(
+        &logged_field(first_start, "call_id")?,
+        &first,
+        "the first start line carries the first completion's call id",
+    )?;
+    ensure_eq(
+        &logged_field(second_start, "call_id")?,
+        &second,
+        "the second start line carries the second completion's call id",
+    )?;
     Ok(())
 }
 
@@ -197,22 +227,28 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() -> TestResult {
         Level::INFO,
     )?;
     let error = result.check_err("the tool's error must propagate")?;
-    assert_eq!(
-        error.message, "bad request",
-        "the tool's own error, not a wrapper"
-    );
+    ensure_eq(
+        &error.message,
+        &"bad request",
+        "the tool's own error, not a wrapper",
+    )?;
 
     let completions = completion_lines(&logs, TOOL);
-    assert_eq!(
-        completions.len(),
-        1,
-        "a failure logs exactly one completion line:\n{logs}"
-    );
-    assert!(
-        completions[0].contains("outcome=\"error\""),
-        "{}",
-        completions[0]
-    );
+    ensure_eq(
+        &completions.len(),
+        &1,
+        format!("a failure logs exactly one completion line:\n{logs}"),
+    )?;
+    ensure(
+        completions
+            .first()
+            .check("the first completion line was captured")?
+            .contains("outcome=\"error\""),
+        completions
+            .first()
+            .check("the first completion line was captured")?
+            .to_string(),
+    )?;
     Ok(())
 }
 
@@ -257,15 +293,15 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() -> TestResult {
     )?;
     result.check("query succeeds")?;
 
-    assert_eq!(
-        completion_lines(&logs, TOOL).len(),
-        1,
-        "the completion line must be captured, or this test proves nothing:\n{logs}"
-    );
-    assert!(
+    ensure_eq(
+        &completion_lines(&logs, TOOL).len(),
+        &1,
+        format!("the completion line must be captured, or this test proves nothing:\n{logs}"),
+    )?;
+    ensure(
         !logs.contains(SENTINEL),
-        "the query text leaked into the tool-call log:\n{logs}"
-    );
+        format!("the query text leaked into the tool-call log:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -311,43 +347,51 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
     let error = result
         .err()
         .check("the unknown column must fail the query")?;
-    assert!(
+    ensure(
         error.message.contains(SECRET),
-        "control: the caller still receives the full message: {}",
-        error.message
-    );
+        format!(
+            "control: the caller still receives the full message: {}",
+            error.message
+        ),
+    )?;
 
     let completions = completion_lines(&logs, TOOL);
-    assert_eq!(
-        completions.len(),
-        1,
-        "the completion line must be captured, or this test proves nothing:\n{logs}"
-    );
-    let line = completions[0];
-    assert!(
+    ensure_eq(
+        &completions.len(),
+        &1,
+        format!("the completion line must be captured, or this test proves nothing:\n{logs}"),
+    )?;
+    let line = *completions
+        .first()
+        .check("the completion line was captured")?;
+    ensure(
         line.contains(&format!("tool=\"{TOOL}\"")),
-        "the operation must be identifiable: {line}"
-    );
-    assert_eq!(logged_field(line, "outcome")?, "error");
-    assert_eq!(
-        logged_field(line, "error_class")?,
-        "-32602",
-        "the static JSON-RPC class must be present: {line}"
-    );
-    assert_eq!(
-        logged_field(line, "code")?,
-        "sql_error",
-        "the SQL error class `sql_error` is logged: {line}"
-    );
-    assert!(
+        format!("the operation must be identifiable: {line}"),
+    )?;
+    ensure_eq(
+        &logged_field(line, "outcome")?,
+        &"error",
+        "logged_field(line, \"outcome\")? == \"error\"",
+    )?;
+    ensure_eq(
+        &logged_field(line, "error_class")?,
+        &"-32602",
+        format!("the static JSON-RPC class must be present: {line}"),
+    )?;
+    ensure_eq(
+        &logged_field(line, "code")?,
+        &"sql_error",
+        format!("the SQL error class `sql_error` is logged: {line}"),
+    )?;
+    ensure(
         line.contains(SECRET),
-        "the completion line must carry the error message as the cause: {line}"
-    );
-    assert_eq!(
-        logs.lines().filter(|line| line.contains(SECRET)).count(),
-        1,
-        "the message must be logged on one line, not duplicated:\n{logs}"
-    );
+        format!("the completion line must carry the error message as the cause: {line}"),
+    )?;
+    ensure_eq(
+        &logs.lines().filter(|line| line.contains(SECRET)).count(),
+        &1,
+        format!("the message must be logged on one line, not duplicated:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -389,29 +433,39 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
     let error = result
         .err()
         .check("an unknown cursor must fail the query")?;
-    assert_eq!(
-        error.data.as_ref().and_then(|data| data["code"].as_str()),
-        Some("unknown_cursor"),
-        "control: the caller still receives the typed error: {error:?}"
-    );
+    ensure_eq(
+        &error.data.as_ref().and_then(|data| data["code"].as_str()),
+        &Some("unknown_cursor"),
+        format!("control: the caller still receives the typed error: {error:?}"),
+    )?;
 
     let completions = completion_lines(&logs, TOOL);
-    assert_eq!(
-        completions.len(),
-        1,
-        "the completion line must be captured, or this test proves nothing:\n{logs}"
-    );
-    let line = completions[0];
-    assert_eq!(logged_field(line, "outcome")?, "error");
-    assert_eq!(
-        logged_field(line, "code")?,
-        "unknown_cursor",
-        "the machine-readable code must be logged: {line}"
-    );
-    assert_eq!(logged_field(line, "error_class")?, "-32602");
-    assert!(
+    ensure_eq(
+        &completions.len(),
+        &1,
+        format!("the completion line must be captured, or this test proves nothing:\n{logs}"),
+    )?;
+    let line = *completions
+        .first()
+        .check("the completion line was captured")?;
+    ensure_eq(
+        &logged_field(line, "outcome")?,
+        &"error",
+        "logged_field(line, \"outcome\")? == \"error\"",
+    )?;
+    ensure_eq(
+        &logged_field(line, "code")?,
+        &"unknown_cursor",
+        format!("the machine-readable code must be logged: {line}"),
+    )?;
+    ensure_eq(
+        &logged_field(line, "error_class")?,
+        &"-32602",
+        "logged_field(line, \"error_class\")? == \"-32602\"",
+    )?;
+    ensure(
         !logs.contains(CURSOR_TOKEN),
-        "the cursor token leaked into the tool-call log:\n{logs}"
-    );
+        format!("the cursor token leaked into the tool-call log:\n{logs}"),
+    )?;
     Ok(())
 }

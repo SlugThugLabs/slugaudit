@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// The sampling throttle must pass the first event, drop everything inside
 /// the window, and pass again once the window elapses — the exact
@@ -10,23 +10,23 @@ fn throttle_passes_first_event_and_coalesces_within_the_window() -> TestResult {
     let throttle = Throttle::new(std::time::Duration::from_millis(100));
     let t0 = std::time::Instant::now();
 
-    assert!(throttle.should_emit(t0), "first event always passes");
-    assert!(
+    ensure(throttle.should_emit(t0), "first event always passes")?;
+    ensure(
         !throttle.should_emit(t0 + std::time::Duration::from_millis(1)),
-        "event 1 ms in is inside the window and must be dropped"
-    );
-    assert!(
+        "event 1 ms in is inside the window and must be dropped",
+    )?;
+    ensure(
         !throttle.should_emit(t0 + std::time::Duration::from_millis(50)),
-        "event 50 ms in is still inside the window"
-    );
-    assert!(
+        "event 50 ms in is still inside the window",
+    )?;
+    ensure(
         throttle.should_emit(t0 + std::time::Duration::from_millis(101)),
-        "event after the window elapses passes and resets the clock"
-    );
-    assert!(
+        "event after the window elapses passes and resets the clock",
+    )?;
+    ensure(
         !throttle.should_emit(t0 + std::time::Duration::from_millis(102)),
-        "a fresh window starts at the passed event"
-    );
+        "a fresh window starts at the passed event",
+    )?;
     Ok(())
 }
 
@@ -84,8 +84,24 @@ async fn progress_sink_off_runtime_thread_delivers_notification() -> TestResult 
         .check("read notification")?
         .check("notification line")?;
     let value: serde_json::Value = serde_json::from_str(&line).check("json")?;
-    assert_eq!(value["method"], "notifications/progress");
-    assert_eq!(value["params"]["progressToken"], 7);
-    assert_eq!(value["params"]["message"], "sample: 1/2");
+    ensure_eq(
+        value.get("method").check("notification has a method")?,
+        &"notifications/progress",
+        "value[\"method\"] == \"notifications/progress\"",
+    )?;
+    ensure_eq(
+        value
+            .pointer("/params/progressToken")
+            .check("notification has a progress token")?,
+        &7,
+        "value[\"params\"][\"progressToken\"] == 7",
+    )?;
+    ensure_eq(
+        value
+            .pointer("/params/message")
+            .check("notification has a message")?,
+        &"sample: 1/2",
+        "value[\"params\"][\"message\"] == \"sample: 1/2\"",
+    )?;
     Ok(())
 }

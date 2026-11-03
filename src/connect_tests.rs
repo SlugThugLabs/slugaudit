@@ -13,7 +13,7 @@ use super::*;
 use crate::connect_agents::{ConfigShape, Strategy, find_agent};
 use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use crate::util::TEST_ENV_LOCK;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
 #[test]
@@ -24,21 +24,43 @@ fn json_agent_connect_and_disconnect_modifies_config() -> TestResult {
         let agent = find_agent("cursor").check("cursor agent")?;
         let binary = Path::new("/bin/slugaudit");
 
-        assert!(!agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            !agent.is_connected(Some(home)).check("probe config")?,
+            "!agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
 
         connect_agent(&agent, binary, Some(home)).check("connect cursor")?;
-        assert!(agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            agent.is_connected(Some(home)).check("probe config")?,
+            "agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
 
         let cfg_path = home.join(".cursor/mcp.json");
         let content = fs::read_to_string(&cfg_path).check("read config")?;
-        assert!(content.contains("slugaudit"));
-        assert!(content.contains("/bin/slugaudit"));
+        ensure(
+            content.contains("slugaudit"),
+            "content.contains(\"slugaudit\")",
+        )?;
+        ensure(
+            content.contains("/bin/slugaudit"),
+            "content.contains(\"/bin/slugaudit\")",
+        )?;
 
         let outcome = disconnect_agent(&agent, Some(home)).check("disconnect cursor")?;
-        assert_eq!(outcome, DisconnectOutcome::Disconnected);
-        assert!(!agent.is_connected(Some(home)).check("probe config")?);
+        ensure_eq(
+            &outcome,
+            &DisconnectOutcome::Disconnected,
+            "outcome == DisconnectOutcome::Disconnected",
+        )?;
+        ensure(
+            !agent.is_connected(Some(home)).check("probe config")?,
+            "!agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
         let after = fs::read_to_string(&cfg_path).check("read config after")?;
-        assert!(!after.contains("/bin/slugaudit"));
+        ensure(
+            !after.contains("/bin/slugaudit"),
+            "!after.contains(\"/bin/slugaudit\")",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -52,18 +74,33 @@ fn zed_agent_connect_and_disconnect_modifies_settings() -> TestResult {
         let agent = find_agent("zed").check("zed agent")?;
         let binary = Path::new("/bin/slugaudit");
 
-        assert!(!agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            !agent.is_connected(Some(home)).check("probe config")?,
+            "!agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
 
         connect_agent(&agent, binary, Some(home)).check("connect zed")?;
-        assert!(agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            agent.is_connected(Some(home)).check("probe config")?,
+            "agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
 
         let cfg_path = home.join(".config/zed/settings.json");
         let content = fs::read_to_string(&cfg_path).check("read zed settings")?;
-        assert!(content.contains("context_servers"));
-        assert!(content.contains("slugaudit"));
+        ensure(
+            content.contains("context_servers"),
+            "content.contains(\"context_servers\")",
+        )?;
+        ensure(
+            content.contains("slugaudit"),
+            "content.contains(\"slugaudit\")",
+        )?;
 
         disconnect_agent(&agent, Some(home)).check("disconnect zed")?;
-        assert!(!agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            !agent.is_connected(Some(home)).check("probe config")?,
+            "!agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -76,7 +113,10 @@ fn detected_agents_filters_by_installed_presence() -> TestResult {
         let home = temp.path();
         fs::create_dir_all(home.join(".cursor")).check("mkdir .cursor")?;
         let detected = crate::connect_agents::detected_agents(Some(home));
-        assert!(detected.agents.iter().any(|a| a.id == "cursor"));
+        ensure(
+            detected.agents.iter().any(|a| a.id == "cursor"),
+            "detected.agents.iter().any(|a| a.id == \"cursor\")",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -94,12 +134,26 @@ fn a_config_path_that_cannot_be_examined_is_returned_not_read_as_absent() -> Tes
             .is_installed(Some(home))
             .check_err("a path under a file cannot be examined")?;
 
-        assert_eq!(failure.agent, "cursor");
-        assert_eq!(failure.path, home.join(".cursor/mcp.json"));
-        assert_eq!(failure.source.kind(), std::io::ErrorKind::NotADirectory);
+        ensure_eq(&failure.agent, &"cursor", "failure.agent == \"cursor\"")?;
+        ensure_eq(
+            &failure.path,
+            &home.join(".cursor/mcp.json"),
+            "failure.path == home.join(\".cursor/mcp.json\")",
+        )?;
+        ensure_eq(
+            &failure.source.kind(),
+            &std::io::ErrorKind::NotADirectory,
+            "failure.source.kind() == std::io::ErrorKind::NotADirectory",
+        )?;
         let detection = crate::connect_agents::detected_agents(Some(home));
-        assert!(detection.failures.iter().any(|f| f.agent == "cursor"));
-        assert!(!detection.agents.iter().any(|a| a.id == "cursor"));
+        ensure(
+            detection.failures.iter().any(|f| f.agent == "cursor"),
+            "detection.failures.iter().any(|f| f.agent == \"cursor\")",
+        )?;
+        ensure(
+            !detection.agents.iter().any(|a| a.id == "cursor"),
+            "!detection.agents.iter().any(|a| a.id == \"cursor\")",
+        )?;
         Ok(())
     })
 }
@@ -174,11 +228,11 @@ fn connect_surfaces_an_add_failure_from_the_agent_cli() -> TestResult {
             let result = run_connect(Some("claude"));
             match &result {
                 Err(error @ ConnectError::AddFailedNoOutput { cli, .. }) => {
-                    assert_eq!(cli, "claude");
-                    assert!(
+                    ensure_eq(&cli, &"claude", "cli == \"claude\"")?;
+                    ensure(
                         error.to_string().contains("printed no output"),
-                        "a silent client must not be described as having output: {error}"
-                    );
+                        format!("a silent client must not be described as having output: {error}"),
+                    )?;
                 }
                 other => {
                     return Err(format!("expected AddFailedNoOutput, got {other:?}"))
@@ -193,126 +247,37 @@ fn connect_surfaces_an_add_failure_from_the_agent_cli() -> TestResult {
 }
 
 #[test]
-fn json_agent_refuses_to_overwrite_invalid_or_commented_json() -> TestResult {
-    let temp = tempfile::tempdir().check("tempdir")?;
-    let home = temp.path();
-    let agent = find_agent("cursor").check("cursor agent")?;
-    let binary = Path::new("/bin/slugaudit");
-
-    let cfg_path = home.join(".cursor/mcp.json");
-    fs::create_dir_all(cfg_path.parent().check("parent")?).check("mkdir")?;
-    let original = "{\n  // User comment\n  \"mcpServers\": {}\n}";
-    fs::write(&cfg_path, original).check("write original")?;
-
-    let result = connect_agent(&agent, binary, Some(home));
-    assert!(
-        matches!(result, Err(ConnectError::InvalidConfig { .. })),
-        "must error on invalid json, got {result:?}"
-    );
-    let after = fs::read_to_string(&cfg_path).check("read after")?;
-    assert_eq!(after, original, "original file must remain untouched");
-    Ok(())
-}
-
-#[test]
-fn connect_refuses_entries_it_cannot_write_safely() -> TestResult {
-    // goose: YAML config with no machine-writable shape.
-    // crush: `mcp add` is a crushrc bash builtin, so no shape is established.
-    let cases: &[(&str, Option<&str>)] = &[
-        ("goose", Some(".config/goose/config.yaml")),
-        ("crush", Some(".config/crush/crushrc")),
-    ];
-    for (id, file) in cases {
-        let temp = tempfile::tempdir().check("tempdir")?;
-        let home = temp.path();
-        let agent = find_agent(id).check("agent")?;
-        let err = connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home))
-            .check_err("connect must refuse")?;
-        match err {
-            ConnectError::UnsupportedAgent {
-                agent: name,
-                reason,
-            } => {
-                assert_eq!(name, agent.display_name);
-                assert!(
-                    reason.contains("no automated write is possible"),
-                    "{id} must say the write cannot proceed: {reason}"
-                );
-                assert!(
-                    reason.contains(&agent.remedy.replace("{binary}", "/bin/slugaudit")),
-                    "{id} must print its remedy: {reason}"
-                );
-            }
-            other => {
-                return Err(format!(
-                    "{id} must refuse automated registration, got {other:?}"
-                ))
-                .check("unexpected outcome");
-            }
-        }
-        if let Some(file) = file {
-            assert!(!home.join(file).exists(), "{id} must not write {file}");
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn goose_refusal_prints_the_paste_ready_yaml_block() -> TestResult {
-    let temp = tempfile::tempdir().check("tempdir")?;
-    let home = temp.path();
-    let goose = find_agent("goose").check("goose")?;
-
-    // The YAML shape has no machine-writable section, so the generic JSON
-    // merge can never be reached for goose.
-    assert!(
-        ConfigShape::GooseExtensions.write_section().is_none(),
-        "the YAML shape must not be machine-written"
-    );
-    assert_eq!(
-        ConfigShape::GooseExtensions.sections(),
-        ["extensions"],
-        "detection still reads the extensions key"
-    );
-
-    let err = connect_agent(&goose, Path::new("/bin/slugaudit"), Some(home))
-        .check_err("connect must refuse")?;
-    let ConnectError::UnsupportedAgent { reason, .. } = err else {
-        return Err("expected an UnsupportedAgent refusal".to_owned()).check("unexpected outcome");
-    };
-    assert!(
-        reason.contains(".config/goose/config.yaml"),
-        "the refusal must name the target file: {reason}"
-    );
-    assert!(
-        reason.contains(
-            "extensions:\n  slugaudit:\n    type: stdio\n    cmd: /bin/slugaudit\n    args: []"
-        ),
-        "the refusal must carry the paste-ready block: {reason}"
-    );
-    assert!(
-        !home.join(".config/goose/config.yaml").exists(),
-        "goose's write path must be unreachable"
-    );
-    Ok(())
-}
-
-#[test]
 fn connect_writes_the_config_file_for_interactive_only_clients() -> TestResult {
     with_no_cli_on_path(|| -> TestResult {
         let temp = tempfile::tempdir().check("tempdir")?;
         let home = temp.path();
         let agent = find_agent("omp").check("omp")?;
-        assert_eq!(agent.strategy, Strategy::CliInteractiveOnly);
+        ensure_eq(
+            &agent.strategy,
+            &Strategy::CliInteractiveOnly,
+            "agent.strategy == Strategy::CliInteractiveOnly",
+        )?;
 
         connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home)).check("connect omp")?;
         let content = fs::read_to_string(home.join(".omp/agent/mcp.json")).check("omp config")?;
-        assert!(content.contains("slugaudit"));
-        assert!(content.contains("/bin/slugaudit"));
-        assert!(agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            content.contains("slugaudit"),
+            "content.contains(\"slugaudit\")",
+        )?;
+        ensure(
+            content.contains("/bin/slugaudit"),
+            "content.contains(\"/bin/slugaudit\")",
+        )?;
+        ensure(
+            agent.is_connected(Some(home)).check("probe config")?,
+            "agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
 
         disconnect_agent(&agent, Some(home)).check("disconnect omp")?;
-        assert!(!agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            !agent.is_connected(Some(home)).check("probe config")?,
+            "!agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -323,12 +288,18 @@ fn config_file_clients_write_their_documented_filename_without_a_cli() -> TestRe
     let temp = tempfile::tempdir().check("tempdir")?;
     let home = temp.path();
     let warp = find_agent("warp").check("warp")?;
-    assert_eq!(warp.cli, Some("oz"), "oz is detection-only for warp");
+    ensure_eq(&warp.cli, &Some("oz"), "oz is detection-only for warp")?;
 
     connect_agent(&warp, Path::new("/bin/slugaudit"), Some(home)).check("connect warp")?;
     let content = fs::read_to_string(home.join(".warp/.mcp.json")).check("warp config")?;
-    assert!(content.contains("mcpServers"));
-    assert!(content.contains("/bin/slugaudit"));
+    ensure(
+        content.contains("mcpServers"),
+        "content.contains(\"mcpServers\")",
+    )?;
+    ensure(
+        content.contains("/bin/slugaudit"),
+        "content.contains(\"/bin/slugaudit\")",
+    )?;
     Ok(())
 }
 
@@ -343,10 +314,10 @@ fn connect_uses_the_cli_when_a_scriptable_executable_exists() -> TestResult {
             .check("connect pi via cli")?;
         Ok(())
     })?;
-    assert!(
+    ensure(
         !home.join(".pi/agent/mcp.json").exists(),
-        "a present, succeeding CLI must win over the file fallback"
-    );
+        "a present, succeeding CLI must win over the file fallback",
+    )?;
     Ok(())
 }
 
@@ -405,7 +376,11 @@ fn connect_emits_the_transport_grammar_each_client_requires() -> TestResult {
             Ok(())
         })?;
         let recorded = fs::read_to_string(&log).check("args log")?;
-        assert_eq!(&recorded, expected, "{id} emitted the wrong argv");
+        ensure_eq(
+            &&recorded,
+            &expected,
+            format!("{id} emitted the wrong argv"),
+        )?;
     }
     Ok(())
 }
@@ -420,12 +395,15 @@ fn connect_falls_back_to_the_config_file_when_the_executable_is_absent_or_fails(
     with_no_cli_on_path(|| -> TestResult {
         connect_agent(&agent, Path::new("/bin/slugaudit"), Some(home))
             .check("connect pi without cli")?;
-        assert!(
+        ensure(
             config.is_file(),
-            "the documented file path must be used when the CLI is absent"
-        );
+            "the documented file path must be used when the CLI is absent",
+        )?;
         disconnect_agent(&agent, Some(home)).check("disconnect pi")?;
-        assert!(!agent.is_connected(Some(home)).check("probe config")?);
+        ensure(
+            !agent.is_connected(Some(home)).check("probe config")?,
+            "!agent.is_connected(Some(home)).check(\"probe config\")?",
+        )?;
         Ok(())
     })?;
 
@@ -439,55 +417,10 @@ fn connect_falls_back_to_the_config_file_when_the_executable_is_absent_or_fails(
             .check("fall back after a rejected add")?;
         Ok(())
     })?;
-    assert!(
+    ensure(
         config.is_file(),
-        "a CLI that rejects `mcp add` must still fall back to the config file"
-    );
-    Ok(())
-}
-
-/// A config whose top level is not an object has nowhere to hold an MCP
-/// section; the refusal names the file, not an unrelated missing home.
-#[test]
-fn a_json_config_whose_top_level_is_not_an_object_is_refused_by_path() -> TestResult {
-    let temp = tempfile::tempdir().check("tempdir")?;
-    let agent = find_agent("cursor").check("cursor agent")?;
-    let cfg_path = temp.path().join(".cursor/mcp.json");
-    fs::create_dir_all(cfg_path.parent().check("parent")?).check("mkdir")?;
-    fs::write(&cfg_path, "[]").check("write array config")?;
-
-    let result = connect_agent(&agent, Path::new("/bin/slugaudit"), Some(temp.path()));
-
-    let Err(ConnectError::RootNotAnObject { path }) = result else {
-        return Err(format!("expected RootNotAnObject, got {result:?}"))
-            .check("unexpected outcome");
-    };
-    assert_eq!(path, cfg_path, "the refusal names the config file");
-    assert_eq!(
-        fs::read_to_string(&cfg_path).check("read")?,
-        "[]",
-        "file untouched"
-    );
-    Ok(())
-}
-
-/// A section key holding a non-object is refused rather than rewritten
-/// unchanged under a "Wrote" message.
-#[test]
-fn a_json_config_whose_server_section_is_not_an_object_is_refused_by_section() -> TestResult {
-    let temp = tempfile::tempdir().check("tempdir")?;
-    let agent = find_agent("cursor").check("cursor agent")?;
-    let cfg_path = temp.path().join(".cursor/mcp.json");
-    fs::create_dir_all(cfg_path.parent().check("parent")?).check("mkdir")?;
-    fs::write(&cfg_path, r#"{"mcpServers": []}"#).check("write config")?;
-
-    let result = connect_agent(&agent, Path::new("/bin/slugaudit"), Some(temp.path()));
-
-    let Err(ConnectError::SectionNotAnObject { section }) = result else {
-        return Err(format!("expected SectionNotAnObject, got {result:?}"))
-            .check("unexpected outcome");
-    };
-    assert_eq!(section, "mcpServers");
+        "a CLI that rejects `mcp add` must still fall back to the config file",
+    )?;
     Ok(())
 }
 
@@ -497,10 +430,10 @@ fn an_unknown_agent_name_is_rejected_by_connect_and_disconnect() -> TestResult {
     let disconnect = run_disconnect(Some("no-such-agent"));
 
     for result in [connect, disconnect] {
-        assert!(
+        ensure(
             matches!(&result, Err(ConnectError::UnknownAgent(name)) if name == "no-such-agent"),
-            "expected UnknownAgent, got {result:?}"
-        );
+            format!("expected UnknownAgent, got {result:?}"),
+        )?;
     }
     Ok(())
 }
@@ -517,7 +450,7 @@ fn disconnect_surfaces_a_remove_failure_from_the_agent_cli() -> TestResult {
     let Err(ConnectError::RemoveFailed { cli, .. }) = result else {
         return Err(format!("expected RemoveFailed, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(cli, "claude");
+    ensure_eq(&cli, &"claude", "cli == \"claude\"")?;
     Ok(())
 }
 
@@ -530,7 +463,7 @@ fn an_agent_cli_that_cannot_be_executed_is_reported_as_a_command_failure() -> Te
     let Err(ConnectError::AgentCommand { cli, .. }) = result else {
         return Err(format!("expected AgentCommand, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(cli, "claude");
+    ensure_eq(&cli, &"claude", "cli == \"claude\"")?;
     Ok(())
 }
 
@@ -539,3 +472,6 @@ mod binary_tests;
 
 #[path = "connect_prompt_tests.rs"]
 mod prompt_tests;
+
+#[path = "connect_refusal_tests.rs"]
+mod refusal_tests;

@@ -263,7 +263,7 @@ pub fn store_error(error: &crate::store::ResultStoreError) -> rmcp::ErrorData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
     use std::collections::BTreeSet;
 
     /// The wire strings are what a caller branches on, so they must be
@@ -274,14 +274,17 @@ mod tests {
         let mut seen = BTreeSet::new();
         for code in ErrorCode::ALL {
             let text = code.as_str();
-            assert!(!text.is_empty(), "{code:?} has an empty wire string");
-            assert!(
+            ensure(
+                !text.is_empty(),
+                format!("{code:?} has an empty wire string"),
+            )?;
+            ensure(
                 text.chars()
                     .all(|character| character.is_ascii_lowercase() || character == '_'),
-                "{text} must be lowercase snake_case"
-            );
-            assert!(seen.insert(text), "{text} is not unique");
-            assert!(!code.remedy().is_empty(), "{text} has no remedy");
+                format!("{text} must be lowercase snake_case"),
+            )?;
+            ensure(seen.insert(text), format!("{text} is not unique"))?;
+            ensure(!code.remedy().is_empty(), format!("{text} has no remedy"))?;
         }
         Ok(())
     }
@@ -297,11 +300,11 @@ mod tests {
                 .check("fixed profiles need no memory detection")?
                 .max_sync_wall_clock
                 .as_secs();
-            assert!(
+            ensure(
                 remedy.contains(&format!("{name} profile ({secs} s)"))
                     || remedy.contains(&format!("={name} ({secs} s)")),
-                "the remedy must quote {secs} s for {name}: {remedy}"
-            );
+                format!("the remedy must quote {secs} s for {name}: {remedy}"),
+            )?;
         }
         Ok(())
     }
@@ -312,20 +315,27 @@ mod tests {
     #[test]
     fn the_budget_payload_names_the_knob_and_only_the_budget_gets_it() -> TestResult {
         let payload = budget_payload(Some(120_000)).check("a spent budget carries a payload")?;
-        assert_eq!(payload["code"], "sync_budget_exhausted");
-        let remedy = payload["remedy"].as_str().check("remedy is a string")?;
-        assert!(
+        ensure_eq(
+            payload.get("code").check("payload has a code")?,
+            &"sync_budget_exhausted",
+            "payload[\"code\"] == \"sync_budget_exhausted\"",
+        )?;
+        let remedy = payload
+            .get("remedy")
+            .and_then(serde_json::Value::as_str)
+            .check("remedy is a string")?;
+        ensure(
             remedy.contains("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS"),
-            "the remedy must name the knob: {remedy}"
-        );
-        assert!(
+            format!("the remedy must name the knob: {remedy}"),
+        )?;
+        ensure(
             remedy.contains("audit") && remedy.contains("lean"),
-            "the remedy must name the profiles: {remedy}"
-        );
-        assert!(
+            format!("the remedy must name the profiles: {remedy}"),
+        )?;
+        ensure(
             budget_payload(None).is_none(),
-            "a non-budget failure must not carry the budget code"
-        );
+            "a non-budget failure must not carry the budget code",
+        )?;
         Ok(())
     }
 
@@ -356,19 +366,27 @@ mod tests {
             let mapped = store_error(&error);
 
             let expected = code.map(|code| json!({"code": code.as_str(), "remedy": code.remedy()}));
-            assert_eq!(mapped.data, expected, "{error:?}");
-            assert_eq!(
-                mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR,
-                internal,
-                "{error:?}"
-            );
-            assert_eq!(mapped.message, error.to_string());
-            assert!(!mapped.message.contains("secret"), "{}", mapped.message);
+            ensure_eq(&mapped.data, &expected, format!("{error:?}"))?;
+            ensure_eq(
+                &(mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR),
+                &internal,
+                format!("{error:?}"),
+            )?;
+            ensure_eq(
+                &mapped.message,
+                &error.to_string(),
+                "mapped.message == error.to_string()",
+            )?;
+            ensure(
+                !mapped.message.contains("secret"),
+                format!("{}", mapped.message),
+            )?;
         }
-        assert_eq!(
-            store_error(&crate::store::ResultStoreError::Full { active_count: 3 }).message,
-            "the result store is full: 3 active results hold the space"
-        );
+        ensure_eq(
+            &store_error(&crate::store::ResultStoreError::Full { active_count: 3 }).message,
+            &"the result store is full: 3 active results hold the space",
+            "store_error(&crate::store::ResultStoreError::Full { active_count: 3 }).message == \"the result store is full...",
+        )?;
         Ok(())
     }
 }

@@ -7,7 +7,7 @@ use crate::util::{
     CappedReadError, Style, at_least_timestamp, exceeds_input_bytes, hex_encode, lock, now_unix,
     read_file_capped_bytes,
 };
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -18,7 +18,7 @@ fn capped_byte_read_returns_a_file_exactly_at_the_cap() -> TestResult {
 
     let bytes = read_file_capped_bytes(&path, 1024).check("at-cap file reads")?;
 
-    assert_eq!(bytes.len(), 1024);
+    ensure_eq(&bytes.len(), &1024, "bytes.len() == 1024")?;
     Ok(())
 }
 
@@ -32,8 +32,8 @@ fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() -> Test
 
     match error {
         CappedReadError::TooLarge { limit, observed } => {
-            assert_eq!(limit, 1024);
-            assert_eq!(observed, 1025);
+            ensure_eq(&limit, &1024, "limit == 1024")?;
+            ensure_eq(&observed, &1025, "observed == 1025")?;
         }
         other @ CappedReadError::Io(_) => {
             return Err(format!("expected TooLarge, got {other:?}")).check("unexpected outcome");
@@ -51,7 +51,11 @@ fn capped_byte_read_keeps_not_found() -> TestResult {
 
     match error {
         CappedReadError::Io(error) => {
-            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            ensure_eq(
+                &error.kind(),
+                &std::io::ErrorKind::NotFound,
+                "error.kind() == std::io::ErrorKind::NotFound",
+            )?;
         }
         other @ CappedReadError::TooLarge { .. } => {
             return Err(format!("expected Io, got {other:?}")).check("unexpected outcome");
@@ -62,16 +66,17 @@ fn capped_byte_read_keeps_not_found() -> TestResult {
 
 /// Poisons `mutex` the way a bug would: a holder unwinds inside its critical
 /// section. `resume_unwind` starts the unwind without the `panic!` macro.
-fn poison<T>(mutex: &Mutex<T>) {
+fn poison<T>(mutex: &Mutex<T>) -> TestResult {
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
         let _guard = mutex.lock().check("lock the fresh mutex")?;
         std::panic::resume_unwind(Box::new("simulated panic inside the critical section"));
     }));
-    assert!(unwound.is_err(), "the holder must have unwound");
-    assert!(
+    ensure(unwound.is_err(), "the holder must have unwound")?;
+    ensure(
         mutex.is_poisoned(),
-        "the unwind must have poisoned the mutex"
-    );
+        "the unwind must have poisoned the mutex",
+    )?;
+    Ok(())
 }
 
 /// A panic inside a critical section poisons the mutex. The next caller gets
@@ -79,20 +84,22 @@ fn poison<T>(mutex: &Mutex<T>) {
 #[test]
 fn lock_on_a_poisoned_mutex_is_an_error_naming_the_mutex() -> TestResult {
     let mutex: Mutex<String> = Mutex::new("uncorrupted".to_owned());
-    poison(&mutex);
+    poison(&mutex)?;
 
     let error = lock(&mutex, "util_tests_string").check_err("a poisoned mutex is an error")?;
 
-    assert_eq!(
-        error,
-        crate::util::LockPoisoned {
-            mutex: "util_tests_string"
-        }
-    );
-    assert_eq!(
-        error.to_string(),
-        "mutex util_tests_string was poisoned by a panic in an earlier holder"
-    );
+    ensure_eq(
+        &error,
+        &crate::util::LockPoisoned {
+            mutex: "util_tests_string",
+        },
+        "error == crate::util::LockPoisoned { mutex: \"util_tests_string\" }",
+    )?;
+    ensure_eq(
+        &error.to_string(),
+        &"mutex util_tests_string was poisoned by a panic in an earlier holder",
+        "error.to_string() == \"mutex util_tests_string was poisoned by a panic in an earlier holder\"",
+    )?;
     Ok(())
 }
 
@@ -102,7 +109,7 @@ fn lock_on_a_poisoned_mutex_is_an_error_naming_the_mutex() -> TestResult {
 fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> TestResult {
     let healthy: Mutex<u8> = Mutex::new(1);
     let poisoned: Mutex<u8> = Mutex::new(2);
-    poison(&poisoned);
+    poison(&poisoned)?;
 
     let (outcome, logs) = crate::store::test_capture::capture_at_level(
         || {
@@ -113,13 +120,21 @@ fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> Te
         tracing::Level::INFO,
     )?;
 
-    assert_eq!(outcome.0.check("the healthy mutex locks")?, 1);
+    ensure_eq(
+        &outcome.0.check("the healthy mutex locks")?,
+        &1,
+        "outcome.0.check(\"the healthy mutex locks\")? == 1",
+    )?;
     outcome.1.check_err("the poisoned mutex fails")?;
     let events: Vec<&str> = logs.lines().collect();
-    assert_eq!(events.len(), 1, "{logs}");
-    assert!(events[0].contains("ERROR"), "{logs}");
-    assert!(events[0].contains("util_tests_logged"), "{logs}");
-    assert!(events[0].contains("mutex poisoned by a panic in an earlier holder"));
+    ensure_eq(&events.len(), &1, &logs)?;
+    let event = events.first().check("the one logged event")?;
+    ensure(event.contains("ERROR"), &logs)?;
+    ensure(event.contains("util_tests_logged"), &logs)?;
+    ensure(
+        event.contains("mutex poisoned by a panic in an earlier holder"),
+        "event.contains(\"mutex poisoned by a panic in an earlier holder\")",
+    )?;
     Ok(())
 }
 
@@ -129,13 +144,21 @@ fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> Te
 fn lock_on_a_healthy_mutex_returns_a_normal_guard() -> TestResult {
     let mutex: Mutex<Vec<u32>> = Mutex::new(vec![10, 20, 30]);
     let mut guard = lock(&mutex, "util_tests_vec").check("lock the healthy mutex")?;
-    assert_eq!(*guard, vec![10, 20, 30]);
+    ensure_eq(&*guard, &vec![10, 20, 30], "*guard == vec![10, 20, 30]")?;
     guard.push(40);
-    assert_eq!(*guard, vec![10, 20, 30, 40]);
+    ensure_eq(
+        &*guard,
+        &vec![10, 20, 30, 40],
+        "*guard == vec![10, 20, 30, 40]",
+    )?;
 
     drop(guard);
     let guard2 = lock(&mutex, "util_tests_vec").check("lock it again")?;
-    assert_eq!(*guard2, vec![10, 20, 30, 40]);
+    ensure_eq(
+        &*guard2,
+        &vec![10, 20, 30, 40],
+        "*guard2 == vec![10, 20, 30, 40]",
+    )?;
     Ok(())
 }
 
@@ -144,15 +167,15 @@ fn lock_on_a_healthy_mutex_returns_a_normal_guard() -> TestResult {
 #[test]
 fn lock_keeps_failing_on_every_call_after_a_poison() -> TestResult {
     let mutex: Arc<Mutex<i64>> = Arc::new(Mutex::new(0));
-    poison(&mutex);
+    poison(&mutex)?;
 
     for attempt in 1..=3 {
         let error = lock(&mutex, "util_tests_i64").check_err("the mutex stays poisoned")?;
-        assert_eq!(
-            error.to_string(),
-            "mutex util_tests_i64 was poisoned by a panic in an earlier holder",
-            "attempt {attempt}"
-        );
+        ensure_eq(
+            &error.to_string(),
+            &"mutex util_tests_i64 was poisoned by a panic in an earlier holder",
+            format!("attempt {attempt}"),
+        )?;
     }
     Ok(())
 }
@@ -162,25 +185,38 @@ fn lock_keeps_failing_on_every_call_after_a_poison() -> TestResult {
 #[test]
 fn a_poisoned_lock_becomes_an_internal_tool_error_that_says_restart() -> TestResult {
     let mutex: Mutex<u32> = Mutex::new(7);
-    poison(&mutex);
+    poison(&mutex)?;
 
     let error: rmcp::ErrorData = lock(&mutex, "labelled_probe_mutex")
         .check_err("a poisoned mutex is an error")?
         .into();
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert_eq!(
-        error.message,
-        "mutex labelled_probe_mutex was poisoned by a panic in an earlier holder; restart the SlugAudit server"
-    );
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure_eq(
+        &error.message,
+        &"mutex labelled_probe_mutex was poisoned by a panic in an earlier holder; restart the SlugAudit server",
+        "error.message == \"mutex labelled_probe_mutex was poisoned by a panic in an earlier holder; restart the Slug...",
+    )?;
     Ok(())
 }
 
 #[test]
 fn hex_encode_renders_lowercase_hex() -> TestResult {
-    assert_eq!(hex_encode(b""), "");
-    assert_eq!(hex_encode(b"\x00\xff\x10"), "00ff10");
-    assert_eq!(hex_encode(b"hello"), "68656c6c6f");
+    ensure_eq(&hex_encode(b""), &"", "hex_encode(b\"\") == \"\"")?;
+    ensure_eq(
+        &hex_encode(b"\x00\xff\x10"),
+        &"00ff10",
+        "hex_encode(b\"\\x00\\xff\\x10\") == \"00ff10\"",
+    )?;
+    ensure_eq(
+        &hex_encode(b"hello"),
+        &"68656c6c6f",
+        "hex_encode(b\"hello\") == \"68656c6c6f\"",
+    )?;
     Ok(())
 }
 
@@ -195,7 +231,11 @@ fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs()
         Ok(out)
     }
     let every_byte: Vec<u8> = (0..=255).collect();
-    assert_eq!(hex_encode(&every_byte), reference(&every_byte)?);
+    ensure_eq(
+        &hex_encode(&every_byte),
+        &reference(&every_byte)?,
+        "hex_encode(&every_byte) == reference(&every_byte)?",
+    )?;
 
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
     for len in [0_usize, 1, 2, 3, 31, 32, 33, 1000] {
@@ -207,7 +247,11 @@ fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs()
                 state.to_le_bytes()[0]
             })
             .collect();
-        assert_eq!(hex_encode(&input), reference(&input)?, "len {len}");
+        ensure_eq(
+            &hex_encode(&input),
+            &reference(&input)?,
+            format!("len {len}"),
+        )?;
     }
     Ok(())
 }
@@ -215,20 +259,32 @@ fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs()
 #[test]
 fn now_unix_is_nonzero_and_never_moves_backwards() -> TestResult {
     let first = now_unix().check("first read")?;
-    assert!(first > 0, "the epoch must be in the past");
+    ensure(first > 0, "the epoch must be in the past")?;
     let second = now_unix().check("second read")?;
-    assert!(
+    ensure(
         second >= first,
-        "consecutive reads must never move backwards"
-    );
+        "consecutive reads must never move backwards",
+    )?;
     Ok(())
 }
 
 #[test]
 fn at_least_timestamp_never_drops_below_the_persisted_value() -> TestResult {
-    assert_eq!(at_least_timestamp(100, Some(200)), 200);
-    assert_eq!(at_least_timestamp(200, Some(100)), 200);
-    assert_eq!(at_least_timestamp(100, None), 100);
+    ensure_eq(
+        &at_least_timestamp(100, Some(200)),
+        &200,
+        "at_least_timestamp(100, Some(200)) == 200",
+    )?;
+    ensure_eq(
+        &at_least_timestamp(200, Some(100)),
+        &200,
+        "at_least_timestamp(200, Some(100)) == 200",
+    )?;
+    ensure_eq(
+        &at_least_timestamp(100, None),
+        &100,
+        "at_least_timestamp(100, None) == 100",
+    )?;
     Ok(())
 }
 
@@ -240,12 +296,12 @@ fn at_least_timestamp_never_drops_below_the_persisted_value() -> TestResult {
 #[test]
 fn plain_style_passes_text_through_uncolored() -> TestResult {
     let style = Style::plain();
-    assert!(!style.enabled());
-    assert_eq!(style.bold("hi"), "hi");
-    assert_eq!(style.dim("hi"), "hi");
-    assert_eq!(style.cyan("hi"), "hi");
-    assert_eq!(style.green("hi"), "hi");
-    assert_eq!(style.yellow("hi"), "hi");
+    ensure(!style.enabled(), "!style.enabled()")?;
+    ensure_eq(&style.bold("hi"), &"hi", "style.bold(\"hi\") == \"hi\"")?;
+    ensure_eq(&style.dim("hi"), &"hi", "style.dim(\"hi\") == \"hi\"")?;
+    ensure_eq(&style.cyan("hi"), &"hi", "style.cyan(\"hi\") == \"hi\"")?;
+    ensure_eq(&style.green("hi"), &"hi", "style.green(\"hi\") == \"hi\"")?;
+    ensure_eq(&style.yellow("hi"), &"hi", "style.yellow(\"hi\") == \"hi\"")?;
     Ok(())
 }
 
@@ -253,8 +309,12 @@ fn plain_style_passes_text_through_uncolored() -> TestResult {
 fn enabled_style_wraps_text_in_sgr_codes() -> TestResult {
     let style = Style::colored();
 
-    assert!(style.enabled());
-    assert_eq!(style.bold("hi"), "\x1b[1mhi\x1b[0m");
+    ensure(style.enabled(), "style.enabled()")?;
+    ensure_eq(
+        &style.bold("hi"),
+        &"\x1b[1mhi\x1b[0m",
+        "style.bold(\"hi\") == \"\\x1b[1mhi\\x1b[0m\"",
+    )?;
     Ok(())
 }
 
@@ -273,17 +333,26 @@ fn style_uses_the_documented_sgr_codes() -> TestResult {
         (style.yellow("x"), "\x1b[33mx\x1b[0m"),
     ];
     for (output, expected) in expectations {
-        assert_eq!(output, expected);
+        ensure_eq(&output, &expected, "output == expected")?;
     }
     Ok(())
 }
 
 #[test]
 fn input_byte_bound_check_is_utf8_safe_and_exact() -> TestResult {
-    assert!(!exceeds_input_bytes("é", 2));
-    assert!(exceeds_input_bytes("é", 1));
-    assert!(!exceeds_input_bytes("abc", 3));
-    assert!(exceeds_input_bytes("abcd", 3));
+    ensure(
+        !exceeds_input_bytes("é", 2),
+        "!exceeds_input_bytes(\"é\", 2)",
+    )?;
+    ensure(exceeds_input_bytes("é", 1), "exceeds_input_bytes(\"é\", 1)")?;
+    ensure(
+        !exceeds_input_bytes("abc", 3),
+        "!exceeds_input_bytes(\"abc\", 3)",
+    )?;
+    ensure(
+        exceeds_input_bytes("abcd", 3),
+        "exceeds_input_bytes(\"abcd\", 3)",
+    )?;
     Ok(())
 }
 
@@ -292,9 +361,9 @@ fn redacted_log_ids_are_stable_without_containing_input() -> TestResult {
     let secret = "/home/alice/private-project";
     let first = crate::util::redacted_log_id(secret.as_bytes());
     let second = crate::util::redacted_path(std::path::Path::new(secret));
-    assert_eq!(first, second);
-    assert_ne!(first, secret);
-    assert_eq!(first.len(), 64);
+    ensure_eq(&first, &second, "first == second")?;
+    ensure_ne(&first, &secret, "first != secret")?;
+    ensure_eq(&first.len(), &64, "first.len() == 64")?;
     Ok(())
 }
 
@@ -307,11 +376,15 @@ fn a_capped_read_refuses_an_oversized_file() -> TestResult {
     let error =
         crate::util::read_file_capped(&big, 1024).check_err("an over-cap file must fail closed")?;
 
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-    assert!(
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "error.kind() == std::io::ErrorKind::InvalidData",
+    )?;
+    ensure(
         error.to_string().contains("over the 1024-byte cap"),
-        "the message must name the cap that refused: {error}"
-    );
+        format!("the message must name the cap that refused: {error}"),
+    )?;
     Ok(())
 }
 
@@ -323,7 +396,7 @@ fn a_capped_read_accepts_a_file_exactly_at_the_cap() -> TestResult {
 
     let text = crate::util::read_file_capped(&at_cap, 1024).check("a file at the cap reads")?;
 
-    assert_eq!(text.len(), 1024, "the cap is inclusive");
+    ensure_eq(&text.len(), &1024, "the cap is inclusive")?;
     Ok(())
 }
 
@@ -332,7 +405,7 @@ fn serialized_len_measures_exact_json_bytes() -> TestResult {
     let value = serde_json::json!({"key": "value"});
     let len = crate::util::serialized_len(&value).check("serialized_len must succeed")?;
     let exact = serde_json::to_string(&value).check("to_string")?.len();
-    assert_eq!(len, exact);
+    ensure_eq(&len, &exact, "len == exact")?;
     Ok(())
 }
 
@@ -340,7 +413,11 @@ fn serialized_len_measures_exact_json_bytes() -> TestResult {
 fn join_thread_returns_the_value_of_a_finished_thread() -> TestResult {
     let handle = std::thread::spawn(|| 7);
 
-    assert_eq!(crate::util::join_thread(handle).check("thread joins")?, 7);
+    ensure_eq(
+        &crate::util::join_thread(handle).check("thread joins")?,
+        &7,
+        "crate::util::join_thread(handle).check(\"thread joins\")? == 7",
+    )?;
     Ok(())
 }
 
@@ -357,7 +434,11 @@ fn join_thread_returns_a_panic_message_for_both_payload_kinds() -> TestResult {
     let literal = crate::util::join_thread(literal).check_err("a panic is an error")?;
     let formatted = crate::util::join_thread(formatted).check_err("a panic is an error")?;
 
-    assert_eq!(literal, "literal message");
-    assert_eq!(formatted, "formatted 1");
+    ensure_eq(
+        &literal,
+        &"literal message",
+        "literal == \"literal message\"",
+    )?;
+    ensure_eq(&formatted, &"formatted 1", "formatted == \"formatted 1\"")?;
     Ok(())
 }

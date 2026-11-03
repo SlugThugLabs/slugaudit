@@ -238,7 +238,7 @@ fn read_resource_contents(uri: &str) -> Result<ReadResourceResult, ErrorData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
     /// Every session pays for INSTRUCTIONS in context, so it stays short;
     /// detail belongs in the tool descriptions, schemas and resources.
@@ -246,10 +246,10 @@ mod tests {
     fn the_initialize_instructions_stay_under_their_size_budget() -> TestResult {
         let characters = INSTRUCTIONS.chars().count();
 
-        assert!(
+        ensure(
             characters < 5_500,
-            "INSTRUCTIONS is {characters} characters; the budget is 5500"
-        );
+            format!("INSTRUCTIONS is {characters} characters; the budget is 5500"),
+        )?;
         Ok(())
     }
 
@@ -278,12 +278,12 @@ mod tests {
             .as_deref()
             .check("query has a description")?;
 
-        assert_eq!(kinds.len(), 8, "{kinds:?}");
+        ensure_eq(&kinds.len(), &8, format!("{kinds:?}"))?;
         for kind in kinds {
-            assert!(
+            ensure(
                 description.contains(kind),
-                "`{kind}` missing: {description}"
-            );
+                format!("`{kind}` missing: {description}"),
+            )?;
         }
         Ok(())
     }
@@ -293,12 +293,16 @@ mod tests {
         let error =
             read_resource_contents("slugaudit://nope").check_err("an unknown URI is not served")?;
 
-        assert_eq!(
-            error.code,
-            rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
-            "{error:?}"
-        );
-        assert_eq!(error.message, "unknown resource `slugaudit://nope`");
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
+            format!("{error:?}"),
+        )?;
+        ensure_eq(
+            &error.message,
+            &"unknown resource `slugaudit://nope`",
+            "error.message == \"unknown resource `slugaudit://nope`\"",
+        )?;
         Ok(())
     }
 
@@ -308,17 +312,23 @@ mod tests {
 
         let error = read_resource_contents(&uri).check_err("an over-cap URI is refused")?;
 
-        assert_eq!(
-            error.code,
-            rmcp::model::ErrorCode::INVALID_PARAMS,
-            "{error:?}"
-        );
-        assert_eq!(error.message, "resource uri exceeds 8192 bytes");
-        assert!(
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INVALID_PARAMS,
+            format!("{error:?}"),
+        )?;
+        ensure_eq(
+            &error.message,
+            &"resource uri exceeds 8192 bytes",
+            "error.message == \"resource uri exceeds 8192 bytes\"",
+        )?;
+        ensure(
             !error.message.contains("uuuu"),
-            "an oversized URI must not be echoed into the message: {}",
-            error.message
-        );
+            format!(
+                "an oversized URI must not be echoed into the message: {}",
+                error.message
+            ),
+        )?;
         Ok(())
     }
 }

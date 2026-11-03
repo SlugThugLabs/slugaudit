@@ -2,7 +2,7 @@
 //! an agent, and the typed errors for ended input and a closed stdout.
 
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn a_menu_answer_is_valid_only_when_it_is_a_listed_number() -> TestResult {
@@ -10,17 +10,17 @@ fn a_menu_answer_is_valid_only_when_it_is_a_listed_number() -> TestResult {
     let invalid = ["0", "4", "", "two", "-1"];
 
     for (answer, index) in valid {
-        assert_eq!(
-            parse_choice(answer, 3).check(answer)?,
-            index,
-            "answer {answer:?}"
-        );
+        ensure_eq(
+            &parse_choice(answer, 3).check(answer)?,
+            &index,
+            format!("answer {answer:?}"),
+        )?;
     }
     for answer in invalid {
-        assert!(
+        ensure(
             matches!(parse_choice(answer, 3), Err(ConnectError::InvalidChoice)),
-            "answer {answer:?} must be rejected"
-        );
+            format!("answer {answer:?} must be rejected"),
+        )?;
     }
     Ok(())
 }
@@ -29,11 +29,15 @@ fn a_menu_answer_is_valid_only_when_it_is_a_listed_number() -> TestResult {
 fn end_of_input_at_a_prompt_is_the_dedicated_error() -> TestResult {
     let error = answer_from(None).check_err("end of input must not read as an answer")?;
 
-    assert!(
+    ensure(
         matches!(&error, ConnectError::EndOfInput),
-        "expected EndOfInput, got {error:?}"
-    );
-    assert_eq!(error.to_string(), "input ended before an answer was given");
+        format!("expected EndOfInput, got {error:?}"),
+    )?;
+    ensure_eq(
+        &error.to_string(),
+        &"input ended before an answer was given",
+        "error.to_string() == \"input ended before an answer was given\"",
+    )?;
     Ok(())
 }
 
@@ -61,6 +65,10 @@ fn a_prompt_written_to_a_closed_stdout_is_the_typed_io_error() -> TestResult {
     let ConnectError::Io(inner) = error else {
         return Err(format!("expected Io, got {error:?}")).check("unexpected outcome");
     };
-    assert_eq!(inner.kind(), std::io::ErrorKind::BrokenPipe);
+    ensure_eq(
+        &inner.kind(),
+        &std::io::ErrorKind::BrokenPipe,
+        "inner.kind() == std::io::ErrorKind::BrokenPipe",
+    )?;
     Ok(())
 }

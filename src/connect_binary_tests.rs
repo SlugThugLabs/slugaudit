@@ -4,7 +4,7 @@
 use super::*;
 use crate::connect_agents::find_agent;
 use crate::util::TEST_ENV_LOCK;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::path::PathBuf;
 
@@ -21,11 +21,11 @@ fn prefer_slugthug_binary_uses_the_installed_path_when_present() -> TestResult {
         "SLUGTHUG_HOME",
         Some(temp.path().as_os_str()),
         || -> TestResult {
-            assert_eq!(
-                prefer_slugthug_binary(&current).check("stat succeeds")?,
-                bin_dir.join("slugaudit"),
-                "the stable installed path wins over the current build artifact"
-            );
+            ensure_eq(
+                &prefer_slugthug_binary(&current).check("stat succeeds")?,
+                &bin_dir.join("slugaudit"),
+                "the stable installed path wins over the current build artifact",
+            )?;
             Ok(())
         },
     )?;
@@ -42,10 +42,11 @@ fn prefer_slugthug_binary_keeps_current_when_not_installed() -> TestResult {
         ],
         || -> TestResult {
             let current = PathBuf::from("/build/artifacts/slugaudit");
-            assert_eq!(
-                prefer_slugthug_binary(&current).check("stat succeeds")?,
-                current
-            );
+            ensure_eq(
+                &prefer_slugthug_binary(&current).check("stat succeeds")?,
+                &current,
+                "prefer_slugthug_binary(&current).check(\"stat succeeds\")? == current",
+            )?;
             Ok(())
         },
     )?;
@@ -61,8 +62,16 @@ fn a_failed_running_binary_lookup_is_the_binary_path_error() -> TestResult {
     let ConnectError::BinaryPath(inner) = error else {
         return Err(format!("expected BinaryPath, got {error:?}")).check("unexpected outcome");
     };
-    assert_eq!(inner.kind(), std::io::ErrorKind::NotFound);
-    assert_eq!(inner.to_string(), "no executable path");
+    ensure_eq(
+        &inner.kind(),
+        &std::io::ErrorKind::NotFound,
+        "inner.kind() == std::io::ErrorKind::NotFound",
+    )?;
+    ensure_eq(
+        &inner.to_string(),
+        &"no executable path",
+        "inner.to_string() == \"no executable path\"",
+    )?;
     Ok(())
 }
 
@@ -87,10 +96,10 @@ fn a_stat_failure_for_the_installed_binary_is_an_io_error() -> TestResult {
             let error =
                 connect_one(cursor, false).check_err("the installed-path stat must fail")?;
 
-            assert!(
+            ensure(
                 matches!(error, ConnectError::Io(_)),
-                "expected Io, got {error:?}"
-            );
+                format!("expected Io, got {error:?}"),
+            )?;
             Ok(())
         },
     )?;

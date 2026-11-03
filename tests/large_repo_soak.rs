@@ -75,7 +75,7 @@ use slugaudit_mcp_rust::model::{AuditProfile, limits_for_profile, process_limits
 use slugaudit_mcp_rust::progress::NoopProgressSink;
 use slugaudit_mcp_rust::store::open_existing;
 use slugaudit_mcp_rust::sync::SourceSyncManager;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use tempfile::TempDir;
 
 /// Files the soak project contains. The target is "~10k".
@@ -104,16 +104,24 @@ fn write_synthetic_project(
     files: usize,
     directories: usize,
 ) -> TestResult<Vec<String>> {
-    assert!(
+    ensure(
         directories > 0 && files.is_multiple_of(directories),
-        "the synthetic project must divide evenly: {files} files over {directories} directories"
-    );
+        format!(
+            "the synthetic project must divide evenly: {files} files over {directories} directories"
+        ),
+    )?;
     let mut expected = Vec::with_capacity(files);
+    let files_per_directory = files
+        .checked_div(directories)
+        .check("the directory count was checked non-zero above")?;
     for directory in 0..directories {
+        let multiplier = directory
+            .checked_add(1)
+            .check("the module multiplier overflowed")?;
         let relative_directory = format!("src/mod_{directory:03}");
         fs::create_dir_all(root.join(&relative_directory))
             .check("create synthetic module directory")?;
-        for file in 0..files / directories {
+        for file in 0..files_per_directory {
             let relative = format!("{relative_directory}/file_{file:03}.rs");
             let source = format!(
                 "//! Synthetic module {directory}/{file}.\n\
@@ -126,15 +134,14 @@ fn write_synthetic_project(
                  \n\
                  impl Record{directory}_{file} {{\n\
                  \x20   pub fn score(&self, seed: u64) -> u64 {{\n\
-                 \x20       seed.wrapping_mul({})\n\
+                 \x20       seed.wrapping_mul({multiplier})\n\
                  \x20           .wrapping_add(self.labels.len() as u64)\n\
                  \x20   }}\n\
                  }}\n\
                  \n\
                  pub fn entry_{directory}_{file}(seed: u64) -> Record{directory}_{file} {{\n\
                  \x20   Record{directory}_{file} {{ id: seed, labels: HashMap::new() }}\n\
-                 }}\n",
-                directory + 1
+                 }}\n"
             );
             fs::write(root.join(&relative), source).check("write synthetic source file")?;
             expected.push(relative);
@@ -171,7 +178,11 @@ fn stored_paths(connection: &rusqlite::Connection) -> TestResult<Vec<String>> {
 fn sync_synthetic_project(files: usize, directories: usize) -> TestResult {
     let project = activated_project()?;
     let expected = write_synthetic_project(project.path(), files, directories)?;
-    assert_eq!(expected.len(), files, "fixture wrote the wrong file count");
+    ensure_eq(
+        &expected.len(),
+        &files,
+        "fixture wrote the wrong file count",
+    )?;
 
     // The budget the sync itself will enforce: whatever `process_limits()`
     // resolved (env overrides included). The profile default is printed
@@ -198,39 +209,41 @@ fn sync_synthetic_project(files: usize, directories: usize) -> TestResult {
             .check("unexpected outcome");
         }
     };
-    assert!(
+    ensure(
         elapsed < budget,
-        "sync of {files} files completed in {elapsed:?}, outside the {budget:?} budget"
-    );
+        format!("sync of {files} files completed in {elapsed:?}, outside the {budget:?} budget"),
+    )?;
 
     let connection = open_existing(&synced.database_path).check("open the published database")?;
-    assert_eq!(
-        count(&connection, "SELECT COUNT(*) FROM files")?,
-        files,
-        "the index does not cover the fixture: {files} files were written but the \
+    ensure_eq(
+        &count(&connection, "SELECT COUNT(*) FROM files")?,
+        &files,
+        format!(
+            "the index does not cover the fixture: {files} files were written but the \
          files table holds a different number of rows"
-    );
-    assert_eq!(
-        count(
+        ),
+    )?;
+    ensure_eq(
+        &count(
             &connection,
-            "SELECT COUNT(*) FROM files WHERE file_kind = 'indexed'"
+            "SELECT COUNT(*) FROM files WHERE file_kind = 'indexed'",
         )?,
-        files,
-        "some fixture files were discovered but not indexed (binary/skipped rows)"
-    );
-    assert_eq!(
-        count(
+        &files,
+        "some fixture files were discovered but not indexed (binary/skipped rows)",
+    )?;
+    ensure_eq(
+        &count(
             &connection,
-            "SELECT COUNT(*) FROM files WHERE parse_outcome = 'Succeeded'"
+            "SELECT COUNT(*) FROM files WHERE parse_outcome = 'Succeeded'",
         )?,
-        files,
-        "some fixture files were indexed without a successful parse"
-    );
-    assert_eq!(
-        stored_paths(&connection)?,
-        expected,
-        "the stored path set differs from the fixture's file set"
-    );
+        &files,
+        "some fixture files were indexed without a successful parse",
+    )?;
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &expected,
+        "the stored path set differs from the fixture's file set",
+    )?;
 
     eprintln!(
         "synthetic sync: {files} files published and verified in {:.3}s \

@@ -4,7 +4,7 @@
 //! exit 2, a clean stop (stdin closed before `initialize`, SIGTERM) exits 0,
 //! and no error is printed in Rust `Debug` form.
 
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -26,11 +26,15 @@ fn run(args: &[&str]) -> TestResult<Output> {
 fn cli_exit_unknown_flag_exits_2_with_a_display_message() -> TestResult {
     let output = run(&["--bogus"])?;
     let stderr = String::from_utf8(output.stderr).check("utf-8 stderr")?;
-    assert_eq!(output.status.code(), Some(2));
-    assert!(
+    ensure_eq(
+        &output.status.code(),
+        &Some(2),
+        "output.status.code() == Some(2)",
+    )?;
+    ensure(
         stderr.starts_with("Error: unknown command \"--bogus\""),
-        "{stderr}"
-    );
+        &stderr,
+    )?;
     Ok(())
 }
 
@@ -38,17 +42,29 @@ fn cli_exit_unknown_flag_exits_2_with_a_display_message() -> TestResult {
 fn cli_exit_lowercase_v_prints_the_version_and_exits_0() -> TestResult {
     let output = run(&["-v"])?;
     let stdout = String::from_utf8(output.stdout).check("utf-8 stdout")?;
-    assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout, format!("slugaudit {}\n", env!("CARGO_PKG_VERSION")));
+    ensure_eq(
+        &output.status.code(),
+        &Some(0),
+        "output.status.code() == Some(0)",
+    )?;
+    ensure_eq(
+        &stdout,
+        &format!("slugaudit {}\n", env!("CARGO_PKG_VERSION")),
+        "stdout == format!(\"slugaudit {}\\n\", env!(\"CARGO_PKG_VERSION\"))",
+    )?;
     Ok(())
 }
 
 #[test]
 fn cli_exit_connect_with_an_extra_argument_exits_2() -> TestResult {
     let output = run(&["connect", "claude", "extra"])?;
-    assert_eq!(output.status.code(), Some(2));
+    ensure_eq(
+        &output.status.code(),
+        &Some(2),
+        "output.status.code() == Some(2)",
+    )?;
     let stderr = String::from_utf8(output.stderr).check("utf-8 stderr")?;
-    assert!(stderr.contains("unexpected argument \"extra\""), "{stderr}");
+    ensure(stderr.contains("unexpected argument \"extra\""), &stderr)?;
     Ok(())
 }
 
@@ -56,9 +72,9 @@ fn cli_exit_connect_with_an_extra_argument_exits_2() -> TestResult {
 fn cli_exit_stdin_closed_before_initialize_exits_0_with_one_clean_line() -> TestResult {
     let output = run(&[])?;
     let stderr = String::from_utf8(output.stderr).check("utf-8 stderr")?;
-    assert_eq!(output.status.code(), Some(0), "{stderr}");
-    assert_eq!(stderr.lines().count(), 1, "{stderr}");
-    assert!(!stderr.contains("ConnectionClosed("), "{stderr}");
+    ensure_eq(&output.status.code(), &Some(0), &stderr)?;
+    ensure_eq(&stderr.lines().count(), &1, &stderr)?;
+    ensure(!stderr.contains("ConnectionClosed("), &stderr)?;
     Ok(())
 }
 
@@ -80,7 +96,7 @@ fn cli_exit_sigterm_to_a_serving_process_exits_0() -> TestResult {
     stdout
         .read_line(&mut reply)
         .check("read initialize reply")?;
-    assert!(reply.contains("\"result\""), "{reply}");
+    ensure(reply.contains("\"result\""), &reply)?;
     writeln!(
         stdin,
         r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
@@ -92,7 +108,7 @@ fn cli_exit_sigterm_to_a_serving_process_exits_0() -> TestResult {
         .args(["-TERM", &child.id().to_string()])
         .status()
         .check("run kill")?;
-    assert!(kill.success());
+    ensure(kill.success(), "kill.success()")?;
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = child.try_wait().check("poll slugaudit")? {
@@ -116,8 +132,8 @@ fn cli_exit_sigterm_to_a_serving_process_exits_0() -> TestResult {
         .check("stderr pipe")?
         .read_to_string(&mut stderr)
         .check("read stderr")?;
-    assert_eq!(status.code(), Some(0), "{stderr}");
-    assert!(stderr.contains("received SIGTERM"), "{stderr}");
+    ensure_eq(&status.code(), &Some(0), &stderr)?;
+    ensure(stderr.contains("received SIGTERM"), &stderr)?;
     drop(stdin);
     Ok(())
 }
@@ -149,18 +165,22 @@ fn every_subcommand_help_prints_its_usage_and_exits_0_without_running_it() -> Te
                 .output()
                 .check("run slugaudit")?;
             let stdout = String::from_utf8(output.stdout).check("utf-8 stdout")?;
-            assert_eq!(output.status.code(), Some(0), "{args:?}");
-            assert!(
+            ensure_eq(&output.status.code(), &Some(0), format!("{args:?}"))?;
+            ensure(
                 stdout.starts_with("USAGE:\n    slugaudit "),
-                "{args:?}: {stdout}"
-            );
-            assert!(output.stderr.is_empty(), "{args:?}");
+                format!("{args:?}: {stdout}"),
+            )?;
+            ensure(output.stderr.is_empty(), format!("{args:?}"))?;
         }
     }
     let leftovers = std::fs::read_dir(home.path()).check("read home")?.count();
-    assert_eq!(leftovers, 0, "help must not touch the home directory");
+    ensure_eq(&leftovers, &0, "help must not touch the home directory")?;
     let config_dir = std::fs::read_dir(home.path().join(".slugthug"))
         .check_err("help must not create the config directory")?;
-    assert_eq!(config_dir.kind(), std::io::ErrorKind::NotFound);
+    ensure_eq(
+        &config_dir.kind(),
+        &std::io::ErrorKind::NotFound,
+        "config_dir.kind() == std::io::ErrorKind::NotFound",
+    )?;
     Ok(())
 }

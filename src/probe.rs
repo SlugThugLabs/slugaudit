@@ -26,7 +26,7 @@ pub(crate) fn cli_on_path(cli: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure};
 
     /// Runs `f` with `PATH` set to an empty directory, so no client CLI
     /// resolves, and returns what it logged at warn level or above.
@@ -42,8 +42,8 @@ mod tests {
     fn a_cli_that_is_not_on_path_is_absent_without_a_warning() -> TestResult {
         let (found, logs) = warns_with_empty_path(|| cli_on_path("slugaudit-no-such-cli"))?;
 
-        assert!(!found);
-        assert!(!logs.contains("could not search PATH"), "{logs}");
+        ensure(!found, "!found")?;
+        ensure(!logs.contains("could not search PATH"), &logs)?;
         Ok(())
     }
 
@@ -55,9 +55,12 @@ mod tests {
             crate::store::test_capture::capture_warns(|| cli_on_path("slugaudit-no-such-cli"))
         })?;
 
-        assert!(!found);
-        assert!(logs.contains("could not search PATH"), "{logs}");
-        assert!(logs.contains("error="), "the source error is kept:\n{logs}");
+        ensure(!found, "!found")?;
+        ensure(logs.contains("could not search PATH"), &logs)?;
+        ensure(
+            logs.contains("error="),
+            format!("the source error is kept:\n{logs}"),
+        )?;
         Ok(())
     }
 }

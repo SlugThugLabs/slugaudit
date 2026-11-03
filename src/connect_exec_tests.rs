@@ -1,15 +1,15 @@
 use super::*;
 use crate::connect_agents::find_agent;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn an_atomic_write_for_a_path_without_a_parent_reports_the_home_unavailable() -> TestResult {
     let error = write_atomic(Path::new("/"), b"{}").check_err("root has no parent")?;
 
-    assert!(
+    ensure(
         matches!(error, ConnectError::HomeUnavailable),
-        "expected HomeUnavailable, got {error:?}"
-    );
+        format!("expected HomeUnavailable, got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -19,7 +19,11 @@ fn disconnecting_without_a_config_home_reports_nothing_to_do() -> TestResult {
 
     let outcome = disconnect_agent(&goose, None).check("a missing home is not a failure")?;
 
-    assert_eq!(outcome, DisconnectOutcome::NothingToDo);
+    ensure_eq(
+        &outcome,
+        &DisconnectOutcome::NothingToDo,
+        "outcome == DisconnectOutcome::NothingToDo",
+    )?;
     Ok(())
 }
 
@@ -32,7 +36,7 @@ fn disconnecting_an_entry_with_no_writable_section_or_cli_reports_nothing_to_do(
         let outcome =
             disconnect_agent(&agent, Some(temp.path())).check("the no-op must not fail")?;
 
-        assert_eq!(outcome, DisconnectOutcome::NothingToDo, "{id}");
+        ensure_eq(&outcome, &DisconnectOutcome::NothingToDo, id.to_string())?;
     }
     Ok(())
 }
