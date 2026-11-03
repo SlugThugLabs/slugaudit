@@ -1,7 +1,7 @@
 //! Tests for the logging setup in `main.rs`.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure};
 
 #[test]
 fn unset_log_variables_take_their_defaults_without_a_complaint() -> TestResult {
@@ -11,7 +11,7 @@ fn unset_log_variables_take_their_defaults_without_a_complaint() -> TestResult {
     )
     .check("valid settings")?;
 
-    assert!(!settings.json);
+    ensure(!settings.json, "!settings.json")?;
     Ok(())
 }
 
@@ -26,11 +26,11 @@ fn fail_closed_an_invalid_rust_log_is_an_error_naming_the_variable_not_the_value
         .err()
         .check("an invalid RUST_LOG must fail startup")?;
     let message = error.to_string();
-    assert!(
+    ensure(
         message.starts_with("RUST_LOG is set but is not valid; expected"),
-        "{message}"
-    );
-    assert!(!message.contains("bogus"), "{message}");
+        &message,
+    )?;
+    ensure(!message.contains("bogus"), &message)?;
     Ok(())
 }
 
@@ -39,7 +39,7 @@ fn a_valid_rust_log_and_json_format_are_honored_silently() -> TestResult {
     let settings =
         log_settings(Ok("debug".to_owned()), Ok("JSON".to_owned())).check("valid settings")?;
 
-    assert!(settings.json);
+    ensure(settings.json, "settings.json")?;
     Ok(())
 }
 
@@ -59,8 +59,8 @@ fn fail_closed_a_non_utf8_log_format_is_an_error_without_echoing_its_value() -> 
             .check("unexpected outcome");
     };
     let message = error.to_string();
-    assert!(message.contains("SLUGAUDIT_LOG_FORMAT"), "{message}");
-    assert!(!message.contains("SLUGAUDIT_LEAK_MARKER"), "{message}");
+    ensure(message.contains("SLUGAUDIT_LOG_FORMAT"), &message)?;
+    ensure(!message.contains("SLUGAUDIT_LEAK_MARKER"), &message)?;
     Ok(())
 }
 
@@ -79,11 +79,11 @@ fn fail_closed_a_non_utf8_rust_log_is_an_error_without_echoing_its_value() -> Te
         .err()
         .check("a non-UTF-8 RUST_LOG must fail startup")?;
     let message = error.to_string();
-    assert!(
+    ensure(
         message.starts_with("RUST_LOG is set but is not valid Unicode"),
-        "{message}"
-    );
-    assert!(!message.contains("RUST_LOG_LEAK_MARKER"), "{message}");
+        &message,
+    )?;
+    ensure(!message.contains("RUST_LOG_LEAK_MARKER"), &message)?;
     Ok(())
 }
 
@@ -130,11 +130,11 @@ fn honest_log_default_filter_keeps_our_info_and_drops_rmcp_info() -> TestResult 
 
     let out = String::from_utf8(sink.0.lock().check("sink lock")?.clone())
         .check("log output is utf-8")?;
-    assert!(out.contains("ours-info-marker"), "{out}");
-    assert!(!out.contains("rmcp-info-marker"), "{out}");
-    assert!(!out.contains("rmcp-warn-marker"), "{out}");
-    assert!(!out.contains("dep-info-marker"), "{out}");
-    assert!(out.contains("dep-warn-marker"), "{out}");
+    ensure(out.contains("ours-info-marker"), &out)?;
+    ensure(!out.contains("rmcp-info-marker"), &out)?;
+    ensure(!out.contains("rmcp-warn-marker"), &out)?;
+    ensure(!out.contains("dep-info-marker"), &out)?;
+    ensure(out.contains("dep-warn-marker"), &out)?;
     Ok(())
 }
 
@@ -149,11 +149,11 @@ fn fail_closed_a_mistyped_log_format_is_an_error_not_silently_text() -> TestResu
         .err()
         .check("an unknown SLUGAUDIT_LOG_FORMAT must fail startup")?;
     let message = error.to_string();
-    assert!(
+    ensure(
         message.starts_with("SLUGAUDIT_LOG_FORMAT is set but is not valid; expected"),
-        "{message}"
-    );
-    assert!(!message.contains("MARKER"), "{message}");
+        &message,
+    )?;
+    ensure(!message.contains("MARKER"), &message)?;
     Ok(())
 }
 
@@ -162,6 +162,6 @@ fn the_text_log_format_is_accepted_in_any_case() -> TestResult {
     let settings = log_settings(Err(std::env::VarError::NotPresent), Ok("Text".to_owned()))
         .check("valid settings")?;
 
-    assert!(!settings.json);
+    ensure(!settings.json, "!settings.json")?;
     Ok(())
 }

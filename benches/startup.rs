@@ -15,7 +15,7 @@
 //! rustc-linker-elimination path the cold invoke does, so the number
 //! would be unrealistically low.
 use criterion::Criterion;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure};
 use std::io::{Read, Write};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
@@ -60,11 +60,13 @@ fn initialize_round_trip(binary_path: &std::path::Path) -> TestResult<std::time:
         Some(byte) => byte.to_string(),
         None => "none (empty response)".to_owned(),
     };
-    assert!(
+    ensure(
         response.starts_with(b"{\"jsonrpc\":\"2.0\""),
-        "first MCP frame must be a valid response, got {} bytes starting {first_byte}",
-        response.len(),
-    );
+        format!(
+            "first MCP frame must be a valid response, got {} bytes starting {first_byte}",
+            response.len()
+        ),
+    )?;
     Ok(elapsed)
 }
 

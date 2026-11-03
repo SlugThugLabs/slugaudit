@@ -3,6 +3,7 @@
 //! metadata alone and leave it untouched.
 
 use super::*;
+use slugaudit_test_check::{TestResult, ensure, ensure_eq};
 
 /// `mkfifo(1)` creates the fixture because std exposes no safe FIFO
 /// constructor and `unsafe` is forbidden; it exists on both supported targets.
@@ -19,7 +20,10 @@ fn create_fifo(path: &Path) -> TestResult {
         .arg(path)
         .status()
         .check("run mkfifo")?;
-    assert!(status.success(), "mkfifo creates the fixture: {status}");
+    ensure(
+        status.success(),
+        format!("mkfifo creates the fixture: {status}"),
+    )?;
     Ok(())
 }
 
@@ -57,23 +61,23 @@ fn a_fifo_config_is_refused_by_a_connect_without_blocking() -> TestResult {
     let Err(ConnectError::Io(error)) = result else {
         return Err(format!("expected Io, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(
-        error.kind(),
-        std::io::ErrorKind::InvalidInput,
-        "the FIFO must be refused before the read: {error}"
-    );
-    assert!(
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidInput,
+        format!("the FIFO must be refused before the read: {error}"),
+    )?;
+    ensure(
         error.to_string().contains("not a regular file"),
-        "the refusal must name the file type: {error}"
-    );
-    assert!(
+        format!("the refusal must name the file type: {error}"),
+    )?;
+    ensure(
         config
             .symlink_metadata()
             .check("stat the FIFO")?
             .file_type()
             .is_fifo(),
-        "the FIFO is left untouched"
-    );
+        "the FIFO is left untouched",
+    )?;
     Ok(())
 }
 
@@ -111,24 +115,36 @@ fn a_fifo_config_is_not_opened_by_connection_detection() -> TestResult {
 
     for (id, result) in [("cursor", cursor_result), ("goose", goose_result)] {
         let failure = result.check_err("a FIFO config cannot be examined")?;
-        assert_eq!(failure.agent, id);
-        assert_eq!(failure.check, "connected");
-        assert_eq!(failure.source.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(
+        ensure_eq(&failure.agent, &id, "failure.agent == id")?;
+        ensure_eq(
+            &failure.check,
+            &"connected",
+            "failure.check == \"connected\"",
+        )?;
+        ensure_eq(
+            &failure.source.kind(),
+            &std::io::ErrorKind::InvalidInput,
+            "failure.source.kind() == std::io::ErrorKind::InvalidInput",
+        )?;
+        ensure(
             failure.source.to_string().contains("not a regular file"),
-            "{failure}"
-        );
+            format!("{failure}"),
+        )?;
     }
     for fifo in [&cursor_fifo, &goose_fifo] {
-        assert!(
+        ensure(
             fifo.symlink_metadata()
                 .check("stat the FIFO")?
                 .file_type()
                 .is_fifo(),
-            "the FIFO is left untouched"
-        );
+            "the FIFO is left untouched",
+        )?;
     }
     let error = readable_config(&cursor_fifo).check_err("a FIFO is refused, not read")?;
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidInput,
+        "error.kind() == std::io::ErrorKind::InvalidInput",
+    )?;
     Ok(())
 }

@@ -272,7 +272,7 @@ pub enum Dialect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
     #[test]
     fn the_appdata_token_expands_from_the_environment_and_is_never_guessed() -> TestResult {
@@ -286,12 +286,21 @@ mod tests {
             expand_os_tokens("%APPDATA%/Claude/c.json", home)
         });
 
-        assert_eq!(set, Some(PathBuf::from("/roaming/Claude/c.json")));
-        assert_eq!(unset, None, "an unset APPDATA must not become home/AppData");
-        assert_eq!(
-            expand_os_tokens(".config/x.json", home),
-            Some(PathBuf::from("/home/u/.config/x.json"))
-        );
+        ensure_eq(
+            &set,
+            &Some(PathBuf::from("/roaming/Claude/c.json")),
+            "set == Some(PathBuf::from(\"/roaming/Claude/c.json\"))",
+        )?;
+        ensure_eq(
+            &unset,
+            &None,
+            "an unset APPDATA must not become home/AppData",
+        )?;
+        ensure_eq(
+            &expand_os_tokens(".config/x.json", home),
+            &Some(PathBuf::from("/home/u/.config/x.json")),
+            "expand_os_tokens(\".config/x.json\", home) == Some(PathBuf::from(\"/home/u/.config/x.json\"))",
+        )?;
         Ok(())
     }
 
@@ -299,10 +308,10 @@ mod tests {
     fn shapes_without_a_json_writer_have_no_entry() -> TestResult {
         for shape in [ConfigShape::GooseExtensions, ConfigShape::Unknown] {
             let result = shape.entry(Path::new("/bin/slugaudit"));
-            assert!(
+            ensure(
                 matches!(result, Err(ConnectError::UnsupportedAgent { .. })),
-                "{shape:?}: {result:?}"
-            );
+                format!("{shape:?}: {result:?}"),
+            )?;
         }
         Ok(())
     }

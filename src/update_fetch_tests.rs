@@ -2,7 +2,7 @@
 //! version tests, plus hermetic fake-`curl` tests that never touch the network.
 
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// Runs `f` with `PATH` pointing at exactly `bin_dir`: the inherited entries
 /// are dropped, so `curl` resolves only to the fake planted there and no real
@@ -51,62 +51,114 @@ fn plant_fake_curl(
 #[test]
 fn from_tag_builds_the_asset_and_checksum_urls() -> TestResult {
     let release = LatestRelease::from_tag("v1.0.3");
-    assert_eq!(release.version, "1.0.3");
-    assert!(release.asset_url.ends_with(
-        "/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-linux-gnu"
-    ));
-    assert!(
+    ensure_eq(&release.version, &"1.0.3", "release.version == \"1.0.3\"")?;
+    ensure(
+        release.asset_url.ends_with(
+            "/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-linux-gnu",
+        ),
+        "release.asset_url.ends_with( \"/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-lin...",
+    )?;
+    ensure(
         release
             .checksums_url
-            .ends_with("/SlugThugLabs/slugaudit/releases/download/v1.0.3/SHA256SUMS")
-    );
+            .ends_with("/SlugThugLabs/slugaudit/releases/download/v1.0.3/SHA256SUMS"),
+        "release .checksums_url .ends_with(\"/SlugThugLabs/slugaudit/releases/download/v1.0.3/SHA256SUMS\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn from_tag_trims_a_leading_v_from_the_version() -> TestResult {
-    assert_eq!(LatestRelease::from_tag("1.0.3").version, "1.0.3");
-    assert_eq!(LatestRelease::from_tag("v1.0.3").version, "1.0.3");
+    ensure_eq(
+        &LatestRelease::from_tag("1.0.3").version,
+        &"1.0.3",
+        "LatestRelease::from_tag(\"1.0.3\").version == \"1.0.3\"",
+    )?;
+    ensure_eq(
+        &LatestRelease::from_tag("v1.0.3").version,
+        &"1.0.3",
+        "LatestRelease::from_tag(\"v1.0.3\").version == \"1.0.3\"",
+    )?;
     Ok(())
 }
 
 #[test]
 fn compare_versions_orders_numeric_releases() -> TestResult {
     use std::cmp::Ordering::*;
-    assert_eq!(compare_versions("1.0.2", "1.0.3"), Ok(Less));
-    assert_eq!(compare_versions("1.0.3", "1.0.3"), Ok(Equal));
-    assert_eq!(compare_versions("1.1.0", "1.0.99"), Ok(Greater));
-    assert_eq!(compare_versions("v1.0.3", "1.0.3"), Ok(Equal));
-    assert_eq!(
-        compare_versions("2.0.0", "1.0.3"),
-        Ok(Greater),
-        "major bump outranks any patch"
-    );
+    ensure_eq(
+        &compare_versions("1.0.2", "1.0.3"),
+        &Ok(Less),
+        "compare_versions(\"1.0.2\", \"1.0.3\") == Ok(Less)",
+    )?;
+    ensure_eq(
+        &compare_versions("1.0.3", "1.0.3"),
+        &Ok(Equal),
+        "compare_versions(\"1.0.3\", \"1.0.3\") == Ok(Equal)",
+    )?;
+    ensure_eq(
+        &compare_versions("1.1.0", "1.0.99"),
+        &Ok(Greater),
+        "compare_versions(\"1.1.0\", \"1.0.99\") == Ok(Greater)",
+    )?;
+    ensure_eq(
+        &compare_versions("v1.0.3", "1.0.3"),
+        &Ok(Equal),
+        "compare_versions(\"v1.0.3\", \"1.0.3\") == Ok(Equal)",
+    )?;
+    ensure_eq(
+        &compare_versions("2.0.0", "1.0.3"),
+        &Ok(Greater),
+        "major bump outranks any patch",
+    )?;
     Ok(())
 }
 
 #[test]
 fn compare_versions_rejects_non_numeric_local_versions() -> TestResult {
-    assert!(compare_versions("dev", "1.0.3").is_err());
-    assert!(compare_versions("1.0.3", "abc").is_err());
-    assert_eq!(
-        compare_versions("1.0.3", "1.0.3").check("comparable")?,
-        std::cmp::Ordering::Equal
-    );
+    ensure(
+        compare_versions("dev", "1.0.3").is_err(),
+        "compare_versions(\"dev\", \"1.0.3\").is_err()",
+    )?;
+    ensure(
+        compare_versions("1.0.3", "abc").is_err(),
+        "compare_versions(\"1.0.3\", \"abc\").is_err()",
+    )?;
+    ensure_eq(
+        &compare_versions("1.0.3", "1.0.3").check("comparable")?,
+        &std::cmp::Ordering::Equal,
+        "compare_versions(\"1.0.3\", \"1.0.3\").check(\"comparable\")? == std::cmp::Ordering::Equal",
+    )?;
     Ok(())
 }
 
 #[test]
 fn compare_versions_treats_missing_components_as_zero() -> TestResult {
     use std::cmp::Ordering::{Equal, Greater, Less};
-    assert_eq!(compare_versions("1.0", "1.0.0").check("comparable")?, Equal);
-    assert_eq!(compare_versions("1", "1.0.0").check("comparable")?, Equal);
-    assert_eq!(compare_versions("1.0.0", "1.0").check("comparable")?, Equal);
-    assert_eq!(compare_versions("1.0", "1.0.1").check("comparable")?, Less);
-    assert_eq!(
-        compare_versions("1.1", "1.0.9").check("comparable")?,
-        Greater
-    );
+    ensure_eq(
+        &compare_versions("1.0", "1.0.0").check("comparable")?,
+        &Equal,
+        "compare_versions(\"1.0\", \"1.0.0\").check(\"comparable\")? == Equal",
+    )?;
+    ensure_eq(
+        &compare_versions("1", "1.0.0").check("comparable")?,
+        &Equal,
+        "compare_versions(\"1\", \"1.0.0\").check(\"comparable\")? == Equal",
+    )?;
+    ensure_eq(
+        &compare_versions("1.0.0", "1.0").check("comparable")?,
+        &Equal,
+        "compare_versions(\"1.0.0\", \"1.0\").check(\"comparable\")? == Equal",
+    )?;
+    ensure_eq(
+        &compare_versions("1.0", "1.0.1").check("comparable")?,
+        &Less,
+        "compare_versions(\"1.0\", \"1.0.1\").check(\"comparable\")? == Less",
+    )?;
+    ensure_eq(
+        &compare_versions("1.1", "1.0.9").check("comparable")?,
+        &Greater,
+        "compare_versions(\"1.1\", \"1.0.9\").check(\"comparable\")? == Greater",
+    )?;
     Ok(())
 }
 
@@ -114,7 +166,7 @@ fn compare_versions_treats_missing_components_as_zero() -> TestResult {
 fn compare_versions_error_names_the_unparseable_version_and_keeps_the_cause() -> TestResult {
     let error = compare_versions("1.0.0-rc1", "1.0.0").check_err("pre-release is not numeric")?;
 
-    assert!(error.to_string().contains("1.0.0-rc1"), "{error}");
+    ensure(error.to_string().contains("1.0.0-rc1"), format!("{error}"))?;
     std::error::Error::source(&error).check("the error carries a source")?;
     Ok(())
 }
@@ -135,9 +187,17 @@ fn from_json_prefers_actual_asset_urls_when_present() -> TestResult {
         ]
     });
     let release = LatestRelease::from_json(&json).check("parses")?;
-    assert_eq!(release.version, "1.0.10");
-    assert_eq!(release.asset_url, "https://custom.download/slugaudit-bin");
-    assert_eq!(release.checksums_url, "https://custom.download/SHA256SUMS");
+    ensure_eq(&release.version, &"1.0.10", "release.version == \"1.0.10\"")?;
+    ensure_eq(
+        &release.asset_url,
+        &"https://custom.download/slugaudit-bin",
+        "release.asset_url == \"https://custom.download/slugaudit-bin\"",
+    )?;
+    ensure_eq(
+        &release.checksums_url,
+        &"https://custom.download/SHA256SUMS",
+        "release.checksums_url == \"https://custom.download/SHA256SUMS\"",
+    )?;
     Ok(())
 }
 
@@ -150,7 +210,7 @@ fn from_json_without_a_tag_name_reports_no_tag() -> TestResult {
             .check("unexpected outcome");
     };
 
-    assert!(matches!(error, UpdateError::NoTag), "{error:?}");
+    ensure(matches!(error, UpdateError::NoTag), format!("{error:?}"))?;
     Ok(())
 }
 
@@ -168,15 +228,15 @@ fn fetch_latest_release_reports_undecodable_json() -> TestResult {
     let UpdateError::Json(message) = error else {
         return Err(format!("expected Json, got {error:?}")).check("unexpected outcome");
     };
-    assert!(
+    ensure(
         !message.is_empty(),
-        "the decode failure must keep its reason"
-    );
+        "the decode failure must keep its reason",
+    )?;
     let argv = std::fs::read_to_string(&log).check("the fake curl ran")?;
-    assert!(
+    ensure(
         argv.contains("https://api.github.com/repos/SlugThugLabs/slugaudit/releases/latest"),
-        "the release metadata came from the fake, not the network: {argv}"
-    );
+        format!("the release metadata came from the fake, not the network: {argv}"),
+    )?;
     Ok(())
 }
 
@@ -192,8 +252,12 @@ fn fetch_latest_release_reports_a_missing_curl_as_a_tool_spawn_failure() -> Test
     let UpdateError::ToolSpawn { tool, source } = error else {
         return Err(format!("expected ToolSpawn, got {error:?}")).check("unexpected outcome");
     };
-    assert_eq!(tool, "curl");
-    assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+    ensure_eq(&tool, &"curl", "tool == \"curl\"")?;
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::NotFound,
+        "source.kind() == std::io::ErrorKind::NotFound",
+    )?;
     Ok(())
 }
 
@@ -211,12 +275,16 @@ fn fetch_latest_release_reports_a_failing_curl_as_network() -> TestResult {
     let UpdateError::Network(message) = error else {
         return Err(format!("expected Network, got {error:?}")).check("unexpected outcome");
     };
-    assert_eq!(message, "could not resolve host");
+    ensure_eq(
+        &message,
+        &"could not resolve host",
+        "message == \"could not resolve host\"",
+    )?;
     let argv = std::fs::read_to_string(&log).check("the fake curl ran")?;
-    assert!(
+    ensure(
         argv.contains("https://api.github.com/repos/SlugThugLabs/slugaudit/releases/latest"),
-        "the failing request went to the fake, not the network: {argv}"
-    );
+        format!("the failing request went to the fake, not the network: {argv}"),
+    )?;
     Ok(())
 }
 
@@ -241,16 +309,24 @@ fn download_reports_a_missing_curl_as_a_tool_spawn_failure() -> TestResult {
     else {
         return Err(format!("expected Download, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(action, "download binary to");
-    assert_eq!(path, destination);
+    ensure_eq(
+        &action,
+        &"download binary to",
+        "action == \"download binary to\"",
+    )?;
+    ensure_eq(&path, &destination, "path == destination")?;
     let UpdateError::ToolSpawn { tool, source } = *source else {
         return Err(format!(
             "expected the download cause to be ToolSpawn, got {source:?}"
         ))
         .check("unexpected outcome");
     };
-    assert_eq!(tool, "curl");
-    assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+    ensure_eq(&tool, &"curl", "tool == \"curl\"")?;
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::NotFound,
+        "source.kind() == std::io::ErrorKind::NotFound",
+    )?;
     Ok(())
 }
 
@@ -277,24 +353,28 @@ fn download_reports_a_failing_curl_as_network() -> TestResult {
     else {
         return Err(format!("expected Download, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(action, "download checksums to");
-    assert_eq!(path, destination);
+    ensure_eq(
+        &action,
+        &"download checksums to",
+        "action == \"download checksums to\"",
+    )?;
+    ensure_eq(&path, &destination, "path == destination")?;
     let UpdateError::Network(message) = *source else {
         return Err(format!(
             "expected the download cause to be Network, got {source:?}"
         ))
         .check("unexpected outcome");
     };
-    assert_eq!(message, "404: Not Found");
-    assert!(
+    ensure_eq(&message, &"404: Not Found", "message == \"404: Not Found\"")?;
+    ensure(
         !destination.exists(),
-        "a failed download must not leave a destination file"
-    );
+        "a failed download must not leave a destination file",
+    )?;
     let argv = std::fs::read_to_string(&log).check("the fake curl ran")?;
-    assert!(
+    ensure(
         argv.contains("https://example.invalid/asset") && argv.contains("-o"),
-        "the failing download went to the fake, not the network: {argv}"
-    );
+        format!("the failing download went to the fake, not the network: {argv}"),
+    )?;
     Ok(())
 }
 
@@ -313,7 +393,7 @@ fn update_fetch_malformed_asset_entry_names_its_index() -> TestResult {
             .check("unexpected outcome");
     };
 
-    assert!(message.contains("asset entry 1"), "{message}");
+    ensure(message.contains("asset entry 1"), &message)?;
     Ok(())
 }
 
@@ -337,11 +417,11 @@ fn update_fetch_failed_download_removes_the_partial_file() -> TestResult {
         )
     })?;
 
-    assert!(
+    ensure(
         matches!(result, Err(UpdateError::Download { .. })),
-        "{result:?}"
-    );
-    assert!(!destination.exists(), "the partial file must be removed");
+        format!("{result:?}"),
+    )?;
+    ensure(!destination.exists(), "the partial file must be removed")?;
     Ok(())
 }
 
@@ -354,9 +434,9 @@ fn both_curl_calls_share_one_bounded_https_only_argument_list() -> TestResult {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
 
-    assert_eq!(
-        args,
-        [
+    ensure_eq(
+        &args,
+        &[
             "-fsSL",
             "--max-time",
             "30",
@@ -367,7 +447,8 @@ fn both_curl_calls_share_one_bounded_https_only_argument_list() -> TestResult {
             "--proto-redir",
             "=https",
             "https://example.test/x",
-        ]
-    );
+        ],
+        "args == [ \"-fsSL\", \"--max-time\", \"30\", \"--max-filesize\", \"10000000\", \"--proto\", \"=https\", \"--proto-redir\", ...",
+    )?;
     Ok(())
 }

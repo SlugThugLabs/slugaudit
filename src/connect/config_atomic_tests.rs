@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::connect::config_file::write_json_server;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[cfg(unix)]
 #[test]
@@ -20,7 +20,11 @@ fn config_file_replacing_a_0644_config_preserves_its_mode() -> TestResult {
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(mode, 0o644, "an existing mode is not tightened or widened");
+    ensure_eq(
+        &mode,
+        &0o644,
+        "an existing mode is not tightened or widened",
+    )?;
     Ok(())
 }
 
@@ -38,7 +42,7 @@ fn config_file_new_file_is_created_owner_only() -> TestResult {
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(mode, 0o600, "a new config is owner-only");
+    ensure_eq(&mode, &0o600, "a new config is owner-only")?;
     Ok(())
 }
 
@@ -56,10 +60,22 @@ fn config_file_round_trip_keeps_key_order_and_ends_with_newline() -> TestResult 
 
     let text = std::fs::read_to_string(&config).check("read back")?;
     let position = |needle: &str| text.find(needle).check("key present");
-    assert!(position("\"zeta\"")? < position("\"mcpServers\"")?);
-    assert!(position("\"mcpServers\"")? < position("\"alpha\"")?);
-    assert!(position("\"zz\"")? < position("\"aa\"")?);
-    assert!(position("\"aa\"")? < position("\"slugaudit\"")?);
-    assert!(text.ends_with("}\n"), "trailing newline: {text:?}");
+    ensure(
+        position("\"zeta\"")? < position("\"mcpServers\"")?,
+        "position(\"\\\"zeta\\\"\")? < position(\"\\\"mcpServers\\\"\")?",
+    )?;
+    ensure(
+        position("\"mcpServers\"")? < position("\"alpha\"")?,
+        "position(\"\\\"mcpServers\\\"\")? < position(\"\\\"alpha\\\"\")?",
+    )?;
+    ensure(
+        position("\"zz\"")? < position("\"aa\"")?,
+        "position(\"\\\"zz\\\"\")? < position(\"\\\"aa\\\"\")?",
+    )?;
+    ensure(
+        position("\"aa\"")? < position("\"slugaudit\"")?,
+        "position(\"\\\"aa\\\"\")? < position(\"\\\"slugaudit\\\"\")?",
+    )?;
+    ensure(text.ends_with("}\n"), format!("trailing newline: {text:?}"))?;
     Ok(())
 }

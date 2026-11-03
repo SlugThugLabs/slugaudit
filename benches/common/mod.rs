@@ -53,31 +53,25 @@ impl Mix {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, bound: u64) -> u64 {
-        self.next() % bound
+    fn below(&mut self, bound: u64) -> TestResult<u64> {
+        self.next()
+            .checked_rem(bound)
+            .check("the random bound must not be zero")
     }
 }
 
 /// Project-local import target for a per-language index `k`: a fixed
 /// permutation so every file imports *some* sibling (exercising resolution
 /// and edge building) without forming a degenerate all-to-one graph.
-fn sibling(k: usize, count: usize) -> usize {
-    (k * 7 + 3) % count
+fn sibling(k: usize, count: usize) -> TestResult<usize> {
+    k.checked_mul(7)
+        .and_then(|scaled| scaled.checked_add(3))
+        .and_then(|shifted| shifted.checked_rem(count))
+        .check("the sibling index overflowed or the language count is zero")
 }
 
-/// Generates the full fixture tree under `root`. Returns per-fixture stats.
-///
-/// # Errors
-///
-/// Returns the first filesystem step that failed.
-///
-/// Layout cycle (i % 10): 0=markdown, 1/2/8=Rust, 3/4/9=Python,
-/// 5=JavaScript, 6=TypeScript, 7=JSON config. With `file_count` divisible
-/// by 10 the per-language counts are exact.
-pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> TestResult<FixtureStats> {
-    let mut mix = Mix(0xC0FF_EE00_DEAD_BEEF);
-    let mut total_bytes = 0_u64;
-
+/// Activates the project under `root` and creates the per-language directories.
+fn create_fixture_directories(root: &Path) -> TestResult {
     let activation = root.join(".planning").join("slugaudit");
     fs::create_dir_all(&activation).check("create activation dir")?;
     // A project is active only when `project.db` exists as a regular file.
@@ -94,9 +88,30 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> TestResult<Fix
     fs::create_dir_all(root.join("src/ts")).check("create ts dir")?;
     fs::create_dir_all(root.join("docs")).check("create docs dir")?;
     fs::create_dir_all(root.join("config")).check("create config dir")?;
+    Ok(())
+}
 
-    let rust_count = file_count / 10 * 3;
-    let python_count = file_count / 10 * 3;
+/// Generates the full fixture tree under `root`. Returns per-fixture stats.
+///
+/// # Errors
+///
+/// Returns the first filesystem step that failed.
+///
+/// Layout cycle (i % 10): 0=markdown, 1/2/8=Rust, 3/4/9=Python,
+/// 5=JavaScript, 6=TypeScript, 7=JSON config. With `file_count` divisible
+/// by 10 the per-language counts are exact.
+pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> TestResult<FixtureStats> {
+    let mut mix = Mix(0xC0FF_EE00_DEAD_BEEF);
+    let mut total_bytes = 0_u64;
+
+    create_fixture_directories(root)?;
+
+    let rust_count = (file_count / 10)
+        .checked_mul(3)
+        .check("the rust file count overflowed")?;
+    let python_count = (file_count / 10)
+        .checked_mul(3)
+        .check("the python file count overflowed")?;
     let js_count = file_count / 10;
     let ts_count = file_count / 10;
 
@@ -108,7 +123,9 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> TestResult<Fix
     let mut write = |relative: &str, content: &str| -> TestResult {
         let path = root.join(relative);
         fs::write(&path, content).check("write fixture file")?;
-        total_bytes += content.len() as u64;
+        total_bytes = total_bytes
+            .checked_add(content.len() as u64)
+            .check("the fixture byte total overflowed")?;
         Ok(())
     };
 
@@ -125,34 +142,42 @@ pub(crate) fn generate_fixture(root: &Path, file_count: usize) -> TestResult<Fix
             )?,
             1 | 2 | 8 => {
                 let k = rust_index;
-                rust_index += 1;
+                rust_index = rust_index
+                    .checked_add(1)
+                    .check("the rust file index overflowed")?;
                 write(
                     &format!("src/rust/mod_{k}.rs"),
-                    &rust_source(k, sibling(k, rust_count), mix.below(100)),
+                    &rust_source(k, sibling(k, rust_count)?, mix.below(100)?),
                 )?;
             }
             3 | 4 | 9 => {
                 let k = python_index;
-                python_index += 1;
+                python_index = python_index
+                    .checked_add(1)
+                    .check("the python file index overflowed")?;
                 write(
                     &format!("src/python/mod_{k}.py"),
-                    &python_source(k, sibling(k, python_count), mix.below(100)),
+                    &python_source(k, sibling(k, python_count)?, mix.below(100)?),
                 )?;
             }
             5 => {
                 let k = js_index;
-                js_index += 1;
+                js_index = js_index
+                    .checked_add(1)
+                    .check("the js file index overflowed")?;
                 write(
                     &format!("src/js/mod_{k}.js"),
-                    &js_source(k, sibling(k, js_count), mix.below(100)),
+                    &js_source(k, sibling(k, js_count)?, mix.below(100)?),
                 )?;
             }
             6 => {
                 let k = ts_index;
-                ts_index += 1;
+                ts_index = ts_index
+                    .checked_add(1)
+                    .check("the ts file index overflowed")?;
                 write(
                     &format!("src/ts/mod_{k}.ts"),
-                    &ts_source(k, sibling(k, ts_count), mix.below(100)),
+                    &ts_source(k, sibling(k, ts_count)?, mix.below(100)?),
                 )?;
             }
             _ => write(

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::sync::discover;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure};
 use std::fs;
 
 fn project() -> TestResult<tempfile::TempDir> {
@@ -29,10 +29,10 @@ fn a_parent_gitignore_is_not_applied_to_a_nested_project() -> TestResult {
         .map(|file| file.relative_path.as_str())
         .collect();
 
-    assert!(
+    ensure(
         indexed.contains("dist/out.rs"),
-        "the walker must not apply a parent ignore file: {indexed:?}"
-    );
+        format!("the walker must not apply a parent ignore file: {indexed:?}"),
+    )?;
     Ok(())
 }
 
@@ -59,14 +59,17 @@ fn the_walker_does_not_descend_into_excluded_directories() -> TestResult {
         .collect::<Result<_, _>>()
         .check("walk the project")?;
 
-    assert!(
-        yielded
-            .iter()
-            .all(|path| !path.starts_with(root.join(".git"))
-                && !path.starts_with(root.join(".planning/slugaudit"))),
-        "excluded subtrees must not be yielded: {yielded:?}"
-    );
-    assert!(yielded.iter().any(|path| path.ends_with("src/lib.rs")));
+    ensure(
+        yielded.iter().all(|path| {
+            !path.starts_with(root.join(".git"))
+                && !path.starts_with(root.join(".planning/slugaudit"))
+        }),
+        format!("excluded subtrees must not be yielded: {yielded:?}"),
+    )?;
+    ensure(
+        yielded.iter().any(|path| path.ends_with("src/lib.rs")),
+        "yielded.iter().any(|path| path.ends_with(\"src/lib.rs\"))",
+    )?;
     Ok(())
 }
 
@@ -78,8 +81,14 @@ fn the_runtime_data_directory_and_its_descendants_are_excluded() -> TestResult {
         ".planning/slugaudit/nested/deep.json",
         ".planning\\slugaudit\\project.db",
     ] {
-        assert!(is_excluded_path(excluded), "{excluded} must be excluded");
-        assert!(is_excluded_dir(excluded), "{excluded} must be excluded");
+        ensure(
+            is_excluded_path(excluded),
+            format!("{excluded} must be excluded"),
+        )?;
+        ensure(
+            is_excluded_dir(excluded),
+            format!("{excluded} must be excluded"),
+        )?;
     }
     Ok(())
 }
@@ -96,7 +105,10 @@ fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() -> TestResu
         ".planning",
         "slugaudit/x.md",
     ] {
-        assert!(!is_excluded_path(included), "{included} must be indexed");
+        ensure(
+            !is_excluded_path(included),
+            format!("{included} must be indexed"),
+        )?;
     }
     Ok(())
 }

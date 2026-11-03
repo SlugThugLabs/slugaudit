@@ -22,7 +22,7 @@
 //! The `install` step deliberately runs into the temp `SLUGTHUG_HOME`, never
 //! `~/.slugthug`, so it leaves the machine exactly as it found it.
 
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -183,38 +183,40 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() -> TestResult {
     }
 
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
-    assert!(
+    ensure(
         binary.is_file(),
-        "test binary not found: {}",
-        binary.display()
-    );
+        format!("test binary not found: {}", binary.display()),
+    )?;
 
     // Run `install` so the binary lands at the stable home path `connect`
     // prefers, mirroring the real flow: install once, then connect.
     let install = hermetic_output(&binary, &home, &bin_dir, &["install"])?;
-    assert!(
+    ensure(
         install.status.success(),
-        "install failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&install.stdout),
-        String::from_utf8_lossy(&install.stderr),
-    );
+        format!(
+            "install failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&install.stdout),
+            String::from_utf8_lossy(&install.stderr)
+        ),
+    )?;
     let installed = home.join(".slugthug/slugaudit/slugaudit");
-    assert!(
+    ensure(
         installed.is_file(),
-        "install did not produce {}",
-        installed.display()
-    );
+        format!("install did not produce {}", installed.display()),
+    )?;
 
     for case in CASES {
         fs::write(&log, "").check("truncate argv log")?;
         let output = hermetic_output(&binary, &home, &bin_dir, &["connect", case.agent])?;
-        assert!(
+        ensure(
             output.status.success(),
-            "{} connect failed:\nstdout: {}\nstderr: {}",
-            case.agent,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
+            format!(
+                "{} connect failed:\nstdout: {}\nstderr: {}",
+                case.agent,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        )?;
 
         let expected: Vec<String> = case
             .invocations
@@ -226,13 +228,15 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() -> TestResult {
             .lines()
             .map(str::to_string)
             .collect();
-        assert_eq!(
-            recorded,
-            expected,
-            "{} emitted the wrong argv (install path {})",
-            case.agent,
-            installed.display()
-        );
+        ensure_eq(
+            &recorded,
+            &expected,
+            format!(
+                "{} emitted the wrong argv (install path {})",
+                case.agent,
+                installed.display()
+            ),
+        )?;
 
         if let Some(relative) = case.written {
             let path = home.join(relative);
@@ -241,13 +245,15 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() -> TestResult {
                 case.agent,
                 path.display()
             ))?;
-            assert!(
+            ensure(
                 content.contains("slugaudit") && content.contains(&installed.display().to_string()),
-                "{} wrote {} without a slugaudit entry pointing at {}:\n{content}",
-                case.agent,
-                path.display(),
-                installed.display(),
-            );
+                format!(
+                    "{} wrote {} without a slugaudit entry pointing at {}:\n{content}",
+                    case.agent,
+                    path.display(),
+                    installed.display()
+                ),
+            )?;
         }
     }
     Ok(())
@@ -268,16 +274,21 @@ fn disconnecting_an_entry_with_nothing_to_remove_says_so() -> TestResult {
     let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "goose"])?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
+    ensure(
         output.status.success(),
-        "a no-op disconnect is not an error: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
+        format!(
+            "a no-op disconnect is not an error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    ensure(
         stdout.contains("Nothing to disconnect."),
-        "a no-op must be reported as one: {stdout}"
-    );
-    assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
+        format!("a no-op must be reported as one: {stdout}"),
+    )?;
+    ensure(
+        !stdout.contains("Done."),
+        format!("nothing was done: {stdout}"),
+    )?;
     Ok(())
 }
 
@@ -298,21 +309,26 @@ fn disconnecting_a_config_without_an_entry_leaves_it_untouched() -> TestResult {
     let output = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "cursor"])?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
+    ensure(
         output.status.success(),
-        "a no-op disconnect is not an error: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
+        format!(
+            "a no-op disconnect is not an error: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    ensure(
         stdout.contains("Nothing to disconnect."),
-        "a config without an entry must be reported as nothing to do: {stdout}"
-    );
-    assert!(!stdout.contains("Done."), "nothing was done: {stdout}");
-    assert_eq!(
-        fs::read_to_string(&config).check("read config")?,
-        original,
-        "an untouched config must not be rewritten or reformatted"
-    );
+        format!("a config without an entry must be reported as nothing to do: {stdout}"),
+    )?;
+    ensure(
+        !stdout.contains("Done."),
+        format!("nothing was done: {stdout}"),
+    )?;
+    ensure_eq(
+        &fs::read_to_string(&config).check("read config")?,
+        &original,
+        "an untouched config must not be rewritten or reformatted",
+    )?;
     Ok(())
 }
 
@@ -342,22 +358,25 @@ fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() -> TestR
         .output()
         .check("spawn slugaudit")?;
 
-    assert!(
+    ensure(
         output.status.success(),
-        "connect failed:\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
+        format!(
+            "connect failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
     let config = home.join(".cursor/mcp.json");
     let mode = fs::metadata(&config)
         .check("stat the written config")?
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(
-        mode, 0o600,
-        "another user's umask must not make a credential-bearing config readable"
-    );
+    ensure_eq(
+        &mode,
+        &0o600,
+        "another user's umask must not make a credential-bearing config readable",
+    )?;
     Ok(())
 }
 
@@ -384,18 +403,18 @@ fn connect_fails_a_malformed_client_config_and_names_the_json_cause() -> TestRes
         .check("spawn slugaudit")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
+    ensure(
         !output.status.success(),
-        "a malformed config must fail the connect"
-    );
-    assert!(
+        "a malformed config must fail the connect",
+    )?;
+    ensure(
         stderr.contains("could not tell whether cursor is connected"),
-        "the probe must report that it could not tell: {stderr}"
-    );
-    assert!(
+        format!("the probe must report that it could not tell: {stderr}"),
+    )?;
+    ensure(
         stderr.contains("contains invalid JSON"),
-        "the error must name the JSON cause: {stderr}"
-    );
+        format!("the error must name the JSON cause: {stderr}"),
+    )?;
     Ok(())
 }
 
@@ -421,11 +440,14 @@ fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() -> Te
         .check("spawn slugaudit")?;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
+    ensure(
         !output.status.success(),
-        "end of input must fail the command"
-    );
-    assert!(stderr.contains("input ended"), "stderr: {stderr}");
-    assert!(!stderr.contains("invalid agent choice"), "stderr: {stderr}");
+        "end of input must fail the command",
+    )?;
+    ensure(stderr.contains("input ended"), format!("stderr: {stderr}"))?;
+    ensure(
+        !stderr.contains("invalid agent choice"),
+        format!("stderr: {stderr}"),
+    )?;
     Ok(())
 }

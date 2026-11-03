@@ -24,7 +24,11 @@ use std::process::ExitCode;
 
 fn walk(root: &std::path::Path) -> TestResult<usize> {
     let (files, skipped) = discover(root).check("discover files")?;
-    Ok(black_box(files.len() + skipped.len()))
+    let total = files
+        .len()
+        .checked_add(skipped.len())
+        .check("discovered file count overflowed")?;
+    Ok(black_box(total))
 }
 
 fn walk_and_hash(root: &std::path::Path) -> TestResult<u64> {
@@ -34,7 +38,9 @@ fn walk_and_hash(root: &std::path::Path) -> TestResult<u64> {
         if file.kind == FileKind::Indexed {
             let identity = hash_file(&file.relative_path, &file.absolute_path, HASH_CAP_BYTES)
                 .check("hash an indexed file")?;
-            digest_chars += identity.content_hash.len() as u64;
+            digest_chars = digest_chars
+                .checked_add(identity.content_hash.len() as u64)
+                .check("digest character total overflowed")?;
         }
     }
     Ok(black_box(digest_chars))

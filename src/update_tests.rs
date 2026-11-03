@@ -3,7 +3,7 @@
 //! against a real `sha256sum` invocation.
 
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// The checksum tests drive a real `sha256sum`; a machine without it must fail
 /// them, not report green for tests that ran nothing. They resolve and execute
@@ -173,10 +173,10 @@ fn verify_checksum_rejects_a_mismatching_file() -> TestResult {
     let err = verify_checksum(&binary, &sums_file).check_err("a mismatch must be rejected")?;
     match err {
         UpdateError::Checksum(msg) => {
-            assert!(
+            ensure(
                 msg.contains("checksum mismatch"),
-                "unexpected error message: {msg}"
-            );
+                format!("unexpected error message: {msg}"),
+            )?;
         }
         other => {
             return Err(format!("expected Checksum error, got: {other:?}"))
@@ -200,7 +200,7 @@ fn target_binary_prefers_the_installed_stable_path() -> TestResult {
         Some(temp.path().as_os_str()),
         || -> TestResult {
             let target = target_binary().check("target binary resolves")?;
-            assert_eq!(target, stable);
+            ensure_eq(&target, &stable, "target == stable")?;
             Ok(())
         },
     )?;
@@ -214,7 +214,10 @@ fn verify_checksum_fails_on_missing_sums_file() -> TestResult {
     std::fs::write(&binary, b"content").check("write binary")?;
     let missing_sums = dir.path().join("nonexistent_SHA256SUMS");
     let err = verify_checksum(&binary, &missing_sums).check_err("the call must fail")?;
-    assert!(err.to_string().contains("reading checksums"));
+    ensure(
+        err.to_string().contains("reading checksums"),
+        "err.to_string().contains(\"reading checksums\")",
+    )?;
     Ok(())
 }
 
@@ -226,7 +229,10 @@ fn verify_checksum_fails_when_asset_entry_missing() -> TestResult {
     let sums_file = dir.path().join("SHA256SUMS");
     std::fs::write(&sums_file, "1234567890abcdef  other-asset.tar.gz\n").check("write sums")?;
     let err = verify_checksum(&binary, &sums_file).check_err("the call must fail")?;
-    assert!(err.to_string().contains("has no entry for"));
+    ensure(
+        err.to_string().contains("has no entry for"),
+        "err.to_string().contains(\"has no entry for\")",
+    )?;
     Ok(())
 }
 
@@ -239,55 +245,68 @@ fn verify_checksum_fails_when_binary_file_missing() -> TestResult {
     let sums_file = dir.path().join("SHA256SUMS");
     std::fs::write(&sums_file, format!("abc  {ASSET}\n")).check("write sums")?;
     let err = verify_checksum(&missing_binary, &sums_file).check_err("the call must fail")?;
-    assert!(err.to_string().contains("checksum verification failed"));
+    ensure(
+        err.to_string().contains("checksum verification failed"),
+        "err.to_string().contains(\"checksum verification failed\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn update_error_display_covers_all_variants() -> TestResult {
-    assert!(
+    ensure(
         UpdateError::ToolSpawn {
             tool: "curl",
             source: std::io::Error::other("Permission denied (os error 13)"),
         }
         .to_string()
-        .contains("could not run curl (required to self-update): Permission denied")
-    );
-    assert!(
+        .contains("could not run curl (required to self-update): Permission denied"),
+        "UpdateError::ToolSpawn { tool: \"curl\", source: std::io::Error::other(\"Permission denied (os error 13)\"), } ...",
+    )?;
+    ensure(
         UpdateError::Target(std::io::Error::other("fail"))
             .to_string()
-            .contains("could not determine")
-    );
-    assert!(
+            .contains("could not determine"),
+        "UpdateError::Target(std::io::Error::other(\"fail\")) .to_string() .contains(\"could not determine\")",
+    )?;
+    ensure(
         UpdateError::Network("conn reset".into())
             .to_string()
-            .contains("network request failed")
-    );
-    assert!(
+            .contains("network request failed"),
+        "UpdateError::Network(\"conn reset\".into()) .to_string() .contains(\"network request failed\")",
+    )?;
+    ensure(
         UpdateError::Json("bad json".into())
             .to_string()
-            .contains("JSON decodable")
-    );
-    assert!(UpdateError::NoTag.to_string().contains("tag name"));
-    assert!(
+            .contains("JSON decodable"),
+        "UpdateError::Json(\"bad json\".into()) .to_string() .contains(\"JSON decodable\")",
+    )?;
+    ensure(
+        UpdateError::NoTag.to_string().contains("tag name"),
+        "UpdateError::NoTag.to_string().contains(\"tag name\")",
+    )?;
+    ensure(
         UpdateError::Checksum("bad hash".into())
             .to_string()
-            .contains("checksum verification failed")
-    );
-    assert!(
+            .contains("checksum verification failed"),
+        "UpdateError::Checksum(\"bad hash\".into()) .to_string() .contains(\"checksum verification failed\")",
+    )?;
+    ensure(
         UpdateError::Io(std::io::Error::other("io"))
             .to_string()
-            .contains("filesystem")
-    );
-    assert!(
+            .contains("filesystem"),
+        "UpdateError::Io(std::io::Error::other(\"io\")) .to_string() .contains(\"filesystem\")",
+    )?;
+    ensure(
         UpdateError::Stage {
             action: "create",
             path: PathBuf::from("/test"),
             source: std::io::Error::other("perm"),
         }
         .to_string()
-        .contains("could not create /test")
-    );
+        .contains("could not create /test"),
+        "UpdateError::Stage { action: \"create\", path: PathBuf::from(\"/test\"), source: std::io::Error::other(\"perm\"),...",
+    )?;
     Ok(())
 }
 
@@ -299,24 +318,37 @@ fn a_download_failure_keeps_its_typed_cause() -> TestResult {
         source: Box::new(UpdateError::Network("conn reset".into())),
     };
 
-    assert!(
+    ensure(
         err.to_string()
-            .contains("could not download binary to /test")
-    );
-    assert!(
+            .contains("could not download binary to /test"),
+        "err.to_string() .contains(\"could not download binary to /test\")",
+    )?;
+    ensure(
         std::error::Error::source(&err)
             .is_some_and(|cause| cause.to_string().contains("network request failed")),
-        "the cause must stay reachable through source()"
-    );
+        "the cause must stay reachable through source()",
+    )?;
     Ok(())
 }
 
 #[test]
 fn only_the_published_platform_may_self_update() -> TestResult {
-    assert!(platform_supported("linux", "x86_64"));
-    assert!(!platform_supported("linux", "aarch64"));
-    assert!(!platform_supported("macos", "x86_64"));
-    assert!(!platform_supported("macos", "aarch64"));
+    ensure(
+        platform_supported("linux", "x86_64"),
+        "platform_supported(\"linux\", \"x86_64\")",
+    )?;
+    ensure(
+        !platform_supported("linux", "aarch64"),
+        "!platform_supported(\"linux\", \"aarch64\")",
+    )?;
+    ensure(
+        !platform_supported("macos", "x86_64"),
+        "!platform_supported(\"macos\", \"x86_64\")",
+    )?;
+    ensure(
+        !platform_supported("macos", "aarch64"),
+        "!platform_supported(\"macos\", \"aarch64\")",
+    )?;
     Ok(())
 }
 
@@ -331,8 +363,8 @@ fn an_unsupported_platform_is_the_exact_unsupported_variant() -> TestResult {
         return Err(format!("expected UnsupportedPlatform, got {error:?}"))
             .check("unexpected outcome");
     };
-    assert_eq!(os, "macos");
-    assert_eq!(arch, "aarch64");
+    ensure_eq(&os, &"macos", "os == \"macos\"")?;
+    ensure_eq(&arch, &"aarch64", "arch == \"aarch64\"")?;
     Ok(())
 }
 
@@ -350,8 +382,8 @@ fn the_unsupported_platform_error_names_both_sides() -> TestResult {
     }
     .to_string();
 
-    assert!(message.contains("linux/x86_64"), "{message}");
-    assert!(message.contains("macos/aarch64"), "{message}");
+    ensure(message.contains("linux/x86_64"), &message)?;
+    ensure(message.contains("macos/aarch64"), &message)?;
     Ok(())
 }
 
@@ -365,11 +397,11 @@ fn update_fetches_only_a_newer_or_incomparable_release() -> TestResult {
     ];
 
     for (current, latest, expected) in cases {
-        assert_eq!(
-            update_decision(current, latest),
-            expected,
-            "{current} vs {latest}"
-        );
+        ensure_eq(
+            &update_decision(current, latest),
+            &expected,
+            format!("{current} vs {latest}"),
+        )?;
     }
     Ok(())
 }
@@ -380,13 +412,20 @@ fn update_fetches_only_a_newer_or_incomparable_release() -> TestResult {
 fn an_empty_sha256sum_output_is_a_named_parse_failure() -> TestResult {
     let error = parse_digest("  \n").check_err("no token is no digest")?;
 
-    assert!(error.to_string().contains("printed no digest"), "{error}");
+    ensure(
+        error.to_string().contains("printed no digest"),
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
 #[test]
 fn the_first_sha256sum_token_is_the_lowercase_digest() -> TestResult {
-    assert_eq!(parse_digest("ABCDEF  file\n").check("digest")?, "abcdef");
+    ensure_eq(
+        &parse_digest("ABCDEF  file\n").check("digest")?,
+        &"abcdef",
+        "parse_digest(\"ABCDEF file\\n\").check(\"digest\")? == \"abcdef\"",
+    )?;
     Ok(())
 }
 
@@ -408,7 +447,11 @@ fn target_binary_reports_a_failing_stat_of_the_installed_path() -> TestResult {
     let Err(UpdateError::Target(source)) = result else {
         return Err(format!("expected Target, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(source.kind(), std::io::ErrorKind::NotADirectory);
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::NotADirectory,
+        "source.kind() == std::io::ErrorKind::NotADirectory",
+    )?;
     Ok(())
 }
 
@@ -429,9 +472,13 @@ fn apply_update_with_a_target_that_has_no_parent_reports_the_prepare_stage() -> 
     else {
         return Err(format!("expected Stage, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(action, "prepare");
-    assert_eq!(path, PathBuf::from("/"));
-    assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
+    ensure_eq(&action, &"prepare", "action == \"prepare\"")?;
+    ensure_eq(&path, &PathBuf::from("/"), "path == PathBuf::from(\"/\")")?;
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::InvalidInput,
+        "source.kind() == std::io::ErrorKind::InvalidInput",
+    )?;
     Ok(())
 }
 
@@ -467,19 +514,28 @@ fn apply_update_maps_a_placement_failure_to_the_stage_variant() -> TestResult {
     else {
         return Err(format!("expected Stage, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(action, "retain the previous binary at");
-    assert_eq!(path, install_dir.join("slugaudit.prev"));
+    ensure_eq(
+        &action,
+        &"retain the previous binary at",
+        "action == \"retain the previous binary at\"",
+    )?;
+    ensure_eq(
+        &path,
+        &install_dir.join("slugaudit.prev"),
+        "path == install_dir.join(\"slugaudit.prev\")",
+    )?;
     // `std::fs::copy` refuses a directory as its source before it reads any
     // bytes; the target directory is what made the retain step fail.
-    assert_eq!(source.kind(), std::io::ErrorKind::InvalidInput);
-    assert!(target.is_dir(), "the target must be left in place");
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::InvalidInput,
+        "source.kind() == std::io::ErrorKind::InvalidInput",
+    )?;
+    ensure(target.is_dir(), "the target must be left in place")?;
     let argv = std::fs::read_to_string(&argv_log).check("the fake curl ran")?;
-    assert!(
-        argv.contains(
+    ensure(argv.contains(
             "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-linux-gnu"
-        ),
-        "the fake curl must have served the asset download: {argv}"
-    );
+        ), format!("the fake curl must have served the asset download: {argv}"))?;
     Ok(())
 }
 
@@ -499,8 +555,12 @@ fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() -> Test
     let Err(UpdateError::ToolSpawn { tool, source }) = result else {
         return Err(format!("expected ToolSpawn, got {result:?}")).check("unexpected outcome");
     };
-    assert_eq!(tool, "sha256sum");
-    assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+    ensure_eq(&tool, &"sha256sum", "tool == \"sha256sum\"")?;
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::NotFound,
+        "source.kind() == std::io::ErrorKind::NotFound",
+    )?;
     Ok(())
 }
 
@@ -516,7 +576,11 @@ fn run_update_refuses_a_platform_with_no_published_asset() -> TestResult {
         return Err(format!("expected UnsupportedPlatform, got {result:?}"))
             .check("unexpected outcome");
     };
-    assert_eq!(os, std::env::consts::OS);
-    assert_eq!(arch, std::env::consts::ARCH);
+    ensure_eq(&os, &std::env::consts::OS, "os == std::env::consts::OS")?;
+    ensure_eq(
+        &arch,
+        &std::env::consts::ARCH,
+        "arch == std::env::consts::ARCH",
+    )?;
     Ok(())
 }

@@ -5,7 +5,7 @@
 use super::*;
 use crate::install::InstallError;
 use crate::util::TEST_ENV_LOCK;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::Path;
 
 #[test]
@@ -20,8 +20,16 @@ fn path_config_maps_bash_shell_to_bashrc_export() -> TestResult {
         || -> TestResult {
             let (config, line) =
                 path_config(Path::new("/x/slugthug/slugaudit")).check("path config")?;
-            assert_eq!(config, temp.path().join(".bashrc"));
-            assert_eq!(line, "export PATH=\"/x/slugthug/slugaudit:$PATH\"");
+            ensure_eq(
+                &config,
+                &temp.path().join(".bashrc"),
+                "config == temp.path().join(\".bashrc\")",
+            )?;
+            ensure_eq(
+                &line,
+                &"export PATH=\"/x/slugthug/slugaudit:$PATH\"",
+                "line == \"export PATH=\\\"/x/slugthug/slugaudit:$PATH\\\"\"",
+            )?;
             Ok(())
         },
     )?;
@@ -40,8 +48,16 @@ fn path_config_maps_fish_shell_to_config_fish() -> TestResult {
         || -> TestResult {
             let (config, line) =
                 path_config(Path::new("/x/slugthug/slugaudit")).check("path config")?;
-            assert_eq!(config, temp.path().join(".config/fish/config.fish"));
-            assert_eq!(line, "fish_add_path /x/slugthug/slugaudit");
+            ensure_eq(
+                &config,
+                &temp.path().join(".config/fish/config.fish"),
+                "config == temp.path().join(\".config/fish/config.fish\")",
+            )?;
+            ensure_eq(
+                &line,
+                &"fish_add_path /x/slugthug/slugaudit",
+                "line == \"fish_add_path /x/slugthug/slugaudit\"",
+            )?;
             Ok(())
         },
     )?;
@@ -59,16 +75,16 @@ fn install_path_unset_shell_is_refused_with_the_line_to_add() -> TestResult {
         ],
         || -> TestResult {
             let error = path_config(Path::new("/x/slugaudit")).check_err("unset SHELL refused")?;
-            assert!(
+            ensure(
                 matches!(error, InstallError::UnknownShell { .. }),
-                "{error}"
-            );
-            assert!(
+                format!("{error}"),
+            )?;
+            ensure(
                 error
                     .to_string()
                     .contains("export PATH=\"/x/slugaudit:$PATH\""),
-                "{error}"
-            );
+                format!("{error}"),
+            )?;
             Ok(())
         },
     )?;
@@ -86,12 +102,12 @@ fn install_path_unknown_shell_writes_no_rc_file() -> TestResult {
         ],
         || -> TestResult {
             let error = add_to_path(&temp.path().join("slugaudit")).check_err("refused")?;
-            assert!(
+            ensure(
                 matches!(error, InstallError::UnknownShell { .. }),
-                "{error}"
-            );
+                format!("{error}"),
+            )?;
             let entries = std::fs::read_dir(temp.path()).check("read home")?.count();
-            assert_eq!(entries, 0, "no rc file or temp file may be created");
+            ensure_eq(&entries, &0, "no rc file or temp file may be created")?;
             Ok(())
         },
     )?;
@@ -119,16 +135,14 @@ fn install_path_append_keeps_mode_and_leaves_no_temp_file() -> TestResult {
         .permissions()
         .mode()
         & 0o777;
-    assert_eq!(mode, 0o640);
+    ensure_eq(&mode, &0o640, "mode == 0o640")?;
     let contents = std::fs::read_to_string(&config).check("read rc")?;
-    assert!(
-        contents.starts_with("alias a=b\nexport PATH="),
-        "{contents}"
-    );
-    assert_eq!(
-        std::fs::read_dir(temp.path()).check("read home")?.count(),
-        1
-    );
+    ensure(contents.starts_with("alias a=b\nexport PATH="), &contents)?;
+    ensure_eq(
+        &std::fs::read_dir(temp.path()).check("read home")?.count(),
+        &1,
+        "std::fs::read_dir(temp.path()).check(\"read home\")?.count() == 1",
+    )?;
     Ok(())
 }
 
@@ -145,14 +159,22 @@ fn path_config_escapes_a_bash_bin_dir_with_spaces_quotes_and_dollars() -> TestRe
         || -> TestResult {
             let bin_dir = home.join("slugthug").join("slugaudit");
             let (config, line) = path_config(&bin_dir).check("path config")?;
-            assert_eq!(config, home.join(".bashrc"));
+            ensure_eq(
+                &config,
+                &home.join(".bashrc"),
+                "config == home.join(\".bashrc\")",
+            )?;
             let escaped = bin_dir
                 .display()
                 .to_string()
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"")
                 .replace('$', "\\$");
-            assert_eq!(line, format!("export PATH=\"{escaped}:$PATH\""));
+            ensure_eq(
+                &line,
+                &format!("export PATH=\"{escaped}:$PATH\""),
+                "line == format!(\"export PATH=\\\"{escaped}:$PATH\\\"\")",
+            )?;
             Ok(())
         },
     )?;
@@ -172,13 +194,21 @@ fn path_config_quotes_a_fish_bin_dir_with_spaces_and_quotes() -> TestResult {
         || -> TestResult {
             let bin_dir = home.join("slugaudit");
             let (config, line) = path_config(&bin_dir).check("path config")?;
-            assert_eq!(config, home.join(".config/fish/config.fish"));
+            ensure_eq(
+                &config,
+                &home.join(".config/fish/config.fish"),
+                "config == home.join(\".config/fish/config.fish\")",
+            )?;
             let escaped = bin_dir
                 .display()
                 .to_string()
                 .replace('\\', "\\\\")
                 .replace('\'', "\\'");
-            assert_eq!(line, format!("fish_add_path '{escaped}'"));
+            ensure_eq(
+                &line,
+                &format!("fish_add_path '{escaped}'"),
+                "line == format!(\"fish_add_path '{escaped}'\")",
+            )?;
             Ok(())
         },
     )?;
@@ -199,17 +229,18 @@ fn add_to_path_is_idempotent() -> TestResult {
             add_to_path(&bin_dir).check("first add")?;
             let config = temp.path().join(".bashrc");
             let contents = std::fs::read_to_string(&config).check("read config")?;
-            assert!(
+            ensure(
                 contents.contains("export PATH=\""),
-                "the export line should have been appended"
-            );
+                "the export line should have been appended",
+            )?;
 
             add_to_path(&bin_dir).check("second add")?;
             let again = std::fs::read_to_string(&config).check("read config")?;
-            assert_eq!(
-                contents, again,
-                "adding twice must not duplicate the export line"
-            );
+            ensure_eq(
+                &contents,
+                &again,
+                "adding twice must not duplicate the export line",
+            )?;
             Ok(())
         },
     )?;
@@ -235,12 +266,16 @@ fn add_to_path_is_idempotent_for_a_home_with_spaces_and_quotes() -> TestResult {
 
             add_to_path(&bin_dir).check("second add")?;
 
-            assert_eq!(
-                std::fs::read_to_string(&config).check("read config again")?,
-                contents,
-                "the escaped line must match itself on the next run"
-            );
-            assert_eq!(contents.lines().count(), 1, "one PATH line: {contents}");
+            ensure_eq(
+                &std::fs::read_to_string(&config).check("read config again")?,
+                &contents,
+                "the escaped line must match itself on the next run",
+            )?;
+            ensure_eq(
+                &contents.lines().count(),
+                &1,
+                format!("one PATH line: {contents}"),
+            )?;
             Ok(())
         },
     )?;
@@ -260,7 +295,10 @@ fn add_to_path_reports_unreadable_shell_config() -> TestResult {
         ],
         || -> TestResult {
             let error = add_to_path(&bin_dir).check_err("a directory cannot be read as config")?;
-            assert!(matches!(error, InstallError::Io(_)));
+            ensure(
+                matches!(error, InstallError::Io(_)),
+                "matches!(error, InstallError::Io(_))",
+            )?;
             Ok(())
         },
     )?;
@@ -284,7 +322,10 @@ fn a_non_utf8_shell_variable_is_refused_instead_of_choosing_bashrc() -> TestResu
             let error =
                 path_config(Path::new("/x/slugaudit")).check_err("non-UTF-8 SHELL fails")?;
 
-            assert!(matches!(error, InstallError::ShellNotUnicode), "{error}");
+            ensure(
+                matches!(error, InstallError::ShellNotUnicode),
+                format!("{error}"),
+            )?;
             Ok(())
         },
     )?;
@@ -307,16 +348,16 @@ fn a_non_utf8_bin_dir_is_refused_instead_of_writing_a_lossy_path_line() -> TestR
         || -> TestResult {
             let error = path_config(bin_dir).check_err("non-UTF-8 bin dir fails")?;
 
-            assert!(
+            ensure(
                 matches!(error, InstallError::BinDirNotUnicode { .. }),
-                "{error}"
-            );
+                format!("{error}"),
+            )?;
             Ok(())
         },
     )?;
-    assert!(
+    ensure(
         !temp.path().join(".bashrc").exists(),
-        "no shell config may be written"
-    );
+        "no shell config may be written",
+    )?;
     Ok(())
 }

@@ -151,7 +151,7 @@ pub fn run_remove(agent: &AgentDef, cli: &str) -> Result<(), ConnectError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
     #[cfg(unix)]
     #[test]
@@ -170,7 +170,7 @@ mod tests {
             return Err(format!("expected AgentTimeout, got {result:?}"))
                 .check("unexpected outcome");
         };
-        assert_eq!(named, cli);
+        ensure_eq(&named, &cli, "named == cli")?;
         Ok(())
     }
 
@@ -188,12 +188,12 @@ mod tests {
             return Err(format!("expected AgentCommand, got {result:?}"))
                 .check("unexpected outcome");
         };
-        assert_eq!(cli, "claude");
-        assert_eq!(
-            inner.kind(),
-            std::io::ErrorKind::NotFound,
-            "the missing executable must be the cause: {inner}"
-        );
+        ensure_eq(&cli, &"claude", "cli == \"claude\"")?;
+        ensure_eq(
+            &inner.kind(),
+            &std::io::ErrorKind::NotFound,
+            format!("the missing executable must be the cause: {inner}"),
+        )?;
         Ok(())
     }
 
@@ -204,11 +204,19 @@ mod tests {
             &["mcp", "add", "slugaudit", "--", "/bin/slug audit"].map(str::to_string),
         );
 
-        assert_eq!(split, "claude mcp add slugaudit -- '/bin/slug audit'");
+        ensure_eq(
+            &split,
+            &"claude mcp add slugaudit -- '/bin/slug audit'",
+            "split == \"claude mcp add slugaudit -- '/bin/slug audit'\"",
+        )?;
 
         let apostrophe = display_command("claude", &["it's".to_string()]);
 
-        assert_eq!(apostrophe, "claude 'it'\\''s'");
+        ensure_eq(
+            &apostrophe,
+            &"claude 'it'\\''s'",
+            "apostrophe == \"claude 'it'\\\\''s'\"",
+        )?;
         Ok(())
     }
 }

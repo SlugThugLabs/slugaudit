@@ -113,7 +113,7 @@ fn confirm_reconnect(agent: AgentDef) -> Result<bool, ConnectError> {
 /// Prints the numbered list of detected agents with their connection status;
 /// `connected[i]` is the state of `detected[i]`.
 fn print_detected_agents(detected: &[AgentDef], connected: &[bool]) -> Result<(), ConnectError> {
-    for (i, (agent, is_connected)) in detected.iter().zip(connected).enumerate() {
+    for (number, (agent, is_connected)) in (1usize..).zip(detected.iter().zip(connected)) {
         let status = if *is_connected {
             " [Connected ✅]"
         } else {
@@ -121,9 +121,7 @@ fn print_detected_agents(detected: &[AgentDef], connected: &[bool]) -> Result<()
         };
         cli::out(format_args!(
             "  {}) {:<24}{}\n",
-            i + 1,
-            agent.display_name,
-            status
+            number, agent.display_name, status
         ))?;
     }
     Ok(())
@@ -139,29 +137,30 @@ fn print_detected_agents(detected: &[AgentDef], connected: &[bool]) -> Result<()
 pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
     let home = config_home();
     let mut connected = Vec::new();
-    let mut unchecked = 0usize;
+    let mut unchecked = Vec::new();
     for agent in crate::connect_agents::AGENTS {
         match agent.is_connected(home.as_deref()) {
             Ok(true) => connected.push(*agent),
             Ok(false) => {}
             Err(failure) => {
                 cli::err(format_args!("Note: {failure}\n"))?;
-                unchecked += 1;
+                unchecked.push(failure);
             }
         }
     }
     if connected.is_empty() {
         cli::out(format_args!("No active SlugAudit connections found.\n"))?;
-        if unchecked > 0 {
+        if !unchecked.is_empty() {
             cli::out(format_args!(
-                "Could not check {unchecked} client(s); see the notes above.\n"
+                "Could not check {} client(s); see the notes above.\n",
+                unchecked.len()
             ))?;
         }
         return Ok(());
     }
     cli::out(format_args!("Connected AI agents and editors:\n\n"))?;
-    for (i, agent) in connected.iter().enumerate() {
-        cli::out(format_args!("  {}) {}\n", i + 1, agent.display_name))?;
+    for (number, agent) in (1usize..).zip(connected.iter()) {
+        cli::out(format_args!("  {}) {}\n", number, agent.display_name))?;
     }
     cli::out(format_args!("\n"))?;
     write_prompt(
@@ -182,7 +181,7 @@ pub fn run_disconnect_interactive() -> Result<(), ConnectError> {
 /// `InvalidChoice` for anything that is not one of the listed numbers.
 pub(super) fn parse_choice(answer: &str, count: usize) -> Result<usize, ConnectError> {
     match answer.trim().parse::<usize>() {
-        Ok(choice) if (1..=count).contains(&choice) => Ok(choice - 1),
+        Ok(choice) if choice <= count => choice.checked_sub(1).ok_or(ConnectError::InvalidChoice),
         _ => Err(ConnectError::InvalidChoice),
     }
 }

@@ -1,7 +1,7 @@
 //! `AgentDef::is_connected` reads local config files only.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure};
 
 /// Enumeration is config-only: a client CLI on `PATH` that records any
 /// invocation must never be run by `is_connected`, whatever the config says.
@@ -46,11 +46,14 @@ fn is_connected_never_spawns_a_client_cli() -> TestResult {
         },
     )?;
 
-    assert!(connected.is_empty(), "no config exists: {connected:?}");
-    assert!(
+    ensure(
+        connected.is_empty(),
+        format!("no config exists: {connected:?}"),
+    )?;
+    ensure(
         !marker.exists(),
-        "a client CLI was spawned during enumeration"
-    );
+        "a client CLI was spawned during enumeration",
+    )?;
     Ok(())
 }
 
@@ -61,12 +64,12 @@ fn a_client_without_a_config_path_is_not_detected_as_connected() -> TestResult {
     let home = tempfile::tempdir().check("home")?;
     for id in ["agy", "amp", "q"] {
         let agent = find_agent(id).check("agent")?;
-        assert!(
+        ensure(
             !agent
                 .is_connected(Some(home.path()))
                 .check("probe config")?,
-            "{id}"
-        );
+            id.to_string(),
+        )?;
     }
     Ok(())
 }

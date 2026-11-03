@@ -74,25 +74,32 @@ pub(crate) fn saturating_millis(duration: Duration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::TestResult;
+    use slugaudit_test_check::{TestResult, ensure, ensure_eq};
 
-    fn before_epoch() -> SystemTime {
-        UNIX_EPOCH - Duration::from_secs(5)
+    fn before_epoch() -> TestResult<SystemTime> {
+        use slugaudit_test_check::Check;
+
+        UNIX_EPOCH
+            .checked_sub(Duration::from_secs(5))
+            .check("five seconds before the epoch is representable")
     }
 
     #[test]
     fn a_pre_epoch_clock_is_an_error() -> slugaudit_test_check::TestResult {
         use slugaudit_test_check::CheckErr;
 
-        let error = unix_seconds(before_epoch()).check_err("a pre-epoch clock is an error")?;
+        let error = unix_seconds(before_epoch()?).check_err("a pre-epoch clock is an error")?;
 
-        assert!(matches!(error, ClockError::BeforeEpoch(_)), "{error:?}");
-        assert!(
+        ensure(
+            matches!(error, ClockError::BeforeEpoch(_)),
+            format!("{error:?}"),
+        )?;
+        ensure(
             error
                 .to_string()
                 .starts_with("the system clock is before the Unix epoch: "),
-            "{error}"
-        );
+            format!("{error}"),
+        )?;
         Ok(())
     }
 
@@ -103,7 +110,10 @@ mod tests {
         let error = whole_seconds(Duration::from_secs(i64::MAX.unsigned_abs() + 1))
             .check_err("a duration past i64 is an error")?;
 
-        assert!(matches!(error, ClockError::OutOfRange(_)), "{error:?}");
+        ensure(
+            matches!(error, ClockError::OutOfRange(_)),
+            format!("{error:?}"),
+        )?;
         Ok(())
     }
 
@@ -112,33 +122,41 @@ mod tests {
         use slugaudit_test_check::Check;
         let at = UNIX_EPOCH + Duration::from_millis(42_999);
 
-        assert_eq!(unix_seconds(at).check("convert")?, 42);
+        ensure_eq(
+            &unix_seconds(at).check("convert")?,
+            &42,
+            "unix_seconds(at).check(\"convert\")? == 42",
+        )?;
         Ok(())
     }
 
     #[test]
     fn a_clock_error_becomes_an_internal_tool_error() -> slugaudit_test_check::TestResult {
         use slugaudit_test_check::CheckErr;
-        let error: rmcp::ErrorData = unix_seconds(before_epoch())
+        let error: rmcp::ErrorData = unix_seconds(before_epoch()?)
             .check_err("a pre-epoch clock is an error")?
             .into();
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-        assert!(
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+        )?;
+        ensure(
             error.message.ends_with("; fix the system clock"),
-            "{}",
-            error.message
-        );
+            format!("{}", error.message),
+        )?;
         Ok(())
     }
 
     #[test]
     fn a_pre_epoch_mtime_is_none_and_warns() -> TestResult {
+        let before = before_epoch()?;
         let (mtime, logs) =
-            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Ok(before_epoch())))?;
+            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Ok(before)))?;
 
-        assert_eq!(mtime, None);
-        assert!(logs.contains("mtime unusable"), "{logs}");
+        ensure_eq(&mtime, &None, "mtime == None")?;
+        ensure(logs.contains("mtime unusable"), &logs)?;
         Ok(())
     }
 
@@ -149,8 +167,8 @@ mod tests {
         let (mtime, logs) =
             crate::store::test_capture::capture_warns(|| mtime_seconds_from(Err(unsupported)))?;
 
-        assert_eq!(mtime, None);
-        assert!(logs.contains("no mtime here"), "{logs}");
+        ensure_eq(&mtime, &None, "mtime == None")?;
+        ensure(logs.contains("no mtime here"), &logs)?;
         Ok(())
     }
 
@@ -158,14 +176,26 @@ mod tests {
     fn a_readable_mtime_converts_to_epoch_seconds() -> TestResult {
         let at = UNIX_EPOCH + Duration::from_secs(42);
 
-        assert_eq!(mtime_seconds_from(Ok(at)), Some(42));
+        ensure_eq(
+            &mtime_seconds_from(Ok(at)),
+            &Some(42),
+            "mtime_seconds_from(Ok(at)) == Some(42)",
+        )?;
         Ok(())
     }
 
     #[test]
     fn milliseconds_are_exact_and_saturate_at_the_maximum() -> TestResult {
-        assert_eq!(saturating_millis(Duration::from_millis(1_234)), 1_234);
-        assert_eq!(saturating_millis(Duration::MAX), u64::MAX);
+        ensure_eq(
+            &saturating_millis(Duration::from_millis(1_234)),
+            &1_234,
+            "saturating_millis(Duration::from_millis(1_234)) == 1_234",
+        )?;
+        ensure_eq(
+            &saturating_millis(Duration::MAX),
+            &u64::MAX,
+            "saturating_millis(Duration::MAX) == u64::MAX",
+        )?;
         Ok(())
     }
 }
