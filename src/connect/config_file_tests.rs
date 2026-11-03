@@ -198,7 +198,7 @@ fn a_non_utf8_binary_path_is_refused_before_the_config_is_written() -> TestResul
 }
 
 #[test]
-fn a_config_path_that_is_a_directory_is_an_io_error() -> TestResult {
+fn a_client_config_path_that_is_a_directory_is_an_io_error() -> TestResult {
     let home = tempfile::tempdir().check("temp dir")?;
     let config = home.path().join(".cursor/mcp.json");
     std::fs::create_dir_all(&config).check("plant a directory at the config path")?;
