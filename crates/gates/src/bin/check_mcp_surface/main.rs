@@ -122,7 +122,7 @@ fn compare_snapshot(
         Ok(text) => text,
         Err(error) => {
             eprintln!(
-                "mcp-surface: cannot read {}: {error}; run `cargo run --bin check_mcp_surface -- \
+                "mcp-surface: cannot read {}: {error}; run `cargo run -p slugaudit-gates --bin check_mcp_surface -- \
                  --record` once the surface is what it should be",
                 path.display()
             );

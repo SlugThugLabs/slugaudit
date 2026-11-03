@@ -110,7 +110,7 @@ elif command -v cargo >/dev/null 2>&1; then
     install -m 0755 "${TMP_DIR}/bin/slugaudit" "${TARGET_PATH}"
 else
     echo "Error: Pre-built binary currently available for Linux x86_64."
-    echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --git https://github.com/${GITHUB_REPO}.git"
+    echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --git https://github.com/${GITHUB_REPO}.git --bin slugaudit"
     exit 1
 fi
 
