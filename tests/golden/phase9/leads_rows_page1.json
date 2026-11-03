@@ -1,7 +1,7 @@
 {
   "case": "leads_rows_page1",
   "request": {
-    "mechanic": "unwrap_calls",
+    "mechanic": "comment_markers",
     "limit": 5,
     "cursor": null,
     "compact": false
@@ -9,12 +9,12 @@
   "response": {
     "page": {
       "returned": 5,
-      "total": 12,
+      "total": 15,
       "complete": false,
-      "cursor": "v1.b44ff69c-fd63-45d4-8db4-bc1e6d11a14b.d7e0ff45-276e-4ea8-8a78-b1a6d9685471.5",
+      "cursor": "v1.49b52f25-8ae4-41c3-b4ab-435e742718db.3da9efbc-8428-45c1-bee6-9b1c909afa56.5",
       "completeness": "complete",
       "page_bytes": 65536,
-      "bytes_used": 350,
+      "bytes_used": 366,
       "limited_by": "limit",
       "revision_id": "<REVISION_ID>"
     },
@@ -23,8 +23,8 @@
         "mechanic": "unwrap_calls",
         "source": "builtin",
         "note": null,
-        "count": 12,
-        "files": 3,
+        "count": 0,
+        "files": 0,
         "covers": [
           "rust"
         ]
@@ -83,7 +83,7 @@
         "mechanic": "comment_markers",
         "source": "builtin",
         "note": null,
-        "count": 3,
+        "count": 15,
         "files": 3,
         "covers": [
           "rust"
@@ -107,44 +107,40 @@
       {
         "file": "mod0.rs",
         "line": 1,
-        "detail": "x.unwrap",
-        "detail_clipped": false
-      },
-      {
-        "file": "mod0.rs",
-        "line": 2,
-        "detail": "x.unwrap",
+        "detail": "// TODO: 0",
         "detail_clipped": false
       },
       {
         "file": "mod0.rs",
         "line": 3,
-        "detail": "x.unwrap",
+        "detail": "// TODO: 1",
         "detail_clipped": false
       },
       {
         "file": "mod0.rs",
-        "line": 4,
-        "detail": "x.unwrap",
+        "line": 5,
+        "detail": "// TODO: 2",
         "detail_clipped": false
       },
       {
-        "file": "mod1.rs",
-        "line": 1,
-        "detail": "x.unwrap",
+        "file": "mod0.rs",
+        "line": 7,
+        "detail": "// TODO: 3",
+        "detail_clipped": false
+      },
+      {
+        "file": "mod0.rs",
+        "line": 9,
+        "detail": "// TODO: revisit",
         "detail_clipped": false
       }
     ],
     "files_total": 3,
-    "files_covered": 2,
+    "files_covered": 1,
     "page_file_counts": [
       {
         "file": "mod0.rs",
-        "count": 4
-      },
-      {
-        "file": "mod1.rs",
-        "count": 1
+        "count": 5
       }
     ],
     "oversized_row": false

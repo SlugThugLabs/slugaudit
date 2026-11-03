@@ -142,8 +142,8 @@ fn cause_with_sources(error: &dyn std::error::Error) -> String {
     cause
 }
 
-/// Converts an expected failure into a value: the replacement for
-/// `unwrap_err` and `expect_err`.
+/// Converts an expected failure into a value: the checked form of taking the
+/// error out of a result.
 pub trait CheckErr<T, E> {
     /// Returns the error value, or a [`TestError`] when the result was `Ok`.
     ///

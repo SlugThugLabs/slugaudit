@@ -365,28 +365,31 @@ fn a_failed_directory_sync_after_the_rename_still_reports_a_written_file() -> Te
 }
 
 #[test]
-fn a_negation_after_the_ignore_leaves_the_directory_unignored() {
+fn a_negation_after_the_ignore_leaves_the_directory_unignored() -> TestResult {
     assert!(!ignores_activation_dir(
         b".planning/slugaudit/\n!.planning/slugaudit/\n"
     ));
     assert!(!ignores_activation_dir(
         b"/.planning/slugaudit\n!/.planning/slugaudit\n"
     ));
+    Ok(())
 }
 
 #[test]
-fn an_ignore_after_the_negation_wins_again() {
+fn an_ignore_after_the_negation_wins_again() -> TestResult {
     assert!(ignores_activation_dir(
         b"!.planning/slugaudit/\n.planning/slugaudit/\n"
     ));
     assert!(ignores_activation_dir(
         b".planning/slugaudit/\n!.planning/slugaudit/\n.planning/slugaudit\n"
     ));
+    Ok(())
 }
 
 #[test]
-fn a_negation_alone_or_a_comment_ignores_nothing() {
+fn a_negation_alone_or_a_comment_ignores_nothing() -> TestResult {
     assert!(!ignores_activation_dir(b"!.planning/slugaudit/\n"));
     assert!(!ignores_activation_dir(b"# .planning/slugaudit/\n"));
     assert!(ignores_activation_dir(b".planning/slugaudit/\n# note\n"));
+    Ok(())
 }

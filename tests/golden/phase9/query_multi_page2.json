@@ -1,22 +1,21 @@
 {
   "case": "query_multi_page2",
   "request": {
-    "page": 2,
+    "sql": "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<60) SELECT i, printf('%050d', i) AS pad FROM n",
     "page_bytes": 1000,
-    "sql": "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<60) SELECT i, printf('%050d', i) AS pad FROM n"
+    "page": 2
   },
   "response": {
-    "clipped_cells": [],
-    "non_finite_cells": [],
     "page": {
-      "bytes_used": 938,
-      "complete": false,
-      "limited_by": "page_bytes",
-      "next_offset": 29,
-      "page_bytes": 1000,
       "returned": 14,
-      "revision_id": "<REVISION_ID>",
-      "total": 60
+      "total": 60,
+      "complete": false,
+      "cursor": "v1.815ca6d9-fc99-4fdf-87a9-e6c1852cdbb1.f46ee23e-3bd9-439b-ad74-28288f6b4cf5.29",
+      "completeness": "complete",
+      "page_bytes": 1000,
+      "bytes_used": 938,
+      "limited_by": "page_bytes",
+      "revision_id": "<REVISION_ID>"
     },
     "rows": [
       {
@@ -76,6 +75,7 @@
         "pad": "00000000000000000000000000000000000000000000000029"
       }
     ],
-    "total_unavailable": null
+    "clipped_cells": [],
+    "non_finite_cells": []
   }
 }

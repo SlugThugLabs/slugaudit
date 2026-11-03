@@ -77,8 +77,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sums_values() {
+    fn sums_values() -> Result<(), String> {
         assert_eq!(sum(&[1, 2, 3]), 6);
+        Ok(())
     }
 }
 "#,

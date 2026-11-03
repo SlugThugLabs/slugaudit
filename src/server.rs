@@ -243,13 +243,14 @@ mod tests {
     /// Every session pays for INSTRUCTIONS in context, so it stays short;
     /// detail belongs in the tool descriptions, schemas and resources.
     #[test]
-    fn the_initialize_instructions_stay_under_their_size_budget() {
+    fn the_initialize_instructions_stay_under_their_size_budget() -> TestResult {
         let characters = INSTRUCTIONS.chars().count();
 
         assert!(
             characters < 5_500,
             "INSTRUCTIONS is {characters} characters; the budget is 5500"
         );
+        Ok(())
     }
 
     /// The `query` description is where a model learns what `evidence.kind`

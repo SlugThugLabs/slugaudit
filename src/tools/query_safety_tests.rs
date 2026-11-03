@@ -219,8 +219,7 @@ fn functions_that_could_leave_the_sandbox_are_refused_or_inert() -> TestResult {
     );
     assert!(
         installer.is_err(),
-        "the pointer-installing fts3_tokenizer form must be refused, got: {:?}",
-        installer.ok()
+        "the pointer-installing fts3_tokenizer form must be refused, got: {installer:?}"
     );
     Ok(())
 }
@@ -446,11 +445,7 @@ fn refused_prepare_time_pragmas_leave_process_wide_state_unchanged() -> TestResu
         &crate::progress::NoopProgressSink,
         &crate::sync::SourceSyncManager::default(),
     );
-    assert!(
-        report.is_ok(),
-        "report after the refusals: {:?}",
-        report.err()
-    );
+    report.as_ref().check("`report` is ok")?;
     Ok(())
 }
 

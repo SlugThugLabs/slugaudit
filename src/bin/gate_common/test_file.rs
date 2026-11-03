@@ -21,9 +21,10 @@ pub(crate) fn is_test_file(path: &Path) -> bool {
 #[cfg(test)]
 mod test_file_tests {
     use super::*;
+    use slugaudit_test_check::TestResult;
 
     #[test]
-    fn the_repos_test_file_names_are_recognized() {
+    fn the_repos_test_file_names_are_recognized() -> TestResult {
         for name in [
             "query_tests.rs",
             "tests.rs",
@@ -32,12 +33,14 @@ mod test_file_tests {
         ] {
             assert!(is_test_file(&Path::new("src/x").join(name)), "{name}");
         }
+        Ok(())
     }
 
     #[test]
-    fn production_file_names_are_not_test_files() {
+    fn production_file_names_are_not_test_files() -> TestResult {
         for name in ["query.rs", "tests_helper.rs", "attests.rs", "main.rs"] {
             assert!(!is_test_file(&Path::new("src/x").join(name)), "{name}");
         }
+        Ok(())
     }
 }

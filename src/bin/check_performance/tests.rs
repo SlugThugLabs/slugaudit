@@ -9,12 +9,13 @@ use super::record::{baseline_json, unmeasured};
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
-fn fmt_ns_thresholds() {
+fn fmt_ns_thresholds() -> TestResult {
     assert_eq!(fmt_ns(0), "0 ns");
     assert_eq!(fmt_ns(500), "500 ns");
     assert_eq!(fmt_ns(1_500), "1.50 us");
     assert_eq!(fmt_ns(2_500_000), "2.50 ms");
     assert_eq!(fmt_ns(3_500_000_000), "3.50 s");
+    Ok(())
 }
 
 #[test]
@@ -205,7 +206,7 @@ fn baseline_of(
 }
 
 #[test]
-fn a_bench_within_the_threshold_passes() {
+fn a_bench_within_the_threshold_passes() -> TestResult {
     let measured = medians(&[("search/a", 119)]);
     let baseline = baseline_of(&[("search/a", 100, None)]);
 
@@ -213,10 +214,11 @@ fn a_bench_within_the_threshold_passes() {
 
     assert!(result.failures.is_empty(), "{:?}", result.failures);
     assert_eq!(result.rows[0].verdict, Verdict::Ok);
+    Ok(())
 }
 
 #[test]
-fn a_bench_past_the_threshold_regresses() {
+fn a_bench_past_the_threshold_regresses() -> TestResult {
     let measured = medians(&[("search/a", 121)]);
     let baseline = baseline_of(&[("search/a", 100, None)]);
 
@@ -224,10 +226,11 @@ fn a_bench_past_the_threshold_regresses() {
 
     assert_eq!(result.rows[0].verdict, Verdict::Regressed);
     assert_eq!(result.failures, ["search/a: 21.0% slower than baseline"]);
+    Ok(())
 }
 
 #[test]
-fn an_absolute_budget_overrun_outranks_a_regression() {
+fn an_absolute_budget_overrun_outranks_a_regression() -> TestResult {
     let measured = medians(&[("sync/first", 3_000_000)]);
     let baseline = baseline_of(&[("sync/first", 1_000_000, Some(2_000_000))]);
 
@@ -240,10 +243,11 @@ fn an_absolute_budget_overrun_outranks_a_regression() {
         "both rules report: {:?}",
         result.failures
     );
+    Ok(())
 }
 
 #[test]
-fn a_baselined_bench_that_did_not_run_fails_the_gate() {
+fn a_baselined_bench_that_did_not_run_fails_the_gate() -> TestResult {
     let measured = medians(&[("search/a", 100)]);
     let baseline = baseline_of(&[("search/a", 100, None), ("search/gone", 100, None)]);
 
@@ -251,10 +255,11 @@ fn a_baselined_bench_that_did_not_run_fails_the_gate() {
 
     assert_eq!(result.failures.len(), 1);
     assert!(result.failures[0].starts_with("search/gone: produced no measurements"));
+    Ok(())
 }
 
 #[test]
-fn an_unbaselined_bench_warns_and_prints_without_a_ratio() {
+fn an_unbaselined_bench_warns_and_prints_without_a_ratio() -> TestResult {
     let measured = medians(&[("search/new", 100)]);
 
     let result = compare(&measured, &baseline_of(&[]), 20.0);
@@ -266,20 +271,22 @@ fn an_unbaselined_bench_warns_and_prints_without_a_ratio() {
         table_line(&result.rows[0]).contains("  new"),
         "row prints its verdict"
     );
+    Ok(())
 }
 
 #[test]
-fn a_zero_baseline_median_is_an_infinite_regression() {
+fn a_zero_baseline_median_is_an_infinite_regression() -> TestResult {
     let measured = medians(&[("search/a", 1)]);
     let baseline = baseline_of(&[("search/a", 0, None)]);
 
     let result = compare(&measured, &baseline, 20.0);
 
     assert_eq!(result.rows[0].verdict, Verdict::Regressed);
+    Ok(())
 }
 
 #[test]
-fn re_recording_keeps_each_hand_set_budget() {
+fn re_recording_keeps_each_hand_set_budget() -> TestResult {
     let measured = medians(&[("sync/first", 5), ("search/a", 7)]);
     let previous = baseline_of(&[("sync/first", 1, Some(99))]);
 
@@ -288,6 +295,7 @@ fn re_recording_keeps_each_hand_set_budget() {
     assert_eq!(json["benches"]["sync/first"]["budget_ns"], 99);
     assert_eq!(json["benches"]["sync/first"]["median_ns"], 5);
     assert!(json["benches"]["search/a"]["budget_ns"].is_null());
+    Ok(())
 }
 
 #[test]
@@ -301,7 +309,7 @@ fn the_recorded_document_holds_only_what_the_gate_reads() -> TestResult {
 }
 
 #[test]
-fn a_baselined_bench_the_run_did_not_measure_is_reported_for_a_record() {
+fn a_baselined_bench_the_run_did_not_measure_is_reported_for_a_record() -> TestResult {
     let measured = medians(&[("search/a", 7)]);
     let previous = baseline_of(&[
         ("search/a", 1, None),
@@ -314,10 +322,11 @@ fn a_baselined_bench_the_run_did_not_measure_is_reported_for_a_record() {
         ["parsing/old", "sync/first"]
     );
     assert!(unmeasured(&measured, &baseline_of(&[("search/a", 1, None)])).is_empty());
+    Ok(())
 }
 
 #[test]
-fn criterion_output_follows_the_cargo_target_dir() {
+fn criterion_output_follows_the_cargo_target_dir() -> TestResult {
     let root = std::path::Path::new("/proj");
 
     assert_eq!(
@@ -332,15 +341,17 @@ fn criterion_output_follows_the_cargo_target_dir() {
         estimates::criterion_dir(root, Some(std::ffi::OsStr::new("out"))),
         std::path::Path::new("/proj/out/criterion")
     );
+    Ok(())
 }
 
 #[test]
-fn the_cli_rejects_a_non_finite_or_negative_threshold() {
+fn the_cli_rejects_a_non_finite_or_negative_threshold() -> TestResult {
     for raw in ["NaN", "inf", "-1"] {
         let result = options(false, &[raw.to_string()]);
 
         assert!(result.is_err(), "threshold {raw} must be rejected");
     }
+    Ok(())
 }
 
 #[test]

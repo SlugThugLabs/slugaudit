@@ -68,7 +68,7 @@ fn a_leads_call_naming_a_builtin_scans_no_registered_entry() -> TestResult {
     let manager = sync::SourceSyncManager::default();
     call(&manager, add(&path, "py_eval", "python", EVAL_QUERY)).check("add")?;
     let (limits, catalog) = spent_budget(&manager, &path)?;
-    let request = leads_request(&path, Some("unwrap_calls"), LeadMode::Full);
+    let request = leads_request(&path, Some("comment_markers"), LeadMode::Full);
 
     let response = crate::tools::leads::leads_with_catalog(
         &request,

@@ -2,7 +2,7 @@ use super::*;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
-fn parse_str_recognizes_profiles() {
+fn parse_str_recognizes_profiles() -> TestResult {
     assert_eq!(AuditProfile::parse_str("lean"), Some(AuditProfile::Lean));
     assert_eq!(AuditProfile::parse_str("AUDIT"), Some(AuditProfile::Audit));
     assert_eq!(
@@ -10,6 +10,7 @@ fn parse_str_recognizes_profiles() {
         Some(AuditProfile::Adaptive)
     );
     assert_eq!(AuditProfile::parse_str("unknown"), None);
+    Ok(())
 }
 
 #[test]

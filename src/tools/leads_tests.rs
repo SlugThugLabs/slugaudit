@@ -130,14 +130,15 @@ fn rust_fixture() -> TestResult<tempfile::TempDir> {
     Ok(project)
 }
 
-/// A Rust project with `per_file` `unwrap` calls in each of `files` files —
-/// enough rows to page, with a distinct-file denominator above one.
-fn unwrap_fixture(files: usize, per_file: usize) -> TestResult<tempfile::TempDir> {
+/// A Rust project with `per_file` TODO comments in each of `files` files, each
+/// comment on the odd line above a function (lines 1, 3, 5, ...) — enough
+/// `comment_markers` rows to page, with a distinct-file denominator above one.
+fn marker_fixture(files: usize, per_file: usize) -> TestResult<tempfile::TempDir> {
     let project = tempfile::tempdir().check("project dir")?;
     activate(project.path())?;
     for file in 0..files {
         let body = (0..per_file)
-            .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
+            .map(|n| format!("// TODO: {n}\npub fn f{n}() {{}}\n"))
             .collect::<Vec<_>>()
             .concat();
         fs::write(project.path().join(format!("mod{file}.rs")), body).check("write rust source")?;
@@ -150,17 +151,11 @@ fn two_dir_fixture() -> TestResult<tempfile::TempDir> {
     let project = tempfile::tempdir().check("project dir")?;
     activate(project.path())?;
     for (relative, body) in [
-        (
-            "src/auth/login.rs",
-            "pub fn a(x: Option<u8>) -> u8 { x.unwrap() }\n",
-        ),
-        (
-            "src/auth/token.rs",
-            "pub fn b(x: Option<u8>) -> u8 { x.unwrap() }\n",
-        ),
+        ("src/auth/login.rs", "// TODO: a\npub fn a() {}\n"),
+        ("src/auth/token.rs", "// TODO: b\npub fn b() {}\n"),
         (
             "src/db/pool.rs",
-            "pub fn c(x: Option<u8>) -> u8 { x.unwrap() }\npub fn d(x: Option<u8>) -> u8 { x.unwrap() }\n",
+            "// TODO: c\npub fn c() {}\n// TODO: d\npub fn d() {}\n",
         ),
     ] {
         let path = project.path().join(relative);
@@ -192,6 +187,8 @@ fn counts_every_mechanic_without_returning_rows() -> TestResult {
     ];
     assert_eq!(ids, expected);
     assert_eq!(count_of(&response, "unwrap_calls")?, 1);
+    assert_eq!(entry(&response, "unwrap_calls")?.files, 1);
+    assert_eq!(entry(&response, "unwrap_calls")?.covers, ["rust"]);
     assert_eq!(count_of(&response, "expect_calls")?, 1);
     assert!(count_of(&response, "comment_markers")? >= 1);
     assert_eq!(count_of(&response, "credential_files")?, 1);
@@ -202,18 +199,27 @@ fn counts_every_mechanic_without_returning_rows() -> TestResult {
     assert!(response.page.complete);
     assert_eq!(response.page.cursor, None);
     assert_eq!((response.page.total, response.files_total), (Some(0), 0));
+
+    // The row the `unwrap_calls` count stands for: file, 1-based line, callee.
+    let rows = run(request(project.path(), Some("unwrap_calls")))?;
+    let rows = full_rows(&rows)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (rows[0].file.as_str(), rows[0].line, rows[0].detail.as_str()),
+        ("lib.rs", 3, "x.unwrap")
+    );
     Ok(())
 }
 
 #[test]
 fn returns_rows_for_the_requested_mechanic_only() -> TestResult {
     let project = rust_fixture()?;
-    let response = run(request(project.path(), Some("unwrap_calls")))?;
+    let response = run(request(project.path(), Some("expect_calls")))?;
 
     assert_eq!(full_rows(&response)?.len(), 1);
     assert_eq!(full_rows(&response)?[0].file, "lib.rs");
-    assert!(full_rows(&response)?[0].line > 0);
-    assert_eq!(full_rows(&response)?[0].detail, "x.unwrap");
+    assert_eq!(full_rows(&response)?[0].line, 4);
+    assert_eq!(full_rows(&response)?[0].detail, "x.expect");
     assert_eq!(count_of(&response, "credential_files")?, 1);
     assert!(response.page.complete);
     assert_eq!((response.page.returned, response.page.total), (1, Some(1)));
@@ -227,7 +233,7 @@ fn returns_rows_for_the_requested_mechanic_only() -> TestResult {
 #[test]
 fn a_zero_limit_is_clamped_to_one_row() -> TestResult {
     let project = rust_fixture()?;
-    let mut request = request(project.path(), Some("unwrap_calls"));
+    let mut request = request(project.path(), Some("expect_calls"));
     request.limit = Some(0);
     let response = run(request)?;
 
@@ -248,7 +254,7 @@ fn rejects_an_unknown_mechanic_id() -> TestResult {
 
     let message = error.message.to_string();
     assert!(message.contains("unknown mechanic"), "{message}");
-    assert!(message.contains("unwrap_calls"), "{message}");
+    assert!(message.contains("expect_calls"), "{message}");
     Ok(())
 }
 
@@ -257,9 +263,9 @@ fn rejects_an_unknown_mechanic_id() -> TestResult {
 /// distinct files — the number a sweep can actually exhaust — not rows.
 #[test]
 fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() -> TestResult {
-    let project = unwrap_fixture(3, 4)?; // 12 rows across 3 files
+    let project = marker_fixture(3, 4)?; // 12 rows across 3 files
     let manager = crate::sync::SourceSyncManager::default();
-    let mut first = request(project.path(), Some("unwrap_calls"));
+    let mut first = request(project.path(), Some("comment_markers"));
     first.limit = Some(5);
     let first = run_on(&manager, first)?;
 
@@ -267,7 +273,11 @@ fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() ->
     assert_eq!(first.files_total, 3, "the denominator is files, not rows");
     assert_eq!(first.files_covered, 2, "5 rows reach mod0 and mod1");
     assert!(!first.page.complete && first.page.limited_by == PageLimit::Limit);
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
     let (spent, budget) = (first.page.bytes_used, first.page.page_bytes);
     assert!(spent > 0 && budget >= spent, "{spent} of {budget}");
 
@@ -290,9 +300,9 @@ fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() ->
 /// rows still to come equal `files_total`, not `files_total` per page.
 #[test]
 fn files_covered_counts_a_file_split_across_pages_once() -> TestResult {
-    let project = unwrap_fixture(2, 3)?; // 6 rows across 2 files
+    let project = marker_fixture(2, 3)?; // 6 rows across 2 files
     let manager = crate::sync::SourceSyncManager::default();
-    let mut first = request(project.path(), Some("unwrap_calls"));
+    let mut first = request(project.path(), Some("comment_markers"));
     first.limit = Some(4); // mod0's 3 rows, then mod1's first
     let first = run_on(&manager, first)?;
 
@@ -310,11 +320,11 @@ fn files_covered_counts_a_file_split_across_pages_once() -> TestResult {
 #[test]
 fn a_pattern_narrows_counts_and_rows_to_matching_paths() -> TestResult {
     let project = two_dir_fixture()?;
-    let unfiltered = run(request(project.path(), Some("unwrap_calls")))?;
+    let unfiltered = run(request(project.path(), Some("comment_markers")))?;
     assert_eq!(unfiltered.page.total, Some(4));
     assert_eq!(unfiltered.files_total, 3);
 
-    let mut scoped = request(project.path(), Some("unwrap_calls"));
+    let mut scoped = request(project.path(), Some("comment_markers"));
     scoped.pattern = Some("src/auth/*".to_owned());
     let scoped = run(scoped)?;
     assert_eq!(scoped.page.total, Some(2), "only src/auth rows");
@@ -324,7 +334,7 @@ fn a_pattern_narrows_counts_and_rows_to_matching_paths() -> TestResult {
     assert!(inside, "{scoped_rows:?}");
 
     // No `*`/`?` means a substring match, exactly as `structure` treats it.
-    let mut substring = request(project.path(), Some("unwrap_calls"));
+    let mut substring = request(project.path(), Some("comment_markers"));
     substring.pattern = Some("token".to_owned());
     let substring = run(substring)?;
     assert_eq!(substring.page.total, Some(1));
@@ -335,7 +345,7 @@ fn a_pattern_narrows_counts_and_rows_to_matching_paths() -> TestResult {
     let mut nothing = request(project.path(), None);
     nothing.pattern = Some("no/such/path".to_owned());
     let nothing = run(nothing)?;
-    assert_eq!(count_of(&nothing, "unwrap_calls")?, 0);
+    assert_eq!(count_of(&nothing, "comment_markers")?, 0);
     assert!(nothing.page.complete);
     assert!(full_rows(&nothing)?.is_empty());
     Ok(())
@@ -365,68 +375,20 @@ fn a_pattern_filters_a_credential_predicate_that_is_an_or_chain() -> TestResult 
 
 #[test]
 fn mechanic_counts_carry_the_file_denominator_and_what_each_mechanic_covers() -> TestResult {
-    let project = unwrap_fixture(3, 2)?; // 6 unwraps across 3 files
+    let project = marker_fixture(3, 2)?; // 6 markers across 3 files
     let response = run(request(project.path(), None))?;
 
-    let unwrap = entry(&response, "unwrap_calls")?;
-    assert_eq!(unwrap.count, 6);
-    assert_eq!(unwrap.files, 3);
-    assert_eq!(unwrap.covers, ["rust"]);
-    assert_eq!(entry(&response, "comment_markers")?.covers, ["rust"]);
+    let markers = entry(&response, "comment_markers")?;
+    assert_eq!(markers.count, 6);
+    assert_eq!(markers.files, 3);
+    assert_eq!(markers.covers, ["rust"]);
+    assert_eq!(entry(&response, "expect_calls")?.covers, ["rust"]);
     assert_eq!(entry(&response, "credential_files")?.covers, ["rust"]);
     Ok(())
 }
 
 #[test]
-fn comment_marker_detail_is_clipped_at_the_char_limit() -> TestResult {
-    let project = tempfile::tempdir().check("project dir")?;
-    activate(project.path())?;
-    // Multi-byte padding proves the cut lands on a char boundary, not a byte
-    // offset: 300 two-byte chars, truncated to the cap.
-    let short = "y".repeat(120);
-    let long = format!("// TODO: {}\n", "é".repeat(300));
-    fs::write(project.path().join("long.rs"), long).check("write long")?;
-    let body = format!("// TODO: {short}\n");
-    fs::write(project.path().join("short.rs"), body).check("write short")?;
-
-    let response = run(request(project.path(), Some("comment_markers")))?;
-    let rows = full_rows(&response)?;
-
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].detail.chars().count(), MAX_DETAIL_CHARS);
-    assert!(rows[0].detail_clipped, "clipped on a char boundary");
-    assert!(!rows[1].detail_clipped);
-    assert!(rows[1].detail.ends_with(&short), "{}", rows[1].detail);
-    Ok(())
-}
-
-/// A marker counts only as a whole, upper-case word: lower-case text and a
-/// marker inside a longer word ("whack", "shackle", "maxxxed") do not.
-#[test]
-fn comment_markers_match_whole_upper_case_words_only() -> TestResult {
-    let project = tempfile::tempdir().check("project dir")?;
-    activate(project.path())?;
-    fs::write(
-        project.path().join("miss.rs"),
-        "// whack the shackle\n// todo: lower case\n// maxxxed out\n// HACKS and TODOS\nfn a() {}\n",
-    )
-    .check("write non-matching comments")?;
-    fs::write(
-        project.path().join("hit.rs"),
-        "// HACK\n// x FIXME(bob)\n// see XXX.\n// TODO: end\nfn b() {}\n",
-    )
-    .check("write matching comments")?;
-
-    let response = run(request(project.path(), Some("comment_markers")))?;
-    let rows = full_rows(&response)?;
-
-    assert_eq!(rows.len(), 4, "{rows:?}");
-    assert!(rows.iter().all(|row| row.file == "hit.rs"), "{rows:?}");
-    Ok(())
-}
-
-#[test]
-fn clip_detail_flags_only_past_the_char_limit() {
+fn clip_detail_flags_only_past_the_char_limit() -> TestResult {
     let row = |chars: usize| LeadRow {
         file: "f.rs".to_owned(),
         line: 1,
@@ -443,6 +405,7 @@ fn clip_detail_flags_only_past_the_char_limit() {
     assert!(!at_limit.detail_clipped, "exactly the cap is not clipped");
     assert_eq!(over_limit.detail.len(), MAX_DETAIL_CHARS * 2);
     assert!(over_limit.detail_clipped, "one past the cap is clipped");
+    Ok(())
 }
 
 /// `credential_files` reads `files` directly, so a credential-shaped file the
@@ -488,27 +451,34 @@ fn compact_rows_are_mechanic_file_line_triples_without_detail() -> TestResult {
     let project = rust_fixture()?;
     let response = run(compact_request(project.path(), None))?;
     let rows = compact_rows(&response)?;
-    assert!(rows.iter().any(|r| r.mechanic == "unwrap_calls"));
+    assert!(rows.iter().any(|r| r.mechanic == "expect_calls"));
     assert!(rows.iter().any(|r| r.mechanic == "comment_markers"));
     let returned = u64::try_from(response.page.returned).check("fits")?;
     assert_eq!(Some(returned), response.page.total);
     let serialized = serde_json::to_value(rows).check("rows serialize")?;
     let row = &serialized[0];
-    assert_eq!(row["mechanic"], "unwrap_calls");
+    // Rows come in declaration order: the first mechanic with a row leads.
+    assert_eq!(
+        row["mechanic"],
+        crate::tools::leads_mechanics::MECHANICS[0].id
+    );
     assert_eq!(row["file"], "lib.rs");
     assert!(row["line"].as_i64().check("line")? > 0);
     assert_eq!(row.as_object().check("object")?.len(), 3, "{row}");
 
-    let full = run(request(project.path(), Some("unwrap_calls")))?;
+    let full = run(request(project.path(), Some("expect_calls")))?;
     let text = serde_json::to_value(&full.rows).check("rows serialize")?;
-    assert_eq!(text[0]["detail"], "x.unwrap");
+    assert_eq!(text[0]["detail"], "x.expect");
     assert!(text[0].get("mechanic").is_none());
 
     let mut paged = compact_request(project.path(), None);
     paged.limit = Some(1);
     let page = run(paged)?;
     assert_eq!(compact_rows(&page)?[0].mechanic, rows[0].mechanic);
-    assert!(page.page.cursor.is_some());
+    page.page
+        .cursor
+        .as_ref()
+        .check("`page.page.cursor` is present")?;
 
     let mut scoped = compact_request(project.path(), None);
     scoped.pattern = Some("lib.rs".to_owned());
@@ -525,7 +495,7 @@ fn compact_rows_are_mechanic_file_line_triples_without_detail() -> TestResult {
 /// stays cumulative rather than per-page.
 #[test]
 fn compact_paging_reports_a_cumulative_file_denominator() -> TestResult {
-    let project = unwrap_fixture(2, 3)?; // 6 rows across 2 files
+    let project = marker_fixture(2, 3)?; // 6 rows across 2 files
     let manager = crate::sync::SourceSyncManager::default();
     let mut first = compact_request(project.path(), None);
     first.limit = Some(4);
@@ -548,11 +518,11 @@ fn compact_paging_reports_a_cumulative_file_denominator() -> TestResult {
 /// same order, and only the bytes differ.
 #[test]
 fn both_modes_report_the_same_completeness_for_one_mechanic() -> TestResult {
-    let project = unwrap_fixture(3, 4)?;
-    let mut full_req = request(project.path(), Some("unwrap_calls"));
+    let project = marker_fixture(3, 4)?;
+    let mut full_req = request(project.path(), Some("comment_markers"));
     full_req.limit = Some(5);
     let full = run(full_req)?;
-    let mut compact_req = compact_request(project.path(), Some("unwrap_calls"));
+    let mut compact_req = compact_request(project.path(), Some("comment_markers"));
     compact_req.limit = Some(5);
     let compact = run(compact_req)?;
 
@@ -604,6 +574,9 @@ mod leads_page_tests;
 
 #[path = "leads_line_tests.rs"]
 mod leads_line_tests;
+
+#[path = "leads_marker_tests.rs"]
+mod leads_marker_tests;
 
 #[path = "leads_language_tests.rs"]
 mod leads_language_tests;

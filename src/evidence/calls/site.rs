@@ -9,9 +9,9 @@ use serde_json::json;
 pub(super) struct CallSite {
     pub(super) language: &'static str,
     pub(super) origin: EvidenceOrigin,
-    /// The callee as written, receiver included (`v.unwrap`, `obj.method`).
+    /// The callee as written, receiver included (`v.expect`, `obj.method`).
     pub(super) callee_text: String,
-    /// The callee's last simple name (`unwrap`, `method`).
+    /// The callee's last simple name (`expect`, `method`).
     pub(super) callee_name: String,
     pub(super) caller: Option<String>,
     pub(super) macro_call: bool,

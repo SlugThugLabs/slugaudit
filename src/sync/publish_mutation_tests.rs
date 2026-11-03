@@ -10,7 +10,7 @@ use crate::sync::test_support::{stored_paths, write};
 use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {
+fn is_retryable_is_true_only_for_the_two_documented_race_hazards() -> TestResult {
     assert!(is_retryable(&PublishError::Revision(
         RevisionError::StaleBaseline {
             expected: "rev-1".into(),
@@ -31,6 +31,7 @@ fn is_retryable_is_true_only_for_the_two_documented_race_hazards() {
             reason: "x",
         }
     )));
+    Ok(())
 }
 
 #[test]
@@ -435,7 +436,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() ->
 }
 
 #[test]
-fn publish_error_corruption_classification_matches_sqlite_corruption() {
+fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestResult {
     let corrupt_db = PublishError::Database(rusqlite::Error::SqliteFailure(
         rusqlite::ffi::Error {
             code: rusqlite::ffi::ErrorCode::DatabaseCorrupt,
@@ -483,10 +484,11 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() {
         }
         .is_corruption()
     );
+    Ok(())
 }
 
 #[test]
-fn publish_error_budget_elapsed() {
+fn publish_error_budget_elapsed() -> TestResult {
     let budget_pub = PublishError::TimeBudgetExceeded {
         path: " a.rs".into(),
         elapsed_ms: 42,
@@ -499,10 +501,11 @@ fn publish_error_budget_elapsed() {
     assert_eq!(budget_pub.budget_elapsed_ms(), Some(42));
     assert_eq!(budget_disc.budget_elapsed_ms(), Some(84));
     assert_eq!(changed.budget_elapsed_ms(), None);
+    Ok(())
 }
 
 #[test]
-fn a_file_that_vanished_during_discovery_becomes_the_retryable_tree_change() {
+fn a_file_that_vanished_during_discovery_becomes_the_retryable_tree_change() -> TestResult {
     let error = PublishError::from(discovery::DiscoveryError::Vanished {
         relative_path: "gone.rs".into(),
     });
@@ -512,10 +515,11 @@ fn a_file_that_vanished_during_discovery_becomes_the_retryable_tree_change() {
         "got {error:?}"
     );
     assert!(is_retryable(&error));
+    Ok(())
 }
 
 #[test]
-fn a_read_after_the_walk_is_a_tree_change_only_when_the_file_is_gone() {
+fn a_read_after_the_walk_is_a_tree_change_only_when_the_file_is_gone() -> TestResult {
     let gone = PublishError::read_after_walk(
         "gone.rs",
         std::path::PathBuf::from("/p/gone.rs"),
@@ -538,6 +542,7 @@ fn a_read_after_the_walk_is_a_tree_change_only_when_the_file_is_gone() {
         "got {denied:?}"
     );
     assert!(!is_retryable(&denied));
+    Ok(())
 }
 
 #[test]

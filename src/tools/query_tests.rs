@@ -344,7 +344,11 @@ fn a_page_is_cut_by_the_byte_budget_and_carries_a_cursor() -> TestResult {
 
     assert!(!first.page.complete);
     assert!(first.rows.len() > 1 && first.rows.len() < 900);
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
     assert_eq!(first.rows[0]["x"], 1);
     Ok(())
 }

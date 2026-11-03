@@ -191,7 +191,8 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
         .import_resolution
         .iter()
         .find(|entry| entry.kind == "Unresolved")
-        .map_or(0, |entry| entry.count);
+        .check("the Unresolved resolution bucket exists")?
+        .count;
     assert_eq!(
         total_unresolved, 3,
         "all three edges must still count toward the general Unresolved bucket"

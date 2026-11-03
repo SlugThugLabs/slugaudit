@@ -71,10 +71,8 @@ fn a_lock_held_for_a_moment_by_another_process_delays_the_session_without_failin
 
     begin_process_session(&root).check("the session starts once the other holder lets go")?;
 
-    assert!(
-        session_findings_path(&dir)
-            .check("the session table")?
-            .is_some()
-    );
+    session_findings_path(&dir)
+        .check("the session table")?
+        .check("the session findings table exists")?;
     Ok(())
 }

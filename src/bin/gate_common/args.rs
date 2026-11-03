@@ -131,7 +131,7 @@ mod gate_args_tests {
     }
 
     #[test]
-    fn usage_errors_and_help_stop_the_gate_before_it_runs() {
+    fn usage_errors_and_help_stop_the_gate_before_it_runs() -> TestResult {
         let cases: &[(&[&str], ExitCode)] = &[
             (&["--root"], ExitCode::from(USAGE_EXIT)),
             (&["--record"], ExitCode::from(USAGE_EXIT)),
@@ -147,6 +147,7 @@ mod gate_args_tests {
                 "{args:?} must stop with its own exit code"
             );
         }
+        Ok(())
     }
 
     #[test]
@@ -172,13 +173,14 @@ mod gate_args_tests {
     }
 
     #[test]
-    fn an_unknown_double_dash_flag_is_refused_even_when_positionals_are_taken() {
+    fn an_unknown_double_dash_flag_is_refused_even_when_positionals_are_taken() -> TestResult {
         let mut values = Vec::new();
 
         let outcome = parse_os(vec![OsString::from("--bogus")], &mut [], Some(&mut values));
 
         assert_eq!(outcome, Err(ExitCode::from(USAGE_EXIT)));
         assert!(values.is_empty());
+        Ok(())
     }
 
     #[cfg(unix)]

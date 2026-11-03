@@ -50,10 +50,10 @@ fn a_changed_identity_under_the_same_id_misses() -> TestResult {
         cache.get(&other).check("look up")?.is_none(),
         "a different query misses"
     );
-    assert!(
-        cache.get(&key("r1", "a")).check("look up")?.is_some(),
-        "the original hits"
-    );
+    cache
+        .get(&key("r1", "a"))
+        .check("look up")?
+        .check("the original hits")?;
     Ok(())
 }
 
@@ -73,8 +73,14 @@ fn insert_evicts_oldest_first_and_counts_each_eviction() -> TestResult {
         cache.get(&key("r1", "a")).check("look up")?.is_none(),
         "the oldest went"
     );
-    assert!(cache.get(&key("r1", "b")).check("look up")?.is_some());
-    assert!(cache.get(&key("r1", "c")).check("look up")?.is_some());
+    cache
+        .get(&key("r1", "b"))
+        .check("look up")?
+        .check("the cache still holds key b")?;
+    cache
+        .get(&key("r1", "c"))
+        .check("look up")?
+        .check("the cache still holds key c")?;
     Ok(())
 }
 
@@ -100,6 +106,9 @@ fn remove_id_drops_every_entry_of_that_id_only() -> TestResult {
     cache.remove_id("a").check("remove a")?;
 
     assert!(cache.get(&key("r1", "a")).check("look up")?.is_none());
-    assert!(cache.get(&key("r1", "b")).check("look up")?.is_some());
+    cache
+        .get(&key("r1", "b"))
+        .check("look up")?
+        .check("the cache still holds key b")?;
     Ok(())
 }

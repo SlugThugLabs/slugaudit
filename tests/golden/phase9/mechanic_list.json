@@ -3,75 +3,75 @@
   "request": "list",
   "response": {
     "action": "list",
-    "first_count": null,
     "id": null,
-    "invalid": [],
+    "source": null,
     "mechanics": [
       {
         "id": "println_calls",
-        "language": "rust",
+        "source": "session",
         "note": "println macro calls",
-        "query": "(macro_invocation macro: (identifier) @m (#eq? @m \"println\"))",
-        "source": "session"
+        "language": "rust",
+        "query": "(macro_invocation macro: (identifier) @m (#eq? @m \"println\"))"
       },
       {
         "id": "unwrap_calls",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "expect_calls",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "panic_calls",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "todo_calls",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "assert_calls",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "diagnostics",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "comment_markers",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       },
       {
         "id": "credential_files",
-        "language": null,
+        "source": "builtin",
         "note": null,
-        "query": null,
-        "source": "builtin"
+        "language": null,
+        "query": null
       }
     ],
+    "invalid": [],
     "mechanics_invalid": 0,
-    "source": null
+    "first_count": null
   }
 }

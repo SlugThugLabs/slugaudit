@@ -159,10 +159,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_proc_meminfo_handles_missing_memtotal() {
+    fn parse_proc_meminfo_handles_missing_memtotal() -> TestResult {
         let sample = "MemFree:         8192000 kB\nMemAvailable:   12288000 kB\n";
         assert!(parse_proc_meminfo(sample).is_err());
         assert!(parse_proc_meminfo("invalid content").is_err());
+        Ok(())
     }
 
     #[test]
@@ -184,10 +185,11 @@ mod tests {
     }
 
     #[test]
-    fn a_sysctl_output_that_is_not_a_number_is_an_error_with_a_cause() {
+    fn a_sysctl_output_that_is_not_a_number_is_an_error_with_a_cause() -> TestResult {
         assert_eq!(parse_sysctl_memsize(b"17179869184\n"), Ok(17_179_869_184));
         assert!(parse_sysctl_memsize(b"n/a").is_err());
         assert!(parse_sysctl_memsize(&[0xff]).is_err());
+        Ok(())
     }
 
     #[test]

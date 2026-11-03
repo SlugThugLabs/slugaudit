@@ -104,7 +104,7 @@ mod tests {
     use slugaudit_test_check::{Check, CheckErr, TestResult};
 
     #[test]
-    fn only_y_or_yes_in_any_case_accepts_a_confirmation() {
+    fn only_y_or_yes_in_any_case_accepts_a_confirmation() -> TestResult {
         let accepted = ["y", "Y", "yes", " YES\n"];
         let declined = ["", "n", "no", "yep", "y es"];
 
@@ -114,6 +114,7 @@ mod tests {
         for answer in declined {
             assert!(!is_yes(answer), "{answer:?} must decline");
         }
+        Ok(())
     }
 
     #[test]
@@ -208,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn confirm_from_accepts_a_yes_and_asks_the_question() {
+    fn confirm_from_accepts_a_yes_and_asks_the_question() -> TestResult {
         let mut output = Vec::new();
         let mut report = Vec::new();
 
@@ -222,10 +223,11 @@ mod tests {
         assert!(accepted);
         assert_eq!(output, b"Add? ");
         assert!(report.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn confirm_from_declines_and_reports_a_read_failure() {
+    fn confirm_from_declines_and_reports_a_read_failure() -> TestResult {
         let mut output = Vec::new();
         let mut report = Vec::new();
         let mut input = std::io::BufReader::new(FailingReader);
@@ -237,5 +239,6 @@ mod tests {
             String::from_utf8_lossy(&report),
             "could not read your answer: stdin closed under us\n"
         );
+        Ok(())
     }
 }

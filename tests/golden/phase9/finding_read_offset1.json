@@ -14,7 +14,7 @@
         "line_start": 1,
         "path": "mod1.rs",
         "severity": "low",
-        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
+        "source_hash": "19ee09f625334a0f6a2c137e3427670a6fea5a82144c57bac376ed5398fc7498",
         "status": "current",
         "title": "second"
       },
@@ -27,7 +27,7 @@
         "line_start": 1,
         "path": "mod2.rs",
         "severity": "low",
-        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
+        "source_hash": "19ee09f625334a0f6a2c137e3427670a6fea5a82144c57bac376ed5398fc7498",
         "status": "current",
         "title": "third"
       }

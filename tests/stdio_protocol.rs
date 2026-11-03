@@ -541,10 +541,9 @@ fn progress_notifications_flow_over_stdio() -> TestResult {
             notification["params"]["progressToken"], "pt-q",
             "progress token must round-trip: {notification}"
         );
-        assert!(
-            notification["params"]["progress"].as_f64().is_some(),
-            "progress must be a number: {notification}"
-        );
+        notification["params"]["progress"]
+            .as_f64()
+            .check("`notification['params']['progress'].as_f64()` is present")?;
     }
 
     // The last notification must signal completion at 1.0.

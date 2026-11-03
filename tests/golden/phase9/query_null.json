@@ -1,29 +1,28 @@
 {
   "case": "query_null",
   "request": {
-    "page_bytes": null,
-    "sql": "SELECT NULL AS n, 1 AS one, 0.5 AS half"
+    "sql": "SELECT NULL AS n, 1 AS one, 0.5 AS half",
+    "page_bytes": null
   },
   "response": {
-    "clipped_cells": [],
-    "non_finite_cells": [],
     "page": {
-      "bytes_used": 29,
-      "complete": true,
-      "limited_by": "none",
-      "next_offset": null,
-      "page_bytes": 65536,
       "returned": 1,
-      "revision_id": "<REVISION_ID>",
-      "total": 1
+      "total": 1,
+      "complete": true,
+      "completeness": "complete",
+      "page_bytes": 65536,
+      "bytes_used": 29,
+      "limited_by": "none",
+      "revision_id": "<REVISION_ID>"
     },
     "rows": [
       {
-        "half": 0.5,
         "n": null,
-        "one": 1
+        "one": 1,
+        "half": 0.5
       }
     ],
-    "total_unavailable": null
+    "clipped_cells": [],
+    "non_finite_cells": []
   }
 }

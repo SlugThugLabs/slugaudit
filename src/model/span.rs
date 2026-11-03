@@ -61,7 +61,11 @@ pub(crate) fn char_column(source: &str, byte_offset: usize) -> Result<u32, Posit
     while !source.is_char_boundary(offset) {
         offset -= 1;
     }
-    let line_start = source[..offset].rfind('\n').map_or(0, |idx| idx + 1);
+    let line_start = match source[..offset].rfind('\n') {
+        Some(idx) => idx + 1,
+        // No newline before the offset: the line starts at the text start.
+        None => 0,
+    };
     position_u32(source[line_start..offset].chars().count())
 }
 

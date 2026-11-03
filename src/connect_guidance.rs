@@ -23,11 +23,10 @@ use std::path::Path;
 /// exists.
 #[must_use]
 pub fn target(agent: &AgentDef, home: Option<&Path>) -> String {
-    home.and_then(|home| agent.config.resolve(home))
-        .map_or_else(
-            || format!("`{}`", agent.id),
-            |path| path.display().to_string(),
-        )
+    match home.and_then(|home| agent.config.resolve(home)) {
+        Some(path) => path.display().to_string(),
+        None => format!("`{}`", agent.id),
+    }
 }
 
 /// `Reference: <version/date>` — always printed, so a probed registration is

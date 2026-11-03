@@ -127,7 +127,10 @@ fn a_garbage_project_db_is_rebuilt_by_the_next_call() -> TestResult {
     let answer = report(&path, &sync::SourceSyncManager::new()).check("the call rebuilds")?;
 
     assert_eq!(answer.file_count, 2);
-    assert!(answer.database_discard.is_some(), "the rebuild is reported");
+    answer
+        .database_discard
+        .as_ref()
+        .check("the rebuild is reported")?;
     store::open_existing(&database).check("the rebuilt database opens")?;
     Ok(())
 }

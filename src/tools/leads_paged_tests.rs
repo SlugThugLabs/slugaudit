@@ -5,7 +5,7 @@ use super::*;
 use crate::tools::context::{ensure_synced, with_verified_read};
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
-/// A page size that forces several pages out of `unwrap_fixture(4, 6)`.
+/// A page size that forces several pages out of `marker_fixture(4, 6)`.
 const SMALL_PAGE: usize = 400;
 
 fn places(response: &LeadsResponse) -> TestResult<Vec<(String, i64)>> {
@@ -43,34 +43,35 @@ fn rest_of_limited(
 }
 
 fn small_pages(project: &tempfile::TempDir) -> LeadsRequest {
-    let mut first = request(project.path(), Some("unwrap_calls"));
+    let mut first = request(project.path(), Some("comment_markers"));
     first.page_bytes = Some(SMALL_PAGE);
     first
 }
 
 #[test]
 fn paged_leads_pages_survive_an_edit_between_pages() -> TestResult {
-    let project = unwrap_fixture(4, 6)?; // 24 rows
+    let project = marker_fixture(4, 6)?; // 24 rows
     let manager = crate::sync::SourceSyncManager::default();
-    let mut whole = request(project.path(), Some("unwrap_calls"));
+    let mut whole = request(project.path(), Some("comment_markers"));
     whole.page_bytes = Some(1_000_000);
     let whole = run_on(&manager, whole)?;
     assert_eq!(whole.page.total, Some(24));
     let first = run_on(&manager, small_pages(&project))?;
-    assert!(
-        first.page.cursor.is_some(),
-        "the first page is not the last"
-    );
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("the first page is not the last")?;
 
     // One match vanishes (mod0 loses a function), one appears (a new file).
     let shorter = (0..5)
-        .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
+        .map(|n| format!("// TODO: {n}\npub fn f{n}() {{}}\n"))
         .collect::<Vec<_>>()
         .concat();
     fs::write(project.path().join("mod0.rs"), shorter).check("shrink mod0")?;
     fs::write(
         project.path().join("extra.rs"),
-        b"pub fn e(x: Option<u8>) -> u8 { x.unwrap() }\n",
+        b"// TODO: e\npub fn e() {}\n",
     )
     .check("add a file")?;
     let rest = rest_of(&manager, &first)?;
@@ -97,14 +98,15 @@ fn paged_leads_pages_survive_an_edit_between_pages() -> TestResult {
         fresh_places.extend(places(&page)?);
     }
     assert!(fresh_places.iter().any(|(file, _)| file == "extra.rs"));
-    assert!(!fresh_places.contains(&("mod0.rs".to_owned(), 6)));
-    assert!(union.contains(&("mod0.rs".to_owned(), 6)));
+    // The sixth marker of mod0 sits on line 11; the shortened file has five.
+    assert!(!fresh_places.contains(&("mod0.rs".to_owned(), 11)));
+    assert!(union.contains(&("mod0.rs".to_owned(), 11)));
     Ok(())
 }
 
 #[test]
 fn paged_leads_same_cursor_twice_returns_identical_pages() -> TestResult {
-    let project = unwrap_fixture(4, 6)?;
+    let project = marker_fixture(4, 6)?;
     let manager = crate::sync::SourceSyncManager::default();
     let first = run_on(&manager, small_pages(&project))?;
 
@@ -121,7 +123,7 @@ fn paged_leads_same_cursor_twice_returns_identical_pages() -> TestResult {
 
 #[test]
 fn paged_leads_final_page_can_be_retried() -> TestResult {
-    let project = unwrap_fixture(4, 6)?;
+    let project = marker_fixture(4, 6)?;
     let manager = crate::sync::SourceSyncManager::default();
     let first = run_on(&manager, small_pages(&project))?;
     let mut penultimate = first;
@@ -145,7 +147,7 @@ fn paged_leads_final_page_can_be_retried() -> TestResult {
 
 #[test]
 fn paged_leads_refuses_offset_and_expected_revision_naming_cursor() -> TestResult {
-    let project = unwrap_fixture(1, 1)?;
+    let project = marker_fixture(1, 1)?;
     let path = project.path().to_string_lossy().into_owned();
     for field in [
         serde_json::json!({ "path": path, "offset": 2 }),
@@ -171,7 +173,7 @@ fn paged_leads_refuses_offset_and_expected_revision_naming_cursor() -> TestResul
 /// read and a row read of one transaction is invisible to both.
 #[test]
 fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
-    let project = unwrap_fixture(3, 4)?;
+    let project = marker_fixture(3, 4)?;
     let manager = crate::sync::SourceSyncManager::default();
     let path = project.path().to_string_lossy().into_owned();
     let synced =
@@ -181,7 +183,7 @@ fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
         let counts = crate::tools::leads_query::count_all(tx, None, &languages)?;
         fs::write(
             project.path().join("late.rs"),
-            b"pub fn l(x: Option<u8>) -> u8 { x.unwrap() }\n",
+            b"// TODO: l\npub fn l() {}\n",
         )
         .map_err(|error| {
             ErrorData::internal_error(format!("edit mid-transaction: {error}"), None)
@@ -194,12 +196,19 @@ fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
             )
         })?;
         let mut rows = 0_i64;
-        let unwrap = &crate::tools::leads_mechanics::MECHANICS[0];
-        crate::tools::leads_query::stream_rows(tx, unwrap, None, &mut |_| {
+        let markers = crate::tools::leads_mechanics::MECHANICS
+            .iter()
+            .find(|mechanic| mechanic.id == "comment_markers")
+            .ok_or_else(|| ErrorData::internal_error("comment_markers is built in", None))?;
+        crate::tools::leads_query::stream_rows(tx, markers, None, &mut |_| {
             rows += 1;
             Ok(())
         })?;
-        Ok((counts[0].count, rows))
+        let counted = counts
+            .iter()
+            .find(|count| count.mechanic == "comment_markers")
+            .ok_or_else(|| ErrorData::internal_error("comment_markers is counted", None))?;
+        Ok((counted.count, rows))
     })
     .check("the transaction reads one snapshot")?;
     assert_eq!(counted, read, "a mid-transaction publish is invisible");
@@ -207,12 +216,12 @@ fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
     let first = run_on(&manager, small_pages(&project))?;
     fs::write(
         project.path().join("later.rs"),
-        b"pub fn l(x: Option<u8>) -> u8 { x.unwrap() }\n",
+        b"// TODO: l\npub fn l() {}\n",
     )
     .check("edit after page one")?;
     let rest = rest_of(&manager, &first)?;
     for page in std::iter::once(&first).chain(&rest) {
-        assert_eq!(count_of(page, "unwrap_calls")?, 13);
+        assert_eq!(count_of(page, "comment_markers")?, 13);
         assert_eq!(page.page.total, Some(13));
         assert_eq!(page.files_total, 4);
     }
@@ -223,7 +232,9 @@ fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
 fn paged_leads_orders_equal_lines_by_id() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     activate(project.path())?;
-    let body = "pub fn f(a: Option<u8>, b: Option<u8>, c: Option<u8>) -> u8 { c.unwrap() + a.unwrap() + b.unwrap() }\n";
+    // Three markers on one line, written out of alphabetical order so the
+    // tie-break (id, i.e. source order) is distinguishable from a text sort.
+    let body = "/* TODO: c */ /* TODO: a */ /* TODO: b */ pub fn f() {}\n";
     fs::write(project.path().join("lib.rs"), body).check("write source")?;
     let manager = crate::sync::SourceSyncManager::default();
     let path = project.path().to_string_lossy().into_owned();
@@ -232,9 +243,8 @@ fn paged_leads_orders_equal_lines_by_id() -> TestResult {
     let connection = crate::store::open_existing(&synced.database_path).check("open the index")?;
     let mut statement = connection
         .prepare(
-            "SELECT json_extract(e.payload, '$.callee_text') FROM evidence e \
-             WHERE e.kind = 'Call' AND json_extract(e.payload, '$.callee_name') = 'unwrap' \
-             ORDER BY e.id",
+            "SELECT json_extract(e.payload, '$.text') FROM evidence e \
+             WHERE e.kind = 'Comment' ORDER BY e.id",
         )
         .check("prepare")?;
     let by_id: Vec<String> = statement
@@ -243,7 +253,7 @@ fn paged_leads_orders_equal_lines_by_id() -> TestResult {
         .collect::<rusqlite::Result<_>>()
         .check("rows")?;
 
-    let response = run_on(&manager, request(project.path(), Some("unwrap_calls")))?;
+    let response = run_on(&manager, request(project.path(), Some("comment_markers")))?;
 
     let details: Vec<&str> = full_rows(&response)?
         .iter()
@@ -255,7 +265,11 @@ fn paged_leads_orders_equal_lines_by_id() -> TestResult {
         details,
         by_id.iter().map(String::as_str).collect::<Vec<_>>()
     );
-    let sql = crate::tools::leads_mechanics::MECHANICS[0].order_expr();
+    let sql = crate::tools::leads_mechanics::MECHANICS
+        .iter()
+        .find(|mechanic| mechanic.id == "comment_markers")
+        .check("comment_markers is built in")?
+        .order_expr();
     assert_eq!(sql, "f.path, e.start_line, e.id");
     Ok(())
 }
@@ -271,7 +285,7 @@ fn eval_entry() -> crate::project::MechanicEntry {
 
 #[test]
 fn paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page() -> TestResult {
-    let project = unwrap_fixture(3, 4)?;
+    let project = marker_fixture(3, 4)?;
     fs::write(project.path().join("app.py"), "eval(\"1\")\n").check("write python")?;
     let manager = crate::sync::SourceSyncManager::default();
     manager
@@ -313,7 +327,7 @@ fn paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page() -> Tes
 
 #[test]
 fn paged_leads_compact_pages_by_cursor() -> TestResult {
-    let project = unwrap_fixture(3, 4)?; // 12 unwraps across 3 files
+    let project = marker_fixture(3, 4)?; // 12 markers across 3 files
     let manager = crate::sync::SourceSyncManager::default();
     let mut whole = compact_request(project.path(), None);
     whole.page_bytes = Some(1_000_000);
@@ -375,15 +389,19 @@ fn run_with_defaults(
 
 #[test]
 fn paged_leads_continuation_keeps_the_page_budget_of_page_one() -> TestResult {
-    let project = unwrap_fixture(4, 6)?; // 24 rows
+    let project = marker_fixture(4, 6)?; // 24 rows
     let manager = crate::sync::SourceSyncManager::default();
     let first = run_with_defaults(
         &manager,
-        request(project.path(), Some("unwrap_calls")),
+        request(project.path(), Some("comment_markers")),
         SMALL_PAGE,
     )?;
     assert_eq!(first.page.page_bytes, SMALL_PAGE);
-    assert!(first.page.cursor.is_some(), "a small default forces paging");
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("a small default forces paging")?;
 
     let mut seen = places(&first)?;
     let mut last = first;
@@ -401,9 +419,9 @@ fn paged_leads_continuation_keeps_the_page_budget_of_page_one() -> TestResult {
 
 #[test]
 fn paged_leads_continuation_keeps_the_limit_of_page_one() -> TestResult {
-    let project = unwrap_fixture(4, 6)?; // 24 rows
+    let project = marker_fixture(4, 6)?; // 24 rows
     let manager = crate::sync::SourceSyncManager::default();
-    let mut asked = request(project.path(), Some("unwrap_calls"));
+    let mut asked = request(project.path(), Some("comment_markers"));
     asked.limit = Some(5);
     let first = run_on(&manager, asked)?;
     assert_eq!(first.page.returned, 5);
@@ -425,10 +443,10 @@ fn paged_leads_continuation_keeps_the_limit_of_page_one() -> TestResult {
 #[test]
 fn paged_leads_continuation_clamps_page_bytes_to_the_ceiling_of_page_one() -> TestResult {
     const CEILING: usize = 300;
-    let project = unwrap_fixture(4, 6)?; // 24 rows
+    let project = marker_fixture(4, 6)?; // 24 rows
     let manager = crate::sync::SourceSyncManager::default();
     let Json(first) = leads_with_limits(
-        &Parameters(request(project.path(), Some("unwrap_calls"))),
+        &Parameters(request(project.path(), Some("comment_markers"))),
         &ResourceLimits {
             max_query_response_bytes: CEILING,
             ..ResourceLimits::default()

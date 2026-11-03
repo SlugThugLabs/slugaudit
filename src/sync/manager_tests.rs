@@ -351,7 +351,10 @@ fn database_corrupted_during_sync_is_automatically_rebuilt() -> TestResult {
     // Next sync must detect the corrupt DB, discard it, and rebuild from scratch.
     let synced_after = sync_project(&manager, &project)?;
     assert!(!synced_after.revision_id.is_empty());
-    assert!(synced_after.discard.is_some());
+    synced_after
+        .discard
+        .as_ref()
+        .check("`synced_after.discard` is present")?;
 
     let file_count: i64 = with_verified_read(&synced_after, |tx| {
         tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
@@ -394,7 +397,10 @@ fn database_corrupted_during_publish_is_automatically_rebuilt() -> TestResult {
     let synced_after = sync_project(&manager, &project)?;
     hook.outcome()?;
     assert!(!synced_after.revision_id.is_empty());
-    assert!(synced_after.discard.is_some());
+    synced_after
+        .discard
+        .as_ref()
+        .check("`synced_after.discard` is present")?;
     let discard = synced_after
         .discard
         .as_ref()

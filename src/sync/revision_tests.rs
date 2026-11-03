@@ -151,7 +151,8 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() -> TestResult {
 }
 
 #[test]
-fn a_baseline_label_is_the_revision_id_or_none() {
+fn a_baseline_label_is_the_revision_id_or_none() -> TestResult {
     assert_eq!(baseline_label(Some("rev-1")), "rev-1");
     assert_eq!(baseline_label(None), "none");
+    Ok(())
 }

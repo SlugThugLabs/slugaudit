@@ -40,15 +40,16 @@ fn sample_of(path: &str, hash: &str) -> sample::Sample {
 }
 
 #[test]
-fn parser_version_change_samples_every_hashed_file() {
+fn parser_version_change_samples_every_hashed_file() -> TestResult {
     let discovered = [file("a.rs"), file("b.rs"), file("unhashed.rs")];
     let identities = [identity("a.rs", "h1"), identity("b.rs", "h2")];
     let picked = files_to_sample(&discovered, &identities, &[], true);
     assert_eq!(paths(&picked), vec!["a.rs", "b.rs"]);
+    Ok(())
 }
 
 #[test]
-fn unchanged_parser_samples_only_changed_hashed_files() {
+fn unchanged_parser_samples_only_changed_hashed_files() -> TestResult {
     let discovered = [
         file("added.rs"),
         file("same.rs"),
@@ -68,27 +69,32 @@ fn unchanged_parser_samples_only_changed_hashed_files() {
     ];
     let picked = files_to_sample(&discovered, &identities, &changes, false);
     assert_eq!(paths(&picked), vec!["added.rs", "modified.rs"]);
+    Ok(())
 }
 
 #[test]
-fn deleted_change_is_never_sampled() {
+fn deleted_change_is_never_sampled() -> TestResult {
     let discovered = [file("a.rs")];
     let identities = [identity("a.rs", "h1")];
     let changes = [change("a.rs", ChangeStatus::Deleted)];
     assert!(files_to_sample(&discovered, &identities, &changes, false).is_empty());
+    Ok(())
 }
 
 #[test]
-fn matching_sample_hashes_pass() {
+fn matching_sample_hashes_pass() -> TestResult {
     let samples = [sample_of("a.rs", "h1"), sample_of("b.rs", "h2")];
     let identities = [identity("a.rs", "h1"), identity("b.rs", "h2")];
-    assert!(check_samples_match_pass1(&samples, &identities).is_ok());
+    check_samples_match_pass1(&samples, &identities).check("the samples match the first pass")?;
+    Ok(())
 }
 
 #[test]
-fn sample_absent_from_pass1_is_not_a_mismatch() {
+fn sample_absent_from_pass1_is_not_a_mismatch() -> TestResult {
     let samples = [sample_of("new.rs", "h9")];
-    assert!(check_samples_match_pass1(&samples, &[identity("a.rs", "h1")]).is_ok());
+    check_samples_match_pass1(&samples, &[identity("a.rs", "h1")])
+        .check("the samples match the first pass")?;
+    Ok(())
 }
 
 #[test]

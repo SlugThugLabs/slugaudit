@@ -159,7 +159,9 @@ impl AgentDef {
     /// file, or malformed JSON for a JSON client) is returned as a
     /// [`ProbeFailure`] with its source, never read as "not connected".
     pub fn is_connected(&self, home: Option<&Path>) -> Result<bool, ProbeFailure> {
-        home.map_or(Ok(false), |home| self.config_has_slugaudit(home))
+        // No home directory means no client config to probe: not connected.
+        let Some(home) = home else { return Ok(false) };
+        self.config_has_slugaudit(home)
     }
 
     fn config_has_slugaudit(&self, home: &Path) -> Result<bool, ProbeFailure> {

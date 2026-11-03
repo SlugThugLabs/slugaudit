@@ -132,7 +132,7 @@ fn rust_use_paths() -> TestResult {
 }
 
 #[test]
-fn an_unsupported_language_returns_none() {
+fn an_unsupported_language_returns_none() -> TestResult {
     let resolver = get_resolver("go");
     assert_eq!(resolver.extract_reference("import \"fmt\""), None);
     // Call-based import languages (lua/ruby/r) have neither import-shaped
@@ -140,14 +140,16 @@ fn an_unsupported_language_returns_none() {
     // fails honestly instead of guessing at a module name.
     let resolver = get_resolver("lua");
     assert_eq!(resolver.extract_reference("require(\"x\")"), None);
+    Ok(())
 }
 
 #[test]
-fn malformed_text_returns_none_rather_than_panicking() {
+fn malformed_text_returns_none_rather_than_panicking() -> TestResult {
     let resolver = get_resolver("javascript");
     assert_eq!(resolver.extract_reference("import x from broken"), None);
     let resolver = get_resolver("rust");
     assert_eq!(resolver.extract_reference(""), None);
     let resolver = get_resolver("python");
     assert_eq!(resolver.extract_reference(""), None);
+    Ok(())
 }

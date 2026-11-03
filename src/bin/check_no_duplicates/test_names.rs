@@ -79,7 +79,7 @@ pub(super) fn test_names_by_file(
             let Some(after_attr) = strip_test_attr(line) else {
                 continue;
             };
-            // Same-line form: `#[test] fn foo() { ... }` (possibly after
+            // Same-line form: the attribute followed by `fn foo()` and its body (possibly after
             // whitespace). The attribute regex deliberately matches
             // only `#[test]`-style attributes (optionally path-qualified
             // like `#[tokio::test]`), never `#[cfg(test)]`, so a

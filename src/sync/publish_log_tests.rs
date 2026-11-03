@@ -2,15 +2,17 @@
 
 use super::*;
 use crate::sync::{discovery, sample};
+use slugaudit_test_check::{CheckErr, TestResult};
 
 #[test]
-fn a_sampling_index_error_maps_to_its_static_category_without_a_path() {
+fn a_sampling_index_error_maps_to_its_static_category_without_a_path() -> TestResult {
     let error = PublishError::SamplingIndexOutOfRange { index: 7, total: 3 };
 
     let (error_kind, path) = failure_fields(&error);
 
     assert_eq!(error_kind, "sampling_index_out_of_range");
     assert_eq!(path, None);
+    Ok(())
 }
 
 /// One discovery failure of every kind, wrapped in a publish error, with
@@ -61,9 +63,12 @@ fn discovery_log_field_cases() -> Vec<(PublishError, &'static str, Option<&'stat
 
 /// One non-discovery publish failure of every kind, with the log fields it
 /// must map to.
-fn publish_log_field_cases() -> Vec<(PublishError, &'static str, Option<&'static str>)> {
+fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Option<&'static str>)>>
+{
     use std::path::PathBuf;
-    vec![
+    let invalid = vec![0xff_u8];
+    let not_utf8 = std::str::from_utf8(&invalid).check_err("0xff is not valid UTF-8")?;
+    Ok(vec![
         (
             PublishError::TimeBudgetExceeded {
                 path: " a.rs".into(),
@@ -106,6 +111,7 @@ fn publish_log_field_cases() -> Vec<(PublishError, &'static str, Option<&'static
         (
             PublishError::Sample(sample::SampleError::NotUtf8 {
                 path: PathBuf::from("bytes.rs"),
+                source: not_utf8,
             }),
             "sample_not_utf8",
             Some("bytes.rs"),
@@ -143,13 +149,13 @@ fn publish_log_field_cases() -> Vec<(PublishError, &'static str, Option<&'static
             "invalid_parser_pack_version",
             None,
         ),
-    ]
+    ])
 }
 
 #[test]
-fn every_publish_failure_maps_to_its_kind_and_path() {
+fn every_publish_failure_maps_to_its_kind_and_path() -> TestResult {
     let mut cases = discovery_log_field_cases();
-    cases.extend(publish_log_field_cases());
+    cases.extend(publish_log_field_cases()?);
     for (error, kind, path) in &cases {
         assert_eq!(
             failure_fields(error),
@@ -157,4 +163,5 @@ fn every_publish_failure_maps_to_its_kind_and_path() {
             "log fields of {error:?}"
         );
     }
+    Ok(())
 }

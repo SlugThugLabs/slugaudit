@@ -7,7 +7,7 @@ use super::*;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
-fn registry_entries_cite_a_reference_and_a_docs_page() {
+fn registry_entries_cite_a_reference_and_a_docs_page() -> TestResult {
     for a in AGENTS {
         assert!(
             !a.reference.trim().is_empty(),
@@ -38,6 +38,7 @@ fn registry_entries_cite_a_reference_and_a_docs_page() {
             a.reference
         );
     }
+    Ok(())
 }
 
 fn refusal_text(agent: &crate::connect_agents::AgentDef) -> String {
@@ -83,7 +84,7 @@ fn every_refusal_carries_a_remedy_and_the_source_it_came_from() -> TestResult {
 }
 
 #[test]
-fn success_and_failure_reports_always_name_their_source() {
+fn success_and_failure_reports_always_name_their_source() -> TestResult {
     for a in AGENTS {
         let ok = crate::connect_guidance::success_lines(a, "Wrote mcpServers.slugaudit to /tmp/x");
         assert_eq!(ok[0], "Wrote mcpServers.slugaudit to /tmp/x");
@@ -126,6 +127,7 @@ fn success_and_failure_reports_always_name_their_source() {
             a.id
         );
     }
+    Ok(())
 }
 
 #[test]

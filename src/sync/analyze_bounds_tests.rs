@@ -52,7 +52,7 @@ fn content_over_max_parse_bytes_is_content_only_without_reaching_the_loader() ->
         Some("oversize_for_parse")
     );
     assert!(result.evidence.is_empty());
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -111,7 +111,7 @@ fn a_re_parse_cut_at_the_deadline_keeps_the_pack_evidence_as_partial_parse_timeo
     );
     assert_eq!(result.run.completeness, ExtractionCompleteness::Partial);
     assert_eq!(result.evidence.len(), kept);
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -134,7 +134,7 @@ fn a_spent_per_file_allowance_records_parse_timeout_without_parsing() -> TestRes
     );
     assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
     assert!(result.evidence.is_empty());
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -163,7 +163,7 @@ fn a_per_file_allowance_longer_than_the_sync_budget_yields_to_the_sync_budget() 
 #[test]
 fn a_one_millisecond_per_file_allowance_cuts_a_large_parse_and_leaves_the_sync_budget() -> TestResult
 {
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
     let content = line.repeat(400 * 1024 / line.len());
     let sync = generous_deadline();
 

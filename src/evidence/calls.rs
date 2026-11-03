@@ -264,9 +264,9 @@ fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
     })
 }
 
-/// The simple name of a callee. `field_expression` (`v.unwrap`) recurses to
+/// The simple name of a callee. `field_expression` (`v.expect`) recurses to
 /// its last named child — the `field_identifier` — so a method call reports
-/// `unwrap`, while `callee_text` keeps the receiver for context. A turbofish
+/// `expect`, while `callee_text` keeps the receiver for context. A turbofish
 /// (`generic_function`: `foo::<u8>`, `x.parse::<u32>`) recurses into its
 /// `function` part, not its type arguments, so it reports `foo` / `parse`.
 /// A loop, not recursion: the descent follows file content, so its length is

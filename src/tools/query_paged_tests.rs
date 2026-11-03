@@ -110,7 +110,11 @@ fn paged_query_pages_survive_an_edit_between_pages() -> TestResult {
     let full = start(&manager, &project, LISTING, HUGE_PAGE, &limits).check("full fetch")?;
     assert!(full.page.complete);
     let first = start(&manager, &project, LISTING, SMALL_PAGE, &limits).check("page one")?;
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
 
     fs::remove_file(project.path().join("f10.rs")).check("remove a matching file")?;
     fs::write(project.path().join("zz_new.rs"), b"pub fn z() {}\n").check("add a file")?;
@@ -388,16 +392,21 @@ fn paged_query_continuation_keeps_the_page_budget_of_page_one() -> TestResult {
         .check("page two")?;
 
     assert_eq!(first.page.page_bytes, SMALL_PAGE);
-    assert!(
-        first.page.cursor.is_some(),
-        "the configured budget must page"
-    );
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("the configured budget must page")?;
     assert_eq!(
         second.page.page_bytes, SMALL_PAGE,
         "the continuation inherits page one's budget"
     );
     assert_eq!(second.rows.len(), first.rows.len());
-    assert!(second.page.cursor.is_some(), "still more pages follow");
+    second
+        .page
+        .cursor
+        .as_ref()
+        .check("still more pages follow")?;
     Ok(())
 }
 

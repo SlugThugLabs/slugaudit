@@ -302,11 +302,7 @@ fn every_call_and_caller_node_kind_exists_in_its_grammar() -> TestResult {
         let grammar = require_grammar(entry.language)?;
         for kind in std::iter::once(entry.call_kind).chain(entry.function_kinds.iter().copied()) {
             let compiled = tree_sitter::Query::new(&grammar, &format!("({kind}) @node"));
-            assert!(
-                compiled.is_ok(),
-                "{}: `{kind}`: {compiled:?}",
-                entry.language
-            );
+            compiled.as_ref().check("`compiled` is ok")?;
         }
     }
     Ok(())
@@ -314,7 +310,7 @@ fn every_call_and_caller_node_kind_exists_in_its_grammar() -> TestResult {
 
 #[test]
 fn a_language_without_a_call_query_yields_no_calls_and_stays_complete() -> TestResult {
-    let source = "x.unwrap()\n";
+    let source = "x.expect()\n";
 
     let extraction =
         extract("ruby", source, &LineIndex::new(source), None).check("extract ruby calls")?;
@@ -340,7 +336,7 @@ fn a_call_query_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResul
 }
 
 #[test]
-fn call_languages_are_rust_and_every_embedded_query_language() {
+fn call_languages_are_rust_and_every_embedded_query_language() -> TestResult {
     let languages: Vec<&str> = super::super::call_languages().collect();
 
     assert_eq!(
@@ -356,4 +352,5 @@ fn call_languages_are_rust_and_every_embedded_query_language() {
             "c"
         ]
     );
+    Ok(())
 }

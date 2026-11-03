@@ -51,6 +51,9 @@ pub enum SampleError {
     NotUtf8 {
         /// Absolute path of the non-UTF-8 file.
         path: PathBuf,
+        /// Where the bytes stop being valid UTF-8.
+        #[source]
+        source: std::str::Utf8Error,
     },
 }
 
@@ -118,9 +121,10 @@ pub(super) fn sample_file(
             // Stored content must be byte-exact: a lossy re-encoding would
             // no longer hash to the file's identity, so the file is skipped
             // with a reason instead of stored wrong.
-            Err(_) => {
+            Err(source) => {
                 return Err(SampleError::NotUtf8 {
                     path: file.absolute_path.clone(),
+                    source,
                 });
             }
         }

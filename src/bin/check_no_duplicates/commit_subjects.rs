@@ -113,7 +113,7 @@ mod tests {
     use std::ffi::OsString;
 
     #[test]
-    fn a_base_that_is_not_utf8_fails_instead_of_widening_the_range() {
+    fn a_base_that_is_not_utf8_fails_instead_of_widening_the_range() -> TestResult {
         let mut failures = Vec::new();
 
         let range = commit_range(
@@ -127,20 +127,22 @@ mod tests {
             failures.iter().any(|f| f.contains("not valid UTF-8")),
             "{failures:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_set_base_selects_its_own_range() {
+    fn a_set_base_selects_its_own_range() -> TestResult {
         let mut failures = Vec::new();
 
         let range = commit_range(Ok("abc".to_owned()), Path::new("."), &mut failures);
 
         assert_eq!(range.as_deref(), Some("abc..HEAD"));
         assert!(failures.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn an_empty_or_blank_base_fails_instead_of_checking_no_commits() {
+    fn an_empty_or_blank_base_fails_instead_of_checking_no_commits() -> TestResult {
         for base in ["", "  ", "\t\n"] {
             let mut failures = Vec::new();
 
@@ -153,6 +155,7 @@ mod tests {
                 "base {base:?}"
             );
         }
+        Ok(())
     }
 
     #[test]

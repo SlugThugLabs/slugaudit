@@ -55,7 +55,7 @@ pub fn describe(status: &Status) -> String {
 pub fn shared_helper(value: u64) -> u64 {
     let mut map = HashMap::new();
     map.insert("key", value);
-    map.get("key").copied().unwrap_or(0)
+    map.get("key").map_or(0, |value| *value)
 }
 "#;
 

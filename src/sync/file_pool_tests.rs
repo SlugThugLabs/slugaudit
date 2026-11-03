@@ -102,7 +102,7 @@ fn a_spent_deadline_names_the_pass_activity_and_the_file() -> TestResult {
 }
 
 #[test]
-fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() {
+fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() -> TestResult {
     let error = time_budget_error("processing", "src/lib.rs", Duration::from_millis(1500));
 
     assert!(
@@ -113,6 +113,7 @@ fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() {
         ),
         "got {error:?}"
     );
+    Ok(())
 }
 
 #[test]

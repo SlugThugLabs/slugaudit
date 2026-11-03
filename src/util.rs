@@ -48,7 +48,7 @@ pub(crate) fn redacted_path(path: &std::path::Path) -> String {
 pub(crate) static TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Joins a test thread. A panic in the thread comes back as its message, so a
-/// test can report it with `.check(..)` instead of unwrapping the join error.
+/// test can report it with `.check(..)` instead of panicking on the join error.
 /// Test-only.
 #[cfg(test)]
 pub(crate) fn join_thread<T>(handle: std::thread::JoinHandle<T>) -> Result<T, String> {

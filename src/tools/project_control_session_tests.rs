@@ -71,10 +71,10 @@ fn a_per_repo_config_json_is_ignored_when_turning_on() -> TestResult {
     let response = control(&path, ProjectControlAction::On)?.0;
 
     assert_eq!(response.status, ProjectControlStatus::Enabled);
-    assert!(
-        response.import.is_some(),
-        "the 1-byte ceiling in the old file was not applied"
-    );
+    response
+        .import
+        .as_ref()
+        .check("the 1-byte ceiling in the old file was not applied")?;
     Ok(())
 }
 

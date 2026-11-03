@@ -47,9 +47,10 @@ pub(super) fn is_test_cfg(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_test_cfg;
+    use slugaudit_test_check::TestResult;
 
     #[test]
-    fn test_alone_and_test_inside_all_gate_to_test_builds() {
+    fn test_alone_and_test_inside_all_gate_to_test_builds() -> TestResult {
         for line in [
             "#[cfg(test)]",
             "  #[cfg(test)] mod tests;",
@@ -59,10 +60,11 @@ mod tests {
         ] {
             assert!(is_test_cfg(line), "{line}");
         }
+        Ok(())
     }
 
     #[test]
-    fn items_that_exist_in_a_non_test_build_are_not_test_only() {
+    fn items_that_exist_in_a_non_test_build_are_not_test_only() -> TestResult {
         for line in [
             "#[cfg(not(test))]",
             "#[cfg(any(target_os = \"macos\", test))]",
@@ -75,5 +77,6 @@ mod tests {
         ] {
             assert!(!is_test_cfg(line), "{line}");
         }
+        Ok(())
     }
 }

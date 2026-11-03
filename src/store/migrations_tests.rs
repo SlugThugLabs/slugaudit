@@ -190,10 +190,10 @@ fn pragma_user_version_round_trips_via_optional() -> TestResult {
     connection
         .pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)
         .check("set user_version")?;
-    let version: Option<i64> = connection
+    let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .ok();
-    assert_eq!(version, Some(CURRENT_SCHEMA_VERSION));
+        .check("read user_version")?;
+    assert_eq!(version, CURRENT_SCHEMA_VERSION);
     Ok(())
 }
 

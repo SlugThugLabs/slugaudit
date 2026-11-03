@@ -159,7 +159,11 @@ fn paginate_without_a_cursor_syncs_once_and_serves_page_one() -> TestResult {
     assert!(!served.page.complete);
     assert_eq!(served.page.limited_by, PageLimit::PageBytes);
     assert_eq!(served.page.completeness, Some(Completeness::Complete));
-    assert!(served.page.cursor.is_some());
+    served
+        .page
+        .cursor
+        .as_ref()
+        .check("`served.page.cursor` is present")?;
     assert_eq!(served.meta, Totals { produced: 25 });
     Ok(())
 }

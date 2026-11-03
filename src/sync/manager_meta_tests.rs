@@ -58,7 +58,7 @@ fn ensure_project_row_labels_a_mismatched_root_for_recovery() -> TestResult {
 }
 
 #[test]
-fn root_mismatch_converts_to_an_actionable_message() {
+fn root_mismatch_converts_to_an_actionable_message() -> TestResult {
     let err: rmcp::ErrorData = super::ProjectMetaError::RootMismatch {
         stored_root: "/old/path".into(),
     }
@@ -68,6 +68,7 @@ fn root_mismatch_converts_to_an_actionable_message() {
             && err.message.contains("/old/path"),
         "got: {err:?}",
     );
+    Ok(())
 }
 
 #[test]

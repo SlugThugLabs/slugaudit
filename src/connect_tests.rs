@@ -157,10 +157,7 @@ fn connect_registers_with_a_fake_agent_cli_successfully() -> TestResult {
     with_fake_clis_on_path(bin_dir.path(), || -> TestResult {
         with_config_home(temp.path(), || -> TestResult {
             let result = run_connect(Some("claude"));
-            assert!(
-                result.is_ok(),
-                "fake claude CLI must register successfully: {result:?}"
-            );
+            result.as_ref().check("`result` is ok")?;
             Ok(())
         })?;
         Ok(())
@@ -495,7 +492,7 @@ fn a_json_config_whose_server_section_is_not_an_object_is_refused_by_section() -
 }
 
 #[test]
-fn an_unknown_agent_name_is_rejected_by_connect_and_disconnect() {
+fn an_unknown_agent_name_is_rejected_by_connect_and_disconnect() -> TestResult {
     let connect = run_connect(Some("no-such-agent"));
     let disconnect = run_disconnect(Some("no-such-agent"));
 
@@ -505,6 +502,7 @@ fn an_unknown_agent_name_is_rejected_by_connect_and_disconnect() {
             "expected UnknownAgent, got {result:?}"
         );
     }
+    Ok(())
 }
 
 #[test]

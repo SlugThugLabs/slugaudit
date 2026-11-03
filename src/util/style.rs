@@ -87,6 +87,7 @@ impl Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::TestResult;
     use std::ffi::OsString;
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
@@ -99,27 +100,32 @@ mod tests {
     }
 
     #[test]
-    fn style_colours_a_terminal_with_a_clean_environment() {
+    fn style_colours_a_terminal_with_a_clean_environment() -> TestResult {
         assert!(Style::detect(true, env(&[("TERM", "xterm-256color")])).enabled());
+        Ok(())
     }
 
     #[test]
-    fn style_is_disabled_off_a_terminal() {
+    fn style_is_disabled_off_a_terminal() -> TestResult {
         assert!(!Style::detect(false, env(&[])).enabled());
+        Ok(())
     }
 
     #[test]
-    fn style_is_disabled_by_a_non_empty_no_color() {
+    fn style_is_disabled_by_a_non_empty_no_color() -> TestResult {
         assert!(!Style::detect(true, env(&[("NO_COLOR", "1")])).enabled());
+        Ok(())
     }
 
     #[test]
-    fn style_ignores_an_empty_no_color() {
+    fn style_ignores_an_empty_no_color() -> TestResult {
         assert!(Style::detect(true, env(&[("NO_COLOR", "")])).enabled());
+        Ok(())
     }
 
     #[test]
-    fn style_is_disabled_by_term_dumb() {
+    fn style_is_disabled_by_term_dumb() -> TestResult {
         assert!(!Style::detect(true, env(&[("TERM", "dumb")])).enabled());
+        Ok(())
     }
 }

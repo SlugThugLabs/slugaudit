@@ -225,7 +225,11 @@ fn a_registered_mechanic_pages_by_limit_and_offset_with_cumulative_files() -> Te
     );
     assert_eq!(first.page.limited_by, crate::tools::PageLimit::Limit);
     assert_eq!((first.files_total, first.files_covered), (2, 1));
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
     let mut next = leads_request(&path, Some("py_eval"), LeadMode::Compact);
     next.path = None;
     next.cursor = first.page.cursor.clone();
@@ -339,7 +343,10 @@ fn adding_the_id_of_a_builtin_is_refused() -> TestResult {
     let path = path_of(&project)?;
     let manager = sync::SourceSyncManager::default();
 
-    let error = refusal(&manager, add(&path, "unwrap_calls", "python", EVAL_QUERY))?;
+    let error = refusal(
+        &manager,
+        add(&path, "comment_markers", "python", EVAL_QUERY),
+    )?;
 
     assert_refused(&error, "can never remove, rename or override a built-in");
     Ok(())
@@ -472,10 +479,11 @@ fn the_mechanics_note_is_on_the_first_report_of_a_server_only() -> TestResult {
         second.mechanics.note, None,
         "only the first report carries it"
     );
-    assert!(
-        other_server.mechanics.note.is_some(),
-        "a new server instance starts a new session"
-    );
+    other_server
+        .mechanics
+        .note
+        .as_ref()
+        .check("a new server instance starts a new session")?;
     Ok(())
 }
 

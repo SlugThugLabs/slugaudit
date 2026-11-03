@@ -158,7 +158,7 @@ Key response fields:
 | `mechanics_invalid` | Registered entries that failed to load. |
 | `notices` | Untested-language lines for the languages the counts cover. |
 
-The call-site mechanics (`unwrap_calls` and the like) match Rust callee names. They read calls in rust, python, javascript, typescript, tsx, go, java and c.
+The call-site mechanics (`expect_calls` and the like) match Rust callee names. They read calls in rust, python, javascript, typescript, tsx, go, java and c.
 
 Example, counts first, then rows:
 
@@ -166,7 +166,7 @@ Example, counts first, then rows:
 { "path": "/home/you/code/myproject" }
 ```
 ```json
-{ "path": "/home/you/code/myproject", "mechanic": "unwrap_calls", "pattern": "src/auth/*", "mode": "compact" }
+{ "path": "/home/you/code/myproject", "mechanic": "expect_calls", "pattern": "src/auth/*", "mode": "compact" }
 ```
 
 ## mechanic

@@ -21,18 +21,26 @@ pub(super) fn build() -> Result<Value, serde_json::Error> {
 }
 
 /// Number of advertised tools in a snapshot, for the `--record` report.
-pub(super) fn tool_count(snapshot: &Value) -> usize {
+///
+/// # Errors
+///
+/// Returns a message when the snapshot has no `tools` array.
+pub(super) fn tool_count(snapshot: &Value) -> Result<usize, String> {
     entries(snapshot, "tools")
 }
 
 /// Number of advertised resources in a snapshot, for the `--record` report.
-pub(super) fn resource_count(snapshot: &Value) -> usize {
+///
+/// # Errors
+///
+/// Returns a message when the snapshot has no `resources` array.
+pub(super) fn resource_count(snapshot: &Value) -> Result<usize, String> {
     entries(snapshot, "resources")
 }
 
-fn entries(snapshot: &Value, key: &str) -> usize {
-    snapshot
-        .get(key)
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len)
+fn entries(snapshot: &Value, key: &str) -> Result<usize, String> {
+    match snapshot.get(key).and_then(Value::as_array) {
+        Some(array) => Ok(array.len()),
+        None => Err(format!("the surface has no `{key}` array")),
+    }
 }

@@ -241,6 +241,9 @@ impl PageCut {
 
     /// The failure `accept` met, if any.
     pub(in crate::tools) fn check(&mut self) -> Result<(), ErrorData> {
-        self.failure.take().map_or(Ok(()), Err)
+        match self.failure.take() {
+            Some(failure) => Err(failure),
+            None => Ok(()),
+        }
     }
 }

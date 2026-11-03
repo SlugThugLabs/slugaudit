@@ -183,10 +183,7 @@ fn enable_is_idempotent() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
     enable(&root).check("first enable")?;
-    assert!(
-        enable(&root).is_ok(),
-        "enabling an already-active project must not error"
-    );
+    enable(&root).check("enabling an already-active project must not error")?;
     Ok(())
 }
 
@@ -265,10 +262,11 @@ fn overlong_path() -> PathBuf {
 }
 
 #[test]
-fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() {
+fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() -> TestResult {
     let result = planning_checked_activation_dir(&overlong_path());
 
     assert!(matches!(result, Err(ActivationError::Io(_))), "{result:?}");
+    Ok(())
 }
 
 #[test]
@@ -287,8 +285,8 @@ fn a_directory_without_project_db_is_an_active_project() -> TestResult {
     fs::create_dir_all(&activation).check("create activation dir")?;
     fs::write(activation.join("config.json"), b"{}").check("write config")?;
 
-    assert!(find_project_root(directory.path()).is_ok());
-    assert!(resolve_project(directory.path()).is_ok());
+    find_project_root(directory.path()).check("`find_project_root(directory.path())` is ok")?;
+    resolve_project(directory.path()).check("`resolve_project(directory.path())` is ok")?;
     Ok(())
 }
 

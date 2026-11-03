@@ -10,22 +10,24 @@ fn accepts_empty_eof_span() -> TestResult {
 }
 
 #[test]
-fn rejects_reversed_ranges() {
+fn rejects_reversed_ranges() -> TestResult {
     let position = Position { line: 0, column: 0 };
     assert_eq!(
         Span::new(2, 1, position, position),
         Err(SpanError::ReversedBytes)
     );
+    Ok(())
 }
 
 #[test]
-fn a_span_whose_end_position_precedes_its_start_is_rejected() {
+fn a_span_whose_end_position_precedes_its_start_is_rejected() -> TestResult {
     let start = Position { line: 3, column: 5 };
     let end = Position { line: 3, column: 4 };
 
     let result = Span::new(10, 12, start, end);
 
     assert_eq!(result, Err(SpanError::ReversedPosition));
+    Ok(())
 }
 
 #[test]

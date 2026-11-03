@@ -22,7 +22,7 @@ fn req(path: Option<&str>) -> Parameters<HealthRequest> {
 }
 
 #[test]
-fn tool_counters_record_bumps_call_and_total_counts() {
+fn tool_counters_record_bumps_call_and_total_counts() -> TestResult {
     let before = ToolCounters::snapshot();
     let after = ToolCounters::record_call(true, 17);
     assert_eq!(after.call_count, before.call_count + 1);
@@ -31,24 +31,27 @@ fn tool_counters_record_bumps_call_and_total_counts() {
         "successful call does NOT bump error_count",
     );
     assert_eq!(after.total_ms, before.total_ms + 17);
+    Ok(())
 }
 
 #[test]
-fn tool_counters_record_bumps_error_count_on_error() {
+fn tool_counters_record_bumps_error_count_on_error() -> TestResult {
     let before = ToolCounters::snapshot();
     let after = ToolCounters::record_call(false, 3);
     assert_eq!(after.call_count, before.call_count + 1);
     assert_eq!(after.error_count, before.error_count + 1);
     assert_eq!(after.total_ms, before.total_ms + 3);
+    Ok(())
 }
 
 #[test]
-fn tool_counters_always_return_non_decreasing_after_a_bump() {
+fn tool_counters_always_return_non_decreasing_after_a_bump() -> TestResult {
     // The returned snapshot must reflect this call's increments, not a
     // stale value loaded before the call lands.
     let snap_calls_before = ToolCounters::snapshot().call_count;
     let snap_after = ToolCounters::record_call(true, 0);
     assert!(snap_after.call_count > snap_calls_before);
+    Ok(())
 }
 
 #[test]
@@ -237,21 +240,25 @@ fn project_state_populates_database_fields_for_an_active_project() -> TestResult
     assert_eq!(fields.remedy, None);
     assert_eq!(fields.database_read_error, None);
     let database = fields.database.as_ref().check("database group")?;
-    assert!(
-        database.revision_id.is_some(),
-        "a revision must exist after sync"
-    );
-    assert!(database.parser_pack_version.is_some());
+    database
+        .revision_id
+        .as_ref()
+        .check("a revision must exist after sync")?;
+    database
+        .parser_pack_version
+        .as_ref()
+        .check("`database.parser_pack_version` is present")?;
     assert_eq!(database.file_count, 1, "one indexed source file");
     assert_eq!(database.skipped_file_count, 0, "nothing was skipped");
     Ok(())
 }
 
 #[test]
-fn global_only_state_is_no_active_project() {
+fn global_only_state_is_no_active_project() -> TestResult {
     let fields = super::compute_global_only_state();
     assert_eq!(fields.phase, HealthPhase::NoActiveProject);
     assert_eq!(fields.database, None, "no path never opens a database");
+    Ok(())
 }
 
 /// The core read-only guarantee: calling `health` with a path must never
@@ -310,19 +317,24 @@ fn health_with_an_active_project_path_reports_db_fields() -> TestResult {
 
     let inner = response.0;
     let database = inner.database.as_ref().check("database group")?;
-    assert!(database.revision_id.is_some());
+    database
+        .revision_id
+        .as_ref()
+        .check("`database.revision_id` is present")?;
     assert_eq!(database.file_count, 1);
     let detail = inner
         .detail
         .as_ref()
         .check("a verbose answer carries detail")?;
     let database_detail = detail.database.as_ref().check("database detail group")?;
-    assert!(database_detail.parser_pack_version.is_some());
+    database_detail
+        .parser_pack_version
+        .as_ref()
+        .check("`database_detail.parser_pack_version` is present")?;
     assert!(
         detail.server.last_sync_unix_seconds > 0,
         "ensure_current must stamp the last-sync timestamp"
     );
-    let _ = project;
     Ok(())
 }
 
@@ -375,7 +387,11 @@ fn health_without_a_path_still_names_the_way_to_enable_a_project() -> TestResult
     .check("health never fails without a path")?;
 
     assert_eq!(response.0.phase, HealthPhase::NoActiveProject);
-    assert!(response.0.remedy.is_some());
+    response
+        .0
+        .remedy
+        .as_ref()
+        .check("`response.0.remedy` is present")?;
     Ok(())
 }
 
@@ -397,15 +413,14 @@ fn health_reports_no_remedy_for_an_active_project() -> TestResult {
     .check("health succeeds for an active project")?;
 
     assert_eq!(response.0.remedy, None);
-    assert!(
-        response
-            .0
-            .database
-            .as_ref()
-            .check("database group")?
-            .revision_id
-            .is_some()
-    );
+    response
+        .0
+        .database
+        .as_ref()
+        .check("database group")?
+        .revision_id
+        .as_ref()
+        .check("a revision exists after sync")?;
     Ok(())
 }
 

@@ -42,7 +42,7 @@ pub(crate) fn join_scoped_checked<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::CheckErr;
+    use slugaudit_test_check::{CheckErr, TestResult};
 
     #[test]
     fn a_finished_thread_returns_its_value() -> TestResult {
@@ -65,11 +65,12 @@ mod tests {
     }
 
     #[test]
-    fn a_non_text_panic_gets_a_fixed_description() {
+    fn a_non_text_panic_gets_a_fixed_description() -> TestResult {
         assert_eq!(
             panic_message(&42_u8),
             "the thread panicked with a non-text payload"
         );
         assert_eq!(panic_message(&"static text"), "static text");
+        Ok(())
     }
 }

@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn shapes_without_a_json_writer_have_no_entry() {
+    fn shapes_without_a_json_writer_have_no_entry() -> TestResult {
         for shape in [ConfigShape::GooseExtensions, ConfigShape::Unknown] {
             let result = shape.entry(Path::new("/bin/slugaudit"));
             assert!(
@@ -304,5 +304,6 @@ mod tests {
                 "{shape:?}: {result:?}"
             );
         }
+        Ok(())
     }
 }

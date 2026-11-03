@@ -215,7 +215,9 @@ fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() -> TestResult 
         tracing::warn!("capture liveness control");
         open_read_write(&path)
     })?;
-    assert!(result.is_ok(), "sanity: the open itself must succeed");
+    result
+        .as_ref()
+        .check("sanity: the open itself must succeed")?;
     assert!(
         logs.contains("capture liveness control"),
         "the capture must see this thread's events, or the absence checks \
@@ -405,11 +407,7 @@ fn every_evidence_kind_text_passes_the_kind_check() -> TestResult {
             ],
         );
 
-        assert!(
-            inserted.is_ok(),
-            "kind {} must be modeled by the CHECK: {inserted:?}",
-            row.kind
-        );
+        inserted.as_ref().check("`inserted` is ok")?;
         inserted_kinds.push(row.kind.to_owned());
     }
 
@@ -441,10 +439,7 @@ fn a_database_under_a_symlinked_parent_directory_opens_for_both_modes() -> TestR
     drop(open_read_write(&path).check("read-write open through a symlinked parent")?);
     let read_only = open_existing(&path);
 
-    assert!(
-        read_only.is_ok(),
-        "read-only open through a symlinked parent: {read_only:?}"
-    );
+    read_only.as_ref().check("`read_only` is ok")?;
     assert!(
         real.join("project.db").is_file(),
         "the database lands in the real directory"
@@ -500,7 +495,7 @@ fn a_connection_that_cannot_enter_wal_mode_fails_configuration() -> TestResult {
 }
 
 #[test]
-fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() {
+fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() -> TestResult {
     let path = std::path::Path::new("/tmp")
         .join("a".repeat(300))
         .join("project.db");
@@ -509,4 +504,5 @@ fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() 
         super::reject_symlink(&path),
         Err(StoreError::Inspect(_))
     ));
+    Ok(())
 }

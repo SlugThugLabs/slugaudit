@@ -1,7 +1,7 @@
 //! Production Rust code-line limit checker.
 #![forbid(unsafe_code)]
 // Panicking indexing is denied outside tests, as in the library root
-// (`lib.rs`); `unwrap` and `expect` are denied for every target in
+// (`lib.rs`); panicking calls are denied for every target in
 // `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 

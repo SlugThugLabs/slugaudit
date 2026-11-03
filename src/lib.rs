@@ -22,7 +22,7 @@
 // `std::io::Write` and return the failure instead of panicking.
 #![deny(clippy::print_stdout)]
 // Production code must not panic on an error value. The workspace lints
-// (`Cargo.toml`) deny `unwrap` and `expect` for every target, tests included.
+// (`Cargo.toml`) deny panicking calls for every target, tests included.
 // Fallible work returns `Result`, and the only genuinely fatal conditions
 // (failed process startup) report the error and choose an exit code. Indexing
 // is denied here outside tests.

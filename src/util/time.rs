@@ -124,29 +124,35 @@ mod deadline_tests {
     use slugaudit_test_check::{Check, TestResult};
 
     #[test]
-    fn a_zero_budget_is_exceeded_immediately() {
+    fn a_zero_budget_is_exceeded_immediately() -> TestResult {
         let deadline = Deadline::after(Duration::ZERO);
-        assert!(deadline.exceeded().is_some());
+        deadline
+            .exceeded()
+            .check("`deadline.exceeded()` is present")?;
+        Ok(())
     }
 
     #[test]
-    fn a_generous_budget_is_not_exceeded_immediately() {
+    fn a_generous_budget_is_not_exceeded_immediately() -> TestResult {
         let deadline = Deadline::after(Duration::from_mins(1));
         assert!(deadline.exceeded().is_none());
+        Ok(())
     }
 
     #[test]
-    fn a_spent_budget_has_no_milliseconds_remaining() {
+    fn a_spent_budget_has_no_milliseconds_remaining() -> TestResult {
         let deadline = Deadline::after(Duration::ZERO);
 
         assert_eq!(deadline.remaining_millis(), None);
+        Ok(())
     }
 
     #[test]
-    fn a_sub_millisecond_remainder_counts_as_spent() {
+    fn a_sub_millisecond_remainder_counts_as_spent() -> TestResult {
         let deadline = Deadline::after(Duration::from_micros(999));
 
         assert_eq!(deadline.remaining_millis(), None);
+        Ok(())
     }
 
     #[test]
@@ -187,22 +193,24 @@ mod deadline_tests {
     }
 
     #[test]
-    fn a_spent_operation_is_an_operation_bound_whatever_the_cap() {
+    fn a_spent_operation_is_an_operation_bound_whatever_the_cap() -> TestResult {
         let operation = Deadline::after(Duration::ZERO);
 
         let (unit, bound) = operation.capped(Duration::from_secs(5));
 
         assert_eq!(bound, BudgetBound::Operation);
-        assert!(unit.exceeded().is_some());
+        unit.exceeded().check("`unit.exceeded()` is present")?;
+        Ok(())
     }
 
     #[test]
-    fn a_zero_cap_is_a_spent_unit_bound() {
+    fn a_zero_cap_is_a_spent_unit_bound() -> TestResult {
         let operation = Deadline::after(Duration::from_mins(1));
 
         let (unit, bound) = operation.capped(Duration::ZERO);
 
         assert_eq!(bound, BudgetBound::Unit);
-        assert!(unit.exceeded().is_some());
+        unit.exceeded().check("`unit.exceeded()` is present")?;
+        Ok(())
     }
 }

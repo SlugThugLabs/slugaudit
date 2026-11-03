@@ -73,7 +73,7 @@ fn dotted_module_with_from_substring_resolves_to_real_file() -> TestResult {
 }
 
 #[test]
-fn malformed_js_import_with_unquoted_from_still_drops() {
+fn malformed_js_import_with_unquoted_from_still_drops() -> TestResult {
     // Token-gating keeps the JS branch's behavioural purpose intact:
     // a real JS-shape with `from` as a keyword but no quoted path is
     // malformed and must keep returning `None`. Falling through
@@ -85,6 +85,7 @@ fn malformed_js_import_with_unquoted_from_still_drops() {
         resolver.extract_reference("import x from broken").is_none(),
         "malformed JS `from` without a quote must still drop under JS",
     );
+    Ok(())
 }
 
 #[test]

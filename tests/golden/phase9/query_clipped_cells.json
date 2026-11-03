@@ -1,50 +1,49 @@
 {
   "case": "query_clipped_cells",
   "request": {
-    "page_bytes": 600,
-    "sql": "SELECT replace(hex(zeroblob(1500)), '00', 'ab') AS t, zeroblob(1500) AS b, 7 AS n"
+    "sql": "SELECT replace(hex(zeroblob(1500)), '00', 'ab') AS t, zeroblob(1500) AS b, 7 AS n",
+    "page_bytes": 600
   },
   "response": {
-    "clipped_cells": [
-      {
-        "column": "t",
-        "continue_with": "substr(\"t\", 290, 2711)",
-        "kind": "text",
-        "next_start": 290,
-        "returned": 289,
-        "row": 0,
-        "total": 3000,
-        "unit": "characters"
-      },
-      {
-        "column": "b",
-        "continue_with": "substr(\"b\", 146, 1355)",
-        "kind": "blob",
-        "next_start": 146,
-        "returned": 145,
-        "row": 0,
-        "total": 1500,
-        "unit": "bytes"
-      }
-    ],
-    "non_finite_cells": [],
     "page": {
-      "bytes_used": 600,
-      "complete": true,
-      "limited_by": "none",
-      "next_offset": null,
-      "page_bytes": 600,
       "returned": 1,
-      "revision_id": "<REVISION_ID>",
-      "total": 1
+      "total": 1,
+      "complete": true,
+      "completeness": "complete",
+      "page_bytes": 600,
+      "bytes_used": 600,
+      "limited_by": "none",
+      "revision_id": "<REVISION_ID>"
     },
     "rows": [
       {
+        "t": "ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababa",
         "b": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
-        "n": 7,
-        "t": "ababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababa"
+        "n": 7
       }
     ],
-    "total_unavailable": null
+    "clipped_cells": [
+      {
+        "row": 0,
+        "column": "t",
+        "kind": "text",
+        "unit": "characters",
+        "returned": 289,
+        "total": 3000,
+        "next_start": 290,
+        "continue_with": "substr(\"t\", 290, 2711)"
+      },
+      {
+        "row": 0,
+        "column": "b",
+        "kind": "blob",
+        "unit": "bytes",
+        "returned": 145,
+        "total": 1500,
+        "next_start": 146,
+        "continue_with": "substr(\"b\", 146, 1355)"
+      }
+    ],
+    "non_finite_cells": []
   }
 }

@@ -10,11 +10,10 @@ use slugaudit_test_check::{Check, CheckErr, TestResult};
 /// it through `PATH`, so each holds `TEST_ENV_LOCK` for its whole body: the
 /// update failure-path tests replace `PATH` with a fake bin directory, and an
 /// unguarded checksum test would otherwise execute the fake.
-fn require_sha256sum() {
-    assert!(
-        which::which("sha256sum").is_ok(),
-        "sha256sum (coreutils) is required to run the checksum tests"
-    );
+fn require_sha256sum() -> TestResult {
+    which::which("sha256sum")
+        .check("sha256sum (coreutils) is required to run the checksum tests")?;
+    Ok(())
 }
 
 /// Runs `f` with `PATH` pointing at exactly `bin_dir`: the inherited entries
@@ -87,7 +86,7 @@ fn plant_fake_sha256sum(bin_dir: &std::path::Path, digest: &str) -> TestResult {
 #[test]
 fn verify_checksum_accepts_a_matching_file() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum();
+    require_sha256sum()?;
     let dir = tempfile::tempdir().check("temp dir")?;
     let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     let contents = b"#!/bin/sh\necho fake binary\n";
@@ -124,7 +123,7 @@ fn verify_checksum_accepts_a_matching_file() -> TestResult {
 #[test]
 fn verify_checksum_accepts_a_unique_temporary_file_path() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum();
+    require_sha256sum()?;
     let dir = tempfile::tempdir().check("temp dir")?;
     // Deliberately NOT named the asset — a unique `.update-<pid>` name.
     let binary = dir
@@ -159,7 +158,7 @@ fn verify_checksum_accepts_a_unique_temporary_file_path() -> TestResult {
 #[test]
 fn verify_checksum_rejects_a_mismatching_file() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum();
+    require_sha256sum()?;
     let dir = tempfile::tempdir().check("temp dir")?;
     let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
     std::fs::write(&binary, b"different bytes\n").check("write fake binary")?;
@@ -234,7 +233,7 @@ fn verify_checksum_fails_when_asset_entry_missing() -> TestResult {
 #[test]
 fn verify_checksum_fails_when_binary_file_missing() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum();
+    require_sha256sum()?;
     let dir = tempfile::tempdir().check("temp dir")?;
     let missing_binary = dir.path().join("missing_bin");
     let sums_file = dir.path().join("SHA256SUMS");
@@ -245,7 +244,7 @@ fn verify_checksum_fails_when_binary_file_missing() -> TestResult {
 }
 
 #[test]
-fn update_error_display_covers_all_variants() {
+fn update_error_display_covers_all_variants() -> TestResult {
     assert!(
         UpdateError::ToolSpawn {
             tool: "curl",
@@ -289,10 +288,11 @@ fn update_error_display_covers_all_variants() {
         .to_string()
         .contains("could not create /test")
     );
+    Ok(())
 }
 
 #[test]
-fn a_download_failure_keeps_its_typed_cause() {
+fn a_download_failure_keeps_its_typed_cause() -> TestResult {
     let err = UpdateError::Download {
         action: "download binary to",
         path: PathBuf::from("/test"),
@@ -308,14 +308,16 @@ fn a_download_failure_keeps_its_typed_cause() {
             .is_some_and(|cause| cause.to_string().contains("network request failed")),
         "the cause must stay reachable through source()"
     );
+    Ok(())
 }
 
 #[test]
-fn only_the_published_platform_may_self_update() {
+fn only_the_published_platform_may_self_update() -> TestResult {
     assert!(platform_supported("linux", "x86_64"));
     assert!(!platform_supported("linux", "aarch64"));
     assert!(!platform_supported("macos", "x86_64"));
     assert!(!platform_supported("macos", "aarch64"));
+    Ok(())
 }
 
 /// The refusal `run_update` takes on an unsupported machine is reachable on
@@ -341,7 +343,7 @@ fn the_published_platform_is_accepted() -> TestResult {
 }
 
 #[test]
-fn the_unsupported_platform_error_names_both_sides() {
+fn the_unsupported_platform_error_names_both_sides() -> TestResult {
     let message = UpdateError::UnsupportedPlatform {
         os: "macos",
         arch: "aarch64",
@@ -350,10 +352,11 @@ fn the_unsupported_platform_error_names_both_sides() {
 
     assert!(message.contains("linux/x86_64"), "{message}");
     assert!(message.contains("macos/aarch64"), "{message}");
+    Ok(())
 }
 
 #[test]
-fn update_fetches_only_a_newer_or_incomparable_release() {
+fn update_fetches_only_a_newer_or_incomparable_release() -> TestResult {
     let cases = [
         ("1.0.10", "1.0.10", UpdateDecision::UpToDate),
         ("1.1.0", "1.0.10", UpdateDecision::UpToDate),
@@ -368,6 +371,7 @@ fn update_fetches_only_a_newer_or_incomparable_release() {
             "{current} vs {latest}"
         );
     }
+    Ok(())
 }
 
 /// A `sha256sum` that exits 0 but prints nothing must be named as a parse
@@ -505,12 +509,14 @@ fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() -> Test
 /// (the platform this repository builds and tests) never takes it.
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 #[test]
-fn run_update_refuses_a_platform_with_no_published_asset() {
+fn run_update_refuses_a_platform_with_no_published_asset() -> TestResult {
     let result = run_update();
 
     let Err(UpdateError::UnsupportedPlatform { os, arch }) = result else {
-        panic!("expected UnsupportedPlatform, got {result:?}");
+        return Err(format!("expected UnsupportedPlatform, got {result:?}"))
+            .check("unexpected outcome");
     };
     assert_eq!(os, std::env::consts::OS);
     assert_eq!(arch, std::env::consts::ARCH);
+    Ok(())
 }

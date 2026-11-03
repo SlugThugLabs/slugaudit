@@ -47,7 +47,7 @@ fn call(
 /// longer than a few milliseconds.
 fn many_functions(count: usize) -> String {
     (0..count)
-        .map(|index| format!("pub fn f{index}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
+        .map(|index| format!("pub fn f{index}(x: Option<u8>) -> u8 {{ x.expect() }}\n"))
         .collect::<Vec<_>>()
         .concat()
 }

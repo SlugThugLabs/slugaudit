@@ -22,8 +22,8 @@
         "mechanic": "unwrap_calls",
         "source": "builtin",
         "note": null,
-        "count": 12,
-        "files": 3,
+        "count": 0,
+        "files": 0,
         "covers": [
           "rust"
         ]
@@ -82,7 +82,7 @@
         "mechanic": "comment_markers",
         "source": "builtin",
         "note": null,
-        "count": 3,
+        "count": 15,
         "files": 3,
         "covers": [
           "rust"

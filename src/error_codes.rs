@@ -270,7 +270,7 @@ mod tests {
     /// unique, non-empty, lowercase `snake_case`, and each must carry a
     /// non-empty remedy.
     #[test]
-    fn every_code_is_unique_non_empty_and_lowercase_snake_case() {
+    fn every_code_is_unique_non_empty_and_lowercase_snake_case() -> TestResult {
         let mut seen = BTreeSet::new();
         for code in ErrorCode::ALL {
             let text = code.as_str();
@@ -283,6 +283,7 @@ mod tests {
             assert!(seen.insert(text), "{text} is not unique");
             assert!(!code.remedy().is_empty(), "{text} has no remedy");
         }
+        Ok(())
     }
 
     /// The remedy quotes both profile budgets in seconds; they must be the
@@ -332,7 +333,7 @@ mod tests {
     /// internal faults), with the static remedy and a message that carries
     /// no more than the error's own text.
     #[test]
-    fn store_errors_map_to_their_wire_codes_and_static_remedies() {
+    fn store_errors_map_to_their_wire_codes_and_static_remedies() -> TestResult {
         use crate::store::ResultStoreError as E;
         let unavailable = E::Unavailable {
             context: "open the result store",
@@ -368,5 +369,6 @@ mod tests {
             store_error(&crate::store::ResultStoreError::Full { active_count: 3 }).message,
             "the result store is full: 3 active results hold the space"
         );
+        Ok(())
     }
 }

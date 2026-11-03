@@ -33,11 +33,15 @@ pub(super) fn build(
     unrepresentable_path_count: i64,
 ) -> Result<CompletenessEnvelope, rusqlite::Error> {
     let grouped = read_grouped_counts(connection)?;
-    let skipped_file_count = grouped
+    let skipped_file_count = match grouped
         .file_kind_counts
         .iter()
         .find(|entry| entry.kind == "skipped")
-        .map_or(0, |entry| entry.count);
+    {
+        Some(entry) => entry.count,
+        // The grouped counts omit a kind with no files.
+        None => 0,
+    };
     let (evidence_capped_file_count, indexed_files_without_evidence) = read_gap_counts(connection)?;
     let prose_files_not_parsed: i64 = connection.query_row(
         "SELECT count(*) FROM files WHERE file_kind = 'indexed' AND language = ?1",

@@ -100,6 +100,6 @@ SELECT f.path, e.start_line, e.payload
 FROM evidence e
 JOIN files f ON e.file_id = f.id
 WHERE e.kind = 'Call'
-  AND json_extract(e.payload, '$.callee_name') = 'unwrap'
+  AND json_extract(e.payload, '$.callee_name') = 'expect'
 ORDER BY f.path, e.start_line;
 ```

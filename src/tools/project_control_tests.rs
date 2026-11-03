@@ -438,7 +438,7 @@ fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() -
         .check("enable reports the gitignore guard")?;
     assert_eq!(report.status, GitignoreStatus::AlreadyIgnored);
     assert_eq!(response.0.status, ProjectControlStatus::Enabled);
-    assert!(response.0.import.is_some(), "the import still ran");
+    response.0.import.as_ref().check("the import still ran")?;
     assert_eq!(
         fs::read(&gitignore).check("read .gitignore")?,
         original.to_vec(),
@@ -460,7 +460,7 @@ fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() -> 
         .gitignore
         .check("enable reports the gitignore guard")?;
     assert_eq!(report.status, GitignoreStatus::NotWritten);
-    assert!(report.error.is_some(), "the reason is reported");
+    report.error.as_ref().check("the reason is reported")?;
     assert_eq!(response.0.status, ProjectControlStatus::Enabled);
     assert!(
         activation_dir(&project).join("project.db").exists(),

@@ -6,98 +6,113 @@ use super::{FileOutcome, check_file};
 use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn empty_string_is_zero() {
+fn empty_string_is_zero() -> TestResult {
     assert_eq!(code_lines(""), 0);
+    Ok(())
 }
 
 #[test]
-fn only_whitespace_is_zero() {
+fn only_whitespace_is_zero() -> TestResult {
     assert_eq!(code_lines("   \n\t\n  \n"), 0);
+    Ok(())
 }
 
 #[test]
-fn line_comment_only_is_zero() {
+fn line_comment_only_is_zero() -> TestResult {
     assert_eq!(code_lines("// nothing\n// here\n"), 0);
+    Ok(())
 }
 
 #[test]
-fn block_comment_only_is_zero() {
+fn block_comment_only_is_zero() -> TestResult {
     assert_eq!(code_lines("/* this\nspans\nlines */\n"), 0);
+    Ok(())
 }
 
 #[test]
-fn nested_block_comment_does_not_close_early() {
+fn nested_block_comment_does_not_close_early() -> TestResult {
     // Depth-2 block comment: the inner `*/` must NOT close the outer
     // comment.
     let src = "/* outer /* inner */ still in outer */\n";
     assert_eq!(code_lines(src), 0);
+    Ok(())
 }
 
 #[test]
-fn fn_definition_counts_one() {
+fn fn_definition_counts_one() -> TestResult {
     assert_eq!(code_lines("fn foo() {}\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn code_then_blank_lines_still_one() {
+fn code_then_blank_lines_still_one() -> TestResult {
     assert_eq!(code_lines("\n\nfn x() {}\n\n\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn two_separate_code_lines() {
+fn two_separate_code_lines() -> TestResult {
     assert_eq!(code_lines("fn a() {}\nfn b() {}\n"), 2);
+    Ok(())
 }
 
 #[test]
-fn string_does_not_split_line() {
+fn string_does_not_split_line() -> TestResult {
     // The string content has an escaped newline (\n), but Rust
     // considers it a single line of code (no actual newline byte
     // present).
     assert_eq!(code_lines("let x = \"a\\nb\";\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn raw_string_with_embedded_newline_counts_each_physical_line() {
+fn raw_string_with_embedded_newline_counts_each_physical_line() -> TestResult {
     // A raw string spanning multiple physical lines via an embedded
     // newline byte counts each physical line of code — each line has
     // at least one token, so each counts. Finalize-on-newline
     // runs at the top of the loop regardless of state, so multi-line raw
     // strings count per physical line.
     assert_eq!(code_lines("let x = r#\"a\nb\"#;\n"), 2);
+    Ok(())
 }
 
 #[test]
-fn a_string_continuation_ends_its_physical_line() {
+fn a_string_continuation_ends_its_physical_line() -> TestResult {
     // `\` before the newline continues the string onto the next line, but the
     // two physical lines both hold tokens.
     assert_eq!(code_lines("const S: &str = \"a\\\n    b\";\n"), 2);
+    Ok(())
 }
 
 #[test]
-fn an_escaped_newline_in_a_char_or_string_counts_each_line_once() {
+fn an_escaped_newline_in_a_char_or_string_counts_each_line_once() -> TestResult {
     assert_eq!(code_lines("let a = \"x\\\ny\\\nz\";\nlet b = 1;\n"), 4);
     assert_eq!(code_lines("let a = \"x\\\n\";\n"), 2);
+    Ok(())
 }
 
 #[test]
-fn char_literal_counts() {
+fn char_literal_counts() -> TestResult {
     assert_eq!(code_lines("let c = 'a';\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn escaped_char_literal_counts() {
+fn escaped_char_literal_counts() -> TestResult {
     assert_eq!(code_lines("let c = '\\n';\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn unterminated_char_literal_falls_through() {
+fn unterminated_char_literal_falls_through() -> TestResult {
     // `'` alone is not a valid char literal; the apostrophe is just a
     // stray byte that should still count as code.
     assert_eq!(code_lines("let c = ';\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn non_ascii_code_is_scanned_without_slicing_inside_a_char() {
+fn non_ascii_code_is_scanned_without_slicing_inside_a_char() -> TestResult {
     let source = "let tree = \"├──\"; let x = 'é'; // ├\nfn r() {}\n";
 
     let lines = code_lines(source);
@@ -106,20 +121,23 @@ fn non_ascii_code_is_scanned_without_slicing_inside_a_char() {
         lines, 2,
         "multi-byte chars must not split or panic the scan"
     );
+    Ok(())
 }
 
 #[test]
-fn code_after_end_of_line_comment_counts() {
+fn code_after_end_of_line_comment_counts() -> TestResult {
     assert_eq!(code_lines("// hdr\nfn x() {}\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn code_after_block_comment_counts() {
+fn code_after_block_comment_counts() -> TestResult {
     assert_eq!(code_lines("/* hdr */\nfn x() {}\n"), 1);
+    Ok(())
 }
 
 #[test]
-fn exception_reason_parsed() {
+fn exception_reason_parsed() -> TestResult {
     let src = "// slugaudit-line-exception: approved-by=slugthuglabs; reason=foo bar\nfn x() {}\n";
     assert_eq!(
         exception_reason(src)
@@ -127,21 +145,24 @@ fn exception_reason_parsed() {
             .as_deref(),
         Some("foo bar")
     );
+    Ok(())
 }
 
 #[test]
-fn exception_reason_absent_returns_none() {
+fn exception_reason_absent_returns_none() -> TestResult {
     assert_eq!(exception_reason("fn x() {}\n"), None);
+    Ok(())
 }
 
 #[test]
-fn exception_wrong_approver_returns_none() {
+fn exception_wrong_approver_returns_none() -> TestResult {
     let src = "// slugaudit-line-exception: approved-by=human; reason=foo\nfn x() {}\n";
     assert_eq!(exception_reason(src), None);
+    Ok(())
 }
 
 #[test]
-fn a_malformed_annotation_does_not_end_the_scan() {
+fn a_malformed_annotation_does_not_end_the_scan() -> TestResult {
     let valid = "// slugaudit-line-exception: approved-by=slugthuglabs; reason=later\n";
     for malformed in [
         "// slugaudit-line-exception: approved-by=slugthuglabs; reason=\n",
@@ -159,10 +180,11 @@ fn a_malformed_annotation_does_not_end_the_scan() {
             "{malformed}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn dated_human_exception_is_parsed() {
+fn dated_human_exception_is_parsed() -> TestResult {
     let src =
         "// slugaudit-line-exception: approved-by=human-user; date=2026-08-28; reason=approved\n";
     assert_eq!(
@@ -171,38 +193,42 @@ fn dated_human_exception_is_parsed() {
             .as_deref(),
         Some("[human-approved 2026-08-28] approved")
     );
+    Ok(())
 }
 
 // --- line-limit policy (verdict) ---
 
 #[test]
-fn test_files_auto_pass_up_to_the_500_ceiling() {
+fn test_files_auto_pass_up_to_the_500_ceiling() -> TestResult {
     assert_eq!(verdict(0, None, true), Verdict::Pass);
     assert_eq!(
         verdict(300, Some(Exception::agent("reason".to_owned())), true),
         Verdict::Pass
     );
     assert_eq!(verdict(500, None, true), Verdict::Pass);
+    Ok(())
 }
 
 #[test]
-fn test_files_over_500_hard_fail_even_with_an_exception() {
+fn test_files_over_500_hard_fail_even_with_an_exception() -> TestResult {
     assert_eq!(
         verdict(501, Some(Exception::agent("reason".to_owned())), true),
         Verdict::FailHard {
             ceiling: TEST_FILE_CEILING
         }
     );
+    Ok(())
 }
 
 #[test]
-fn production_files_below_the_exception_floor_auto_pass() {
+fn production_files_below_the_exception_floor_auto_pass() -> TestResult {
     assert_eq!(verdict(0, None, false), Verdict::Pass);
     assert_eq!(verdict(199, None, false), Verdict::Pass);
+    Ok(())
 }
 
 #[test]
-fn production_files_need_an_exception_from_200_to_300() {
+fn production_files_need_an_exception_from_200_to_300() -> TestResult {
     assert_eq!(verdict(200, None, false), Verdict::FailNeedsException);
     assert_eq!(verdict(300, None, false), Verdict::FailNeedsException);
     assert_eq!(
@@ -211,16 +237,18 @@ fn production_files_need_an_exception_from_200_to_300() {
             reason: "contract".into()
         }
     );
+    Ok(())
 }
 
 #[test]
-fn production_files_over_300_hard_fail_even_with_an_exception() {
+fn production_files_over_300_hard_fail_even_with_an_exception() -> TestResult {
     assert_eq!(
         verdict(301, Some(Exception::agent("reason".to_owned())), false),
         Verdict::FailHard {
             ceiling: PRODUCTION_CEILING
         }
     );
+    Ok(())
 }
 
 const HUMAN_ANNOTATION: &str =

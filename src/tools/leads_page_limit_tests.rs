@@ -1,7 +1,8 @@
 use super::*;
+use slugaudit_test_check::TestResult;
 
 #[test]
-fn limited_by_names_the_cause_for_every_combination() {
+fn limited_by_names_the_cause_for_every_combination() -> TestResult {
     let size = |at_ceiling| PageSize {
         bytes: 10,
         at_ceiling,
@@ -31,4 +32,5 @@ fn limited_by_names_the_cause_for_every_combination() {
             PageLimit::Ceiling
         );
     }
+    Ok(())
 }

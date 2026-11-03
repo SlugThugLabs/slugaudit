@@ -192,7 +192,9 @@ fn an_unchanged_file_passes_revalidation() -> TestResult {
     let (upserts, _deletions) = build_upserts_and_deletions(samples, &[], true, &limits, &deadline)
         .check("build upserts")?;
 
-    assert!(revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline).is_ok());
+    revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline).check(
+        "`revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline)` is ok",
+    )?;
     Ok(())
 }
 

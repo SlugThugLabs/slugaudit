@@ -177,10 +177,11 @@ fn a_poisoned_lock_becomes_an_internal_tool_error_that_says_restart() -> TestRes
 }
 
 #[test]
-fn hex_encode_renders_lowercase_hex() {
+fn hex_encode_renders_lowercase_hex() -> TestResult {
     assert_eq!(hex_encode(b""), "");
     assert_eq!(hex_encode(b"\x00\xff\x10"), "00ff10");
     assert_eq!(hex_encode(b"hello"), "68656c6c6f");
+    Ok(())
 }
 
 #[test]
@@ -224,10 +225,11 @@ fn now_unix_is_nonzero_and_never_moves_backwards() -> TestResult {
 }
 
 #[test]
-fn at_least_timestamp_never_drops_below_the_persisted_value() {
+fn at_least_timestamp_never_drops_below_the_persisted_value() -> TestResult {
     assert_eq!(at_least_timestamp(100, Some(200)), 200);
     assert_eq!(at_least_timestamp(200, Some(100)), 200);
     assert_eq!(at_least_timestamp(100, None), 100);
+    Ok(())
 }
 
 // --- Style (ANSI / TTY) ---
@@ -236,7 +238,7 @@ fn at_least_timestamp_never_drops_below_the_persisted_value() {
 /// even when the text itself would otherwise be stylable. This is the
 /// safety contract that keeps redirected/piped output clean.
 #[test]
-fn plain_style_passes_text_through_uncolored() {
+fn plain_style_passes_text_through_uncolored() -> TestResult {
     let style = Style::plain();
     assert!(!style.enabled());
     assert_eq!(style.bold("hi"), "hi");
@@ -244,21 +246,23 @@ fn plain_style_passes_text_through_uncolored() {
     assert_eq!(style.cyan("hi"), "hi");
     assert_eq!(style.green("hi"), "hi");
     assert_eq!(style.yellow("hi"), "hi");
+    Ok(())
 }
 
 #[test]
-fn enabled_style_wraps_text_in_sgr_codes() {
+fn enabled_style_wraps_text_in_sgr_codes() -> TestResult {
     let style = Style::colored();
 
     assert!(style.enabled());
     assert_eq!(style.bold("hi"), "\x1b[1mhi\x1b[0m");
+    Ok(())
 }
 
 /// The exact SGR codes used by `Style` must match the documented ANSI
 /// mapping (bold=1, dim=2, cyan=36, green=32, yellow=33, reset=0), so a
 /// "fix" that changes one code fails here.
 #[test]
-fn style_uses_the_documented_sgr_codes() {
+fn style_uses_the_documented_sgr_codes() -> TestResult {
     let style = Style::colored();
 
     let expectations = [
@@ -271,24 +275,27 @@ fn style_uses_the_documented_sgr_codes() {
     for (output, expected) in expectations {
         assert_eq!(output, expected);
     }
+    Ok(())
 }
 
 #[test]
-fn input_byte_bound_check_is_utf8_safe_and_exact() {
+fn input_byte_bound_check_is_utf8_safe_and_exact() -> TestResult {
     assert!(!exceeds_input_bytes("é", 2));
     assert!(exceeds_input_bytes("é", 1));
     assert!(!exceeds_input_bytes("abc", 3));
     assert!(exceeds_input_bytes("abcd", 3));
+    Ok(())
 }
 
 #[test]
-fn redacted_log_ids_are_stable_without_containing_input() {
+fn redacted_log_ids_are_stable_without_containing_input() -> TestResult {
     let secret = "/home/alice/private-project";
     let first = crate::util::redacted_log_id(secret.as_bytes());
     let second = crate::util::redacted_path(std::path::Path::new(secret));
     assert_eq!(first, second);
     assert_ne!(first, secret);
     assert_eq!(first.len(), 64);
+    Ok(())
 }
 
 #[test]

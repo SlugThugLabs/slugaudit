@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn a_displayed_command_quotes_arguments_a_shell_would_split() {
+    fn a_displayed_command_quotes_arguments_a_shell_would_split() -> TestResult {
         let split = display_command(
             "claude",
             &["mcp", "add", "slugaudit", "--", "/bin/slug audit"].map(str::to_string),
@@ -209,5 +209,6 @@ mod tests {
         let apostrophe = display_command("claude", &["it's".to_string()]);
 
         assert_eq!(apostrophe, "claude 'it'\\''s'");
+        Ok(())
     }
 }

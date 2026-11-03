@@ -49,7 +49,7 @@ fn plant_fake_curl(
 }
 
 #[test]
-fn from_tag_builds_the_asset_and_checksum_urls() {
+fn from_tag_builds_the_asset_and_checksum_urls() -> TestResult {
     let release = LatestRelease::from_tag("v1.0.3");
     assert_eq!(release.version, "1.0.3");
     assert!(release.asset_url.ends_with(
@@ -60,16 +60,18 @@ fn from_tag_builds_the_asset_and_checksum_urls() {
             .checksums_url
             .ends_with("/SlugThugLabs/slugaudit/releases/download/v1.0.3/SHA256SUMS")
     );
+    Ok(())
 }
 
 #[test]
-fn from_tag_trims_a_leading_v_from_the_version() {
+fn from_tag_trims_a_leading_v_from_the_version() -> TestResult {
     assert_eq!(LatestRelease::from_tag("1.0.3").version, "1.0.3");
     assert_eq!(LatestRelease::from_tag("v1.0.3").version, "1.0.3");
+    Ok(())
 }
 
 #[test]
-fn compare_versions_orders_numeric_releases() {
+fn compare_versions_orders_numeric_releases() -> TestResult {
     use std::cmp::Ordering::*;
     assert_eq!(compare_versions("1.0.2", "1.0.3"), Ok(Less));
     assert_eq!(compare_versions("1.0.3", "1.0.3"), Ok(Equal));
@@ -80,6 +82,7 @@ fn compare_versions_orders_numeric_releases() {
         Ok(Greater),
         "major bump outranks any patch"
     );
+    Ok(())
 }
 
 #[test]
@@ -112,7 +115,7 @@ fn compare_versions_error_names_the_unparseable_version_and_keeps_the_cause() ->
     let error = compare_versions("1.0.0-rc1", "1.0.0").check_err("pre-release is not numeric")?;
 
     assert!(error.to_string().contains("1.0.0-rc1"), "{error}");
-    assert!(std::error::Error::source(&error).is_some());
+    std::error::Error::source(&error).check("the error carries a source")?;
     Ok(())
 }
 
@@ -343,7 +346,7 @@ fn update_fetch_failed_download_removes_the_partial_file() -> TestResult {
 }
 
 #[test]
-fn both_curl_calls_share_one_bounded_https_only_argument_list() {
+fn both_curl_calls_share_one_bounded_https_only_argument_list() -> TestResult {
     let command = curl_command("https://example.test/x", 30, 10_000_000);
 
     let args: Vec<_> = command
@@ -366,4 +369,5 @@ fn both_curl_calls_share_one_bounded_https_only_argument_list() {
             "https://example.test/x",
         ]
     );
+    Ok(())
 }

@@ -1,36 +1,35 @@
 {
   "case": "query_plain_rows",
   "request": {
-    "page_bytes": null,
-    "sql": "SELECT path, language FROM files ORDER BY path"
+    "sql": "SELECT path, language FROM files ORDER BY path",
+    "page_bytes": null
   },
   "response": {
-    "clipped_cells": [],
-    "non_finite_cells": [],
     "page": {
-      "bytes_used": 108,
-      "complete": true,
-      "limited_by": "none",
-      "next_offset": null,
-      "page_bytes": 65536,
       "returned": 3,
-      "revision_id": "<REVISION_ID>",
-      "total": 3
+      "total": 3,
+      "complete": true,
+      "completeness": "complete",
+      "page_bytes": 65536,
+      "bytes_used": 108,
+      "limited_by": "none",
+      "revision_id": "<REVISION_ID>"
     },
     "rows": [
       {
-        "language": "rust",
-        "path": "mod0.rs"
+        "path": "mod0.rs",
+        "language": "rust"
       },
       {
-        "language": "rust",
-        "path": "mod1.rs"
+        "path": "mod1.rs",
+        "language": "rust"
       },
       {
-        "language": "rust",
-        "path": "mod2.rs"
+        "path": "mod2.rs",
+        "language": "rust"
       }
     ],
-    "total_unavailable": null
+    "clipped_cells": [],
+    "non_finite_cells": []
   }
 }

@@ -364,8 +364,11 @@ pub(super) fn sql_value_to_json(value: &SqlValue) -> serde_json::Value {
     match value {
         SqlValue::Null => serde_json::Value::Null,
         SqlValue::Integer(number) => serde_json::Value::from(*number),
-        SqlValue::Real(number) => serde_json::Number::from_f64(*number)
-            .map_or(serde_json::Value::Null, serde_json::Value::Number),
+        SqlValue::Real(number) => match serde_json::Number::from_f64(*number) {
+            Some(finite) => serde_json::Value::Number(finite),
+            // Not representable in JSON: `null`, reported by `non_finite_cells`.
+            None => serde_json::Value::Null,
+        },
         SqlValue::Text(text) => serde_json::Value::String(text.clone()),
         SqlValue::Blob(bytes) => serde_json::Value::String(util::hex_encode(bytes)),
     }

@@ -8,7 +8,7 @@ use super::*;
 use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn find_agent_finds_standard_and_aliased_names() {
+fn find_agent_finds_standard_and_aliased_names() -> TestResult {
     assert_eq!(find_agent("agy").map(|a| a.id), Some("agy"));
     assert_eq!(find_agent("antigravity").map(|a| a.id), Some("agy"));
     assert_eq!(find_agent("claude").map(|a| a.id), Some("claude"));
@@ -17,6 +17,7 @@ fn find_agent_finds_standard_and_aliased_names() {
     assert_eq!(find_agent("cursor").map(|a| a.id), Some("cursor"));
     assert_eq!(find_agent("zed").map(|a| a.id), Some("zed"));
     assert_eq!(find_agent("nonexistent_agent"), None);
+    Ok(())
 }
 
 #[test]
@@ -124,7 +125,7 @@ fn registry_entries_carry_an_evidence_status() -> TestResult {
 }
 
 #[test]
-fn registry_never_uses_a_display_name_as_the_executable() {
+fn registry_never_uses_a_display_name_as_the_executable() -> TestResult {
     for a in AGENTS {
         for cli in a.cli.into_iter().chain(a.verify_cli) {
             assert!(!cli.is_empty(), "{}: empty executable", a.id);
@@ -171,10 +172,11 @@ fn registry_never_uses_a_display_name_as_the_executable() {
         [("cursor", "agent")],
         "cursor's agent binary can verify but not register"
     );
+    Ok(())
 }
 
 #[test]
-fn registry_file_fallbacks_keep_a_real_executable_and_path() {
+fn registry_file_fallbacks_keep_a_real_executable_and_path() -> TestResult {
     let fallbacks: Vec<_> = AGENTS
         .iter()
         .filter(|a| a.file_fallback)
@@ -182,11 +184,7 @@ fn registry_file_fallbacks_keep_a_real_executable_and_path() {
         .collect();
     assert_eq!(fallbacks, ["opencode", "bob", "pi"]);
     for a in AGENTS.iter().filter(|a| a.file_fallback) {
-        assert!(
-            a.cli.is_some(),
-            "{}: a file fallback still needs a CLI to try first",
-            a.id
-        );
+        a.cli.as_ref().check("`a.cli` is present")?;
         assert!(
             a.config.is_usable(),
             "{}: a file fallback needs a config path",
@@ -198,6 +196,7 @@ fn registry_file_fallbacks_keep_a_real_executable_and_path() {
             a.id
         );
     }
+    Ok(())
 }
 
 #[test]
@@ -318,11 +317,7 @@ fn registry_shape_and_path_models_match_the_documented_forms() -> TestResult {
             "{}: a refusal needs a paste-ready remedy",
             a.id
         );
-        assert!(
-            a.blocker().is_some(),
-            "{}: a manual entry must block the automated path",
-            a.id
-        );
+        a.blocker().check("`a.blocker()` is present")?;
     }
     for a in AGENTS.iter().filter(|a| !a.manual_steps) {
         assert!(

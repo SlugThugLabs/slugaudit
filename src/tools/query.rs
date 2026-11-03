@@ -385,7 +385,10 @@ fn first_keyword_is_pragma(sql: &str) -> bool {
         if let Some(comment) = rest.strip_prefix("--") {
             // A line comment ends at the newline; without one it runs to the
             // end of the statement, leaving no keyword.
-            rest = comment.split_once('\n').map_or("", |(_, after)| after);
+            rest = match comment.split_once('\n') {
+                Some((_, after)) => after,
+                None => "",
+            };
             continue;
         }
         if let Some(comment) = rest.strip_prefix("/*") {

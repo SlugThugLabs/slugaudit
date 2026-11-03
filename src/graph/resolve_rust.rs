@@ -41,7 +41,11 @@ impl LanguageResolver for RustResolver {
     fn extract_reference(&self, raw: &str) -> Option<ImportReference> {
         let without_visibility = strip_visibility(raw.trim());
         let rest = without_visibility.strip_prefix("use ")?;
-        let end = rest.find([';', '{', ' ']).map_or(rest.len(), |index| index);
+        let end = match rest.find([';', '{', ' ']) {
+            Some(index) => index,
+            // No terminator: the path runs to the end of the text.
+            None => rest.len(),
+        };
         let path = rest[..end].trim_end_matches("::");
         if path.is_empty() {
             None
@@ -83,9 +87,10 @@ fn strip_visibility(text: &str) -> &str {
 /// The file stem, or the empty string for a path with none (`..`, `/`): such
 /// a path owns no module, which is the correct answer, not a lost error.
 fn file_stem(relative_path: &str) -> String {
-    Path::new(relative_path)
-        .file_stem()
-        .map_or_else(String::new, |stem| stem.to_string_lossy().into_owned())
+    match Path::new(relative_path).file_stem() {
+        Some(stem) => stem.to_string_lossy().into_owned(),
+        None => String::new(),
+    }
 }
 
 /// The directory that a Rust file's *own* module owns — i.e. where its

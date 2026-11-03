@@ -71,7 +71,7 @@ fn the_walker_does_not_descend_into_excluded_directories() -> TestResult {
 }
 
 #[test]
-fn the_runtime_data_directory_and_its_descendants_are_excluded() {
+fn the_runtime_data_directory_and_its_descendants_are_excluded() -> TestResult {
     for excluded in [
         ".planning/slugaudit",
         ".planning/slugaudit/project.db",
@@ -81,10 +81,11 @@ fn the_runtime_data_directory_and_its_descendants_are_excluded() {
         assert!(is_excluded_path(excluded), "{excluded} must be excluded");
         assert!(is_excluded_dir(excluded), "{excluded} must be excluded");
     }
+    Ok(())
 }
 
 #[test]
-fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() {
+fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() -> TestResult {
     for included in [
         ".planning/slugaudit-notes/x.md",
         ".planning/slugaudit-notes",
@@ -97,4 +98,5 @@ fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() {
     ] {
         assert!(!is_excluded_path(included), "{included} must be indexed");
     }
+    Ok(())
 }

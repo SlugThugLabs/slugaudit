@@ -93,17 +93,19 @@ pub fn language_available(language: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::TestResult;
 
     #[test]
-    fn only_rust_is_a_tested_language() {
+    fn only_rust_is_a_tested_language() -> TestResult {
         assert_eq!(TESTED_LANGUAGES, ["rust"]);
         assert!(is_tested_language("rust"));
         assert!(!is_tested_language("python"));
         assert!(!is_tested_language(PROSE_LANGUAGE));
+        Ok(())
     }
 
     #[test]
-    fn prose_extensions_classify_as_prose_and_data_or_source_stay_parsed() {
+    fn prose_extensions_classify_as_prose_and_data_or_source_stay_parsed() -> TestResult {
         let table = [
             ("docs/a.md", "prose"),
             ("a.markdown", "prose"),
@@ -122,10 +124,11 @@ mod tests {
         for (path, expected) in table {
             assert_eq!(detect_language(path).as_deref(), Some(expected), "{path}");
         }
+        Ok(())
     }
 
     #[test]
-    fn ignore_pattern_lists_are_stored_as_prose_at_any_depth() {
+    fn ignore_pattern_lists_are_stored_as_prose_at_any_depth() -> TestResult {
         for path in [
             ".gitignore",
             "sub/.gitignore",
@@ -141,20 +144,23 @@ mod tests {
         for path in ["gitignore", ".gitignore.bak", "npmignore"] {
             assert_eq!(detect_language(path), None, "{path}");
         }
+        Ok(())
     }
 
     #[test]
-    fn prose_language_names_include_the_shadowed_pack_grammars() {
+    fn prose_language_names_include_the_shadowed_pack_grammars() -> TestResult {
         for name in ["prose", "markdown", "rst", "org", "vimdoc"] {
             assert!(is_prose_language_name(name), "{name}");
         }
         for name in ["rust", "json", "yaml", "toml", "python"] {
             assert!(!is_prose_language_name(name), "{name}");
         }
+        Ok(())
     }
 
     #[test]
-    fn detects_a_pack_language_by_path() {
+    fn detects_a_pack_language_by_path() -> TestResult {
         assert_eq!(detect_language("src/main.rs").as_deref(), Some("rust"));
+        Ok(())
     }
 }

@@ -91,7 +91,7 @@ fn sample_failure_fields(error: &SampleError) -> (&'static str, Option<&Path>) {
     match error {
         SampleError::Read { path, .. } => ("sample_read", Some(path)),
         SampleError::TooLarge { path, .. } => ("sample_too_large", Some(path)),
-        SampleError::NotUtf8 { path } => ("sample_not_utf8", Some(path)),
+        SampleError::NotUtf8 { path, .. } => ("sample_not_utf8", Some(path)),
     }
 }
 

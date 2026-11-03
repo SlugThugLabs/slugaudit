@@ -276,7 +276,11 @@ fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not
         PageLimit::MatchCap,
         "the page stopped at the match cap inside a.rs"
     );
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
     assert_eq!(first.files_not_scanned, 0);
     assert_eq!(first.next_start_after_file, None);
     assert_eq!(first.matches.len(), 1);

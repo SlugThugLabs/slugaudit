@@ -101,7 +101,11 @@ fn paged_structure_pages_survive_an_edit_between_pages() -> TestResult {
     let full = page_of(&project, None, None, &manager)?;
     assert_eq!(full.matches.len(), 40);
     let first = page_of(&project, None, Some(SMALL_PAGE), &manager)?;
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
 
     let edited = functions("a", 20).replace("pub fn a05() {}\n", "pub fn zz_new() {}\n");
     std::fs::write(project.path().join("a.rs"), edited).check("edit a.rs")?;
@@ -396,6 +400,6 @@ fn paged_structure_continuation_keeps_the_page_budget_of_page_one() -> TestResul
     assert_eq!(second.page.page_bytes, SMALL_PAGE);
     assert!(second.page.bytes_used <= SMALL_PAGE);
     assert_eq!(second.page.limited_by, PageLimit::PageBytes);
-    assert!(second.page.cursor.is_some(), "still several pages");
+    second.page.cursor.as_ref().check("still several pages")?;
     Ok(())
 }

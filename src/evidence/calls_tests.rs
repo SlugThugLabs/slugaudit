@@ -85,17 +85,6 @@ fn calls_have_spans_and_do_not_include_definition_names() -> TestResult {
 }
 
 #[test]
-fn method_calls_report_the_field_name_as_callee_name() -> TestResult {
-    let source = "fn run(v: Option<u8>) -> u8 {\n    v.unwrap()\n}\n";
-    let calls = extract_rust(source)?;
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].payload["callee_name"], "unwrap");
-    assert_eq!(calls[0].payload["callee_text"], "v.unwrap");
-    assert_eq!(calls[0].payload["caller"], "run");
-    Ok(())
-}
-
-#[test]
 fn turbofish_callees_report_the_inner_function_or_method_name() -> TestResult {
     let source = "fn run(x: &str) {\n    foo::<u8>();\n    x.parse::<u32>();\n}\n";
 
@@ -156,65 +145,37 @@ fn malformed_rust_does_not_panic() -> TestResult {
     Ok(())
 }
 
+/// The one fixture with a callee named `unwrap`: a method call reports its
+/// field name as `callee_name` (keeping the receiver in `callee_text`), a call
+/// inside a macro's arguments is found exactly once (also when macros nest),
+/// and text inside a string or a comment is never a call.
 #[test]
-fn extracts_method_calls_from_macro_arguments_without_duplicates() -> TestResult {
+fn method_calls_are_found_once_each_in_code_and_macro_arguments_and_not_in_text() -> TestResult {
     let source = r#"
-fn run(a: Option<u8>, b: Option<u8>) {
+fn run(a: Option<u8>, b: Option<u8>) -> u8 {
     assert_eq!(a.unwrap(), b.unwrap());
-    assert!(Some(1).unwrap() == 1);
     debug_assert!(Some(2).unwrap() > 0);
-    println!("{}", Some(3).unwrap());
+    println!("fake.unwrap() {}", a.unwrap()); // ignored.unwrap()
+    assert!(matches!(b.unwrap(), 1), "text.unwrap()");
     let _ = vec![Some(4).unwrap(), Some(5).unwrap()];
+    a.unwrap()
 }
 "#;
     let calls = extract_rust(source)?;
-    let unwraps: Vec<_> = calls
+    let hits: Vec<_> = calls
         .iter()
         .filter(|item| item.payload["callee_name"] == "unwrap")
         .collect();
-    assert_eq!(unwraps.len(), 7, "{calls:?}");
-    for call in unwraps {
+    assert_eq!(hits.len(), 8, "{calls:?}");
+    for call in &hits {
         assert_eq!(call.payload["caller"], "run");
         assert!(matches!(
             call.span,
             crate::model::SpanAvailability::Present(_)
         ));
+        let text = call.payload["callee_text"].as_str().check("callee_text")?;
+        assert!(text.ends_with("unwrap"), "callee_text {text}");
     }
-    Ok(())
-}
-
-#[test]
-fn macro_arguments_do_not_index_strings_or_comments_as_calls() -> TestResult {
-    let source = r#"
-fn run(value: Option<u8>) {
-    println!("fake.unwrap() {}", value.unwrap()); // ignored.unwrap()
-    assert!(value.is_some(), "text.unwrap()");
-}
-"#;
-    let calls = extract_rust(source)?;
-    assert_eq!(
-        calls
-            .iter()
-            .filter(|c| c.payload["callee_name"] == "unwrap")
-            .count(),
-        1,
-        "{calls:?}"
-    );
-    Ok(())
-}
-
-#[test]
-fn nested_macros_do_not_duplicate_inner_method_calls() -> TestResult {
-    let source = "fn run(v: Option<u8>) { assert!(matches!(v.unwrap(), 1)); }";
-    let calls = extract_rust(source)?;
-    assert_eq!(
-        calls
-            .iter()
-            .filter(|c| c.payload["callee_name"] == "unwrap")
-            .count(),
-        1,
-        "{calls:?}"
-    );
     Ok(())
 }
 

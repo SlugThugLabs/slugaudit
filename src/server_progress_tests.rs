@@ -6,7 +6,7 @@ use slugaudit_test_check::{Check, TestResult};
 /// behavior that keeps a 60 k-file import from spawning 60 k notification
 /// tasks.
 #[test]
-fn throttle_passes_first_event_and_coalesces_within_the_window() {
+fn throttle_passes_first_event_and_coalesces_within_the_window() -> TestResult {
     let throttle = Throttle::new(std::time::Duration::from_millis(100));
     let t0 = std::time::Instant::now();
 
@@ -27,6 +27,7 @@ fn throttle_passes_first_event_and_coalesces_within_the_window() {
         !throttle.should_emit(t0 + std::time::Duration::from_millis(102)),
         "a fresh window starts at the passed event"
     );
+    Ok(())
 }
 
 /// `Sampling` events come from `std::thread::scope` workers with no tokio

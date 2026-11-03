@@ -2,42 +2,48 @@ use super::*;
 use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn strip_test_attr_accepts_bare_test() {
+fn strip_test_attr_accepts_bare_test() -> TestResult {
     assert_eq!(strip_test_attr("#[test]"), Some(""));
     assert_eq!(strip_test_attr("  #[test]"), Some(""));
     assert_eq!(strip_test_attr("#[test] rest"), Some(" rest"));
+    Ok(())
 }
 
 #[test]
-fn strip_test_attr_accepts_qualified() {
+fn strip_test_attr_accepts_qualified() -> TestResult {
     assert_eq!(strip_test_attr("#[tokio::test]"), Some(""));
     assert_eq!(strip_test_attr("#[some::path::test]"), Some(""));
+    Ok(())
 }
 
 #[test]
-fn strip_test_attr_rejects_cfg_test() {
+fn strip_test_attr_rejects_cfg_test() -> TestResult {
     assert_eq!(strip_test_attr("#[cfg(test)]"), None);
+    Ok(())
 }
 
 #[test]
-fn strip_test_attr_rejects_test_case() {
+fn strip_test_attr_rejects_test_case() -> TestResult {
     // `test_case` ends with `case`, not `test`.
     assert_eq!(strip_test_attr("#[test_case]"), None);
+    Ok(())
 }
 
 #[test]
-fn same_line_fn_name_basic() {
+fn same_line_fn_name_basic() -> TestResult {
     assert_eq!(same_line_fn_name(" fn foo() {"), Some("foo"));
+    Ok(())
 }
 
 #[test]
-fn same_line_fn_name_with_pub() {
+fn same_line_fn_name_with_pub() -> TestResult {
     assert_eq!(same_line_fn_name(" pub fn bar() {"), Some("bar"));
     assert_eq!(same_line_fn_name("async fn baz()"), Some("baz"));
+    Ok(())
 }
 
 #[test]
-fn same_line_fn_name_skips_visibility_and_qualifiers() {
+fn same_line_fn_name_skips_visibility_and_qualifiers() -> TestResult {
     for (after_attr, expected) in [
         (" pub async fn a()", "a"),
         (" pub(crate) fn b()", "b"),
@@ -53,10 +59,11 @@ fn same_line_fn_name_skips_visibility_and_qualifiers() {
             "{after_attr}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn same_line_fn_name_rejects_what_is_not_a_fn_item() {
+fn same_line_fn_name_rejects_what_is_not_a_fn_item() -> TestResult {
     for after_attr in [
         " fnord()",
         " pubfn x()",
@@ -67,6 +74,7 @@ fn same_line_fn_name_rejects_what_is_not_a_fn_item() {
     ] {
         assert_eq!(same_line_fn_name(after_attr), None, "{after_attr:?}");
     }
+    Ok(())
 }
 
 #[test]

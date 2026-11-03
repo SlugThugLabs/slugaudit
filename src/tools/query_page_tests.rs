@@ -37,7 +37,11 @@ fn the_default_page_cuts_at_64_kib_and_carries_a_cursor() -> TestResult {
     assert!(!first.page.complete);
     assert!(first.page.bytes_used <= 65_536, "{}", first.page.bytes_used);
     assert!(first.rows.len() > 1 && first.rows.len() < 500);
-    assert!(first.page.cursor.is_some());
+    first
+        .page
+        .cursor
+        .as_ref()
+        .check("`first.page.cursor` is present")?;
     assert!(first.clipped_cells.is_empty());
     assert_eq!(first.page.limited_by, PageLimit::PageBytes);
     assert_eq!(
@@ -164,7 +168,10 @@ fn a_first_row_larger_than_the_page_is_clipped_and_the_cut_is_reported() -> Test
         (cell.row, cell.column.as_str(), cell.total),
         (0, "pad", 1000)
     );
-    assert!(page.page.cursor.is_some());
+    page.page
+        .cursor
+        .as_ref()
+        .check("`page.page.cursor` is present")?;
     assert_eq!(page.page.total, Some(500));
     Ok(())
 }
@@ -292,7 +299,10 @@ fn an_oversized_row_after_a_small_first_row_still_ends_the_page() -> TestResult 
     assert_eq!(page.page.bytes_used, 9);
     assert!(page.clipped_cells.is_empty());
     assert!(!page.page.complete);
-    assert!(page.page.cursor.is_some());
+    page.page
+        .cursor
+        .as_ref()
+        .check("`page.page.cursor` is present")?;
     assert_eq!(page.page.total, Some(2));
     Ok(())
 }

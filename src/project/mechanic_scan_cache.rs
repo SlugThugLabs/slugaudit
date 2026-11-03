@@ -78,7 +78,10 @@ impl ScanKey {
         [
             self.project.len(),
             self.revision.len(),
-            self.glob.as_ref().map_or(0, String::len),
+            match &self.glob {
+                Some(glob) => glob.len(),
+                None => 0,
+            },
             self.id.len(),
             self.language.len(),
             self.query.len(),

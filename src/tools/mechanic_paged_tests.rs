@@ -236,6 +236,6 @@ fn paged_mechanic_continuation_keeps_the_page_budget_of_page_one() -> TestResult
     assert_eq!(page.page_bytes, SMALL_PAGE);
     assert!(page.bytes_used <= SMALL_PAGE);
     assert_eq!(page.limited_by, PageLimit::PageBytes);
-    assert!(cursor_of(&second)?.is_some(), "still several pages");
+    cursor_of(&second)?.check("still several pages")?;
     Ok(())
 }

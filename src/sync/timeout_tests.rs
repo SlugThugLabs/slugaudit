@@ -154,7 +154,7 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() -
     )
     .check("analyze the file")?;
 
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     assert_eq!(
         result.run.outcome,
         crate::model::ParseOutcome::Failed {
@@ -178,7 +178,7 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() -
 #[test]
 fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout() -> TestResult {
     use crate::sync::analyze::analyze;
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
     let content = line.repeat(400 * 1024 / line.len());
     let limits = crate::model::ResourceLimits::default();
     let deadline = Deadline::after(Duration::from_millis(50));
@@ -215,7 +215,7 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
 #[test]
 fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
     write(
         project.path(),
         "slow.rs",

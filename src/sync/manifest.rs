@@ -89,15 +89,17 @@ pub(crate) fn paths_json_array<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::TestResult;
 
     #[test]
-    fn unchanged_file_produces_no_change() {
+    fn unchanged_file_produces_no_change() -> TestResult {
         let changes = compare([("a.rs", "hash1")], [("a.rs", "hash1")]);
         assert!(changes.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn same_size_content_change_is_modified() {
+    fn same_size_content_change_is_modified() -> TestResult {
         let changes = compare([("a.rs", "hash1")], [("a.rs", "hash2")]);
         assert_eq!(
             changes,
@@ -106,10 +108,11 @@ mod tests {
                 status: ChangeStatus::Modified,
             }]
         );
+        Ok(())
     }
 
     #[test]
-    fn new_file_is_added() {
+    fn new_file_is_added() -> TestResult {
         let changes = compare([], [("a.rs", "hash1")]);
         assert_eq!(
             changes,
@@ -118,10 +121,11 @@ mod tests {
                 status: ChangeStatus::Added,
             }]
         );
+        Ok(())
     }
 
     #[test]
-    fn missing_file_is_deleted() {
+    fn missing_file_is_deleted() -> TestResult {
         let changes = compare([("a.rs", "hash1")], []);
         assert_eq!(
             changes,
@@ -130,10 +134,11 @@ mod tests {
                 status: ChangeStatus::Deleted,
             }]
         );
+        Ok(())
     }
 
     #[test]
-    fn mixed_changes_are_all_reported_and_sorted() {
+    fn mixed_changes_are_all_reported_and_sorted() -> TestResult {
         let changes = compare(
             [
                 ("deleted.rs", "h1"),
@@ -159,5 +164,6 @@ mod tests {
                 },
             ]
         );
+        Ok(())
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
-fn defaults_are_strictly_positive() {
+fn defaults_are_strictly_positive() -> TestResult {
     let limits = ResourceLimits::default();
     assert!(limits.max_file_bytes > 0);
     assert!(limits.max_total_import_bytes >= limits.max_file_bytes);
@@ -15,6 +15,7 @@ fn defaults_are_strictly_positive() {
     assert!(limits.max_structure_matches > 0);
     assert!(limits.max_structure_execution_time.as_millis() > 0);
     assert!(limits.max_sync_wall_clock.as_millis() > 0);
+    Ok(())
 }
 
 #[test]

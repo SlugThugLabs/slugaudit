@@ -57,9 +57,10 @@ impl SessionMechanics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use slugaudit_test_check::TestResult;
 
     #[test]
-    fn claim_report_note_is_true_once_per_session_set() {
+    fn claim_report_note_is_true_once_per_session_set() -> TestResult {
         let session = SessionMechanics::default();
         let shared = session.clone();
 
@@ -68,5 +69,6 @@ mod tests {
 
         assert!(first, "the first claim delivers the note");
         assert!(!second, "a clone shares the claim");
+        Ok(())
     }
 }

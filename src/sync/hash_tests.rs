@@ -2,37 +2,42 @@ use super::*;
 use slugaudit_test_check::{Check, CheckErr, TestResult};
 
 #[test]
-fn identical_bytes_hash_identically() {
+fn identical_bytes_hash_identically() -> TestResult {
     let first = hash_bytes("a.rs", b"fn a() {}");
     let second = hash_bytes("a.rs", b"fn a() {}");
     assert_eq!(first.content_hash, second.content_hash);
+    Ok(())
 }
 
 #[test]
-fn one_changed_byte_changes_the_hash() {
+fn one_changed_byte_changes_the_hash() -> TestResult {
     let first = hash_bytes("a.rs", b"fn a() {}");
     let second = hash_bytes("a.rs", b"fn b() {}");
     assert_ne!(first.content_hash, second.content_hash);
+    Ok(())
 }
 
 #[test]
-fn hash_algorithm_is_recorded() {
+fn hash_algorithm_is_recorded() -> TestResult {
     let identity = hash_bytes("a.rs", b"content");
     assert_eq!(identity.hash_algorithm, "blake3-v1");
+    Ok(())
 }
 
 #[test]
-fn aggregate_hash_is_independent_of_input_order() {
+fn aggregate_hash_is_independent_of_input_order() -> TestResult {
     let forward = aggregate_manifest_hash([("a.rs", "h1"), ("b.rs", "h2")]);
     let backward = aggregate_manifest_hash([("b.rs", "h2"), ("a.rs", "h1")]);
     assert_eq!(forward, backward);
+    Ok(())
 }
 
 #[test]
-fn aggregate_hash_changes_when_a_file_hash_changes() {
+fn aggregate_hash_changes_when_a_file_hash_changes() -> TestResult {
     let before = aggregate_manifest_hash([("a.rs", "h1")]);
     let after = aggregate_manifest_hash([("a.rs", "h2")]);
     assert_ne!(before, after);
+    Ok(())
 }
 
 #[test]
@@ -153,7 +158,7 @@ fn hash_file_reports_a_missing_path_as_a_read_error() -> TestResult {
 /// actually track the two stat fields it stands in for — otherwise a
 /// skipped file would look unchanged after any edit that kept its path.
 #[test]
-fn stat_identity_is_tagged_and_tracks_size_and_mtime() {
+fn stat_identity_is_tagged_and_tracks_size_and_mtime() -> TestResult {
     let baseline = stat_identity("a.rs", Some(10), Some(100));
     assert_eq!(baseline.hash_algorithm, STAT_IDENTITY_ALGORITHM);
     assert_ne!(
@@ -183,4 +188,5 @@ fn stat_identity_is_tagged_and_tracks_size_and_mtime() {
         stat_identity("a.rs", None, Some(100)).content_hash,
         "an unknown size must not collide with a recorded empty file"
     );
+    Ok(())
 }

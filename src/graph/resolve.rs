@@ -34,10 +34,11 @@ pub(super) fn normalize_join(base_dir: &str, relative: &str) -> Option<String> {
 
 /// Returns the parent directory of a project-relative path.
 pub(super) fn parent_dir(relative_path: &str) -> String {
-    Path::new(relative_path)
-        .parent()
-        .map(Path::to_string_lossy)
-        .map_or_else(String::new, std::borrow::Cow::into_owned)
+    match Path::new(relative_path).parent() {
+        Some(parent) => parent.to_string_lossy().into_owned(),
+        // A root or empty path has no parent directory.
+        None => String::new(),
+    }
 }
 
 // Re-export resolver types for use by language-specific resolvers.

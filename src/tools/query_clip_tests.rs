@@ -319,7 +319,11 @@ fn the_clipped_row_index_is_absolute_and_later_rows_are_not_clipped() -> TestRes
     assert_eq!(resumed.clipped_cells[0].row, 2);
     assert!(big_after_small.clipped_cells.is_empty());
     assert!(!big_after_small.page.complete);
-    assert!(big_after_small.page.cursor.is_some());
+    big_after_small
+        .page
+        .cursor
+        .as_ref()
+        .check("`big_after_small.page.cursor` is present")?;
     Ok(())
 }
 

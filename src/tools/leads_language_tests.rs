@@ -35,8 +35,8 @@ fn leads_counts_python_calls_and_covers_lists_python() -> TestResult {
         "the comment and string decoys do not count"
     );
     assert_eq!(expect.covers, ["python"]);
-    assert_eq!(entry(&response, "unwrap_calls")?.covers, ["python"]);
-    assert_eq!(count_of(&response, "unwrap_calls")?, 0);
+    assert_eq!(entry(&response, "panic_calls")?.covers, ["python"]);
+    assert_eq!(count_of(&response, "panic_calls")?, 0);
     let rows = full_rows(&response)?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].file, "app.py");
@@ -96,7 +96,7 @@ fn call_mechanics_cover_no_language_for_a_project_without_call_extraction() -> T
     activate(project.path())?;
     fs::write(
         project.path().join("app.rb"),
-        b"def a(x)\n  x.unwrap()\nend\n",
+        b"def a(x)\n  x.expect()\nend\n",
     )
     .check("write ruby source")?;
 
@@ -105,8 +105,8 @@ fn call_mechanics_cover_no_language_for_a_project_without_call_extraction() -> T
     // Ruby has no call query: the mechanic exists but measured nothing here,
     // so it reports zero rather than disappearing — and an empty `covers`
     // says the zero is unchecked, while comment markers did read Ruby.
-    assert_eq!(count_of(&response, "unwrap_calls")?, 0);
-    assert!(entry(&response, "unwrap_calls")?.covers.is_empty());
+    assert_eq!(count_of(&response, "expect_calls")?, 0);
+    assert!(entry(&response, "expect_calls")?.covers.is_empty());
     assert_eq!(entry(&response, "comment_markers")?.covers, ["ruby"]);
     Ok(())
 }
@@ -116,7 +116,7 @@ fn covers_follows_the_pattern_and_keeps_both_call_languages_sorted() -> TestResu
     let project = python_project()?;
     fs::write(
         project.path().join("lib.rs"),
-        b"pub fn a(x: Option<u8>) -> u8 { x.unwrap() }\n",
+        b"pub fn a(x: Option<u8>) -> u8 { x.expect(\"nope\") }\n",
     )
     .check("write rust source")?;
 
@@ -126,10 +126,10 @@ fn covers_follows_the_pattern_and_keeps_both_call_languages_sorted() -> TestResu
     let rust_only = run(rust_only)?;
 
     assert_eq!(
-        entry(&everything, "unwrap_calls")?.covers,
+        entry(&everything, "expect_calls")?.covers,
         ["python", "rust"]
     );
-    assert_eq!(entry(&rust_only, "unwrap_calls")?.covers, ["rust"]);
+    assert_eq!(entry(&rust_only, "expect_calls")?.covers, ["rust"]);
     Ok(())
 }
 

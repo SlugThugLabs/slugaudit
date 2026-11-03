@@ -60,14 +60,21 @@ fuzz_target!(|data: &[u8]| {
     decode(*selector as usize % KINDS, body);
 });
 
-/// Decodes `body` as one of the request types. The result is dropped: a
-/// `tools/call` carrying arguments that do not fit its schema is an
-/// `invalid_params` response, not a defect, so only the decoder's own
+/// Decodes `body` as one of the request types. The outcome is observed, not
+/// asserted: a `tools/call` carrying arguments that do not fit its schema is
+/// an `invalid_params` response, not a defect, so only the decoder's own
 /// behaviour (panic, abort, unbounded recursion) is under test.
 fn decode(kind: usize, body: &[u8]) {
     macro_rules! decode_as {
         ($request:ty) => {{
-            let _ = serde_json::from_slice::<$request>(body);
+            match serde_json::from_slice::<$request>(body) {
+                Ok(request) => {
+                    std::hint::black_box(&request);
+                }
+                Err(error) => {
+                    std::hint::black_box(error.to_string());
+                }
+            }
         }};
     }
     match kind {

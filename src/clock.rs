@@ -155,15 +155,17 @@ mod tests {
     }
 
     #[test]
-    fn a_readable_mtime_converts_to_epoch_seconds() {
+    fn a_readable_mtime_converts_to_epoch_seconds() -> TestResult {
         let at = UNIX_EPOCH + Duration::from_secs(42);
 
         assert_eq!(mtime_seconds_from(Ok(at)), Some(42));
+        Ok(())
     }
 
     #[test]
-    fn milliseconds_are_exact_and_saturate_at_the_maximum() {
+    fn milliseconds_are_exact_and_saturate_at_the_maximum() -> TestResult {
         assert_eq!(saturating_millis(Duration::from_millis(1_234)), 1_234);
         assert_eq!(saturating_millis(Duration::MAX), u64::MAX);
+        Ok(())
     }
 }

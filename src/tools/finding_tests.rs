@@ -212,14 +212,12 @@ fn a_line_number_within_the_files_real_length_succeeds() -> TestResult {
     let mut request = base_request(&project, "lib.rs");
     request.line_start = 2;
     request.line_end = 3;
-    assert!(
-        finding(
-            &Parameters(request),
-            &crate::progress::NoopProgressSink,
-            &crate::sync::SourceSyncManager::default(),
-        )
-        .is_ok()
-    );
+    finding(
+        &Parameters(request),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .check("the finding is accepted")?;
     Ok(())
 }
 

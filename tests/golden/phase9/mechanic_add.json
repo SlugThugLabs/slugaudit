@@ -77,10 +77,10 @@
         "returned": 2,
         "total": 3,
         "complete": false,
-        "cursor": "v1.abdd574f-87a0-45e8-9c01-1abc1a1413ff.90c48e3f-a404-447d-be6c-0c5d60c1ed69.2",
+        "cursor": "v1.163da384-be63-42ae-9522-65a351ef6c21.0cc5922e-bf62-4d49-b18e-1802d646507c.2",
         "completeness": "complete",
         "page_bytes": 65536,
-        "bytes_used": 138,
+        "bytes_used": 140,
         "limited_by": "limit",
         "revision_id": "<REVISION_ID>"
       },
@@ -99,8 +99,8 @@
           "mechanic": "unwrap_calls",
           "source": "builtin",
           "note": null,
-          "count": 12,
-          "files": 3,
+          "count": 0,
+          "files": 0,
           "covers": [
             "rust"
           ]
@@ -159,7 +159,7 @@
           "mechanic": "comment_markers",
           "source": "builtin",
           "note": null,
-          "count": 3,
+          "count": 15,
           "files": 3,
           "covers": [
             "rust"
@@ -182,13 +182,13 @@
       "rows": [
         {
           "file": "mod0.rs",
-          "line": 6,
+          "line": 10,
           "detail": "println",
           "detail_clipped": false
         },
         {
           "file": "mod1.rs",
-          "line": 6,
+          "line": 10,
           "detail": "println",
           "detail_clipped": false
         }

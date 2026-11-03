@@ -134,8 +134,9 @@ mod tests {
     use slugaudit_test_check::{Check, TestResult};
 
     #[test]
-    fn hash_chunk_bytes_is_64_kib() {
+    fn hash_chunk_bytes_is_64_kib() -> TestResult {
         assert_eq!(HASH_CHUNK_BYTES, 65536);
+        Ok(())
     }
 
     struct MockInterruptedReader<'a> {
@@ -191,11 +192,12 @@ mod tests {
     }
 
     #[test]
-    fn hash_reader_fails_on_non_interrupted_error() {
+    fn hash_reader_fails_on_non_interrupted_error() -> TestResult {
         let mut reader = MockNonInterruptedErrorReader { called: false };
         let dummy_path = std::path::Path::new("dummy.rs");
         let result = hash_reader(&mut reader, "dummy.rs", dummy_path, 1024);
         assert!(matches!(result, Err(HashError::Read { .. })));
+        Ok(())
     }
 
     /// A reader that claims to have filled more bytes than the buffer holds.

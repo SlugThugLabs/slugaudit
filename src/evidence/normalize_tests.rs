@@ -105,7 +105,7 @@ fn a_rust_macro_nested_past_the_macro_bound_is_reported_partial_not_aborted() ->
 
 #[test]
 fn a_rust_macro_nested_within_the_bound_is_fully_scanned() -> TestResult {
-    let source = "fn run(v: Option<u8>) { a!(b!(c!(v.unwrap()))); }";
+    let source = "fn run(v: Option<u8>) { a!(b!(c!(v.expect()))); }";
 
     let (items, depth_capped) = extract("rust", source).check("extract")?;
 
@@ -113,7 +113,7 @@ fn a_rust_macro_nested_within_the_bound_is_fully_scanned() -> TestResult {
     assert!(
         items
             .iter()
-            .any(|item| item.payload["callee_name"] == "unwrap")
+            .any(|item| item.payload["callee_name"] == "expect")
     );
     Ok(())
 }
@@ -492,7 +492,7 @@ fn nested_macro_source(levels: usize, parens: usize) -> String {
     let open = format!("m!({}", "(".repeat(parens));
     let close = format!("{})", ")".repeat(parens));
     format!(
-        "fn run() {{ {}v.unwrap(){}; }}\n",
+        "fn run() {{ {}v.expect(){}; }}\n",
         open.repeat(levels),
         close.repeat(levels)
     )
@@ -615,7 +615,7 @@ fn a_json_file_nested_past_the_pack_bound_fits_the_production_stack() -> TestRes
 #[test]
 fn a_parse_cut_at_the_deadline_does_not_corrupt_the_next_parse_on_the_same_thread() -> TestResult {
     let generous = Deadline::after(std::time::Duration::from_mins(10));
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
     let big = line.repeat(400 * 1024 / line.len());
     extract_within("rust", "pub fn warm() {}\n", Some(&generous))
         .check("warm the cached parser")?;

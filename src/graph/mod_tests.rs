@@ -1,8 +1,9 @@
 use super::*;
 use crate::graph::test_support::paths;
+use slugaudit_test_check::TestResult;
 
 #[test]
-fn every_source_produces_exactly_one_edge_in_order() {
+fn every_source_produces_exactly_one_edge_in_order() -> TestResult {
     let known = paths(&["pkg/a.py", "pkg/bar.py"]);
     let sources = vec![
         "from .bar import baz".to_owned(),
@@ -21,19 +22,21 @@ fn every_source_produces_exactly_one_edge_in_order() {
 
     assert_eq!(edges[2].resolution_kind, "Unresolved");
     assert_eq!(edges[2].to_relative_path, None);
+    Ok(())
 }
 
 #[test]
-fn an_unparseable_raw_statement_becomes_unresolved_not_dropped() {
+fn an_unparseable_raw_statement_becomes_unresolved_not_dropped() -> TestResult {
     let known = paths(&["a.go"]);
     let edges = resolve_imports("go", "a.go", &["import \"fmt\"".to_owned()], &known);
     assert_eq!(edges.len(), 1);
     assert_eq!(edges[0].resolution_kind, "Unresolved");
     assert_eq!(edges[0].raw_import_text, "import \"fmt\"");
+    Ok(())
 }
 
 #[test]
-fn circular_imports_are_just_two_independent_edges() {
+fn circular_imports_are_just_two_independent_edges() -> TestResult {
     // a.py imports b, b.py imports a — nothing about resolution needs to
     // special-case a cycle; each direction resolves independently, and
     // detecting/traversing the cycle is a `query` concern (recursive CTE
@@ -48,10 +51,11 @@ fn circular_imports_are_just_two_independent_edges() {
     // submodule named after the imported symbol — a known limitation of
     // not modeling `from X import Y` symbol-vs-submodule ambiguity; both
     // directions are still independently and consistently classified.
+    Ok(())
 }
 
 #[test]
-fn an_aliased_import_resolves_on_the_module_not_the_alias() {
+fn an_aliased_import_resolves_on_the_module_not_the_alias() -> TestResult {
     let known = paths(&["pkg/a.py", "pkg/real_name.py"]);
     let edges = resolve_imports(
         "python",
@@ -68,4 +72,5 @@ fn an_aliased_import_resolves_on_the_module_not_the_alias() {
         edges[0].to_relative_path.as_deref(),
         Some("pkg/real_name.py")
     );
+    Ok(())
 }

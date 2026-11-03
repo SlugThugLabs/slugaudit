@@ -7,10 +7,10 @@ use crate::tools::query::{QueryRequest, query};
 use crate::tools::structure::{StructureRequest, structure};
 use slugaudit_test_check::{Check, TestResult};
 
-/// The lines `cat -n` shows: `x.unwrap()` on 3, the TODO comment on 4,
+/// The lines `cat -n` shows: `assert!` on 3, the TODO comment on 4,
 /// `fn helper` on 6.
 const FIXTURE: &str =
-    "fn main() {\n    let x = Some(1);\n    x.unwrap();\n    // TODO: fix\n}\nfn helper() {}\n";
+    "fn main() {\n    let x = 1;\n    assert!(x > 0);\n    // TODO: fix\n}\nfn helper() {}\n";
 
 /// The 1-based line of the first fixture line containing `needle`, found by
 /// scanning the text rather than trusting a hardcoded number.
@@ -65,16 +65,16 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     activate(project.path())?;
     fs::write(project.path().join("main.rs"), FIXTURE).check("write fixture")?;
-    assert_eq!((scanned_line("unwrap")?, scanned_line("TODO")?), (3, 4));
+    assert_eq!((scanned_line("assert")?, scanned_line("TODO")?), (3, 4));
     assert_eq!(scanned_line("fn helper")?, 6);
 
     // leads
-    let unwrap = run(request(project.path(), Some("unwrap_calls")))?;
+    let asserted = run(request(project.path(), Some("assert_calls")))?;
     let todo = run(request(project.path(), Some("comment_markers")))?;
-    let unwrap = full_rows(&unwrap)?;
+    let asserted = full_rows(&asserted)?;
     let todo = full_rows(&todo)?;
-    assert_eq!(unwrap.len(), 1);
-    assert_eq!(unwrap[0].line, 3);
+    assert_eq!(asserted.len(), 1);
+    assert_eq!(asserted[0].line, 3);
     assert_eq!(todo.len(), 1);
     assert_eq!(todo[0].line, 4);
 
@@ -82,7 +82,7 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() -> TestResult {
     let call = sql_rows(
         &project,
         "SELECT start_line, end_line FROM evidence WHERE kind = 'Call' \
-         AND json_extract(payload, '$.callee_name') = 'unwrap'",
+         AND json_extract(payload, '$.callee_name') = 'assert'",
     )?;
     assert_eq!(call.len(), 1);
     assert_eq!(
@@ -111,7 +111,7 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() -> TestResult {
             line_end: 4,
             severity: "low".to_owned(),
             category: "correctness".to_owned(),
-            title: "unwrap before TODO".to_owned(),
+            title: "assert before TODO".to_owned(),
             description: "Lines 3 to 4 of main.rs.".to_owned(),
         }),
         &crate::progress::NoopProgressSink,
@@ -134,7 +134,7 @@ fn every_surface_reports_the_same_one_based_inclusive_lines() -> TestResult {
     )?;
     assert_eq!(
         ranged[0]["r"].as_str(),
-        Some("    x.unwrap();\n    // TODO: fix")
+        Some("    assert!(x > 0);\n    // TODO: fix")
     );
     Ok(())
 }

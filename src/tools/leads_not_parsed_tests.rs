@@ -9,12 +9,12 @@ use std::fs;
 use std::time::{Duration, Instant};
 
 /// A 3 MiB Rust file (over the 2 MiB `max_parse_bytes` default) full of
-/// `unwrap()` calls, beside one small parsed file with exactly one.
+/// `expect()` calls, beside one small parsed file with exactly one.
 fn oversize_fixture() -> TestResult<tempfile::TempDir> {
     let project = tempfile::tempdir().check("project dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).check("activate")?;
     crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
     let big = line.repeat(3 * 1024 * 1024 / line.len() + 1);
     assert!(big.len() > 3 * 1024 * 1024, "the fixture is over 3 MiB");
     fs::write(project.path().join("big.rs"), big).check("write oversize file")?;
@@ -56,7 +56,7 @@ fn an_oversize_file_indexes_fast_and_every_leads_response_counts_it_not_parsed()
     let started = Instant::now();
     let counts = run_leads(leads_request(&project, None), &manager)?;
     let elapsed = started.elapsed();
-    let rows = run_leads(leads_request(&project, Some("unwrap_calls")), &manager)?;
+    let rows = run_leads(leads_request(&project, Some("expect_calls")), &manager)?;
     let compact = run_leads(
         LeadsRequest {
             mode: LeadMode::Compact,
@@ -149,7 +149,7 @@ fn slow_parse_fixture() -> TestResult<(
     crate::project::write_database_marker(&config_dir)?;
     let config =
         crate::tools::test_support::use_global_config(r#"{"max_parse_wall_clock_ms": 200}"#)?;
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.unwrap() }\n";
+    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
     let big = line.repeat(1_900_000 / line.len());
     assert!(big.len() < 2 * 1024 * 1024, "under max_parse_bytes");
     fs::write(project.path().join("slow.rs"), big).check("write slow file")?;
@@ -179,7 +179,7 @@ fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() ->
     let manager = crate::sync::SourceSyncManager::default();
 
     let counts = run_leads(leads_request(&project, None), &manager)?;
-    let rows = run_leads(leads_request(&project, Some("unwrap_calls")), &manager)?;
+    let rows = run_leads(leads_request(&project, Some("expect_calls")), &manager)?;
     let first_report = run_report(&project, &manager)?;
     let second_report = run_report(&project, &manager)?;
 

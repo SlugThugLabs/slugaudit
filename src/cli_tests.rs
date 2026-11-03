@@ -11,7 +11,7 @@ fn no_arguments_means_serve() -> TestResult {
 }
 
 #[test]
-fn usage_with_a_plain_style_is_byte_identical_to_the_usage_text() {
+fn usage_with_a_plain_style_is_byte_identical_to_the_usage_text() -> TestResult {
     let rendered = render_usage(&Style::plain());
 
     assert_eq!(
@@ -19,10 +19,11 @@ fn usage_with_a_plain_style_is_byte_identical_to_the_usage_text() {
         usage_text(),
         "plain help must match the usage text"
     );
+    Ok(())
 }
 
 #[test]
-fn usage_with_a_colored_style_keeps_every_heading_and_styles_it() {
+fn usage_with_a_colored_style_keeps_every_heading_and_styles_it() -> TestResult {
     let rendered = render_usage(&Style::colored());
 
     for heading in ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"] {
@@ -32,6 +33,7 @@ fn usage_with_a_colored_style_keeps_every_heading_and_styles_it() {
         rendered.contains("\x1b[1m\x1b[36mCOMMANDS:\x1b[0m\x1b[0m"),
         "headings are bold cyan: {rendered:?}"
     );
+    Ok(())
 }
 
 #[test]
@@ -222,7 +224,7 @@ fn version_parses_in_all_three_spellings() -> TestResult {
 }
 
 #[test]
-fn help_names_the_installed_binary_connect_registers() {
+fn help_names_the_installed_binary_connect_registers() -> TestResult {
     assert!(
         usage_text().contains("Register the installed SlugAudit binary"),
         "connect prefers the installed binary, so the help must say so"
@@ -231,6 +233,7 @@ fn help_names_the_installed_binary_connect_registers() {
         !usage_text().contains("Register this binary"),
         "the running binary is only used when no installed copy exists"
     );
+    Ok(())
 }
 
 #[test]
@@ -353,16 +356,17 @@ fn a_successful_write_keeps_the_exact_output_text() -> TestResult {
 }
 
 #[test]
-fn a_closed_pipe_is_found_through_every_cli_error_wrapper() {
+fn a_closed_pipe_is_found_through_every_cli_error_wrapper() -> TestResult {
     let broken = || std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed pipe");
 
     assert!(is_broken_pipe(&ConnectError::Io(broken())));
     assert!(is_broken_pipe(&crate::install::InstallError::Io(broken())));
     assert!(is_broken_pipe(&crate::update::UpdateError::Io(broken())));
+    Ok(())
 }
 
 #[test]
-fn a_non_pipe_io_failure_in_a_wrapper_is_not_a_clean_exit() {
+fn a_non_pipe_io_failure_in_a_wrapper_is_not_a_clean_exit() -> TestResult {
     let refused = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
 
     assert!(!is_broken_pipe(&ConnectError::Io(refused())));
@@ -370,6 +374,7 @@ fn a_non_pipe_io_failure_in_a_wrapper_is_not_a_clean_exit() {
         &crate::install::InstallError::Io(refused())
     ));
     assert!(!is_broken_pipe(&crate::update::UpdateError::Io(refused())));
+    Ok(())
 }
 
 #[test]
@@ -491,7 +496,7 @@ fn update_help_never_parses_to_the_update_command() -> TestResult {
 }
 
 #[test]
-fn every_subcommand_has_its_own_usage_naming_that_subcommand() {
+fn every_subcommand_has_its_own_usage_naming_that_subcommand() -> TestResult {
     for (topic, needle) in [
         (Topic::Serve, "slugaudit serve"),
         (Topic::Connect, "slugaudit connect [AGENT]"),
@@ -505,10 +510,11 @@ fn every_subcommand_has_its_own_usage_naming_that_subcommand() {
         assert!(text.contains(needle), "{needle}: {text}");
         assert!(text.contains("-h, --help"), "{text}");
     }
+    Ok(())
 }
 
 #[test]
-fn general_help_lists_serve_and_shares_every_description_with_the_subcommand_help() {
+fn general_help_lists_serve_and_shares_every_description_with_the_subcommand_help() -> TestResult {
     let general = usage_text();
     assert!(
         general.contains(
@@ -535,4 +541,5 @@ fn general_help_lists_serve_and_shares_every_description_with_the_subcommand_hel
             assert!(general.contains(line), "general help lacks {line:?}");
         }
     }
+    Ok(())
 }

@@ -151,7 +151,11 @@ fn respond(served: Served<Extras>, cutting: &Cutting) -> Result<LeadsResponse, E
     let files_covered = if page.complete {
         extras.files_total
     } else {
-        rows.last().map_or(0, |row| row.files_seen)
+        match rows.last() {
+            Some(row) => row.files_seen,
+            // An incomplete page with no rows has scanned no file yet.
+            None => 0,
+        }
     };
     let files = rows.iter().map(|row| row.file.as_str());
     let page_file_counts: Vec<FileCount> = page_file_counts(files);
@@ -237,7 +241,7 @@ fn produce(
     )?;
     let mut counts = leads_custom::counts(scope.catalog, &scanned, &found.tallies, &read)?;
     counts.extend(count_all(tx, scope.pattern, &read)?);
-    let notices = notices_for(scope, &counts);
+    let notices = notices_for(scope, &counts)?;
     let files_not_parsed = leads_query::files_not_parsed(tx, scope.pattern)?;
     let mut feed = Feed::new(sink);
     stream_selected(tx, scope, &found, &mut feed)?;
@@ -301,21 +305,32 @@ fn stream_selected(
 /// counted mechanic's `covers`, or only the selected mechanic's when the call
 /// names one. `covers` is built from the files indexed under the pattern, so
 /// a language with no files here never appears.
-fn notices_for(scope: &Scope<'_>, counts: &[MechanicCount]) -> Vec<String> {
-    let selected_id = scope.selected.map(|selected| match selected {
-        Selected::Builtin(mechanic) => mechanic.id,
-        Selected::Registered(index) => scope
-            .catalog
-            .custom
-            .get(index)
-            .map_or("", |registered| registered.entry.id.as_str()),
-    });
+///
+/// # Errors
+/// An internal error when the selected registered entry is not in the catalog.
+fn notices_for(scope: &Scope<'_>, counts: &[MechanicCount]) -> Result<Vec<String>, ErrorData> {
+    let selected_id = match scope.selected {
+        None => None,
+        Some(Selected::Builtin(mechanic)) => Some(mechanic.id),
+        Some(Selected::Registered(index)) => {
+            let registered = scope.catalog.custom.get(index).ok_or_else(|| {
+                mechanic_scan_cached::index_out_of_range(
+                    "custom",
+                    index,
+                    scope.catalog.custom.len(),
+                )
+            })?;
+            Some(registered.entry.id.as_str())
+        }
+    };
     let languages: BTreeSet<&str> = counts
         .iter()
         .filter(|count| selected_id.is_none_or(|id| count.mechanic == id))
         .flat_map(|count| count.covers.iter().map(String::as_str))
         .collect();
-    untested_language_notices(languages.into_iter().map(|language| (language, None)))
+    Ok(untested_language_notices(
+        languages.into_iter().map(|language| (language, None)),
+    ))
 }
 
 /// The registered entries this call scans: every one when no mechanic is

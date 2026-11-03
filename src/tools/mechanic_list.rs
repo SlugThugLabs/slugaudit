@@ -48,7 +48,10 @@ impl MechanicSource {
 }
 
 fn optional_text(value: Option<&str>) -> Cell {
-    value.map_or(Cell::Null, |text| Cell::Text(text.to_owned()))
+    match value {
+        Some(text) => Cell::Text(text.to_owned()),
+        None => Cell::Null,
+    }
 }
 
 impl Materialize for MechanicListing {

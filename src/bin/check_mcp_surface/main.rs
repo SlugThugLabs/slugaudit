@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 // Panicking indexing is denied outside tests, as in the library root
-// (`lib.rs`); `unwrap` and `expect` are denied for every target in
+// (`lib.rs`); panicking calls are denied for every target in
 // `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
@@ -99,11 +99,16 @@ fn write_snapshot(
         eprintln!("mcp-surface: cannot write {}: {error}", path.display());
         return Ok(std::process::ExitCode::from(2));
     }
+    let (tools, resources) = match (surface::tool_count(live), surface::resource_count(live)) {
+        (Ok(tools), Ok(resources)) => (tools, resources),
+        (Err(message), _) | (_, Err(message)) => {
+            eprintln!("mcp-surface: cannot count the recorded surface: {message}");
+            return Ok(std::process::ExitCode::from(2));
+        }
+    };
     gate_out::line(format_args!(
-        "mcp-surface: recorded {} ({} tools, {} resources)",
+        "mcp-surface: recorded {} ({tools} tools, {resources} resources)",
         path.display(),
-        surface::tool_count(live),
-        surface::resource_count(live)
     ))?;
     Ok(std::process::ExitCode::SUCCESS)
 }

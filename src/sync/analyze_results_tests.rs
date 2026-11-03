@@ -48,7 +48,7 @@ fn a_position_overflow_records_failed_with_its_cause_and_logs_its_kind() -> Test
 }
 
 #[test]
-fn a_failed_result_is_a_valid_content_only_run() {
+fn a_failed_result_is_a_valid_content_only_run() -> TestResult {
     let result = failed_result("rust".to_owned(), "probe reason".to_owned());
 
     assert_eq!(
@@ -60,4 +60,5 @@ fn a_failed_result_is_a_valid_content_only_run() {
     assert_eq!(result.run.availability, ParserAvailability::Available);
     assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
     assert_eq!(result.run.validate(), Ok(()));
+    Ok(())
 }

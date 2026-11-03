@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_span_carries_no_coordinates() {
+    fn a_missing_span_carries_no_coordinates() -> TestResult {
         let item = EvidenceItem {
             key: "structure:0".into(),
             kind: EvidenceKind::Structure,
@@ -185,5 +185,6 @@ mod tests {
         let row = to_row(&item);
         assert_eq!(row.span_availability, "PackOmitted");
         assert_eq!(row.start_byte, None);
+        Ok(())
     }
 }

@@ -6,7 +6,7 @@ use slugaudit_test_check::{Check, TestResult};
 use std::path::Path;
 
 #[test]
-fn each_listed_number_selects_its_step_and_end_of_input_exits() {
+fn each_listed_number_selects_its_step_and_end_of_input_exits() -> TestResult {
     let cases = [
         (Some("1"), MenuChoice::Install),
         (Some(" 2\n"), MenuChoice::Connect),
@@ -20,6 +20,7 @@ fn each_listed_number_selects_its_step_and_end_of_input_exits() {
     for (line, expected) in cases {
         assert_eq!(menu_choice(line), Some(expected), "line {line:?}");
     }
+    Ok(())
 }
 
 #[test]
@@ -56,34 +57,38 @@ fn an_invalid_answer_prints_one_error_line_and_reprompts_without_the_banner() ->
 }
 
 #[test]
-fn an_unlisted_or_non_numeric_menu_answer_is_invalid() {
+fn an_unlisted_or_non_numeric_menu_answer_is_invalid() -> TestResult {
     let answers = ["0", "7", "", "install", "-1"];
 
     for answer in answers {
         assert_eq!(menu_choice(Some(answer)), None, "{answer:?}");
     }
+    Ok(())
 }
 
 #[test]
-fn plain_style_renders_the_byte_exact_plain_menu() {
+fn plain_style_renders_the_byte_exact_plain_menu() -> TestResult {
     let plain = render_menu(&Style::plain());
     assert_eq!(plain, MENU);
     assert!(!plain.contains('\x1b'));
+    Ok(())
 }
 
 #[test]
-fn colored_style_renders_ansi_escapes() {
+fn colored_style_renders_ansi_escapes() -> TestResult {
     let colored = render_menu(&Style::colored());
     assert!(colored.contains('\x1b'));
     assert!(colored.contains("SlugAudit setup"));
+    Ok(())
 }
 
 #[test]
-fn section_label_extracts_the_rule_label_and_nothing_else() {
+fn section_label_extracts_the_rule_label_and_nothing_else() -> TestResult {
     assert_eq!(section_label("── Setup ──"), Some("Setup"));
     assert_eq!(section_label("── Advanced ──"), Some("Advanced"));
     assert_eq!(section_label("── Exit ────"), Some("Exit"));
     assert_eq!(section_label("not a rule"), None);
+    Ok(())
 }
 
 #[test]
@@ -128,7 +133,7 @@ fn other_agent_instructions_snippet_is_valid_json_for_awkward_paths() -> TestRes
 
 #[cfg(unix)]
 #[test]
-fn other_agent_instructions_refuse_a_non_utf8_binary_path() {
+fn other_agent_instructions_refuse_a_non_utf8_binary_path() -> TestResult {
     use std::os::unix::ffi::OsStrExt as _;
     let binary = Path::new(std::ffi::OsStr::from_bytes(b"/opt/\xff/slugaudit"));
     let result = other_agent_instructions(binary, None);
@@ -136,12 +141,14 @@ fn other_agent_instructions_refuse_a_non_utf8_binary_path() {
         matches!(result, Err(crate::cli::ConnectError::BinaryPath(_))),
         "{result:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn colored_menu_ends_on_the_prompt_without_a_trailing_newline() {
+fn colored_menu_ends_on_the_prompt_without_a_trailing_newline() -> TestResult {
     let colored = render_menu(&Style::colored());
     assert!(!colored.ends_with('\n'), "{colored:?}");
     assert!(colored.contains("Choose an option [1-6]: "));
     assert_eq!(colored.lines().count(), MENU.lines().count());
+    Ok(())
 }

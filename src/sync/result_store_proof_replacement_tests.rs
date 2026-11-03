@@ -341,7 +341,11 @@ fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor()
 fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() -> TestResult {
     let open = open_result()?;
     let second = open_first_page(&open.manager, &open.path)?;
-    assert!(second.page.cursor.is_some(), "the second result is open");
+    second
+        .page
+        .cursor
+        .as_ref()
+        .check("the second result is open")?;
     std::fs::write(
         open.project.path().join("lib.rs"),
         b"pub fn a() {}\npub fn b() {}\n",

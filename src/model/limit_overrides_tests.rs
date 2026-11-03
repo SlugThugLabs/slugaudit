@@ -178,7 +178,7 @@ const ZERO_REFUSED: [&str; 16] = [
 /// `nonzero_override` in `env_overrides.rs` must be listed, and nothing else.
 #[test]
 fn the_zero_refused_list_names_exactly_the_variables_env_overrides_rs_reads_with_nonzero_override()
-{
+-> TestResult {
     let source = include_str!("env_overrides.rs");
     let mut read: Vec<&str> = source
         .split("nonzero_override")
@@ -194,6 +194,7 @@ fn the_zero_refused_list_names_exactly_the_variables_env_overrides_rs_reads_with
     listed.sort_unstable();
 
     assert_eq!(read, listed);
+    Ok(())
 }
 
 #[test]

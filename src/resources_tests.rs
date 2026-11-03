@@ -2,7 +2,7 @@ use super::*;
 use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn lists_every_served_resource_with_a_distinct_uri() {
+fn lists_every_served_resource_with_a_distinct_uri() -> TestResult {
     let resources = list();
     assert_eq!(
         resources.len(),
@@ -25,6 +25,7 @@ fn lists_every_served_resource_with_a_distinct_uri() {
     let count = uris.len();
     uris.dedup();
     assert_eq!(uris.len(), count, "uris are unique");
+    Ok(())
 }
 
 #[test]
@@ -149,9 +150,10 @@ fn reads_the_schema_resource() -> TestResult {
 }
 
 #[test]
-fn unknown_uris_are_not_served() {
+fn unknown_uris_are_not_served() -> TestResult {
     assert!(read("slugaudit://nope").is_none());
     assert!(read("file:///etc/passwd").is_none());
+    Ok(())
 }
 
 /// The recipe promises call sites, so it must match the callee and not any
@@ -251,7 +253,7 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() -> TestResult {
     std::fs::create_dir_all(project.path().join("src")).check("create src")?;
     std::fs::write(
         project.path().join("src/main.rs"),
-        b"mod auth;\nuse crate::auth::session_token;\nfn main() {\n    let token: Option<u8> = session_token();\n    token.unwrap();\n}\n",
+        b"mod auth;\nuse crate::auth::session_token;\nfn main() {\n    let token: Option<u8> = session_token();\n    token.expect(\"set\");\n}\n",
     )
     .check("write main.rs")?;
     std::fs::write(
@@ -298,7 +300,7 @@ fn every_sql_recipe_runs_unedited_through_the_query_tool() -> TestResult {
     }
 
     assert_eq!(recipes.len(), 6, "the six SQL recipes: {rows_by_recipe:?}");
-    // The fixture has an unwrap call, auth/session/token names and one
+    // The fixture has an expect call, auth/session/token names and one
     // resolved import from src/main.rs, so every recipe but the diagnostics
     // one (the fixture parses cleanly) has something to return.
     for (name, rows) in &rows_by_recipe {

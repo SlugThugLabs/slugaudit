@@ -148,7 +148,10 @@ impl PageCut {
 
     /// Surfaces the failure the cut hit, if any.
     pub(super) fn finish(self) -> Result<(), ErrorData> {
-        self.failure.map_or(Ok(()), Err)
+        match self.failure {
+            Some(failure) => Err(failure),
+            None => Ok(()),
+        }
     }
 }
 

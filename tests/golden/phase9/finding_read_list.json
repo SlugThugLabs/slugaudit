@@ -1,59 +1,57 @@
 {
   "case": "finding_read_list",
-  "request": {
-    "offset": 0
-  },
+  "request": {},
   "response": {
+    "page": {
+      "returned": 3,
+      "total": 3,
+      "complete": true,
+      "completeness": "complete",
+      "page_bytes": 65536,
+      "bytes_used": 809,
+      "limited_by": "none",
+      "revision_id": "<REVISION_ID>"
+    },
     "findings": [
       {
+        "id": 1,
+        "path": "mod0.rs",
+        "line_start": 1,
+        "line_end": 2,
+        "severity": "low",
         "category": "test",
+        "title": "first",
         "description": "first finding description",
         "detail_clipped": false,
-        "id": 1,
-        "line_end": 2,
-        "line_start": 1,
-        "path": "mod0.rs",
-        "severity": "low",
-        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
         "status": "current",
-        "title": "first"
+        "source_hash": "19ee09f625334a0f6a2c137e3427670a6fea5a82144c57bac376ed5398fc7498"
       },
       {
+        "id": 2,
+        "path": "mod1.rs",
+        "line_start": 1,
+        "line_end": 2,
+        "severity": "low",
         "category": "test",
+        "title": "second",
         "description": "second finding description",
         "detail_clipped": false,
-        "id": 2,
-        "line_end": 2,
-        "line_start": 1,
-        "path": "mod1.rs",
-        "severity": "low",
-        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
         "status": "current",
-        "title": "second"
+        "source_hash": "19ee09f625334a0f6a2c137e3427670a6fea5a82144c57bac376ed5398fc7498"
       },
       {
+        "id": 3,
+        "path": "mod2.rs",
+        "line_start": 1,
+        "line_end": 2,
+        "severity": "low",
         "category": "test",
+        "title": "third",
         "description": "third finding description",
         "detail_clipped": false,
-        "id": 3,
-        "line_end": 2,
-        "line_start": 1,
-        "path": "mod2.rs",
-        "severity": "low",
-        "source_hash": "1864a27e7c81e798ed19861f98191b80006fd4962b720e87823787dd29326b7f",
         "status": "current",
-        "title": "third"
+        "source_hash": "19ee09f625334a0f6a2c137e3427670a6fea5a82144c57bac376ed5398fc7498"
       }
-    ],
-    "page": {
-      "bytes_used": 809,
-      "complete": true,
-      "limited_by": "none",
-      "next_offset": null,
-      "page_bytes": 65536,
-      "returned": 3,
-      "revision_id": "<REVISION_ID>",
-      "total": 3
-    }
+    ]
   }
 }

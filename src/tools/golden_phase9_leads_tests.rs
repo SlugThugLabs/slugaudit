@@ -68,10 +68,10 @@ fn golden_phase9_leads_counts_rows_pages_and_compact() -> TestResult {
         &leads_request(&project, None)?,
         &manager,
     )?;
-    let mut first = leads_request(&project, Some("unwrap_calls"))?;
+    let mut first = leads_request(&project, Some("comment_markers"))?;
     first.limit = Some(5);
     let page_one = leads_case("leads_rows_page1", &project, &first, &manager)?;
-    let mut second = leads_request(&project, Some("unwrap_calls"))?;
+    let mut second = leads_request(&project, Some("comment_markers"))?;
     second.limit = Some(5);
     second.path = None;
     second.cursor = page_one["page"]["cursor"].as_str().map(str::to_owned);

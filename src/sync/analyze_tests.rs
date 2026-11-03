@@ -34,7 +34,7 @@ fn sampled_content_with_no_detectable_language_is_content_only() -> TestResult {
         ExtractionCompleteness::ContentOnly,
         "the text is indexed, so 'Unavailable' would read as 'no content'"
     );
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -45,7 +45,7 @@ fn content_free_binary_text_is_unavailable() -> TestResult {
     assert_eq!(result.run.availability, ParserAvailability::Unavailable);
     assert_eq!(result.run.completeness, ExtractionCompleteness::Unavailable);
     assert!(result.evidence.is_empty());
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -56,7 +56,7 @@ fn a_supported_language_produces_real_evidence() -> TestResult {
     assert_eq!(result.run.availability, ParserAvailability::Available);
     assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
     assert!(!result.evidence.is_empty());
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -70,7 +70,7 @@ fn malformed_source_reports_syntax_errors_with_a_real_count() -> TestResult {
                 .check("unexpected outcome");
         }
     }
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
@@ -114,17 +114,18 @@ fn every_produced_run_satisfies_its_own_invariant() -> TestResult {
         analyze("lib.rs", Some("pub fn a() {}"))?,
         analyze("lib.rs", Some("fn broken( {\n"))?,
     ] {
-        assert!(result.run.validate().is_ok(), "{:?}", result.run);
+        result.run.validate().check("the parser run validates")?;
     }
     Ok(())
 }
 
 #[test]
-fn load_failure_classification_is_disjoint_from_parse_failure() {
+fn load_failure_classification_is_disjoint_from_parse_failure() -> TestResult {
     let load_failure = PackError::LanguageNotFound("x".into());
     let parse_failure = PackError::ParseFailed;
     assert!(is_load_failure(&load_failure));
     assert!(!is_load_failure(&parse_failure));
+    Ok(())
 }
 
 /// Per-file parse logs name the project-relative path, and a pack error's
@@ -182,12 +183,12 @@ fn a_grammar_download_error_is_recorded_as_load_failed() -> TestResult {
     assert_eq!(result.run.outcome, ParseOutcome::NotAttempted);
     assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
     assert_eq!(result.language.as_deref(), Some("rust"));
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 
 #[test]
-fn every_grammar_fetch_error_variant_is_a_load_failure() {
+fn every_grammar_fetch_error_variant_is_a_load_failure() -> TestResult {
     let fetch_errors = [
         PackError::Download("x".into()),
         PackError::ChecksumMismatch {
@@ -201,6 +202,7 @@ fn every_grammar_fetch_error_variant_is_a_load_failure() {
     for error in &fetch_errors {
         assert!(is_load_failure(error), "{error:?} must be a load failure");
     }
+    Ok(())
 }
 
 #[test]
@@ -215,7 +217,7 @@ fn an_unrelated_parse_error_stays_failed_not_load_failed() -> TestResult {
         "got {:?}",
         result.run
     );
-    assert!(result.run.validate().is_ok());
+    result.run.validate().check("the parser run validates")?;
     Ok(())
 }
 

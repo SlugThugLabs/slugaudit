@@ -123,9 +123,7 @@ pub(super) fn production_code(source: &str) -> String {
             if ended {
                 break;
             }
-            let Some(next) = lines.next() else {
-                break;
-            };
+            let Some(next) = lines.next() else { break };
             current = next;
         }
         kept.push('\n');
@@ -134,7 +132,10 @@ pub(super) fn production_code(source: &str) -> String {
 }
 
 fn code_before_line_comment(line: &str) -> &str {
-    line.split_once("//").map_or(line, |(code, _)| code)
+    match line.split_once("//") {
+        Some((code, _)) => code,
+        None => line,
+    }
 }
 
 /// The variant identifiers declared by `pub enum <name>` — parsed from the
@@ -177,10 +178,11 @@ pub(super) fn enum_variants(source: &str, name: &str) -> Option<Vec<String>> {
         // A variant is the leading identifier of its line; a payload
         // (`LoadFailed { … }`) or discriminant never changes which variant
         // the line declares.
-        let head = trimmed
-            .split_once(['{', '(', '=', ','])
-            .map_or(trimmed, |(head, _)| head)
-            .trim();
+        let head = match trimmed.split_once(['{', '(', '=', ',']) {
+            Some((head, _)) => head,
+            None => trimmed,
+        }
+        .trim();
         if is_identifier(head) {
             variants.push(head.to_owned());
         }

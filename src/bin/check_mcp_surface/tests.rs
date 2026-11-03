@@ -3,17 +3,18 @@ use serde_json::json;
 use slugaudit_test_check::{Check, TestResult};
 
 #[test]
-fn identical_surfaces_have_no_differences() {
+fn identical_surfaces_have_no_differences() -> TestResult {
     let surface = json!({
         "tools": [{"name": "report", "title": "Project snapshot"}],
         "resources": [{"name": "query-cookbook", "uri": "slugaudit://queries/README.md"}],
     });
 
     assert!(differences(&surface, &surface).is_empty());
+    Ok(())
 }
 
 #[test]
-fn a_removed_and_an_added_surface_entry_are_both_reported_by_name() {
+fn a_removed_and_an_added_surface_entry_are_both_reported_by_name() -> TestResult {
     let committed = json!({"tools": [{"name": "report"}, {"name": "leads"}]});
     let live = json!({"tools": [{"name": "report"}, {"name": "health"}]});
 
@@ -24,10 +25,11 @@ fn a_removed_and_an_added_surface_entry_are_both_reported_by_name() {
             "tools[health]: absent from the snapshot, present now",
         ]
     );
+    Ok(())
 }
 
 #[test]
-fn a_changed_annotation_is_reported_with_its_path_and_both_values() {
+fn a_changed_annotation_is_reported_with_its_path_and_both_values() -> TestResult {
     let committed = json!({
         "tools": [{"name": "project_control", "annotations": {"destructiveHint": false}}],
     });
@@ -39,18 +41,20 @@ fn a_changed_annotation_is_reported_with_its_path_and_both_values() {
         differences(&committed, &live),
         vec!["tools[project_control].annotations.destructiveHint: snapshot false, live true"]
     );
+    Ok(())
 }
 
 #[test]
-fn reordering_named_surface_entries_is_not_drift() {
+fn reordering_named_surface_entries_is_not_drift() -> TestResult {
     let committed = json!({"tools": [{"name": "report"}, {"name": "leads"}]});
     let live = json!({"tools": [{"name": "leads"}, {"name": "report"}]});
 
     assert!(differences(&committed, &live).is_empty());
+    Ok(())
 }
 
 #[test]
-fn schema_arrays_are_compared_by_position() {
+fn schema_arrays_are_compared_by_position() -> TestResult {
     let committed = json!({"tools": [{"name": "x", "inputSchema": {"required": ["a", "b"]}}]});
     let live = json!({"tools": [{"name": "x", "inputSchema": {"required": ["a"]}}]});
 
@@ -58,6 +62,7 @@ fn schema_arrays_are_compared_by_position() {
         differences(&committed, &live),
         vec!["tools[x].inputSchema.required: snapshot has 2 entries, live has 1"]
     );
+    Ok(())
 }
 
 #[test]
@@ -66,12 +71,10 @@ fn every_live_tool_carries_a_title_a_description_and_both_schemas() -> TestResul
 
     assert_eq!(tools.len(), 10, "the surface is the ten advertised tools");
     for tool in &tools {
-        assert!(tool.title.is_some(), "{} has no title", tool.name);
-        assert!(
-            tool.description.is_some(),
-            "{} has no description",
-            tool.name
-        );
+        tool.title.as_ref().check("`tool.title` is present")?;
+        tool.description
+            .as_ref()
+            .check("`tool.description` is present")?;
         assert!(
             !tool.input_schema.is_empty(),
             "{} has no input schema",
@@ -130,7 +133,7 @@ fn every_live_tool_matches_the_documented_annotation_table() -> TestResult {
 }
 
 #[test]
-fn one_sided_lines_for_keys_and_named_entries_read_the_same_way() {
+fn one_sided_lines_for_keys_and_named_entries_read_the_same_way() -> TestResult {
     let committed = json!({"a": 1, "tools": [{"name": "x"}]});
     let live = json!({"b": 1, "tools": [{"name": "y"}]});
 
@@ -146,4 +149,5 @@ fn one_sided_lines_for_keys_and_named_entries_read_the_same_way() {
             "tools[y]: absent from the snapshot, present now",
         ]
     );
+    Ok(())
 }

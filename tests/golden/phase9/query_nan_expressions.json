@@ -1,21 +1,19 @@
 {
   "case": "query_nan_expressions",
   "request": {
-    "page_bytes": null,
-    "sql": "SELECT 1e308*10*0 AS mul, 1e308*10 - 1e308*10 AS sub, golden_nan() AS udf"
+    "sql": "SELECT 1e308*10*0 AS mul, 1e308*10 - 1e308*10 AS sub, golden_nan() AS udf",
+    "page_bytes": null
   },
   "response": {
-    "clipped_cells": [],
-    "non_finite_cells": [],
     "page": {
-      "bytes_used": 34,
-      "complete": true,
-      "limited_by": "none",
-      "next_offset": null,
-      "page_bytes": 65536,
       "returned": 1,
-      "revision_id": "<REVISION_ID>",
-      "total": 1
+      "total": 1,
+      "complete": true,
+      "completeness": "complete",
+      "page_bytes": 65536,
+      "bytes_used": 34,
+      "limited_by": "none",
+      "revision_id": "<REVISION_ID>"
     },
     "rows": [
       {
@@ -24,6 +22,7 @@
         "udf": null
       }
     ],
-    "total_unavailable": null
+    "clipped_cells": [],
+    "non_finite_cells": []
   }
 }

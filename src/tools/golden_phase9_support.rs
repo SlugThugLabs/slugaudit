@@ -131,12 +131,13 @@ pub(super) fn project_with(files: &[(&str, String)]) -> TestResult<tempfile::Tem
     Ok(project)
 }
 
-/// Three Rust files with four `unwrap` calls each, one `expect` and a TODO.
+/// Three Rust files with four TODO-marked functions each, one more TODO and
+/// one `expect` call.
 pub(super) fn rust_project() -> TestResult<tempfile::TempDir> {
     let files: Vec<(String, String)> = (0..3)
         .map(|file| {
             let body = (0..4)
-                .map(|n| format!("pub fn f{n}(x: Option<u8>) -> u8 {{ x.unwrap() }}\n"))
+                .map(|n| format!("// TODO: {n}\npub fn f{n}() {{}}\n"))
                 .collect::<Vec<_>>()
                 .concat();
             let extra = "// TODO: revisit\npub fn g(x: Option<u8>) -> u8 { println!(\"hi\"); x.expect(\"nope\") }\n";

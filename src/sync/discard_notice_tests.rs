@@ -106,7 +106,7 @@ fn discard_surface_is_reported_only_by_the_call_that_discarded() -> TestResult {
     let first = sync_project(&manager, &project)?;
     let second = sync_project(&manager, &project)?;
 
-    assert!(first.discard.is_some());
+    first.discard.as_ref().check("`first.discard` is present")?;
     assert_eq!(second.discard, None);
     Ok(())
 }

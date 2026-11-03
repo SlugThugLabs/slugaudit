@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `std::env::args()` panics on any argument that is not valid Unicode,
     // and on Linux argv is bytes: a path typed or completed from a Latin-1
     // filename reaches here unmodified (`slugaudit $'\xff'` would exit 101 with
-    // `called Result::unwrap() on an Err value`), so the lossy conversion is
+    // a panic message), so the lossy conversion is
     // what keeps a bad argument a rejected command rather than a crash.
     let args = std::env::args_os()
         .skip(1)
