@@ -9,7 +9,7 @@ use slugaudit_test_check::{
 fn check_returns_the_value_of_an_ok_result() -> TestResult {
     let result: Result<u8, String> = Ok(7);
     let value = result.check("read the value")?;
-    ensure_eq(value, 7, "the values match")?;
+    ensure_eq(&value, &7, "the values match")?;
     Ok(())
 }
 
@@ -20,8 +20,8 @@ fn check_turns_an_err_into_a_test_error_with_the_display_cause() -> TestResult {
     let outcome = failing.check("open the disk");
     let error = outcome.err().check("an Err must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!("{}:{line}: open the disk: disk on fire", file!()),
+        &format!("{error:?}"),
+        &format!("{}:{line}: open the disk: disk on fire", file!()),
         "the values match",
     )?;
     Ok(())
@@ -30,7 +30,7 @@ fn check_turns_an_err_into_a_test_error_with_the_display_cause() -> TestResult {
 #[test]
 fn check_returns_the_value_of_some() -> TestResult {
     let value = Some(3_u8).check("first item")?;
-    ensure_eq(value, 3, "the values match")?;
+    ensure_eq(&value, &3, "the values match")?;
     Ok(())
 }
 
@@ -41,8 +41,8 @@ fn check_turns_none_into_a_test_error() -> TestResult {
     let outcome = absent.check("first item");
     let error = outcome.err().check("None must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!("{}:{line}: first item: value was absent", file!()),
+        &format!("{error:?}"),
+        &format!("{}:{line}: first item: value was absent", file!()),
         "the values match",
     )?;
     Ok(())
@@ -52,7 +52,7 @@ fn check_turns_none_into_a_test_error() -> TestResult {
 fn check_err_returns_the_error_value() -> TestResult {
     let result: Result<u8, String> = Err("boom".to_owned());
     let error = result.check_err("expect a failure")?;
-    ensure_eq(error, "boom", "the values match")?;
+    ensure_eq(&error, &"boom", "the values match")?;
     Ok(())
 }
 
@@ -63,8 +63,8 @@ fn check_err_on_ok_reports_the_value() -> TestResult {
     let outcome = result.check_err("expect a failure");
     let error = outcome.err().check("Ok must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!(
+        &format!("{error:?}"),
+        &format!(
             "{}:{line}: expect a failure: expected an error, got Ok(9)",
             file!()
         ),
@@ -77,7 +77,11 @@ fn check_err_on_ok_reports_the_value() -> TestResult {
 fn display_matches_debug() -> TestResult {
     let result: Result<u8, String> = Err("x".to_owned());
     let error = result.check("step").err().check("must fail")?;
-    ensure_eq(format!("{error}"), format!("{error:?}"), "the values match")?;
+    ensure_eq(
+        &format!("{error}"),
+        &format!("{error:?}"),
+        "the values match",
+    )?;
     Ok(())
 }
 
@@ -87,8 +91,8 @@ fn the_recorded_line_is_the_callers_line_through_the_trait() -> TestResult {
     let (outcome, line) = (result.check("same-line probe"), line!());
     let error = outcome.err().check("must fail")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!("{}:{line}: same-line probe: e", file!()),
+        &format!("{error:?}"),
+        &format!("{}:{line}: same-line probe: e", file!()),
         "the values match",
     )?;
     Ok(())
@@ -144,8 +148,8 @@ fn check_sources_walks_the_whole_source_chain_into_the_cause() -> TestResult {
     let outcome = failing.check_sources("run the step");
     let error = outcome.err().check("an Err must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!(
+        &format!("{error:?}"),
+        &format!(
             "{}:{line}: run the step: outer failed: caused by: inner failed: caused by: root cause",
             file!()
         ),
@@ -177,8 +181,8 @@ fn check_sources_does_not_repeat_a_source_the_display_already_names() -> TestRes
     let outcome = failing.check_sources("run the step");
     let error = outcome.err().check("an Err must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!("{}:{line}: run the step: wrapper: root cause", file!()),
+        &format!("{error:?}"),
+        &format!("{}:{line}: run the step: wrapper: root cause", file!()),
         "the values match",
     )?;
     Ok(())
@@ -188,8 +192,8 @@ fn check_sources_does_not_repeat_a_source_the_display_already_names() -> TestRes
 fn check_sources_returns_the_value_of_an_ok_result() -> TestResult {
     let result: Result<u8, Root> = Ok(5);
     ensure_eq(
-        result.check_sources("read the value")?,
-        5,
+        &result.check_sources("read the value")?,
+        &5,
         "the values match",
     )?;
     Ok(())
@@ -206,8 +210,8 @@ fn ensure_fails_with_the_callers_file_and_line() -> TestResult {
     let outcome = ensure(false, format!("flag {} set", "was not"));
     let error = outcome.err().check("false must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!("{}:{line}: flag was not set: condition was false", file!()),
+        &format!("{error:?}"),
+        &format!("{}:{line}: flag was not set: condition was false", file!()),
         "ensure failure text",
     )
 }
@@ -215,19 +219,26 @@ fn ensure_fails_with_the_callers_file_and_line() -> TestResult {
 #[test]
 fn ensure_eq_passes_on_equal_values_and_mixed_references() -> TestResult {
     let value = 4_u8;
-    ensure_eq(value, 4_u8, "owned values")?;
+    ensure_eq(&value, &4_u8, "owned values")?;
     ensure_eq(&value, &4_u8, "references")?;
-    ensure_eq(String::from("a"), "a", "String against str")
+    let name = String::from("abc");
+    ensure_eq(&name, "abc", "String against str")?;
+    let items = vec![1_u8, 2, 3];
+    ensure_eq(&items, &[1_u8, 2, 3], "Vec against array")?;
+    ensure_eq(&&items, &&[1_u8, 2, 3], "&Vec against &[T; N]")?;
+    ensure_eq(items.as_slice(), &[1_u8, 2, 3][..], "slice against slice")?;
+    let count = 3_usize;
+    ensure_eq(&count, &3, "integer against literal")
 }
 
 #[test]
 fn ensure_eq_fails_with_location_and_both_values() -> TestResult {
     let line = line!() + 1;
-    let outcome = ensure_eq(1_u8, 2_u8, "the counts");
+    let outcome = ensure_eq(&1_u8, &2_u8, "the counts");
     let error = outcome.err().check("unequal must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!(
+        &format!("{error:?}"),
+        &format!(
             "{}:{line}: the counts: expected left == right\nleft: 1\nright: 2",
             file!()
         ),
@@ -237,18 +248,18 @@ fn ensure_eq_fails_with_location_and_both_values() -> TestResult {
 
 #[test]
 fn ensure_ne_passes_on_different_values() -> TestResult {
-    ensure_ne(1_u8, 2_u8, "different values")?;
-    ensure_ne("a", "b", "different strs")
+    ensure_ne(&1_u8, &2_u8, "different values")?;
+    ensure_ne(&String::from("a"), "b", "String against str")
 }
 
 #[test]
 fn ensure_ne_fails_with_location_and_both_values() -> TestResult {
     let line = line!() + 1;
-    let outcome = ensure_ne("x", "x", "the names");
+    let outcome = ensure_ne(&"x", &"x", "the names");
     let error = outcome.err().check("equal must become a TestError")?;
     ensure_eq(
-        format!("{error:?}"),
-        format!(
+        &format!("{error:?}"),
+        &format!(
             "{}:{line}: the names: expected left != right\nleft: \"x\"\nright: \"x\"",
             file!()
         ),

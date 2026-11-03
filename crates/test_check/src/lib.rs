@@ -198,13 +198,13 @@ pub fn ensure(condition: bool, what: impl fmt::Display) -> TestResult {
 ///
 /// Returns the [`TestError`] when `left == right` is false.
 #[track_caller]
-pub fn ensure_eq<L, R>(left: L, right: R, what: impl fmt::Display) -> TestResult
+pub fn ensure_eq<L, R>(left: &L, right: &R, what: impl fmt::Display) -> TestResult
 where
-    L: PartialEq<R> + fmt::Debug,
-    R: fmt::Debug,
+    L: PartialEq<R> + fmt::Debug + ?Sized,
+    R: fmt::Debug + ?Sized,
 {
     let location = Location::caller();
-    let outcome = if left == right {
+    if left == right {
         Ok(())
     } else {
         Err(TestError::new(
@@ -212,9 +212,7 @@ where
             &what.to_string(),
             format!("expected left == right\nleft: {left:?}\nright: {right:?}"),
         ))
-    };
-    drop(left);
-    outcome
+    }
 }
 
 /// Replacement for `assert_ne!`: returns a [`TestError`] naming the caller's
@@ -227,13 +225,13 @@ where
 ///
 /// Returns the [`TestError`] when `left != right` is false.
 #[track_caller]
-pub fn ensure_ne<L, R>(left: L, right: R, what: impl fmt::Display) -> TestResult
+pub fn ensure_ne<L, R>(left: &L, right: &R, what: impl fmt::Display) -> TestResult
 where
-    L: PartialEq<R> + fmt::Debug,
-    R: fmt::Debug,
+    L: PartialEq<R> + fmt::Debug + ?Sized,
+    R: fmt::Debug + ?Sized,
 {
     let location = Location::caller();
-    let outcome = if left == right {
+    if left == right {
         Err(TestError::new(
             location,
             &what.to_string(),
@@ -241,7 +239,5 @@ where
         ))
     } else {
         Ok(())
-    };
-    drop(left);
-    outcome
+    }
 }
