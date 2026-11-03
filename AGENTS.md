@@ -87,4 +87,7 @@ history conflicts with the owner, the owner wins.
 - Before handing work back, run:
   `cargo fmt --all --check`,
   `cargo clippy --workspace --all-targets -- -D warnings`,
-  `cargo test --workspace --all-targets`, and the `check_*` binaries in `src/bin/`.
+  `cargo test --workspace --all-targets`, and the gate binaries, from the repo
+  root: `cargo run -q -p slugaudit-gates --bin <name>` for `check_source_limits`,
+  `check_no_duplicates`, `check_producer_coverage` and `check_mcp_surface`
+  (they live in `crates/gates/`, not in the product).

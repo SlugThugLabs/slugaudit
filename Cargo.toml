@@ -13,45 +13,15 @@ license-file = "LICENSE"
 default-run = "slugaudit"
 
 # Product boundary:
-# - `slugaudit` is the only end-user executable.
-# - The `check_*` binaries are development/CI-only quality tools.
+# - `slugaudit` is the only end-user executable and the only `[[bin]]` here.
+# - The `check_*` gate binaries and the policy tests live in the dev-only
+#   workspace crate `crates/gates` (`slugaudit-gates`), never in this package.
 # - Customer projects receive the MCP server binary, which owns only its
 #   runtime `.planning/slugaudit/` derived-data directory.
 
 [[bin]]
 name = "slugaudit"
 path = "src/main.rs"
-
-# Pure-Rust dev tooling: every gate is a first-class cargo bin. CI's
-# workflow calls these directly; locally the same `cargo run --bin <name>`
-# is the single entry point. No shell, no Python interpreter required.
-#
-# Some bins are directory-laid-out (`src/bin/<name>/main.rs`) so the
-# algorithm and its tests fit under the project's 200-LoC source-size cap
-# without broad exclusions; the rest are single files.
-[[bin]]
-name = "check_source_limits"
-path = "src/bin/check_source_limits/main.rs"
-
-[[bin]]
-name = "check_no_duplicates"
-path = "src/bin/check_no_duplicates/main.rs"
-
-[[bin]]
-name = "check_coverage"
-path = "src/bin/check_coverage.rs"
-
-[[bin]]
-name = "check_producer_coverage"
-path = "src/bin/check_producer_coverage/main.rs"
-
-[[bin]]
-name = "check_mcp_surface"
-path = "src/bin/check_mcp_surface/main.rs"
-
-[[bin]]
-name = "check_performance"
-path = "src/bin/check_performance/main.rs"
 
 [dependencies]
 blake3 = "1"
@@ -85,10 +55,10 @@ codegen-units = 1
 [lints]
 workspace = true
 
-# Product package plus the dev-only test helper. `fuzz/` declares its own
+# Product package plus the dev-only gates and test helper. `fuzz/` declares its own
 # `[workspace]` and is deliberately not a member.
 [workspace]
-members = [".", "crates/test_check"]
+members = [".", "crates/gates", "crates/test_check"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

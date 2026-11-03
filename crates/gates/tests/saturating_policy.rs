@@ -281,13 +281,13 @@ fn rust_files(dir: &Path) -> TestResult<Vec<PathBuf>> {
 
 #[test]
 fn every_saturating_or_wrapping_use_in_src_carries_a_keep_marker() -> TestResult {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let files = rust_files(&root.join("src"))?;
     ensure(!files.is_empty(), "src/ holds .rs files to scan")?;
     let mut report = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file).check("read a source file")?;
-        let relative = file.strip_prefix(root).check("file is under the root")?;
+        let relative = file.strip_prefix(&root).check("file is under the root")?;
         for finding in scan_source(&text).check("lex a source file")? {
             report.push(format!(
                 "{}:{}: `{}`: {}",
