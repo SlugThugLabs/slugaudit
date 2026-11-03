@@ -2,7 +2,7 @@
 //! that `off` removes the database even while a reader holds a snapshot.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 const VICTIM_BYTES: &[u8] = b"not a SlugAudit database\n";
@@ -51,18 +51,23 @@ fn a_tool_call_refuses_a_symlinked_project_db_and_leaves_the_link_and_target_alo
     .err()
     .check("a symlinked project.db is never opened")?;
 
-    assert_eq!(
-        error.message,
-        "opening the project database for sync: refusing to open a database path that is a symlink"
-    );
-    assert!(
+    ensure_eq(
+        &error.message,
+        &"opening the project database for sync: refusing to open a database path that is a symlink",
+        "error.message == \"opening the project database for sync: refusing to open a database path that is a symlink\"",
+    )?;
+    ensure(
         fs::symlink_metadata(&link)
             .check("link still present")?
             .file_type()
             .is_symlink(),
-        "the link is untouched"
-    );
-    assert_eq!(fs::read(&target).check("read target")?, VICTIM_BYTES);
+        "the link is untouched",
+    )?;
+    ensure_eq(
+        &fs::read(&target).check("read target")?,
+        &VICTIM_BYTES,
+        "fs::read(&target).check(\"read target\")? == VICTIM_BYTES",
+    )?;
     Ok(())
 }
 
@@ -79,18 +84,23 @@ fn on_refuses_a_symlinked_project_db_and_leaves_the_link_and_target_alone() -> T
     .err()
     .check("on must refuse a symlinked project.db")?;
 
-    assert_eq!(
-        error.message,
-        "database: refusing to open a database path that is a symlink"
-    );
-    assert!(
+    ensure_eq(
+        &error.message,
+        &"database: refusing to open a database path that is a symlink",
+        "error.message == \"database: refusing to open a database path that is a symlink\"",
+    )?;
+    ensure(
         fs::symlink_metadata(&link)
             .check("link still present")?
             .file_type()
             .is_symlink(),
-        "the link is untouched"
-    );
-    assert_eq!(fs::read(&target).check("read target")?, VICTIM_BYTES);
+        "the link is untouched",
+    )?;
+    ensure_eq(
+        &fs::read(&target).check("read target")?,
+        &VICTIM_BYTES,
+        "fs::read(&target).check(\"read target\")? == VICTIM_BYTES",
+    )?;
     Ok(())
 }
 
@@ -106,16 +116,20 @@ fn off_deletes_the_directory_without_following_a_symlinked_project_db() -> TestR
     )
     .check("off deletes the directory, link included")?;
 
-    assert_eq!(response.0.status, ProjectControlStatus::Disabled);
-    assert!(
+    ensure_eq(
+        &response.0.status,
+        &ProjectControlStatus::Disabled,
+        "response.0.status == ProjectControlStatus::Disabled",
+    )?;
+    ensure(
         !project.path().join(".planning/slugaudit").exists(),
-        "the whole directory is gone"
-    );
-    assert_eq!(
-        fs::read(&target).check("the target survives")?,
-        VICTIM_BYTES,
-        "off never touches what the link pointed at"
-    );
+        "the whole directory is gone",
+    )?;
+    ensure_eq(
+        &fs::read(&target).check("the target survives")?,
+        &VICTIM_BYTES,
+        "off never touches what the link pointed at",
+    )?;
     Ok(())
 }
 
@@ -152,7 +166,7 @@ fn off_removes_the_database_even_while_a_reader_holds_a_wal_snapshot() -> TestRe
     )
     .check("off removes the file regardless of the reader")?;
 
-    assert!(!database.exists(), "the database is removed");
+    ensure(!database.exists(), "the database is removed")?;
     drop(reader);
     drop(writer);
     Ok(())

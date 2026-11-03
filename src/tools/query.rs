@@ -338,7 +338,7 @@ fn any_statement_is_pragma(sql: &str) -> bool {
         if first_keyword_is_pragma(rest) {
             return true;
         }
-        match statement_end(rest).and_then(|end| rest.get(end + 1..)) {
+        match statement_end(rest).and_then(|end| rest.get(end..)?.get(1..)) {
             Some(after) => rest = after,
             None => return false,
         }
@@ -351,27 +351,26 @@ fn any_statement_is_pragma(sql: &str) -> bool {
 /// ends in `sql`. Every delimiter is ASCII, so the index is a char boundary.
 fn statement_end(sql: &str) -> Option<usize> {
     let bytes = sql.as_bytes();
-    let mut index = 0;
-    while let Some(&byte) = bytes.get(index) {
+    let mut rest = bytes;
+    while let Some((&byte, after)) = rest.split_first() {
         let (opener, closing): (usize, &[u8]) = match byte {
-            b';' => return Some(index),
+            b';' => return bytes.len().checked_sub(rest.len()),
             b'\'' => (1, b"'"),
             b'"' => (1, b"\""),
             b'`' => (1, b"`"),
             b'[' => (1, b"]"),
-            b'-' if bytes.get(index + 1) == Some(&b'-') => (2, b"\n"),
-            b'/' if bytes.get(index + 1) == Some(&b'*') => (2, b"*/"),
+            b'-' if after.first() == Some(&b'-') => (2, b"\n"),
+            b'/' if after.first() == Some(&b'*') => (2, b"*/"),
             _ => {
-                index += 1;
+                rest = after;
                 continue;
             }
         };
-        let body = index + opener;
-        let close = bytes
-            .get(body..)?
+        let body = rest.get(opener..)?;
+        let close = body
             .windows(closing.len())
             .position(|window| window == closing)?;
-        index = body + close + closing.len();
+        rest = body.get(close..)?.get(closing.len()..)?;
     }
     None
 }

@@ -152,7 +152,7 @@ fn grouped_counts<T>(
 mod tests {
     use crate::tools::{ReportRequest, report};
     use rmcp::handler::server::wrapper::Parameters;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
     use std::fs;
 
     fn activate(root: &std::path::Path) -> TestResult {
@@ -187,30 +187,57 @@ mod tests {
         )
         .check("report succeeds")?;
 
-        assert_eq!(
-            response.0.file_count, 2,
-            "both discovered files have a row, indexed or not"
-        );
+        ensure_eq(
+            &response.0.file_count,
+            &2,
+            "both discovered files have a row, indexed or not",
+        )?;
         let envelope = &response.0.completeness;
-        assert!(
+        ensure(
             envelope.index_partial,
-            "a skipped file makes the index partial"
-        );
-        assert_eq!(envelope.skipped_file_count, 1);
-        assert_eq!(envelope.skipped_by_reason.len(), 1);
-        assert_eq!(envelope.skipped_by_reason[0].reason, "oversize");
-        assert_eq!(envelope.skipped_by_reason[0].count, 1);
-        assert_eq!(
-            envelope
+            "a skipped file makes the index partial",
+        )?;
+        ensure_eq(
+            &envelope.skipped_file_count,
+            &1,
+            "envelope.skipped_file_count == 1",
+        )?;
+        ensure_eq(
+            &envelope.skipped_by_reason.len(),
+            &1,
+            "envelope.skipped_by_reason.len() == 1",
+        )?;
+        let skipped = envelope
+            .skipped_by_reason
+            .first()
+            .check("envelope.skipped_by_reason[0]")?;
+        ensure_eq(
+            &skipped.reason,
+            &"oversize",
+            "envelope.skipped_by_reason[0].reason == \"oversize\"",
+        )?;
+        ensure_eq(
+            &skipped.count,
+            &1,
+            "envelope.skipped_by_reason[0].count == 1",
+        )?;
+        ensure_eq(
+            &envelope
                 .file_kind_counts
                 .iter()
                 .find(|entry| entry.kind == "indexed")
                 .map(|entry| entry.count),
-            Some(1)
-        );
+            &Some(1),
+            "envelope .file_kind_counts .iter() .find(|entry| entry.kind == \"indexed\") .map(|entry| entry.count) == Some(1)",
+        )?;
 
+        ensure_skipped_row_is_stored(project.path())
+    }
+
+    /// The published database holds an existence row for `huge.rs`, with its
+    /// reason and no content.
+    fn ensure_skipped_row_is_stored(project: &std::path::Path) -> TestResult {
         let database = project
-            .path()
             .join(".planning")
             .join("slugaudit")
             .join("project.db");
@@ -241,15 +268,24 @@ mod tests {
                 },
             )
             .check("the skipped file must have an existence row")?;
-        assert_eq!(kind, "skipped");
-        assert_eq!(reason.as_deref(), Some("oversize"));
-        assert_eq!(content, None, "no content is retained for a skipped file");
-        assert_eq!(completeness, "Unavailable");
-        assert_eq!(outcome, "NotAttempted");
-        assert_eq!(
-            algorithm, "stat-identity",
-            "the skipped row's identity is stat-derived, never a content hash"
-        );
+        ensure_eq(&kind, &"skipped", "kind == \"skipped\"")?;
+        ensure_eq(
+            &reason.as_deref(),
+            &Some("oversize"),
+            "reason.as_deref() == Some(\"oversize\")",
+        )?;
+        ensure_eq(&content, &None, "no content is retained for a skipped file")?;
+        ensure_eq(
+            &completeness,
+            &"Unavailable",
+            "completeness == \"Unavailable\"",
+        )?;
+        ensure_eq(&outcome, &"NotAttempted", "outcome == \"NotAttempted\"")?;
+        ensure_eq(
+            &algorithm,
+            &"stat-identity",
+            "the skipped row's identity is stat-derived, never a content hash",
+        )?;
         Ok(())
     }
 }

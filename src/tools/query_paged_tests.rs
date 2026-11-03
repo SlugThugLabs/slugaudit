@@ -7,7 +7,7 @@ use crate::tools::golden_phase9_support::fixture_dir;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::fs;
 
 /// 60 files, so a small page forces several pages: one row each.
@@ -99,7 +99,10 @@ fn fixture_response(name: &str) -> TestResult<Value> {
     let text = fs::read_to_string(fixture_dir().join(format!("{name}.json")))
         .check("the golden fixture exists")?;
     let mut fixture: Value = serde_json::from_str(&text).check("the fixture is JSON")?;
-    Ok(fixture["response"].take())
+    Ok(fixture
+        .get_mut("response")
+        .check("fixture[\"response\"]")?
+        .take())
 }
 
 #[test]
@@ -108,7 +111,7 @@ fn paged_query_pages_survive_an_edit_between_pages() -> TestResult {
     let manager = SourceSyncManager::default();
     let limits = ResourceLimits::default();
     let full = start(&manager, &project, LISTING, HUGE_PAGE, &limits).check("full fetch")?;
-    assert!(full.page.complete);
+    ensure(full.page.complete, "full.page.complete")?;
     let first = start(&manager, &project, LISTING, SMALL_PAGE, &limits).check("page one")?;
     first
         .page
@@ -120,24 +123,39 @@ fn paged_query_pages_survive_an_edit_between_pages() -> TestResult {
     fs::write(project.path().join("zz_new.rs"), b"pub fn z() {}\n").check("add a file")?;
     let pages = all_pages(&manager, first)?;
 
-    assert!(pages.len() >= 3, "the fixture must page: {}", pages.len());
-    assert_eq!(
-        rows_of(&pages),
-        full.rows,
-        "the union is the page-one result"
-    );
+    ensure(
+        pages.len() >= 3,
+        format!("the fixture must page: {}", pages.len()),
+    )?;
+    ensure_eq(
+        &rows_of(&pages),
+        &full.rows,
+        "the union is the page-one result",
+    )?;
     for page in &pages {
-        assert_eq!(page.page.total, Some(full.rows.len() as u64));
-        assert_eq!(page.page.revision_id, full.page.revision_id);
+        ensure_eq(
+            &page.page.total,
+            &Some(full.rows.len() as u64),
+            "page.page.total == Some(full.rows.len() as u64)",
+        )?;
+        ensure_eq(
+            &page.page.revision_id,
+            &full.page.revision_id,
+            "page.page.revision_id == full.page.revision_id",
+        )?;
     }
     let fresh = start(&manager, &project, LISTING, HUGE_PAGE, &limits).check("fresh request")?;
     let paths: Vec<_> = fresh.rows.iter().map(|row| row["path"].clone()).collect();
-    assert!(
+    ensure(
         !paths.contains(&json!("f10.rs")),
-        "the removed file is gone"
-    );
-    assert!(paths.contains(&json!("zz_new.rs")), "the new file shows");
-    assert_ne!(fresh.page.revision_id, full.page.revision_id);
+        "the removed file is gone",
+    )?;
+    ensure(paths.contains(&json!("zz_new.rs")), "the new file shows")?;
+    ensure_ne(
+        &fresh.page.revision_id,
+        &full.page.revision_id,
+        "fresh.page.revision_id != full.page.revision_id",
+    )?;
     Ok(())
 }
 
@@ -158,10 +176,11 @@ fn paged_query_same_cursor_twice_returns_identical_pages() -> TestResult {
     let one = follow(&manager, &cursor, SMALL_PAGE).check("first read")?;
     let two = follow(&manager, &cursor, SMALL_PAGE).check("second read")?;
 
-    assert_eq!(
-        serde_json::to_value(&one).check("serializes")?,
-        serde_json::to_value(&two).check("serializes")?
-    );
+    ensure_eq(
+        &serde_json::to_value(&one).check("serializes")?,
+        &serde_json::to_value(&two).check("serializes")?,
+        "serde_json::to_value(&one).check(\"serializes\")? == serde_json::to_value(&two).check(\"serializes\")?",
+    )?;
     Ok(())
 }
 
@@ -179,22 +198,24 @@ fn paged_query_final_page_can_be_retried() -> TestResult {
     .check("page one")?;
     let mut cursors = vec![first.page.cursor.clone().check("more pages follow")?];
     let last_cursor = loop {
-        let page = follow(&manager, &cursors[cursors.len() - 1], SMALL_PAGE).check("a page")?;
+        let newest = cursors.last().check("a cursor to follow")?;
+        let page = follow(&manager, newest, SMALL_PAGE).check("a page")?;
         match page.page.cursor {
             Some(next) => cursors.push(next),
-            None => break cursors[cursors.len() - 1].clone(),
+            None => break cursors.last().check("the last cursor")?.clone(),
         }
     };
 
     let last = follow(&manager, &last_cursor, SMALL_PAGE).check("the final page")?;
     let again = follow(&manager, &last_cursor, SMALL_PAGE).check("the final page again")?;
 
-    assert!(last.page.complete);
-    assert_eq!(last.page.cursor, None);
-    assert_eq!(
-        serde_json::to_value(&last).check("serializes")?,
-        serde_json::to_value(&again).check("serializes")?
-    );
+    ensure(last.page.complete, "last.page.complete")?;
+    ensure_eq(&last.page.cursor, &None, "last.page.cursor == None")?;
+    ensure_eq(
+        &serde_json::to_value(&last).check("serializes")?,
+        &serde_json::to_value(&again).check("serializes")?,
+        "serde_json::to_value(&last).check(\"serializes\")? == serde_json::to_value(&again).check(\"serializes\")?",
+    )?;
     Ok(())
 }
 
@@ -205,11 +226,15 @@ fn paged_query_refuses_offset_and_expected_revision_naming_cursor() -> TestResul
 
     for field in ["offset", "expected_revision"] {
         let mut arguments = json!({ "path": path, "sql": "SELECT 1" });
-        arguments[field] = if field == "offset" {
+        let value = if field == "offset" {
             json!(5)
         } else {
             json!("r1")
         };
+        arguments
+            .as_object_mut()
+            .check("the arguments are an object")?
+            .insert(field.to_owned(), value);
         let request: QueryRequest = serde_json::from_value(arguments).check("still parses")?;
 
         let error = call(
@@ -220,8 +245,19 @@ fn paged_query_refuses_offset_and_expected_revision_naming_cursor() -> TestResul
         .check_err("a removed parameter is refused")?;
 
         let data = error.data.check("a payload")?;
-        assert_eq!(data["code"], "paging_parameter_removed", "{field}");
-        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        ensure_eq(
+            &data.get("code").check("data[\"code\"]")?,
+            &"paging_parameter_removed",
+            field,
+        )?;
+        ensure(
+            data.get("remedy")
+                .check("data[\"remedy\"]")?
+                .as_str()
+                .check("remedy")?
+                .contains("cursor"),
+            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
+        )?;
     }
     Ok(())
 }
@@ -237,13 +273,27 @@ fn paged_query_nan_expression_returns_null_with_no_non_finite_cells_on_the_store
     let response = start(&manager, &project, sql, 65_536, &ResourceLimits::default())
         .check("query succeeds")?;
 
-    assert_eq!(
-        response.rows,
-        [json!({ "mul": null, "sub": null, "udf": null })]
-    );
-    assert!(response.non_finite_cells.is_empty());
-    assert_eq!(json!(response.rows), golden["rows"]);
-    assert_eq!(json!(response.non_finite_cells), golden["non_finite_cells"]);
+    ensure_eq(
+        &response.rows,
+        &[json!({ "mul": null, "sub": null, "udf": null })],
+        "response.rows == [json!({ \"mul\": null, \"sub\": null, \"udf\": null })]",
+    )?;
+    ensure(
+        response.non_finite_cells.is_empty(),
+        "response.non_finite_cells.is_empty()",
+    )?;
+    ensure_eq(
+        &json!(response.rows),
+        golden.get("rows").check("golden[\"rows\"]")?,
+        "json!(response.rows) == golden[\"rows\"]",
+    )?;
+    ensure_eq(
+        &json!(response.non_finite_cells),
+        golden
+            .get("non_finite_cells")
+            .check("golden[\"non_finite_cells\"]")?,
+        "json!(response.non_finite_cells) == golden[\"non_finite_cells\"]",
+    )?;
     Ok(())
 }
 
@@ -269,21 +319,34 @@ fn paged_query_infinity_nul_text_blob_numeric_text_equal_the_golden() -> TestRes
             .check("query succeeds")?;
 
         let golden = fixture_response(name)?;
-        assert_eq!(json!(response.rows), golden["rows"], "{name} rows");
-        assert_eq!(
-            json!(response.non_finite_cells),
-            golden["non_finite_cells"],
-            "{name} non_finite_cells"
-        );
-        assert_eq!(
-            json!(response.clipped_cells),
-            golden["clipped_cells"],
-            "{name} clipped_cells"
-        );
-        assert_eq!(
-            response.page.bytes_used, golden["page"]["bytes_used"],
-            "{name}"
-        );
+        ensure_eq(
+            &json!(response.rows),
+            golden.get("rows").check("golden[\"rows\"]")?,
+            format!("{name} rows"),
+        )?;
+        ensure_eq(
+            &json!(response.non_finite_cells),
+            golden
+                .get("non_finite_cells")
+                .check("golden[\"non_finite_cells\"]")?,
+            format!("{name} non_finite_cells"),
+        )?;
+        ensure_eq(
+            &json!(response.clipped_cells),
+            golden
+                .get("clipped_cells")
+                .check("golden[\"clipped_cells\"]")?,
+            format!("{name} clipped_cells"),
+        )?;
+        ensure_eq(
+            &response.page.bytes_used,
+            golden
+                .get("page")
+                .check("golden[\"page\"]")?
+                .get("bytes_used")
+                .check("golden[\"page\"][\"bytes_used\"]")?,
+            name,
+        )?;
     }
     Ok(())
 }
@@ -302,26 +365,25 @@ fn paged_query_over_vm_step_budget_leaves_no_cursor_and_no_stored_result() -> Te
     let error = start(&manager, &project, sql, 40, &limits)
         .check_err("a spent budget fails the whole call")?;
 
-    assert!(
+    ensure(
         error.message.contains("virtual-machine step budget"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     let store = manager
         .result_stores()
         .current()
         .check("the store slot")?
         .check("the store opened for the attempt")?;
     let stats = store.stats().check("read the store counters")?;
-    assert_eq!(
-        (
+    ensure_eq(
+        &(
             stats.active.results,
             stats.idle.results,
-            stats.delivered.results
+            stats.delivered.results,
         ),
-        (0, 0, 0),
-        "no partial result is left behind"
-    );
+        &(0, 0, 0),
+        "no partial result is left behind",
+    )?;
     Ok(())
 }
 
@@ -336,170 +398,16 @@ fn paged_query_total_is_exact_on_every_page() -> TestResult {
 
     let pages = all_pages(&manager, first)?;
 
-    assert!(pages.len() > 3, "the fixture must page: {}", pages.len());
+    ensure(
+        pages.len() > 3,
+        format!("the fixture must page: {}", pages.len()),
+    )?;
     for (number, page) in pages.iter().enumerate() {
-        assert_eq!(page.page.total, Some(500), "page {number}");
+        ensure_eq(&page.page.total, &Some(500), format!("page {number}"))?;
     }
-    assert_eq!(rows_of(&pages).len(), 500);
+    ensure_eq(&rows_of(&pages).len(), &500, "rows_of(&pages).len() == 500")?;
     Ok(())
 }
 
-/// Sets the global-config `default_page_bytes` that `resolve_limits` reads
-/// (the environment is read once per process, so no env var can set it per
-/// test). Keep the returned guard alive for the test.
-fn write_default_page_bytes(
-    page_bytes: usize,
-) -> TestResult<crate::tools::test_support::GlobalConfigGuard> {
-    crate::tools::test_support::use_global_config(&format!(
-        "{{\"default_page_bytes\": {page_bytes}}}"
-    ))
-}
-
-/// Calls the public tool entry (project limits for a new request, process
-/// limits for a continuation) with no `page_bytes`.
-fn call_without_page_bytes(
-    manager: &SourceSyncManager,
-    path: Option<String>,
-    sql: &str,
-    cursor: Option<String>,
-    sink: &dyn crate::progress::ProgressSink,
-) -> Result<QueryResponse, ErrorData> {
-    query(
-        &Parameters(QueryRequest {
-            path,
-            sql: sql.to_owned(),
-            cursor,
-            legacy_paging: LegacyPaging::default(),
-            page_bytes: None,
-        }),
-        sink,
-        manager,
-    )
-    .map(|Json(response)| response)
-}
-
-#[test]
-fn paged_query_continuation_keeps_the_page_budget_of_page_one() -> TestResult {
-    let project = listing_project()?;
-    let _config = write_default_page_bytes(SMALL_PAGE)?;
-    let manager = SourceSyncManager::default();
-    let path = project.path().to_string_lossy().into_owned();
-    let noop = crate::progress::NoopProgressSink;
-
-    let first =
-        call_without_page_bytes(&manager, Some(path), LISTING, None, &noop).check("page one")?;
-    let second = call_without_page_bytes(&manager, None, "", first.page.cursor.clone(), &noop)
-        .check("page two")?;
-
-    assert_eq!(first.page.page_bytes, SMALL_PAGE);
-    first
-        .page
-        .cursor
-        .as_ref()
-        .check("the configured budget must page")?;
-    assert_eq!(
-        second.page.page_bytes, SMALL_PAGE,
-        "the continuation inherits page one's budget"
-    );
-    assert_eq!(second.rows.len(), first.rows.len());
-    second
-        .page
-        .cursor
-        .as_ref()
-        .check("still more pages follow")?;
-    Ok(())
-}
-
-/// Counts how many times the sync layer began an `ensure_current`.
-#[derive(Default)]
-struct SyncCounter(std::sync::atomic::AtomicUsize);
-
-impl crate::progress::ProgressSink for SyncCounter {
-    fn emit(&self, event: crate::progress::ProgressEvent) {
-        if event
-            == (crate::progress::ProgressEvent::Started {
-                phase: "ensuring_current",
-            })
-        {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-#[test]
-fn paged_query_new_request_syncs_once() -> TestResult {
-    let project = listing_project()?;
-    let _config = write_default_page_bytes(SMALL_PAGE)?;
-    let manager = SourceSyncManager::default();
-    let path = project.path().to_string_lossy().into_owned();
-    let counter = SyncCounter::default();
-
-    let first = call_without_page_bytes(&manager, Some(path), LISTING, None, &counter)
-        .check("a new request")?;
-    let after_first = counter.0.load(std::sync::atomic::Ordering::SeqCst);
-    call_without_page_bytes(&manager, None, "", first.page.cursor, &counter)
-        .check("a continuation")?;
-
-    assert_eq!(after_first, 1, "a new request syncs exactly once");
-    assert_eq!(
-        counter.0.load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "a continuation syncs nothing"
-    );
-    Ok(())
-}
-
-/// The NaN restore branch of `values_of` (a NULL cell carrying the `nonfinite`
-/// NaN mark becomes a REAL NaN again) cannot be reached from SQL in this
-/// bundled build: SQLite turns a NaN into NULL before the cell is stored, so
-/// the query path never writes a mark. The mark is therefore planted through
-/// the store API, and the tool layer must still list the cell as `NaN` while
-/// rendering it as JSON `null`; an unmarked NULL beside it stays plain NULL.
-#[test]
-fn paged_query_marked_nan_cell_is_restored_and_listed_as_non_finite() -> TestResult {
-    use crate::store::{Cell, ResultSpec};
-    use crate::tools::query_value::{NonFiniteCell, PageBuilder};
-    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
-    let manager = SourceSyncManager::default();
-    let store = manager
-        .result_stores()
-        .for_dir(&project.path().join(".planning").join("slugaudit"))
-        .check("open the result store")?;
-    let names = vec!["id".to_owned(), "nan".to_owned(), "plain".to_owned()];
-    let mut writer = store
-        .begin(ResultSpec {
-            tool: "query".to_owned(),
-            project: "proj".to_owned(),
-            revision_id: "rev-1".to_owned(),
-            columns: names.clone(),
-        })
-        .check("begin the result")?;
-    writer
-        .push(&[Cell::Int(1), Cell::Real(f64::NAN), Cell::Null])
-        .check("push the NaN row")?;
-    let handle = writer
-        .finish(&json!({"kind": "complete"}))
-        .check("finish the result")?;
-    let mut builder = PageBuilder::new();
-    builder.set_names(names);
-    builder.set_budget(65_536);
-
-    let page = store
-        .read_page(handle.id, 0, |row| builder.accept(row))
-        .check("read the page")?;
-    let collected = builder.finish(page.rows.len()).check("build the page")?;
-
-    assert_eq!(
-        collected.rows,
-        [json!({ "id": 1, "nan": null, "plain": null })]
-    );
-    assert_eq!(
-        collected.non_finite,
-        [NonFiniteCell {
-            row: 0,
-            column: "nan".to_owned(),
-            value: "NaN"
-        }]
-    );
-    Ok(())
-}
+#[path = "query_paged_budget_tests.rs"]
+mod budget_tests;

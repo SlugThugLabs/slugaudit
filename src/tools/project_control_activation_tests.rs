@@ -3,7 +3,7 @@
 //! the next tool call, and no tool call ever creates the directory.
 
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
 fn project_with_source() -> TestResult<(tempfile::TempDir, String)> {
@@ -41,16 +41,18 @@ fn report(
     .map(|response| response.0)
 }
 
-fn assert_not_enabled(error: &ErrorData) {
-    assert_eq!(
-        error.message,
-        "SlugAudit is not enabled for this project or any parent directory"
-    );
-    assert_eq!(
-        error.data.as_ref().and_then(|data| data.get("code")),
-        Some(&serde_json::json!("project_not_enabled")),
-        "{error:?}"
-    );
+fn assert_not_enabled(error: &ErrorData) -> TestResult {
+    ensure_eq(
+        &error.message,
+        &"SlugAudit is not enabled for this project or any parent directory",
+        "error.message == \"SlugAudit is not enabled for this project or any parent directory\"",
+    )?;
+    ensure_eq(
+        &error.data.as_ref().and_then(|data| data.get("code")),
+        &Some(&serde_json::json!("project_not_enabled")),
+        format!("{error:?}"),
+    )?;
+    Ok(())
 }
 
 #[test]
@@ -60,13 +62,20 @@ fn on_creates_the_directory_the_database_and_the_gitignore_entry_and_a_call_work
 
     let on = control(&path, ProjectControlAction::On)?;
 
-    assert_eq!(on.status, ProjectControlStatus::Enabled);
-    assert!(activation.is_dir());
-    assert!(activation.join("project.db").is_file());
+    ensure_eq(
+        &on.status,
+        &ProjectControlStatus::Enabled,
+        "on.status == ProjectControlStatus::Enabled",
+    )?;
+    ensure(activation.is_dir(), "activation.is_dir()")?;
+    ensure(
+        activation.join("project.db").is_file(),
+        "activation.join(\"project.db\").is_file()",
+    )?;
     let gitignore = fs::read_to_string(project.path().join(".gitignore")).check("gitignore")?;
-    assert!(gitignore.contains(".planning/slugaudit"), "{gitignore}");
+    ensure(gitignore.contains(".planning/slugaudit"), &gitignore)?;
     let answer = report(&path, &sync::SourceSyncManager::new()).check("a call after on works")?;
-    assert_eq!(answer.file_count, 2, "lib.rs and .gitignore are indexed");
+    ensure_eq(&answer.file_count, &2, "lib.rs and .gitignore are indexed")?;
     Ok(())
 }
 
@@ -81,9 +90,16 @@ fn off_deletes_the_directory_with_config_and_extra_files_then_an_empty_planning_
 
     let off = control(&path, ProjectControlAction::Off)?;
 
-    assert_eq!(off.status, ProjectControlStatus::Disabled);
-    assert_eq!(off.removed.len(), 2, "{:?}", off.removed);
-    assert!(!project.path().join(".planning").exists());
+    ensure_eq(
+        &off.status,
+        &ProjectControlStatus::Disabled,
+        "off.status == ProjectControlStatus::Disabled",
+    )?;
+    ensure_eq(&off.removed.len(), &2, format!("{:?}", off.removed))?;
+    ensure(
+        !project.path().join(".planning").exists(),
+        "!project.path().join(\".planning\").exists()",
+    )?;
     Ok(())
 }
 
@@ -96,9 +112,16 @@ fn off_keeps_a_planning_dir_that_holds_other_files() -> TestResult {
 
     let off = control(&path, ProjectControlAction::Off)?;
 
-    assert_eq!(off.removed.len(), 1, "{:?}", off.removed);
-    assert!(!planning.join("slugaudit").exists());
-    assert_eq!(fs::read(planning.join("PLAN.md")).check("kept")?, b"mine");
+    ensure_eq(&off.removed.len(), &1, format!("{:?}", off.removed))?;
+    ensure(
+        !planning.join("slugaudit").exists(),
+        "!planning.join(\"slugaudit\").exists()",
+    )?;
+    ensure_eq(
+        &fs::read(planning.join("PLAN.md")).check("kept")?,
+        &b"mine",
+        "fs::read(planning.join(\"PLAN.md\")).check(\"kept\")? == b\"mine\"",
+    )?;
     Ok(())
 }
 
@@ -111,9 +134,9 @@ fn a_deleted_project_db_is_rebuilt_by_the_next_call() -> TestResult {
 
     let answer = report(&path, &sync::SourceSyncManager::new()).check("the call rebuilds")?;
 
-    assert!(database.is_file(), "project.db is back");
-    assert_eq!(answer.file_count, 2);
-    assert!(answer.database_discard.is_none(), "{answer:?}");
+    ensure(database.is_file(), "project.db is back")?;
+    ensure_eq(&answer.file_count, &2, "answer.file_count == 2")?;
+    ensure(answer.database_discard.is_none(), format!("{answer:?}"))?;
     Ok(())
 }
 
@@ -126,7 +149,7 @@ fn a_garbage_project_db_is_rebuilt_by_the_next_call() -> TestResult {
 
     let answer = report(&path, &sync::SourceSyncManager::new()).check("the call rebuilds")?;
 
-    assert_eq!(answer.file_count, 2);
+    ensure_eq(&answer.file_count, &2, "answer.file_count == 2")?;
     answer
         .database_discard
         .as_ref()
@@ -141,9 +164,15 @@ fn a_call_on_a_repo_without_the_directory_is_not_enabled_and_creates_nothing() -
 
     let error = report(&path, &sync::SourceSyncManager::new()).check_err("not enabled")?;
 
-    assert_not_enabled(&error);
-    assert!(!project.path().join(".planning/slugaudit").exists());
-    assert!(!project.path().join(".planning").exists());
+    assert_not_enabled(&error)?;
+    ensure(
+        !project.path().join(".planning/slugaudit").exists(),
+        "!project.path().join(\".planning/slugaudit\").exists()",
+    )?;
+    ensure(
+        !project.path().join(".planning").exists(),
+        "!project.path().join(\".planning\").exists()",
+    )?;
     Ok(())
 }
 
@@ -157,8 +186,11 @@ fn a_directory_removed_between_two_calls_makes_the_second_not_enabled() -> TestR
 
     let error = report(&path, &manager).check_err("second call is not enabled")?;
 
-    assert_not_enabled(&error);
-    assert!(!project.path().join(".planning/slugaudit").exists());
+    assert_not_enabled(&error)?;
+    ensure(
+        !project.path().join(".planning/slugaudit").exists(),
+        "!project.path().join(\".planning/slugaudit\").exists()",
+    )?;
     Ok(())
 }
 
@@ -174,12 +206,20 @@ fn a_symlinked_activation_directory_is_off_and_off_removes_only_the_link() -> Te
     std::os::unix::fs::symlink(&target, &link).check("symlink")?;
 
     let error = report(&path, &sync::SourceSyncManager::new()).check_err("a symlink is off")?;
-    assert_not_enabled(&error);
+    assert_not_enabled(&error)?;
 
     let off = control(&path, ProjectControlAction::Off)?;
 
-    assert_eq!(off.status, ProjectControlStatus::Disabled);
-    assert!(link.symlink_metadata().is_err(), "the link is gone");
-    assert_eq!(fs::read(target.join("keep.txt")).check("kept")?, b"keep");
+    ensure_eq(
+        &off.status,
+        &ProjectControlStatus::Disabled,
+        "off.status == ProjectControlStatus::Disabled",
+    )?;
+    ensure(link.symlink_metadata().is_err(), "the link is gone")?;
+    ensure_eq(
+        &fs::read(target.join("keep.txt")).check("kept")?,
+        &b"keep",
+        "fs::read(target.join(\"keep.txt\")).check(\"kept\")? == b\"keep\"",
+    )?;
     Ok(())
 }

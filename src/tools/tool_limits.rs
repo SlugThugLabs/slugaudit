@@ -69,7 +69,7 @@ fn map_limits_error(error: crate::project::ProjectLimitsError) -> ErrorData {
 mod tests {
     use super::*;
     use crate::tools::test_support;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
     #[test]
     fn a_poisoned_lock_maps_to_a_restart_error_without_the_file_hint() -> TestResult {
@@ -78,18 +78,23 @@ mod tests {
             let _guard = mutex.lock().check("lock the fresh mutex")?;
             std::panic::resume_unwind(Box::new("simulated panic inside the critical section"));
         }));
-        assert!(unwound.is_err(), "the holder must have unwound");
+        ensure(unwound.is_err(), "the holder must have unwound")?;
         let poisoned = crate::util::lock(&mutex, "limits_test_mutex")
             .check_err("a poisoned mutex is an error")?;
 
         let error = map_limits_error(crate::project::ProjectLimitsError::Lock(poisoned));
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-        assert_eq!(
-            error.message,
-            "mutex limits_test_mutex was poisoned by a panic in an earlier holder; \
-             restart the SlugAudit server"
-        );
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+        )?;
+        ensure_eq(
+            &error.message,
+            &"mutex limits_test_mutex was poisoned by a panic in an earlier holder; \
+             restart the SlugAudit server",
+            "error.message == \"mutex limits_test_mutex was poisoned by a panic in an earlier holder; \\ restart the SlugAudit server\"",
+        )?;
         Ok(())
     }
 
@@ -100,13 +105,21 @@ mod tests {
         let error = resolve_limits(directory.path().to_str().check("utf-8 path")?)
             .check_err("a path with no project root must fail, not fall back")?;
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INVALID_PARAMS,
+            "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+        )?;
         let code = error
             .data
             .as_ref()
             .and_then(|data| data.get("code"))
             .and_then(|code| code.as_str());
-        assert_eq!(code, Some("project_not_enabled"));
+        ensure_eq(
+            &code,
+            &Some("project_not_enabled"),
+            "code == Some(\"project_not_enabled\")",
+        )?;
         Ok(())
     }
 
@@ -117,7 +130,7 @@ mod tests {
         let limits = resolve_limits(project.path().to_str().check("utf-8 path")?)
             .check("an active project resolves")?;
 
-        assert!(limits.max_file_bytes > 0);
+        ensure(limits.max_file_bytes > 0, "limits.max_file_bytes > 0")?;
         Ok(())
     }
 
@@ -132,12 +145,15 @@ mod tests {
         let error = resolve_limits(project.path().to_str().check("utf-8 path")?)
             .check_err("a malformed config must fail the call, not fall back to defaults")?;
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert!(
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INVALID_PARAMS,
+            "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+        )?;
+        ensure(
             error.message.contains(config.to_str().check("utf-8 path")?),
-            "{}",
-            error.message
-        );
+            format!("{}", error.message),
+        )?;
         Ok(())
     }
 }

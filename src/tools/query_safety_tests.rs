@@ -9,7 +9,7 @@
 use super::*;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::time::Duration;
 
 /// The fixture every payload below attacks: one indexed `lib.rs`.
@@ -54,11 +54,11 @@ fn all_refused(project: &tempfile::TempDir, payloads: &[&str], what: &str) -> Te
         refused(project, sql, what)?;
     }
     let after = ask(project, "SELECT path, language FROM files").check("the index still reads")?;
-    assert_eq!(
-        after.rows,
-        vec![serde_json::json!({"path": "lib.rs", "language": "rust"})],
-        "{what}: the index changed, so a refused payload still had an effect"
-    );
+    ensure_eq(
+        &after.rows,
+        &vec![serde_json::json!({"path": "lib.rs", "language": "rust"})],
+        format!("{what}: the index changed, so a refused payload still had an effect"),
+    )?;
     Ok(())
 }
 
@@ -145,16 +145,16 @@ fn pragma_and_other_non_select_statements_smuggled_into_the_subquery_are_refused
     // `VACUUM INTO` is the one payload here that would leave a whole
     // database file behind at an arbitrary path, so the refusal is checked
     // against the filesystem too.
-    assert!(
+    ensure(
         !std::path::Path::new("/tmp/slugaudit-vacuum.db").exists(),
-        "a refused VACUUM INTO still wrote a database file to /tmp"
-    );
+        "a refused VACUUM INTO still wrote a database file to /tmp",
+    )?;
 
-    assert_eq!(
-        writable_knobs(&project)?,
-        before,
-        "a refused write-form PRAGMA still changed a knob"
-    );
+    ensure_eq(
+        &writable_knobs(&project)?,
+        &before,
+        "a refused write-form PRAGMA still changed a knob",
+    )?;
     Ok(())
 }
 
@@ -197,30 +197,37 @@ fn functions_that_could_leave_the_sandbox_are_refused_or_inert() -> TestResult {
             "a function that reads or writes the filesystem",
         )?;
     }
-    assert!(
+    ensure(
         !escaped.exists(),
-        "a refused writefile() payload still created {escaped:?}"
-    );
+        format!("a refused writefile() payload still created {escaped:?}"),
+    )?;
 
     // `fts3_tokenizer` is compiled in but disabled, which is a boundary in
     // both directions: the read form is an inert NULL rather than a raw
     // pointer, and the form that installs a pointer errors. If a build ever
     // re-enables it, the first assertion fails on a leaked pointer.
     let reader = ask(&project, "SELECT fts3_tokenizer('simple') AS t").check("reader form runs")?;
-    assert_eq!(
-        reader.rows[0]["t"],
-        serde_json::Value::Null,
-        "fts3_tokenizer returned a value instead of NULL: {:?}",
-        reader.rows[0]
-    );
+    ensure_eq(
+        reader
+            .rows
+            .first()
+            .check("reader.rows[0]")?
+            .get("t")
+            .check("reader.rows[0][\"t\"]")?,
+        &serde_json::Value::Null,
+        format!(
+            "fts3_tokenizer returned a value instead of NULL: {:?}",
+            reader.rows.first().check("reader.rows[0]")?
+        ),
+    )?;
     let installer = ask(
         &project,
         "SELECT fts3_tokenizer('simple', zeroblob(8)) AS t",
     );
-    assert!(
+    ensure(
         installer.is_err(),
-        "the pointer-installing fts3_tokenizer form must be refused, got: {installer:?}"
-    );
+        format!("the pointer-installing fts3_tokenizer form must be refused, got: {installer:?}"),
+    )?;
     Ok(())
 }
 
@@ -240,11 +247,13 @@ fn a_second_statement_cannot_be_spliced_past_the_single_statement_guard() -> Tes
         "SELECT 1 /* comment */; DELETE FROM files",
     ] {
         let error = refused(&project, sql, "a second statement spliced after the first")?;
-        assert!(
+        ensure(
             error.message.contains("more than one statement"),
-            "{sql}: expected the single-statement refusal, got: {}",
-            error.message
-        );
+            format!(
+                "{sql}: expected the single-statement refusal, got: {}",
+                error.message
+            ),
+        )?;
     }
 
     all_refused(
@@ -274,29 +283,35 @@ fn legal_reads_of_the_schema_and_pragma_table_functions_are_allowed() -> TestRes
         "SELECT name FROM sqlite_master WHERE type = 'table'",
     )
     .check("sqlite_master reads")?;
-    assert!(
+    ensure(
         tables.rows.iter().any(|row| row["name"] == "files"),
-        "legal schema introspection must work; a false pass here means ordinary reads are \
+        format!(
+            "legal schema introspection must work; a false pass here means ordinary reads are \
          being refused too: {:?}",
-        tables.rows
-    );
+            tables.rows
+        ),
+    )?;
 
     let columns = ask(&project, "SELECT name FROM pragma_table_info('files')")
         .check("pragma table-valued functions read")?;
-    assert!(
+    ensure(
         columns.rows.iter().any(|row| row["name"] == "path"),
-        "pragma table-valued functions must work; a false pass here means every SELECT is \
+        format!(
+            "pragma table-valued functions must work; a false pass here means every SELECT is \
          being refused: {:?}",
-        columns.rows
-    );
+            columns.rows
+        ),
+    )?;
 
     let empty = ask(&project, "SELECT path FROM files WHERE 0").check("an empty read succeeds")?;
-    assert!(
+    ensure(
         empty.rows.is_empty(),
-        "an empty read returns Ok, not an error; a false pass here means this suite cannot \
+        format!(
+            "an empty read returns Ok, not an error; a false pass here means this suite cannot \
          tell 'no rows' from 'refused': {:?}",
-        empty.rows
-    );
+            empty.rows
+        ),
+    )?;
     Ok(())
 }
 
@@ -312,30 +327,40 @@ fn read_only_non_select_statements_are_refused_by_the_wrapper() -> TestResult {
                    transaction command), so it cannot run as a subquery (SQLite: ";
 
     let pragma = refused(&project, "PRAGMA table_info(files)", "a PRAGMA statement")?;
-    assert_eq!(pragma.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        pragma.message.as_ref(),
-        "sql was refused: `query` accepts a single read-only SELECT/WITH statement, not \
-         PRAGMA (a PRAGMA can change process state while being prepared)"
-    );
-    assert!(
+    ensure_eq(
+        &pragma.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "pragma.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &pragma.message.as_ref(),
+        &"sql was refused: `query` accepts a single read-only SELECT/WITH statement, not \
+         PRAGMA (a PRAGMA can change process state while being prepared)",
+        "pragma.message.as_ref() == \"sql was refused: `query` accepts a single read-only SELECT/WITH statement, not \\ PRAGMA (a PRAGMA can change process state while being prepared)\"",
+    )?;
+    ensure(
         pragma.data.is_none(),
-        "a refusal carries no machine-readable code"
-    );
+        "a refusal carries no machine-readable code",
+    )?;
 
     let explain = refused(&project, "EXPLAIN SELECT 1", "a non-SELECT statement")?;
-    assert_eq!(explain.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        explain.message.as_ref(),
-        format!(
+    ensure_eq(
+        &explain.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "explain.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &explain.message.as_ref(),
+        &format!(
             "{refusal}near \"SELECT\": syntax error in SELECT * FROM (\nEXPLAIN SELECT \
              1\n) LIMIT -1 OFFSET 0 at offset 24)"
-        )
-    );
-    assert!(
+        ),
+        "explain.message.as_ref() == format!( \"{refusal}near \\\"SELECT\\\": syntax error in SELECT * FROM (\\nEXPLAIN SELECT \\ 1\\n) LIMIT -1 OFFSET 0 at offset 24)\" )",
+    )?;
+    ensure(
         explain.data.is_none(),
-        "a refusal carries no machine-readable code"
-    );
+        "a refusal carries no machine-readable code",
+    )?;
     Ok(())
 }
 
@@ -349,11 +374,16 @@ fn a_comments_only_statement_is_refused_rather_than_run_as_an_empty_query() -> T
         "a comments-only statement",
     )?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message.as_ref(),
-        "sql must contain a statement, not only comments"
-    );
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message.as_ref(),
+        &"sql must contain a statement, not only comments",
+        "error.message.as_ref() == \"sql must contain a statement, not only comments\"",
+    )?;
     Ok(())
 }
 
@@ -374,21 +404,29 @@ fn a_query_path_over_the_cap_is_refused_before_any_sync() -> TestResult {
     .err()
     .check("an oversized path must be refused")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message.as_ref(),
+        &"path exceeds 32768 bytes",
+        "error.message.as_ref() == \"path exceeds 32768 bytes\"",
+    )?;
     Ok(())
 }
 
 /// Demands the clear refusal: `invalid_params`, saying what `query`
 /// accepts, never the comments-only message.
-fn assert_refused_as_not_a_select(error: &ErrorData, sql: &str) {
+fn assert_refused_as_not_a_select(error: &ErrorData, sql: &str) -> TestResult {
     let opening = "sql was refused: `query` accepts a single read-only SELECT/WITH statement";
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
-    assert!(
+    ensure_eq(&error.code, &rmcp::model::ErrorCode::INVALID_PARAMS, sql)?;
+    ensure(
         error.message.starts_with(opening) && !error.message.contains("only comments"),
-        "{sql}: unexpected message: {}",
-        error.message
-    );
+        format!("{sql}: unexpected message: {}", error.message),
+    )?;
+    Ok(())
 }
 
 /// A process-wide pragma as a second, freshly opened connection reads it
@@ -430,14 +468,19 @@ fn refused_prepare_time_pragmas_leave_process_wide_state_unchanged() -> TestResu
     ] {
         let before = fresh_pragma(pragma)?;
         let error = refused(&project, &setter, "a prepare-time PRAGMA")?;
-        assert_refused_as_not_a_select(&error, &setter);
-        assert_eq!(fresh_pragma(pragma)?, before, "{setter} took effect");
+        assert_refused_as_not_a_select(&error, &setter)?;
+        ensure_eq(
+            &fresh_pragma(pragma)?,
+            &before,
+            format!("{setter} took effect"),
+        )?;
     }
 
-    assert_eq!(
-        fresh_pragma("hard_heap_limit")?.as_deref(),
-        Some("Integer(0)")
-    );
+    ensure_eq(
+        &fresh_pragma("hard_heap_limit")?.as_deref(),
+        &Some("Integer(0)"),
+        "fresh_pragma(\"hard_heap_limit\")?.as_deref() == Some(\"Integer(0)\")",
+    )?;
     let report = crate::tools::report::report(
         &Parameters(crate::tools::report::ReportRequest {
             path: project.path().to_string_lossy().into_owned(),
@@ -461,152 +504,26 @@ fn pragma_table_valued_functions_are_ordinary_selects() -> TestResult {
     let version = ask(&project, "SELECT * FROM pragma_user_version")
         .check("a side-effect-free pragma function reads")?;
 
-    assert!(
+    ensure(
         columns
             .rows
             .iter()
             .any(|row| row["name"] == "path" && row["cid"].is_i64()),
-        "{:?}",
-        columns.rows
-    );
-    assert_eq!(version.rows.len(), 1, "{:?}", version.rows);
-    assert!(
-        version.rows[0]["user_version"].is_i64(),
-        "{:?}",
-        version.rows
-    );
+        format!("{:?}", columns.rows),
+    )?;
+    ensure_eq(&version.rows.len(), &1, format!("{:?}", version.rows))?;
+    ensure(
+        version
+            .rows
+            .first()
+            .check("version.rows[0]")?
+            .get("user_version")
+            .check("version.rows[0][\"user_version\"]")?
+            .is_i64(),
+        format!("{:?}", version.rows),
+    )?;
     Ok(())
 }
 
-/// `query` under `limits`, whose `max_file_bytes` and `max_query_value_bytes`
-/// are both `file_bytes`, and the value-length bound that gives.
-fn ask_bounded(
-    project: &tempfile::TempDir,
-    sql: &str,
-    file_bytes: usize,
-) -> TestResult<(Result<QueryResponse, ErrorData>, i32)> {
-    let limits = ResourceLimits {
-        max_file_bytes: file_bytes as u64,
-        max_query_value_bytes: file_bytes,
-        ..ResourceLimits::default()
-    };
-    let bound = crate::tools::query_exec::engine_limits(&limits)
-        .check("engine limits")?
-        .value_length;
-    let request = Parameters(QueryRequest {
-        path: Some(project.path().to_string_lossy().into_owned()),
-        sql: sql.to_owned(),
-        cursor: None,
-        legacy_paging: LegacyPaging::default(),
-        page_bytes: None,
-    });
-    let manager = crate::sync::SourceSyncManager::default();
-    let result = query_with_limits(
-        &request,
-        &limits,
-        &crate::progress::NoopProgressSink,
-        &manager,
-    );
-    Ok((result.map(|Json(response)| response), bound))
-}
-
-/// Unbounded, the amplifier chain grows to gigabytes. Under a 3 MiB value-length bound
-/// it, and each step of the same chain just above the bound, fails quickly
-/// with SQLite's "too big" as `invalid_params`; the bound itself evaluates.
-#[test]
-fn the_zeroblob_hex_replace_amplifier_fails_fast_with_a_too_big_error() -> TestResult {
-    let project = project()?;
-    let bound = ask_bounded(&project, "SELECT 1 AS warm", 1024 * 1024)?.1;
-    let started = std::time::Instant::now();
-
-    for sql in [
-        "SELECT length(replace(replace(hex(zeroblob(250000000)),'0','00'),'00','000')) AS n"
-            .to_owned(),
-        format!("SELECT length(zeroblob({})) AS n", bound + 1),
-        format!("SELECT length(hex(zeroblob({}))) AS n", bound / 2 + 1),
-    ] {
-        let error = ask_bounded(&project, &sql, 1024 * 1024)?
-            .0
-            .check_err("over the bound")?;
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
-        assert!(
-            error.message.contains("too big"),
-            "{sql}: {}",
-            error.message
-        );
-    }
-    let at_bound = ask_bounded(
-        &project,
-        &format!("SELECT length(zeroblob({bound})) AS n"),
-        1024 * 1024,
-    )?
-    .0;
-
-    assert_eq!(
-        at_bound.check("exactly the bound")?.rows[0]["n"],
-        i64::from(bound)
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
-    Ok(())
-}
-
-/// SQLite checks the value-length bound when it reads a stored column too.
-/// Stored content is valid UTF-8 stored byte for byte and at most
-/// `max_file_bytes`; the bound is at least one byte per file byte, so every
-/// stored value is readable within it — a `substr` of its first character works — and the bound
-/// itself is still enforced on computed values (proved by the zeroblob
-/// test above).
-#[test]
-fn a_stored_value_is_readable_within_the_length_bound_and_substr_works() -> TestResult {
-    let file_bytes = 64 * 1024;
-    let body = "a".repeat(file_bytes);
-    let project = activated_project("fits.txt", body.as_bytes())?;
-    let sql = "SELECT substr(content, 1, 1) AS head, length(CAST(content AS BLOB)) AS n \
-               FROM files WHERE path = 'fits.txt'";
-    let (at, bound) = ask_bounded(&project, sql, file_bytes)?;
-
-    assert_eq!(usize::try_from(bound).check("bound")?, file_bytes);
-    let expected = serde_json::json!({"head": "a", "n": file_bytes});
-    assert_eq!(at.check("the stored value reads")?.rows, vec![expected]);
-    Ok(())
-}
-
-/// The value bound is the larger of the query value cap and one byte per
-/// file byte, clamped to SQLite's maximum; the SQL bound is the tool's SQL
-/// cap plus the wrapper overhead.
-#[test]
-fn engine_limits_cover_stored_values_and_the_wrapped_sql() -> TestResult {
-    use crate::tools::query_exec::{EngineLimits, engine_limits};
-    let with = |file: u64, value: usize, sql: usize| ResourceLimits {
-        max_file_bytes: file,
-        max_query_value_bytes: value,
-        max_query_sql_bytes: sql,
-        ..ResourceLimits::default()
-    };
-
-    for (limits, value_length, sql_length) in [
-        (with(1000, 1000, 100), 1000, 164),
-        (with(1000, 10, 100), 1000, 164),
-        (with(1000, 5000, 100), 5000, 164),
-        (
-            with(1_000_000_000, 1, 2_000_000_000),
-            1_000_000_000,
-            1_000_000_000,
-        ),
-    ] {
-        let expected = EngineLimits {
-            value_length,
-            sql_length,
-        };
-        assert_eq!(
-            engine_limits(&limits).check("computable")?,
-            expected,
-            "{limits:?}"
-        );
-    }
-    Ok(())
-}
+#[path = "query_safety_limits_tests.rs"]
+mod limits_tests;

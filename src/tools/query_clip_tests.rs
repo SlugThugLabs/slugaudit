@@ -1,6 +1,6 @@
 use super::*;
 use crate::sync::SourceSyncManager;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fmt::Write as _;
 
 const BIG: &str = "big.txt";
@@ -64,17 +64,20 @@ fn ask_at(
 }
 
 fn first_string(response: &QueryResponse, column: &str) -> TestResult<String> {
-    Ok(response.rows[0][column]
+    Ok(response.rows.first().check("response.rows[0]")?[column]
         .as_str()
         .check("string cell")?
         .to_owned())
 }
 
 fn unhex(hex: &str) -> TestResult<Vec<u8>> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&hex[at..at + 2], 16).check("hex digit pair"))
-        .collect()
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for pair in hex.as_bytes().chunks(2) {
+        ensure_eq(&pair.len(), &2, "every hex digit pair has two digits")?;
+        let digits = std::str::from_utf8(pair).check("hex digits are ASCII")?;
+        bytes.push(u8::from_str_radix(digits, 16).check("hex digit pair")?);
+    }
+    Ok(bytes)
 }
 
 fn big_project() -> TestResult<(tempfile::TempDir, String)> {
@@ -91,31 +94,57 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() -> Tes
 
     let first = ask_at(&project, &manager, &select, None).check("first page")?;
 
-    assert!(original.len() > 4_500_000 && original.matches('\n').count() == LINES);
-    assert_eq!(first.clipped_cells.len(), 1);
-    let cell = &first.clipped_cells[0];
-    assert_eq!((cell.row, cell.column.as_str()), (0, "content"));
-    assert_eq!((cell.kind, cell.unit), ("text", "characters"));
-    assert_eq!(cell.total, original.chars().count());
-    assert!(
+    ensure(
+        original.len() > 4_500_000 && original.matches('\n').count() == LINES,
+        "original.len() > 4_500_000 && original.matches('\\n').count() == LINES",
+    )?;
+    ensure_eq(
+        &first.clipped_cells.len(),
+        &1,
+        "first.clipped_cells.len() == 1",
+    )?;
+    let cell = &first
+        .clipped_cells
+        .first()
+        .check("first.clipped_cells[0]")?;
+    ensure_eq(
+        &(cell.row, cell.column.as_str()),
+        &(0, "content"),
+        "(cell.row, cell.column.as_str()) == (0, \"content\")",
+    )?;
+    ensure_eq(
+        &(cell.kind, cell.unit),
+        &("text", "characters"),
+        "(cell.kind, cell.unit) == (\"text\", \"characters\")",
+    )?;
+    ensure_eq(
+        &cell.total,
+        &original.chars().count(),
+        "cell.total == original.chars().count()",
+    )?;
+    ensure(
         first.page.bytes_used <= first.page.page_bytes,
-        "{}",
-        first.page.bytes_used
-    );
-    assert_eq!(cell.next_start, cell.returned + 1);
-    assert_eq!(
-        cell.continue_with,
-        format!(
+        format!("{}", first.page.bytes_used),
+    )?;
+    ensure_eq(
+        &cell.next_start,
+        &(cell.returned + 1),
+        "cell.next_start == cell.returned + 1",
+    )?;
+    ensure_eq(
+        &cell.continue_with,
+        &format!(
             "substr(\"content\", {}, {})",
             cell.returned + 1,
             cell.total - cell.returned
         ),
-        "the hint covers every remaining unit, not one more chunk"
-    );
-    assert_eq!(
-        first_string(&first, "content")?.chars().count(),
-        cell.returned
-    );
+        "the hint covers every remaining unit, not one more chunk",
+    )?;
+    ensure_eq(
+        &first_string(&first, "content")?.chars().count(),
+        &cell.returned,
+        "first_string(&first, \"content\")?.chars().count() == cell.returned",
+    )?;
 
     let mut rebuilt = first_string(&first, "content")?;
     let mut walked = 1;
@@ -127,14 +156,14 @@ fn a_5mb_file_is_walked_with_substr_hints_and_reassembles_byte_for_byte() -> Tes
         let page = ask_at(&project, &manager, &sql, None).check("walk page")?;
         let piece = first_string(&page, "content")?;
         let taken = piece.chars().count();
-        assert!(taken > 0, "every step must advance");
+        ensure(taken > 0, "every step must advance")?;
         rebuilt.push_str(&piece);
         next_start += taken;
         walked += 1;
     }
 
-    assert!(walked > 40, "walked {walked} pages");
-    assert_eq!(rebuilt, original);
+    ensure(walked > 40, format!("walked {walked} pages"))?;
+    ensure_eq(&rebuilt, &original, "rebuilt == original")?;
     Ok(())
 }
 
@@ -144,7 +173,10 @@ fn the_first_pages_own_hint_returns_the_whole_rest_of_the_cell() -> TestResult {
     let manager = SourceSyncManager::default();
     let select = format!("SELECT content FROM files WHERE path = '{BIG}'");
     let first = ask_at(&project, &manager, &select, None).check("first page")?;
-    let cell = &first.clipped_cells[0];
+    let cell = &first
+        .clipped_cells
+        .first()
+        .check("first.clipped_cells[0]")?;
 
     let sql = format!(
         "SELECT {} AS content FROM files WHERE path = '{BIG}'",
@@ -153,17 +185,19 @@ fn the_first_pages_own_hint_returns_the_whole_rest_of_the_cell() -> TestResult {
     let next = ask_at(&project, &manager, &sql, Some(10_000_000)).check("hinted page")?;
 
     let expected: String = original.chars().skip(cell.returned).collect();
-    assert!(
+    ensure(
         expected.chars().count() > cell.returned,
-        "the fixture must leave more than one page-sized chunk: {} remaining after {}",
-        expected.chars().count(),
-        cell.returned
-    );
-    assert_eq!(
-        first_string(&next, "content")?,
-        expected,
-        "one run of continue_with must return the remainder, not the next chunk"
-    );
+        format!(
+            "the fixture must leave more than one page-sized chunk: {} remaining after {}",
+            expected.chars().count(),
+            cell.returned
+        ),
+    )?;
+    ensure_eq(
+        &first_string(&next, "content")?,
+        &expected,
+        "one run of continue_with must return the remainder, not the next chunk",
+    )?;
     Ok(())
 }
 
@@ -175,9 +209,19 @@ fn raising_page_bytes_returns_the_whole_file_unclipped() -> TestResult {
 
     let page = ask_at(&project, &manager, &select, Some(20_000_000)).check("large page")?;
 
-    assert!(page.clipped_cells.is_empty());
-    assert_eq!(first_string(&page, "content")?, original);
-    assert!(page.page.bytes_used <= 20_000_000);
+    ensure(
+        page.clipped_cells.is_empty(),
+        "page.clipped_cells.is_empty()",
+    )?;
+    ensure_eq(
+        &first_string(&page, "content")?,
+        &original,
+        "first_string(&page, \"content\")? == original",
+    )?;
+    ensure(
+        page.page.bytes_used <= 20_000_000,
+        "page.page.bytes_used <= 20_000_000",
+    )?;
     Ok(())
 }
 
@@ -195,21 +239,32 @@ fn a_blob_is_clipped_in_bytes_walked_and_reassembled_exactly() -> TestResult {
 
     let first = ask_at(&project, &manager, &blob(1), None).check("first blob page")?;
 
-    let cell = &first.clipped_cells[0];
-    assert_eq!(
-        (cell.kind, cell.unit, cell.total),
-        ("blob", "bytes", head.len())
-    );
-    assert_eq!(first_string(&first, "b")?.len(), cell.returned * 2);
-    assert!(first.page.bytes_used <= first.page.page_bytes);
+    let cell = &first
+        .clipped_cells
+        .first()
+        .check("first.clipped_cells[0]")?;
+    ensure_eq(
+        &(cell.kind, cell.unit, cell.total),
+        &("blob", "bytes", head.len()),
+        "(cell.kind, cell.unit, cell.total) == (\"blob\", \"bytes\", head.len())",
+    )?;
+    ensure_eq(
+        &first_string(&first, "b")?.len(),
+        &(cell.returned * 2),
+        "first_string(&first, \"b\")?.len() == cell.returned * 2",
+    )?;
+    ensure(
+        first.page.bytes_used <= first.page.page_bytes,
+        "first.page.bytes_used <= first.page.page_bytes",
+    )?;
     let mut rebuilt = unhex(&first_string(&first, "b")?)?;
     while rebuilt.len() < head.len() {
         let page = ask_at(&project, &manager, &blob(rebuilt.len() + 1), None).check("walk")?;
         let piece = unhex(&first_string(&page, "b")?)?;
-        assert!(!piece.is_empty());
+        ensure(!piece.is_empty(), "!piece.is_empty()")?;
         rebuilt.extend(piece);
     }
-    assert_eq!(rebuilt, head.as_bytes());
+    ensure_eq(&rebuilt, &head.as_bytes(), "rebuilt == head.as_bytes()")?;
     Ok(())
 }
 
@@ -222,8 +277,15 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() -> T
 
     let page = ask_at(&project, &manager, &source, Some(400)).check("clipped page")?;
 
-    assert_eq!(page.clipped_cells.len(), 2);
-    let (text_cell, blob_cell) = (&page.clipped_cells[0], &page.clipped_cells[1]);
+    ensure_eq(
+        &page.clipped_cells.len(),
+        &2,
+        "page.clipped_cells.len() == 2",
+    )?;
+    let (text_cell, blob_cell) = (
+        &page.clipped_cells.first().check("page.clipped_cells[0]")?,
+        &page.clipped_cells.get(1).check("page.clipped_cells[1]")?,
+    );
     let lengths = ask_at(
         &project,
         &manager,
@@ -231,10 +293,36 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() -> T
         None,
     )
     .check("lengths")?;
-    assert_eq!(lengths.rows[0]["t"], text_cell.total);
-    assert_eq!(lengths.rows[0]["b"], blob_cell.total);
-    assert_eq!(text_cell.total, text.chars().count());
-    assert_eq!(blob_cell.total, text.len());
+    ensure_eq(
+        &lengths
+            .rows
+            .first()
+            .check("lengths.rows[0]")?
+            .get("t")
+            .check("lengths.rows[0][\"t\"]")?,
+        &text_cell.total,
+        "lengths.rows[0][\"t\"] == text_cell.total",
+    )?;
+    ensure_eq(
+        &lengths
+            .rows
+            .first()
+            .check("lengths.rows[0]")?
+            .get("b")
+            .check("lengths.rows[0][\"b\"]")?,
+        &blob_cell.total,
+        "lengths.rows[0][\"b\"] == blob_cell.total",
+    )?;
+    ensure_eq(
+        &text_cell.total,
+        &text.chars().count(),
+        "text_cell.total == text.chars().count()",
+    )?;
+    ensure_eq(
+        &blob_cell.total,
+        &text.len(),
+        "blob_cell.total == text.len()",
+    )?;
     let returned_text = first_string(&page, "t")?;
     let check = ask_at(
         &project,
@@ -247,12 +335,33 @@ fn clip_units_match_sqlite_length_and_substr_for_multibyte_text_and_blobs() -> T
         None,
     )
     .check("prefix check")?;
-    assert_eq!(check.rows[0]["same"], 1);
-    assert_eq!(
-        check.rows[0]["h"].as_str().check("hex")?.to_lowercase(),
-        first_string(&page, "b")?
-    );
-    assert!(page.page.bytes_used <= 400, "{}", page.page.bytes_used);
+    ensure_eq(
+        &check
+            .rows
+            .first()
+            .check("check.rows[0]")?
+            .get("same")
+            .check("check.rows[0][\"same\"]")?,
+        &1,
+        "check.rows[0][\"same\"] == 1",
+    )?;
+    ensure_eq(
+        &check
+            .rows
+            .first()
+            .check("check.rows[0]")?
+            .get("h")
+            .check("check.rows[0][\"h\"]")?
+            .as_str()
+            .check("hex")?
+            .to_lowercase(),
+        &first_string(&page, "b")?,
+        "check.rows[0][\"h\"].as_str().check(\"hex\")?.to_lowercase() == first_string(&page, \"b\")?",
+    )?;
+    ensure(
+        page.page.bytes_used <= 400,
+        format!("{}", page.page.bytes_used),
+    )?;
     Ok(())
 }
 
@@ -270,18 +379,24 @@ fn small_cells_stay_whole_and_the_room_is_shared_by_the_large_ones() -> TestResu
         .iter()
         .map(|c| c.column.as_str())
         .collect();
-    assert_eq!(columns, ["big", "quoted"]);
-    assert_eq!(first_string(&page, "small")?.len(), 4000);
-    assert!(
+    ensure_eq(
+        &columns,
+        &["big", "quoted"],
+        "columns == [\"big\", \"quoted\"]",
+    )?;
+    ensure_eq(
+        &first_string(&page, "small")?.len(),
+        &4000,
+        "first_string(&page, \"small\")?.len() == 4000",
+    )?;
+    ensure(
         page.page.bytes_used <= 20_000,
-        "escapes counted: {}",
-        page.page.bytes_used
-    );
-    assert!(
+        format!("escapes counted: {}", page.page.bytes_used),
+    )?;
+    ensure(
         page.page.bytes_used > 19_000,
-        "room is used: {}",
-        page.page.bytes_used
-    );
+        format!("room is used: {}", page.page.bytes_used),
+    )?;
     Ok(())
 }
 
@@ -292,9 +407,17 @@ fn a_page_smaller_than_one_character_still_advances_by_one() -> TestResult {
 
     let page = ask_at(&project, &manager, "SELECT '日本語' AS t", Some(1)).check("page")?;
 
-    let cell = &page.clipped_cells[0];
-    assert_eq!((cell.returned, cell.next_start, cell.total), (1, 2, 3));
-    assert_eq!(first_string(&page, "t")?, "日");
+    let cell = &page.clipped_cells.first().check("page.clipped_cells[0]")?;
+    ensure_eq(
+        &(cell.returned, cell.next_start, cell.total),
+        &(1, 2, 3),
+        "(cell.returned, cell.next_start, cell.total) == (1, 2, 3)",
+    )?;
+    ensure_eq(
+        &first_string(&page, "t")?,
+        &"日",
+        "first_string(&page, \"t\")? == \"日\"",
+    )?;
     Ok(())
 }
 
@@ -316,9 +439,23 @@ fn the_clipped_row_index_is_absolute_and_later_rows_are_not_clipped() -> TestRes
     )
     .check("later row")?;
 
-    assert_eq!(resumed.clipped_cells[0].row, 2);
-    assert!(big_after_small.clipped_cells.is_empty());
-    assert!(!big_after_small.page.complete);
+    ensure_eq(
+        &resumed
+            .clipped_cells
+            .first()
+            .check("resumed.clipped_cells[0]")?
+            .row,
+        &2,
+        "resumed.clipped_cells[0].row == 2",
+    )?;
+    ensure(
+        big_after_small.clipped_cells.is_empty(),
+        "big_after_small.clipped_cells.is_empty()",
+    )?;
+    ensure(
+        !big_after_small.page.complete,
+        "!big_after_small.page.complete",
+    )?;
     big_after_small
         .page
         .cursor
@@ -327,125 +464,5 @@ fn the_clipped_row_index_is_absolute_and_later_rows_are_not_clipped() -> TestRes
     Ok(())
 }
 
-#[test]
-fn line_functions_return_lines_of_the_big_file_through_query() -> TestResult {
-    let (project, original) = big_project()?;
-    let manager = SourceSyncManager::default();
-    let sql = format!(
-        "SELECT line_count(content) AS n, line_range(content, 40000, 40200) AS r \
-         FROM files WHERE path = '{BIG}'"
-    );
-    let lines: Vec<&str> = original.split('\n').collect();
-
-    let page = ask_at(&project, &manager, &sql, Some(1_000_000)).check("line functions")?;
-
-    assert_eq!(page.rows[0]["n"], LINES);
-    assert_eq!(first_string(&page, "r")?, lines[39_999..40_200].join("\n"));
-    assert!(page.clipped_cells.is_empty());
-    Ok(())
-}
-
-#[test]
-fn a_clipped_line_range_continues_with_the_same_hint_mechanism() -> TestResult {
-    let (project, original) = big_project()?;
-    let manager = SourceSyncManager::default();
-    let sql = format!("SELECT line_range(content, 1, 78000) AS r FROM files WHERE path = '{BIG}'");
-
-    let page = ask_at(&project, &manager, &sql, None).check("clipped range")?;
-
-    let cell = &page.clipped_cells[0];
-    assert_eq!(cell.column, "r");
-    assert_eq!(
-        cell.total,
-        original.trim_end_matches(['\r', '\n']).chars().count()
-    );
-    Ok(())
-}
-
-#[test]
-fn a_bad_line_range_is_an_invalid_params_error() -> TestResult {
-    let project = activated_project(&[])?;
-    let manager = SourceSyncManager::default();
-
-    let error = ask_at(&project, &manager, "SELECT line_range('a', 0, 1)", None)
-        .check_err("start 0 is refused")?;
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert!(
-        error.message.contains("start must be at least 1"),
-        "{}",
-        error.message
-    );
-    Ok(())
-}
-
-#[test]
-fn a_text_with_a_nul_is_continued_as_bytes_because_sqlite_text_functions_stop_at_it() -> TestResult
-{
-    let project = activated_project(&[])?;
-    let manager = SourceSyncManager::default();
-    let source = "SELECT 'ab' || char(0) || 'cdefghij' AS t";
-
-    let page = ask_at(&project, &manager, source, Some(14)).check("clipped page")?;
-
-    let cell = &page.clipped_cells[0];
-    assert_eq!((cell.kind, cell.unit, cell.total), ("text", "bytes", 11));
-    let rest = ask_at(
-        &project,
-        &manager,
-        &format!("SELECT hex({}) AS h FROM ({source})", cell.continue_with),
-        None,
-    )
-    .check("continuation")?;
-    let expected = "ab\0cdefghij"
-        .bytes()
-        .skip(cell.returned)
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .concat();
-    assert_eq!(first_string(&rest, "h")?, expected);
-    Ok(())
-}
-
-#[test]
-fn a_duplicate_column_name_is_refused_before_a_row_is_clipped() -> TestResult {
-    let project = activated_project(&[])?;
-    let manager = SourceSyncManager::default();
-    // The projection is refused before any row is read, so a first row that
-    // would otherwise have to be clipped never reaches the clipper.
-    let sql = "SELECT zeroblob(5000) AS id, zeroblob(5000) AS id";
-
-    let error = ask_at(&project, &manager, sql, Some(100))
-        .check_err("the row cannot carry two `id` columns")?;
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message,
-        "duplicate column name \"id\" in query result; alias the columns"
-    );
-    Ok(())
-}
-
-#[test]
-fn both_row_builders_reject_duplicate_column_names() -> TestResult {
-    let names = vec!["id".to_owned(), "id".to_owned()];
-    let values = [
-        rusqlite::types::Value::Integer(1),
-        rusqlite::types::Value::Integer(2),
-    ];
-
-    let plain = crate::tools::query_value::row_to_json(&names, &values)
-        .check_err("the unclipped builder cannot key two columns by one name")?;
-    let clipped = crate::tools::query_clip::clip_row(&names, &values, 100, 0)
-        .err()
-        .check("the clipped builder cannot key two columns by one name")?;
-
-    for error in [plain, clipped] {
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-        assert_eq!(
-            error.message,
-            "duplicate column name \"id\" in query result; alias the columns"
-        );
-    }
-    Ok(())
-}
+#[path = "query_clip_lines_tests.rs"]
+mod lines_tests;

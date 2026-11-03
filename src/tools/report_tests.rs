@@ -1,6 +1,6 @@
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
 /// The response for an index alone, with no session findings, no rebuild
@@ -42,11 +42,12 @@ fn reports_credential_pattern_file_count() -> TestResult {
     )
     .check("report succeeds")?;
 
-    assert_eq!(response.0.file_count, 4);
-    assert_eq!(
-        response.0.credential_pattern_file_count, 2,
-        ".env and keys/cred.pem match credential patterns; pem_util.rs and lib.rs must not"
-    );
+    ensure_eq(&response.0.file_count, &4, "response.0.file_count == 4")?;
+    ensure_eq(
+        &response.0.credential_pattern_file_count,
+        &2,
+        ".env and keys/cred.pem match credential patterns; pem_util.rs and lib.rs must not",
+    )?;
     Ok(())
 }
 
@@ -69,33 +70,47 @@ fn reports_real_counts_for_an_active_project() -> TestResult {
     )
     .check("report succeeds")?;
 
-    assert_eq!(response.0.file_count, 1);
-    assert!(
+    ensure_eq(&response.0.file_count, &1, "response.0.file_count == 1")?;
+    ensure(
         response
             .0
             .languages
             .iter()
-            .any(|entry| entry.language == "rust")
-    );
-    assert!(
+            .any(|entry| entry.language == "rust"),
+        "response .0 .languages .iter() .any(|entry| entry.language == \"rust\")",
+    )?;
+    ensure(
         response
             .0
             .evidence_counts
             .iter()
-            .any(|entry| entry.kind == "Structure")
-    );
-    assert_eq!(response.0.parser_failure_count, 0);
-    assert!(
+            .any(|entry| entry.kind == "Structure"),
+        "response .0 .evidence_counts .iter() .any(|entry| entry.kind == \"Structure\")",
+    )?;
+    ensure_eq(
+        &response.0.parser_failure_count,
+        &0,
+        "response.0.parser_failure_count == 0",
+    )?;
+    ensure(
         response.0.parser_failure_files.is_empty(),
-        "a cleanly-parsing project should have no parser failure files"
-    );
-    assert_eq!(response.0.open_finding_count, 0);
+        "a cleanly-parsing project should have no parser failure files",
+    )?;
+    ensure_eq(
+        &response.0.open_finding_count,
+        &0,
+        "response.0.open_finding_count == 0",
+    )?;
     // A single-file project with no imports has no dependency edges.
-    assert!(
+    ensure(
         response.0.import_resolution.is_empty(),
-        "a single-file project has no import edges"
-    );
-    assert_eq!(response.0.diagnostic_count, 0);
+        "a single-file project has no import edges",
+    )?;
+    ensure_eq(
+        &response.0.diagnostic_count,
+        &0,
+        "response.0.diagnostic_count == 0",
+    )?;
     Ok(())
 }
 
@@ -182,21 +197,23 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
     let tx = connection.transaction().check("begin transaction")?;
     let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
-    assert_eq!(
-        response.unsupported_language_unresolved_count, 1,
+    ensure_eq(
+        &response.unsupported_language_unresolved_count,
+        &1,
         "only the go edge is from import syntax the resolver can't parse; \
-         the kotlin edge (syntax parsed, no file match) must not count"
-    );
+         the kotlin edge (syntax parsed, no file match) must not count",
+    )?;
     let total_unresolved: i64 = response
         .import_resolution
         .iter()
         .find(|entry| entry.kind == "Unresolved")
         .check("the Unresolved resolution bucket exists")?
         .count;
-    assert_eq!(
-        total_unresolved, 3,
-        "all three edges must still count toward the general Unresolved bucket"
-    );
+    ensure_eq(
+        &total_unresolved,
+        &3,
+        "all three edges must still count toward the general Unresolved bucket",
+    )?;
     Ok(())
 }
 
@@ -224,10 +241,14 @@ fn dependency_edge_totals_count_edges_and_files_in_both_directions() -> TestResu
     let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
     let totals = response.dependency_edges;
-    assert_eq!(totals.outbound_edge_count, 2, "both edges leave lib.rs");
-    assert_eq!(totals.inbound_edge_count, 1, "only the resolved edge lands");
-    assert_eq!(totals.outbound_file_count, 1, "one file imports anything");
-    assert_eq!(totals.inbound_file_count, 1, "one file is imported");
+    ensure_eq(&totals.outbound_edge_count, &2, "both edges leave lib.rs")?;
+    ensure_eq(
+        &totals.inbound_edge_count,
+        &1,
+        "only the resolved edge lands",
+    )?;
+    ensure_eq(&totals.outbound_file_count, &1, "one file imports anything")?;
+    ensure_eq(&totals.inbound_file_count, &1, "one file is imported")?;
     Ok(())
 }
 
@@ -267,9 +288,21 @@ fn the_completeness_envelope_groups_files_by_class() -> TestResult {
             .find(|entry| entry.class == class)
             .map(|entry| entry.count)
     };
-    assert_eq!(class_count("authored"), Some(1));
-    assert_eq!(class_count("generated"), Some(1));
-    assert_eq!(class_count("vendored"), Some(1));
+    ensure_eq(
+        &class_count("authored"),
+        &Some(1),
+        "class_count(\"authored\") == Some(1)",
+    )?;
+    ensure_eq(
+        &class_count("generated"),
+        &Some(1),
+        "class_count(\"generated\") == Some(1)",
+    )?;
+    ensure_eq(
+        &class_count("vendored"),
+        &Some(1),
+        "class_count(\"vendored\") == Some(1)",
+    )?;
     Ok(())
 }
 
@@ -295,7 +328,7 @@ fn malformed_language_value_is_reported_instead_of_dropped() -> TestResult {
         ))
         .check("unexpected outcome");
     };
-    assert_eq!(column, "language");
+    ensure_eq(&column, &"language", "column == \"language\"")?;
     Ok(())
 }
 
@@ -312,11 +345,12 @@ fn report_on_an_inactive_project_is_a_typed_error_not_a_panic() -> TestResult {
     )
     .err()
     .check("report on inactive project must return ErrorData")?;
-    assert!(
+    ensure(
         err.message.contains("not enabled")
             || err.message.contains("inactive")
-            || err.message.contains("activate")
-    );
+            || err.message.contains("activate"),
+        "err.message.contains(\"not enabled\") || err.message.contains(\"inactive\") || err.message.contains(\"activate\")",
+    )?;
     Ok(())
 }
 
@@ -334,12 +368,16 @@ fn report_rejects_a_path_over_the_byte_cap() -> TestResult {
     .err()
     .check("an over-cap path is refused")?;
 
-    assert_eq!(
-        error.code,
-        rmcp::model::ErrorCode::INVALID_PARAMS,
-        "{error:?}"
-    );
-    assert_eq!(error.message, "path exceeds 32768 bytes");
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        format!("{error:?}"),
+    )?;
+    ensure_eq(
+        &error.message,
+        &"path exceeds 32768 bytes",
+        "error.message == \"path exceeds 32768 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -371,19 +409,21 @@ fn report_maps_a_build_failure_to_an_internal_error() -> TestResult {
     .err()
     .check("a failed section query fails the report")?;
 
-    assert_eq!(
-        error.code,
-        rmcp::model::ErrorCode::INTERNAL_ERROR,
-        "{error:?}"
-    );
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        format!("{error:?}"),
+    )?;
+    ensure(
         error.message.starts_with("building the report:")
             && error.message.contains("language")
             && !error.message.contains("retry the call")
             && error.data.is_none(),
-        "the operation and cause must survive, with no retry hint and no caller-input code: {}",
-        error.message
-    );
+        format!(
+            "the operation and cause must survive, with no retry hint and no caller-input code: {}",
+            error.message
+        ),
+    )?;
     Ok(())
 }
 
@@ -415,14 +455,14 @@ fn non_utf8_paths_are_counted_from_sync_state_as_the_tree_changes() -> TestResul
         ))
     };
 
-    assert_eq!(report_state()?, (0, false), "nothing is unrepresentable");
+    ensure_eq(&report_state()?, &(0, false), "nothing is unrepresentable")?;
     let bad = project
         .path()
         .join(std::ffi::OsString::from_vec(b"bad\xff.rs".to_vec()));
     fs::write(&bad, b"fn b() {}\n").check("write non-utf8 file")?;
-    assert_eq!(report_state()?, (1, true), "the dropped path is counted");
+    ensure_eq(&report_state()?, &(1, true), "the dropped path is counted")?;
     fs::remove_file(&bad).check("remove non-utf8 file")?;
-    assert_eq!(report_state()?, (0, false), "removal updates the count");
+    ensure_eq(&report_state()?, &(0, false), "removal updates the count")?;
     Ok(())
 }
 

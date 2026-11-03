@@ -18,6 +18,7 @@ use rmcp::ErrorData;
 use rusqlite::types::Value as SqlValue;
 use schemars::JsonSchema;
 use serde::Serialize;
+use text::{text_prefix, text_size};
 
 /// One TEXT or BLOB cell that was cut to fit the page.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
@@ -90,12 +91,12 @@ pub(super) fn clip_row(
         serialized_len(&object)
             .map_err(|error| internal_error("clipping an oversized query row", error))?,
     );
-    let granted = share_room(&variables, room);
+    let granted = share_room(&variables, room)?;
 
     let mut cells = Vec::new();
     for (variable, budget) in variables.iter().zip(granted) {
         let name = variable.name;
-        let Some((content, returned, kind, unit)) = clip_value(variable.value, budget) else {
+        let Some((content, returned, kind, unit)) = clip_value(variable.value, budget)? else {
             continue;
         };
         if returned < variable.units {
@@ -105,7 +106,7 @@ pub(super) fn clip_row(
                 (kind, unit),
                 returned,
                 variable.units,
-            ));
+            )?);
         }
         object.insert(name.to_owned(), serde_json::Value::String(content));
     }
@@ -135,7 +136,7 @@ fn base_object<'a>(
     for (name, value) in column_names.iter().zip(values) {
         let cell = match value {
             SqlValue::Text(text) => {
-                let (cost, chars) = text_size(text);
+                let (cost, chars) = text_size(text)?;
                 let units = if text.contains('\0') {
                     text.len()
                 } else {
@@ -167,7 +168,7 @@ fn base_object<'a>(
 
 /// Shares `room` among the variables as evenly as the smaller cells allow,
 /// smallest first, returning each variable's granted budget by index.
-fn share_room(variables: &[Variable<'_>], room: usize) -> Vec<usize> {
+fn share_room(variables: &[Variable<'_>], room: usize) -> Result<Vec<usize>, ErrorData> {
     let mut room = room;
     let mut order: Vec<(usize, usize)> = variables
         .iter()
@@ -175,16 +176,29 @@ fn share_room(variables: &[Variable<'_>], room: usize) -> Vec<usize> {
         .map(|(position, variable)| (position, variable.cost))
         .collect();
     order.sort_by_key(|(_, cost)| *cost);
-    let count = order.len();
-    let mut grants = Vec::with_capacity(count);
-    for (rank, (position, cost)) in order.into_iter().enumerate() {
-        // `rank < count`, so the divisor is at least 1.
-        let grant = cost.min(room / (count - rank));
-        room -= grant;
+    let mut grants = Vec::with_capacity(order.len());
+    // The divisor is the number of cells not yet granted: it counts down from
+    // the number of cells to 1, so the smallest cells are granted first.
+    for ((position, cost), divisor) in order.into_iter().zip((1..=variables.len()).rev()) {
+        let share = room
+            .checked_div(divisor)
+            .ok_or_else(|| room_error("dividing the room among cells"))?;
+        let grant = cost.min(share);
+        room = room
+            .checked_sub(grant)
+            .ok_or_else(|| room_error("granting a cell its room"))?;
         grants.push((position, grant));
     }
     grants.sort_by_key(|(position, _)| *position);
-    grants.into_iter().map(|(_, grant)| grant).collect()
+    Ok(grants.into_iter().map(|(_, grant)| grant).collect())
+}
+
+/// The error for an arithmetic step of clipping that failed.
+fn room_error(step: &str) -> ErrorData {
+    internal_error(
+        "clipping an oversized query row",
+        format!("{step} overflowed"),
+    )
 }
 
 /// Cuts one TEXT/BLOB cell to `budget` units, returning the content, how
@@ -192,10 +206,10 @@ fn share_room(variables: &[Variable<'_>], room: usize) -> Vec<usize> {
 fn clip_value(
     value: &SqlValue,
     budget: usize,
-) -> Option<(String, usize, &'static str, &'static str)> {
-    match value {
+) -> Result<Option<(String, usize, &'static str, &'static str)>, ErrorData> {
+    Ok(match value {
         SqlValue::Text(text) => {
-            let (prefix, chars) = text_prefix(text, budget);
+            let (prefix, chars) = text_prefix(text, budget)?;
             if text.contains('\0') {
                 // SQLite's text functions stop at a NUL, so the rest is
                 // reachable only as bytes of the value cast to a blob.
@@ -211,7 +225,7 @@ fn clip_value(
             Some((hex_encode(kept), kept.len(), "blob", "bytes"))
         }
         _ => None,
-    }
+    })
 }
 
 fn clipped_cell(
@@ -220,12 +234,16 @@ fn clipped_cell(
     (kind, unit): (&'static str, &'static str),
     returned: usize,
     total: usize,
-) -> ClippedCell {
-    let next_start = returned + 1;
+) -> Result<ClippedCell, ErrorData> {
+    let next_start = returned
+        .checked_add(1)
+        .ok_or_else(|| room_error("numbering the continuation"))?;
     // The rest of the value, not just another chunk the size of the first: the
     // field promises the caller the remainder, and a chunk-sized continuation
     // would let an agent stop early and silently miss most of a large cell.
-    let length = total - returned;
+    let length = total
+        .checked_sub(returned)
+        .ok_or_else(|| room_error("measuring the rest of the cell"))?;
     let quoted = format!("\"{}\"", column.replace('"', "\"\""));
     // Text with a NUL is continued as bytes of the value cast to a blob.
     let target = if kind == "text" && unit == "bytes" {
@@ -233,7 +251,7 @@ fn clipped_cell(
     } else {
         quoted
     };
-    ClippedCell {
+    Ok(ClippedCell {
         row,
         column: column.to_owned(),
         kind,
@@ -242,37 +260,8 @@ fn clipped_cell(
         total,
         next_start,
         continue_with: format!("substr({target}, {next_start}, {length})"),
-    }
-}
-
-/// Serialized JSON bytes a character takes inside a string.
-fn json_char_len(character: char) -> usize {
-    match character {
-        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
-        control if control < ' ' => 6,
-        other => other.len_utf8(),
-    }
-}
-
-/// `(serialized content bytes, characters)` of a whole text.
-fn text_size(text: &str) -> (usize, usize) {
-    text.chars().fold((0, 0), |(cost, chars), character| {
-        (cost + json_char_len(character), chars + 1)
     })
 }
 
-/// The longest prefix whose serialized content fits `budget` (at least one
-/// character), and its length in characters.
-fn text_prefix(text: &str, budget: usize) -> (String, usize) {
-    let mut used = 0;
-    let mut chars = 0;
-    for character in text.chars() {
-        let next = used + json_char_len(character);
-        if chars > 0 && next > budget {
-            break;
-        }
-        used = next;
-        chars += 1;
-    }
-    (text.chars().take(chars).collect(), chars)
-}
+#[path = "query_clip_text.rs"]
+mod text;

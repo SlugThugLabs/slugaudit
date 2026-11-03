@@ -224,7 +224,14 @@ impl PageCut {
             self.cut = self.byte_cut;
             return Take::No;
         }
-        self.taken += 1;
+        let Some(taken) = self.taken.checked_add(1) else {
+            self.failure = Some(ErrorData::internal_error(
+                "structure: the taken-match count overflowed",
+                None,
+            ));
+            return Take::No;
+        };
+        self.taken = taken;
         self.bytes_used = self.bytes_used.saturating_add(bytes);
         Take::Yes
     }

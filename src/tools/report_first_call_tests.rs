@@ -3,7 +3,7 @@
 //! the next call — never retroactively.
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// The first state-bearing call after a server starts syncs the whole tree
 /// and publishes nothing when the tree matches, so it reads the revision
@@ -38,7 +38,11 @@ fn the_first_report_after_project_control_on_succeeds_at_the_imported_revision()
     )
     .check("the first report after on succeeds")?;
 
-    assert_eq!(report.0.revision_id, imported);
+    ensure_eq(
+        &report.0.revision_id,
+        &imported,
+        "report.0.revision_id == imported",
+    )?;
     Ok(())
 }
 
@@ -103,15 +107,16 @@ fn a_change_after_the_scan_is_served_on_the_next_call() -> TestResult {
         &manager,
     )
     .check("the racing call answers from its scan")?;
-    assert!(
+    ensure(
         sink.written.load(std::sync::atomic::Ordering::SeqCst),
-        "the sink wrote during the call"
-    );
-    assert_eq!(
-        *crate::util::lock(&sink.write_failure, "write_failure").check("read the write failure")?,
-        None,
-        "the mid-call write succeeded"
-    );
+        "the sink wrote during the call",
+    )?;
+    ensure_eq(
+        &*crate::util::lock(&sink.write_failure, "write_failure")
+            .check("read the write failure")?,
+        &None,
+        "the mid-call write succeeded",
+    )?;
 
     let second = report(
         &Parameters(ReportRequest { path }),
@@ -120,13 +125,15 @@ fn a_change_after_the_scan_is_served_on_the_next_call() -> TestResult {
     )
     .check("the next call syncs again")?;
 
-    assert_eq!(
-        first.0.revision_id, "rev-1",
-        "the scan that answered the first call saw the original file"
-    );
-    assert_eq!(
-        second.0.revision_id, "rev-2",
-        "the next call observes the change the first scan missed"
-    );
+    ensure_eq(
+        &first.0.revision_id,
+        &"rev-1",
+        "the scan that answered the first call saw the original file",
+    )?;
+    ensure_eq(
+        &second.0.revision_id,
+        &"rev-2",
+        "the next call observes the change the first scan missed",
+    )?;
     Ok(())
 }

@@ -196,7 +196,9 @@ pub(super) fn fetch_sources_for_language(
             .get(1)
             .map_err(|error| internal_error("reading an indexed file's size", error))?;
         if size > per_file_limit {
-            files_over_parse_limit += 1;
+            files_over_parse_limit = files_over_parse_limit.checked_add(1).ok_or_else(|| {
+                internal_error("counting oversized indexed files", "the count overflowed")
+            })?;
             last_examined = Some(path);
             continue;
         }
@@ -316,15 +318,26 @@ fn ensure_indexed_language(
     ))
 }
 
+/// The longest prefix of `text` that is at most `max_bytes` long and ends on a
+/// character boundary.
+fn prefix_within(text: &str, max_bytes: usize) -> String {
+    let mut room = max_bytes;
+    let mut kept = String::new();
+    for character in text.chars() {
+        match room.checked_sub(character.len_utf8()) {
+            Some(left) => room = left,
+            None => break,
+        }
+        kept.push(character);
+    }
+    kept
+}
+
 pub(super) fn truncate_text(text: &str) -> (String, bool) {
     if text.len() <= MAX_TEXT_BYTES {
         return (text.to_owned(), false);
     }
-    let mut end = MAX_TEXT_BYTES;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (text[..end].to_owned(), true)
+    (prefix_within(text, MAX_TEXT_BYTES), true)
 }
 
 pub(super) fn truncate_snippet(text: &str, max_bytes: usize) -> (String, bool) {
@@ -336,10 +349,6 @@ pub(super) fn truncate_snippet(text: &str, max_bytes: usize) -> (String, bool) {
     if first_line.len() <= max_bytes {
         (first_line.to_owned(), text.lines().nth(1).is_some())
     } else {
-        let mut end = max_bytes;
-        while end > 0 && !first_line.is_char_boundary(end) {
-            end -= 1;
-        }
-        (first_line[..end].to_owned(), true)
+        (prefix_within(first_line, max_bytes), true)
     }
 }

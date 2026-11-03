@@ -1,7 +1,7 @@
 //! `query` refuses a PRAGMA wherever it sits in the input, before anything
 //! is prepared, and does not mistake PRAGMA text inside a literal for one.
 use super::safety_tests::{ask, fresh_pragma, project, refused};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// `prepare` also prepares the text after the first statement, so a PRAGMA
 /// that follows a SELECT must be refused before the first prepare, not after.
@@ -18,17 +18,16 @@ fn a_prepare_time_pragma_after_another_statement_is_refused_unapplied() -> TestR
         "SELECT 1; SELECT 2; PRAGMA hard_heap_limit=1024",
     ] {
         let error = refused(&project, sql, "a PRAGMA after another statement")?;
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
-        assert!(
+        ensure_eq(&error.code, &rmcp::model::ErrorCode::INVALID_PARAMS, sql)?;
+        ensure(
             error.message.contains("not PRAGMA"),
-            "{sql}: unexpected message: {}",
-            error.message
-        );
-        assert_eq!(
-            fresh_pragma("hard_heap_limit")?,
-            before,
-            "{sql} took effect"
-        );
+            format!("{sql}: unexpected message: {}", error.message),
+        )?;
+        ensure_eq(
+            &fresh_pragma("hard_heap_limit")?,
+            &before,
+            format!("{sql} took effect"),
+        )?;
     }
     Ok(())
 }
@@ -46,7 +45,16 @@ fn pragma_text_after_a_semicolon_inside_a_literal_is_not_refused() -> TestResult
     )
     .check("a literal that mentions PRAGMA")?;
 
-    assert_eq!(response.rows.len(), 1);
-    assert_eq!(response.rows[0]["a"], "; PRAGMA x");
+    ensure_eq(&response.rows.len(), &1, "response.rows.len() == 1")?;
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("a")
+            .check("response.rows[0][\"a\"]")?,
+        &"; PRAGMA x",
+        "response.rows[0][\"a\"] == \"; PRAGMA x\"",
+    )?;
     Ok(())
 }

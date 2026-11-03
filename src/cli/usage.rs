@@ -179,7 +179,7 @@ pub(super) fn render_usage(style: &Style) -> String {
     }
     let headings = ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"];
     let text = usage_text();
-    let mut out = String::with_capacity(text.len() + 64);
+    let mut out = String::with_capacity(text.len());
     for (i, line) in text.lines().enumerate() {
         let trimmed = line.trim_end();
         if i == 0 {

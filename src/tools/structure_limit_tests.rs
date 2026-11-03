@@ -7,7 +7,7 @@ use super::*;
 use crate::tools::PageLimit;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn ask(
     project: &tempfile::TempDir,
@@ -35,7 +35,10 @@ fn an_empty_query_is_a_typed_error_not_a_silent_noop() -> TestResult {
     let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let result = ask(&project, "lib.rs", "   \n  ");
     let error = result.check_err("a whitespace-only query must be rejected")?;
-    assert!(error.message.contains("must not be empty"));
+    ensure(
+        error.message.contains("must not be empty"),
+        "error.message.contains(\"must not be empty\")",
+    )?;
     Ok(())
 }
 
@@ -45,11 +48,10 @@ fn a_file_without_indexed_content_is_a_typed_error() -> TestResult {
     let result = ask(&project, "logo.bin", "(identifier) @x");
     let error =
         result.check_err("a binary file with no indexed source content must not be queried")?;
-    assert!(
+    ensure(
         error.message.contains("no indexed source content") || error.message.contains("logo.bin"),
-        "unexpected error message: {}",
-        error.message
-    );
+        format!("unexpected error message: {}", error.message),
+    )?;
     Ok(())
 }
 
@@ -65,19 +67,19 @@ fn long_match_text_is_truncated_and_flagged() -> TestResult {
     let project = activated_project("lib.rs", content.as_bytes())?;
 
     let response = ask(&project, "lib.rs", "(string_literal) @s").check("query succeeds")?;
-    let first = &response.matches[0];
-    assert!(
+    let first = &response.matches.first().check("response.matches[0]")?;
+    ensure(
         first.text_truncated,
-        "a >1MB match must be flagged as truncated"
-    );
-    assert!(
+        "a >1MB match must be flagged as truncated",
+    )?;
+    ensure(
         first.text.len() <= super::MAX_TEXT_BYTES,
-        "truncated text must respect the byte cap"
-    );
-    assert!(
+        "truncated text must respect the byte cap",
+    )?;
+    ensure(
         first.text.is_char_boundary(first.text.len()),
-        "truncation must land on a UTF-8 boundary"
-    );
+        "truncation must land on a UTF-8 boundary",
+    )?;
     Ok(())
 }
 
@@ -144,7 +146,7 @@ fn a_zero_page_bytes_is_refused_rather_than_substituted() -> TestResult {
         &crate::sync::SourceSyncManager::default(),
     );
 
-    assert!(result.is_err());
+    ensure(result.is_err(), "result.is_err()")?;
     Ok(())
 }
 
@@ -161,11 +163,10 @@ fn start_after_file_with_a_single_file_query_is_refused() -> TestResult {
     );
 
     let error = result.err().check("start_after_file needs multi-file")?;
-    assert!(
+    ensure(
         error.message.contains("start_after_file"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -198,21 +199,40 @@ fn files_past_the_memory_window_are_reported_and_a_continuation_reaches_them() -
         windows += 1;
         names.extend(response.matches.iter().map(|m| m.text.clone()));
         if let Some(next) = response.next_start_after_file {
-            assert!(response.files_not_scanned > 0 && response.bytes_not_scanned > 0);
-            assert!(!response.page.complete, "a window remains");
-            assert_eq!(response.page.limited_by, PageLimit::ScanWindow);
-            assert_eq!(response.page.cursor, None);
+            ensure(
+                response.files_not_scanned > 0 && response.bytes_not_scanned > 0,
+                "response.files_not_scanned > 0 && response.bytes_not_scanned > 0",
+            )?;
+            ensure(!response.page.complete, "a window remains")?;
+            ensure_eq(
+                &response.page.limited_by,
+                &PageLimit::ScanWindow,
+                "response.page.limited_by == PageLimit::ScanWindow",
+            )?;
+            ensure_eq(&response.page.cursor, &None, "response.page.cursor == None")?;
             start_after = Some(next);
         } else {
-            assert_eq!(response.files_not_scanned, 0);
-            assert_eq!(response.bytes_not_scanned, 0);
-            assert!(response.page.complete);
+            ensure_eq(
+                &response.files_not_scanned,
+                &0,
+                "response.files_not_scanned == 0",
+            )?;
+            ensure_eq(
+                &response.bytes_not_scanned,
+                &0,
+                "response.bytes_not_scanned == 0",
+            )?;
+            ensure(response.page.complete, "response.page.complete")?;
             break;
         }
     }
 
-    assert_eq!(names, ["alpha", "beta", "gamma"]);
-    assert_eq!(windows, 3);
+    ensure_eq(
+        &names,
+        &["alpha", "beta", "gamma"],
+        "names == [\"alpha\", \"beta\", \"gamma\"]",
+    )?;
+    ensure_eq(&windows, &3, "windows == 3")?;
     Ok(())
 }
 
@@ -229,9 +249,17 @@ fn a_window_that_ends_exactly_at_the_last_file_reports_nothing_unscanned() -> Te
     // "pub fn alpha() {}\n" is 18 bytes: the window ends exactly at it.
     let response = run_with(&request, &ResourceLimits::default(), 18)?;
 
-    assert_eq!(response.files_not_scanned, 0);
-    assert_eq!(response.next_start_after_file, None);
-    assert_eq!(response.matches.len(), 1);
+    ensure_eq(
+        &response.files_not_scanned,
+        &0,
+        "response.files_not_scanned == 0",
+    )?;
+    ensure_eq(
+        &response.next_start_after_file,
+        &None,
+        "response.next_start_after_file == None",
+    )?;
+    ensure_eq(&response.matches.len(), &1, "response.matches.len() == 1")?;
     Ok(())
 }
 
@@ -271,20 +299,28 @@ fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not
         &manager,
     )?;
 
-    assert_eq!(
-        first.page.limited_by,
-        PageLimit::MatchCap,
-        "the page stopped at the match cap inside a.rs"
-    );
+    ensure_eq(
+        &first.page.limited_by,
+        &PageLimit::MatchCap,
+        "the page stopped at the match cap inside a.rs",
+    )?;
     first
         .page
         .cursor
         .as_ref()
         .check("`first.page.cursor` is present")?;
-    assert_eq!(first.files_not_scanned, 0);
-    assert_eq!(first.next_start_after_file, None);
-    assert_eq!(first.matches.len(), 1);
-    assert_eq!(first.matches[0].file, "a.rs");
+    ensure_eq(&first.files_not_scanned, &0, "first.files_not_scanned == 0")?;
+    ensure_eq(
+        &first.next_start_after_file,
+        &None,
+        "first.next_start_after_file == None",
+    )?;
+    ensure_eq(&first.matches.len(), &1, "first.matches.len() == 1")?;
+    ensure_eq(
+        &first.matches.first().check("first.matches[0]")?.file,
+        &"a.rs",
+        "first.matches[0].file == \"a.rs\"",
+    )?;
 
     let second = run_with_manager(
         &multi_file_request(&project, first.page.cursor.as_deref()),
@@ -293,10 +329,18 @@ fn a_page_cut_inside_a_multi_file_window_is_signaled_by_the_cursor_not_files_not
         &manager,
     )?;
 
-    assert!(second.page.complete);
-    assert_eq!(second.matches.len(), 1);
-    assert_eq!(second.matches[0].file, "b.rs");
-    assert_eq!(second.matches[0].text, "beta");
+    ensure(second.page.complete, "second.page.complete")?;
+    ensure_eq(&second.matches.len(), &1, "second.matches.len() == 1")?;
+    ensure_eq(
+        &second.matches.first().check("second.matches[0]")?.file,
+        &"b.rs",
+        "second.matches[0].file == \"b.rs\"",
+    )?;
+    ensure_eq(
+        &second.matches.first().check("second.matches[0]")?.text,
+        &"beta",
+        "second.matches[0].text == \"beta\"",
+    )?;
     Ok(())
 }
 
@@ -334,8 +378,16 @@ fn a_path_over_the_cap_is_refused_before_any_sync() -> TestResult {
     .err()
     .check("an oversized path must be refused")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message.as_ref(), "path exceeds 32768 bytes");
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message.as_ref(),
+        &"path exceeds 32768 bytes",
+        "error.message.as_ref() == \"path exceeds 32768 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -349,11 +401,16 @@ fn an_oversized_start_after_file_is_refused_with_its_cap() -> TestResult {
 
     let error = refusal(request)?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message.as_ref(),
-        "start_after_file exceeds 32768 bytes"
-    );
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message.as_ref(),
+        &"start_after_file exceeds 32768 bytes",
+        "error.message.as_ref() == \"start_after_file exceeds 32768 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -365,8 +422,16 @@ fn a_cursor_over_the_shared_cursor_cap_is_refused_with_that_cap() -> TestResult 
 
     let error = refusal(request)?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message.as_ref(), "cursor exceeds 1024 bytes");
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message.as_ref(),
+        &"cursor exceeds 1024 bytes",
+        "error.message.as_ref() == \"cursor exceeds 1024 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -378,7 +443,11 @@ fn an_oversized_file_filter_is_refused_by_name() -> TestResult {
 
     let error = refusal(request)?;
 
-    assert_eq!(error.message.as_ref(), "file exceeds 8192 bytes");
+    ensure_eq(
+        &error.message.as_ref(),
+        &"file exceeds 8192 bytes",
+        "error.message.as_ref() == \"file exceeds 8192 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -391,7 +460,11 @@ fn an_oversized_language_filter_is_refused_by_name() -> TestResult {
 
     let error = refusal(request)?;
 
-    assert_eq!(error.message.as_ref(), "language exceeds 8192 bytes");
+    ensure_eq(
+        &error.message.as_ref(),
+        &"language exceeds 8192 bytes",
+        "error.message.as_ref() == \"language exceeds 8192 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -403,7 +476,11 @@ fn an_oversized_pattern_filter_is_refused_by_name() -> TestResult {
 
     let error = refusal(request)?;
 
-    assert_eq!(error.message.as_ref(), "pattern exceeds 8192 bytes");
+    ensure_eq(
+        &error.message.as_ref(),
+        &"pattern exceeds 8192 bytes",
+        "error.message.as_ref() == \"pattern exceeds 8192 bytes\"",
+    )?;
     Ok(())
 }
 
@@ -417,145 +494,9 @@ fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() -> TestRe
 
     let response = run_with(&page_request(&project, None, None), &limits, usize::MAX)?;
 
-    assert_eq!(response.matches.len(), 1);
+    ensure_eq(&response.matches.len(), &1, "response.matches.len() == 1")?;
     Ok(())
 }
 
-fn rust_root(source: &str) -> TestResult<tree_sitter::Tree> {
-    let mut parser = tree_sitter::Parser::new();
-    parser
-        .set_language(&tree_sitter_language_pack::get_language("rust").check("rust grammar")?)
-        .check("set language")?;
-    parser.parse(source, None).check("parse")
-}
-
-#[test]
-fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() -> TestResult {
-    let source = "fn a() {}";
-    let tree = rust_root(source)?;
-    let lines = crate::model::LineIndex::new(source);
-
-    let (found, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::tools::structure_page::node_to_match(
-            "lib.rs",
-            tree.root_node(),
-            source,
-            &lines,
-            None,
-            false,
-        )
-    })?;
-    let found = found.check("map the capture")?;
-
-    assert!(found.extraction_failed);
-    assert!(logs.contains("capture has no name"), "logs: {logs}");
-    Ok(())
-}
-
-#[test]
-fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() -> TestResult {
-    let tree = rust_root("abc")?;
-    // Three bytes of a four-byte string end inside the second character.
-    let content = "\u{e9}\u{e9}";
-    let lines = crate::model::LineIndex::new(content);
-
-    let (found, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::tools::structure_page::node_to_match(
-            "lib.rs",
-            tree.root_node(),
-            content,
-            &lines,
-            Some("name"),
-            false,
-        )
-    })?;
-    let found = found.check("map the capture")?;
-
-    assert!(found.extraction_failed);
-    assert!(found.text.is_empty());
-    assert!(logs.contains("not valid UTF-8"), "logs: {logs}");
-    assert!(logs.contains("utf-8"), "source error kept: {logs}");
-    Ok(())
-}
-
-fn query_limit(bytes: usize) -> ResourceLimits {
-    ResourceLimits {
-        max_structure_query_bytes: bytes,
-        ..ResourceLimits::default()
-    }
-}
-
-#[test]
-fn a_query_one_byte_over_the_limit_is_refused_by_size_before_anything_else_runs() -> TestResult {
-    let request = Parameters(StructureRequest {
-        // Not a project: a size refusal happens before the sync, so the path
-        // is never opened.
-        path: "/no/such/project".to_owned(),
-        file: Some("lib.rs".to_owned()),
-        query: "x".repeat(33),
-        ..Default::default()
-    });
-
-    let error = structure_with_limits(
-        &request,
-        &query_limit(32),
-        MAX_MULTI_FILE_TOTAL_BYTES,
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .map(|Json(response)| response)
-    .check_err("33 bytes is over a 32-byte limit")?;
-
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.message,
-        "structure query is 33 bytes; the limit is 32 (max_structure_query_bytes)"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_query_of_exactly_the_limit_is_not_refused_for_size() -> TestResult {
-    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
-    let query = format!("(identifier) @name{}", " ".repeat(14));
-    assert_eq!(query.len(), 32);
-
-    let response = structure_with_limits(
-        &Parameters(StructureRequest {
-            path: project.path().to_string_lossy().into_owned(),
-            file: Some("lib.rs".to_owned()),
-            query,
-            ..Default::default()
-        }),
-        &query_limit(32),
-        MAX_MULTI_FILE_TOTAL_BYTES,
-        &crate::progress::NoopProgressSink,
-        &crate::sync::SourceSyncManager::default(),
-    )
-    .map(|Json(response)| response)
-    .check("a query at the limit compiles and runs")?;
-
-    assert_eq!(response.matches.len(), 1);
-    Ok(())
-}
-
-#[test]
-fn a_global_config_query_limit_is_honoured_by_the_tool() -> TestResult {
-    let _lock = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
-    let _config =
-        crate::tools::test_support::use_global_config(r#"{"max_structure_query_bytes": 20}"#)?;
-
-    let error = ask(
-        &project,
-        "lib.rs",
-        "(function_item name: (identifier) @name)",
-    )
-    .check_err("the 40-byte query is over the configured 20")?;
-
-    assert_eq!(
-        error.message,
-        "structure query is 40 bytes; the limit is 20 (max_structure_query_bytes)"
-    );
-    Ok(())
-}
+#[path = "structure_limit_query_tests.rs"]
+mod query_limit_tests;

@@ -60,7 +60,7 @@ pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
     /// Runs the shared fragment — the literal SQL text, not a Rust copy of
     /// it — against one path with the real SQLite engine both surfaces use,
@@ -83,11 +83,11 @@ mod tests {
     /// so the test cannot pass while `report` and `leads` behave differently.
     fn assert_predicate_cases(cases: &[(&str, bool)]) -> TestResult {
         for &(path, expected) in cases {
-            assert_eq!(
-                credential_path_predicate_matches(path)?,
-                expected,
-                "predicate verdict for {path}"
-            );
+            ensure_eq(
+                &credential_path_predicate_matches(path)?,
+                &expected,
+                format!("predicate verdict for {path}"),
+            )?;
         }
         Ok(())
     }

@@ -11,7 +11,7 @@ use crate::tools::PageLimit;
 use crate::tools::page::Completeness;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 
 const QUERY: &str = "(function_item name: (identifier) @name)";
 /// About four matches per page: each serialized match is roughly 200 bytes.
@@ -99,7 +99,7 @@ fn paged_structure_pages_survive_an_edit_between_pages() -> TestResult {
     let project = two_file_project()?;
     let manager = SourceSyncManager::default();
     let full = page_of(&project, None, None, &manager)?;
-    assert_eq!(full.matches.len(), 40);
+    ensure_eq(&full.matches.len(), &40, "full.matches.len() == 40")?;
     let first = page_of(&project, None, Some(SMALL_PAGE), &manager)?;
     first
         .page
@@ -111,19 +111,40 @@ fn paged_structure_pages_survive_an_edit_between_pages() -> TestResult {
     std::fs::write(project.path().join("a.rs"), edited).check("edit a.rs")?;
     let rest = rest_of(&project, &first, &manager)?;
 
-    assert!(rest.len() >= 2, "page one plus two more pages at least");
+    ensure(rest.len() >= 2, "page one plus two more pages at least")?;
     let mut union = names(&first);
     for (_, page) in &rest {
         union.extend(names(page));
-        assert_eq!(page.page.revision_id, first.page.revision_id);
-        assert_eq!(page.page.total, first.page.total);
+        ensure_eq(
+            &page.page.revision_id,
+            &first.page.revision_id,
+            "page.page.revision_id == first.page.revision_id",
+        )?;
+        ensure_eq(
+            &page.page.total,
+            &first.page.total,
+            "page.page.total == first.page.total",
+        )?;
     }
-    assert_eq!(union, names(&full));
-    assert!(union.contains(&"a05".to_owned()) && !union.contains(&"zz_new".to_owned()));
+    ensure_eq(&union, &names(&full), "union == names(&full)")?;
+    ensure(
+        union.contains(&"a05".to_owned()) && !union.contains(&"zz_new".to_owned()),
+        "union.contains(&\"a05\".to_owned()) && !union.contains(&\"zz_new\".to_owned())",
+    )?;
     let fresh = page_of(&project, None, None, &manager)?;
-    assert!(names(&fresh).contains(&"zz_new".to_owned()));
-    assert!(!names(&fresh).contains(&"a05".to_owned()));
-    assert_ne!(fresh.page.revision_id, first.page.revision_id);
+    ensure(
+        names(&fresh).contains(&"zz_new".to_owned()),
+        "names(&fresh).contains(&\"zz_new\".to_owned())",
+    )?;
+    ensure(
+        !names(&fresh).contains(&"a05".to_owned()),
+        "!names(&fresh).contains(&\"a05\".to_owned())",
+    )?;
+    ensure_ne(
+        &fresh.page.revision_id,
+        &first.page.revision_id,
+        "fresh.page.revision_id != first.page.revision_id",
+    )?;
     Ok(())
 }
 
@@ -137,11 +158,12 @@ fn paged_structure_same_cursor_twice_returns_identical_pages() -> TestResult {
     let one = page_of(&project, Some(&token), Some(SMALL_PAGE), &manager)?;
     let two = page_of(&project, Some(&token), Some(SMALL_PAGE), &manager)?;
 
-    assert_eq!(
-        serde_json::to_value(&one).check("serializes")?,
-        serde_json::to_value(&two).check("serializes")?
-    );
-    assert!(!one.matches.is_empty());
+    ensure_eq(
+        &serde_json::to_value(&one).check("serializes")?,
+        &serde_json::to_value(&two).check("serializes")?,
+        "serde_json::to_value(&one).check(\"serializes\")? == serde_json::to_value(&two).check(\"serializes\")?",
+    )?;
+    ensure(!one.matches.is_empty(), "!one.matches.is_empty()")?;
     Ok(())
 }
 
@@ -155,12 +177,20 @@ fn paged_structure_final_page_can_be_retried() -> TestResult {
 
     let again = page_of(&project, Some(last_token), Some(SMALL_PAGE), &manager)?;
 
-    assert_eq!(
-        serde_json::to_value(&again).check("serializes")?,
-        serde_json::to_value(last).check("serializes")?
-    );
-    assert!(again.page.cursor.is_none() && again.page.complete);
-    assert_eq!(again.page.limited_by, PageLimit::None);
+    ensure_eq(
+        &serde_json::to_value(&again).check("serializes")?,
+        &serde_json::to_value(last).check("serializes")?,
+        "serde_json::to_value(&again).check(\"serializes\")? == serde_json::to_value(last).check(\"serializes\")?",
+    )?;
+    ensure(
+        again.page.cursor.is_none() && again.page.complete,
+        "again.page.cursor.is_none() && again.page.complete",
+    )?;
+    ensure_eq(
+        &again.page.limited_by,
+        &PageLimit::None,
+        "again.page.limited_by == PageLimit::None",
+    )?;
     Ok(())
 }
 
@@ -187,8 +217,19 @@ fn paged_structure_refuses_offset_and_expected_revision_naming_cursor() -> TestR
         .check_err("a removed paging parameter is refused")?;
 
         let data = error.data.check("a payload")?;
-        assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        ensure_eq(
+            &data.get("code").check("data[\"code\"]")?,
+            &"paging_parameter_removed",
+            "data[\"code\"] == \"paging_parameter_removed\"",
+        )?;
+        ensure(
+            data.get("remedy")
+                .check("data[\"remedy\"]")?
+                .as_str()
+                .check("remedy")?
+                .contains("cursor"),
+            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
+        )?;
     }
     Ok(())
 }
@@ -212,29 +253,49 @@ fn paged_structure_window_limited_result_is_partial_and_resumes_as_a_new_request
 
     let first = call(&request(&project, None, None), 18, &manager).check("first window")?;
 
-    assert_eq!(names(&first), ["alpha"]);
-    assert!(!first.page.complete && first.page.cursor.is_none());
-    assert_eq!(first.page.limited_by, PageLimit::ScanWindow);
-    assert_eq!(
-        first.page.completeness,
-        Some(Completeness::Partial {
+    ensure_eq(&names(&first), &["alpha"], "names(&first) == [\"alpha\"]")?;
+    ensure(
+        !first.page.complete && first.page.cursor.is_none(),
+        "!first.page.complete && first.page.cursor.is_none()",
+    )?;
+    ensure_eq(
+        &first.page.limited_by,
+        &PageLimit::ScanWindow,
+        "first.page.limited_by == PageLimit::ScanWindow",
+    )?;
+    ensure_eq(
+        &first.page.completeness,
+        &Some(Completeness::Partial {
             limited_by: PageLimit::ScanWindow,
             resume_after_file: Some("a.rs".to_owned()),
             files_scanned: 1,
             files_total: 3,
-        })
-    );
-    assert_eq!(first.next_start_after_file.as_deref(), Some("a.rs"));
+        }),
+        "first.page.completeness == Some(Completeness::Partial { limited_by: PageLimit::ScanWindow, resume_after_file: Some(\"a.rs\".to_owned()), files_scanned: 1, files_total: 3, })",
+    )?;
+    ensure_eq(
+        &first.next_start_after_file.as_deref(),
+        &Some("a.rs"),
+        "first.next_start_after_file.as_deref() == Some(\"a.rs\")",
+    )?;
     let mut resume = request(&project, None, None);
     resume.0.start_after_file = first.next_start_after_file.clone();
     let second = call(&resume, 18, &manager).check("resumed window")?;
-    assert_eq!(names(&second), ["beta"]);
-    assert_eq!(second.next_start_after_file.as_deref(), Some("b.rs"));
+    ensure_eq(&names(&second), &["beta"], "names(&second) == [\"beta\"]")?;
+    ensure_eq(
+        &second.next_start_after_file.as_deref(),
+        &Some("b.rs"),
+        "second.next_start_after_file.as_deref() == Some(\"b.rs\")",
+    )?;
     resume.0.start_after_file = second.next_start_after_file.clone();
     let third = call(&resume, 18, &manager).check("last window")?;
-    assert_eq!(names(&third), ["gamma"]);
-    assert_eq!(third.page.completeness, Some(Completeness::Complete));
-    assert!(third.page.complete);
+    ensure_eq(&names(&third), &["gamma"], "names(&third) == [\"gamma\"]")?;
+    ensure_eq(
+        &third.page.completeness,
+        &Some(Completeness::Complete),
+        "third.page.completeness == Some(Completeness::Complete)",
+    )?;
+    ensure(third.page.complete, "third.page.complete")?;
     Ok(())
 }
 
@@ -246,22 +307,45 @@ fn paged_structure_cursor_never_triggers_a_new_scan_window() -> TestResult {
     let manager = SourceSyncManager::default();
     let first =
         call(&request(&project, None, Some(SMALL_PAGE)), window, &manager).check("first window")?;
-    assert_eq!(first.next_start_after_file.as_deref(), Some("a.rs"));
+    ensure_eq(
+        &first.next_start_after_file.as_deref(),
+        &Some("a.rs"),
+        "first.next_start_after_file.as_deref() == Some(\"a.rs\")",
+    )?;
     std::fs::write(project.path().join("c.rs"), functions("c", 5)).check("write c.rs")?;
 
     let rest = rest_of(&project, &first, &manager)?;
 
-    assert!(!rest.is_empty());
+    ensure(!rest.is_empty(), "!rest.is_empty()")?;
     let mut union = names(&first);
     for (_, page) in &rest {
         union.extend(names(page));
-        assert_eq!(page.next_start_after_file, first.next_start_after_file);
-        assert_eq!(page.files_not_scanned, first.files_not_scanned);
-        assert_eq!(page.page.completeness, first.page.completeness);
-        assert_eq!(page.page.revision_id, first.page.revision_id);
+        ensure_eq(
+            &page.next_start_after_file,
+            &first.next_start_after_file,
+            "page.next_start_after_file == first.next_start_after_file",
+        )?;
+        ensure_eq(
+            &page.files_not_scanned,
+            &first.files_not_scanned,
+            "page.files_not_scanned == first.files_not_scanned",
+        )?;
+        ensure_eq(
+            &page.page.completeness,
+            &first.page.completeness,
+            "page.page.completeness == first.page.completeness",
+        )?;
+        ensure_eq(
+            &page.page.revision_id,
+            &first.page.revision_id,
+            "page.page.revision_id == first.page.revision_id",
+        )?;
     }
-    assert_eq!(union.len(), 30, "only a.rs: no later window, no new file");
-    assert!(union.iter().all(|name| name.starts_with('a')));
+    ensure_eq(&union.len(), &30, "only a.rs: no later window, no new file")?;
+    ensure(
+        union.iter().all(|name| name.starts_with('a')),
+        "union.iter().all(|name| name.starts_with('a'))",
+    )?;
     Ok(())
 }
 
@@ -278,7 +362,11 @@ fn paged_structure_start_after_file_unknown_path_scans_the_files_sorting_after_i
     )
     .check("an unknown start path is a plain lower bound, as before")?;
 
-    assert_eq!(names(&response), ["beta", "gamma"]);
+    ensure_eq(
+        &names(&response),
+        &["beta", "gamma"],
+        "names(&response) == [\"beta\", \"gamma\"]",
+    )?;
     Ok(())
 }
 
@@ -300,9 +388,17 @@ fn a_page_cut_by_bytes_continues_through_the_cursor_to_every_match() -> TestResu
         )?;
         pages += 1;
         names.extend(response.matches.iter().map(|m| m.text.clone()));
-        assert_eq!(!response.page.complete, response.page.cursor.is_some());
-        assert_eq!(response.page.returned, response.matches.len());
-        assert_eq!(response.page.total, None, "structure never counts ahead");
+        ensure_eq(
+            &!response.page.complete,
+            &response.page.cursor.is_some(),
+            "!response.page.complete == response.page.cursor.is_some()",
+        )?;
+        ensure_eq(
+            &response.page.returned,
+            &response.matches.len(),
+            "response.page.returned == response.matches.len()",
+        )?;
+        ensure_eq(&response.page.total, &None, "structure never counts ahead")?;
         cursor = response.page.cursor;
         if cursor.is_none() {
             break;
@@ -310,8 +406,8 @@ fn a_page_cut_by_bytes_continues_through_the_cursor_to_every_match() -> TestResu
     }
 
     let expected: Vec<String> = (0..30).map(|index| format!("f{index:02}")).collect();
-    assert_eq!(names, expected);
-    assert!(pages > 1, "a 900-byte page must not hold 30 matches");
+    ensure_eq(&names, &expected, "names == expected")?;
+    ensure(pages > 1, "a 900-byte page must not hold 30 matches")?;
     Ok(())
 }
 
@@ -327,14 +423,32 @@ fn a_page_bytes_override_changes_the_page_and_is_echoed() -> TestResult {
     )?;
     let default = run_with(&shaped_request(&project, None, None), &limits, usize::MAX)?;
 
-    assert_eq!(small.page.page_bytes, 900);
-    assert_eq!(default.page.page_bytes, limits.default_page_bytes);
-    assert!(small.matches.len() < default.matches.len());
-    assert_eq!(default.matches.len(), 30);
-    assert!(default.page.complete && default.page.cursor.is_none());
-    assert_eq!(default.page.limited_by, PageLimit::None);
-    assert_eq!(small.page.limited_by, PageLimit::PageBytes);
-    assert!(small.page.bytes_used <= 900);
+    ensure_eq(&small.page.page_bytes, &900, "small.page.page_bytes == 900")?;
+    ensure_eq(
+        &default.page.page_bytes,
+        &limits.default_page_bytes,
+        "default.page.page_bytes == limits.default_page_bytes",
+    )?;
+    ensure(
+        small.matches.len() < default.matches.len(),
+        "small.matches.len() < default.matches.len()",
+    )?;
+    ensure_eq(&default.matches.len(), &30, "default.matches.len() == 30")?;
+    ensure(
+        default.page.complete && default.page.cursor.is_none(),
+        "default.page.complete && default.page.cursor.is_none()",
+    )?;
+    ensure_eq(
+        &default.page.limited_by,
+        &PageLimit::None,
+        "default.page.limited_by == PageLimit::None",
+    )?;
+    ensure_eq(
+        &small.page.limited_by,
+        &PageLimit::PageBytes,
+        "small.page.limited_by == PageLimit::PageBytes",
+    )?;
+    ensure(small.page.bytes_used <= 900, "small.page.bytes_used <= 900")?;
     Ok(())
 }
 
@@ -352,9 +466,17 @@ fn a_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling() -> 
         usize::MAX,
     )?;
 
-    assert_eq!(response.page.page_bytes, 4_096);
-    assert_eq!(response.page.limited_by, PageLimit::Ceiling);
-    assert!(!response.page.complete);
+    ensure_eq(
+        &response.page.page_bytes,
+        &4_096,
+        "response.page.page_bytes == 4_096",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::Ceiling,
+        "response.page.limited_by == PageLimit::Ceiling",
+    )?;
+    ensure(!response.page.complete, "!response.page.complete")?;
     Ok(())
 }
 
@@ -368,9 +490,16 @@ fn a_match_count_exactly_at_the_cap_is_not_reported_as_cut() -> TestResult {
 
     let response = run_with(&shaped_request(&project, None, None), &limits, usize::MAX)?;
 
-    assert_eq!(response.matches.len(), 4);
-    assert!(response.page.complete && response.page.cursor.is_none());
-    assert_eq!(response.page.limited_by, PageLimit::None);
+    ensure_eq(&response.matches.len(), &4, "response.matches.len() == 4")?;
+    ensure(
+        response.page.complete && response.page.cursor.is_none(),
+        "response.page.complete && response.page.cursor.is_none()",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::None,
+        "response.page.limited_by == PageLimit::None",
+    )?;
     Ok(())
 }
 
@@ -396,10 +525,25 @@ fn paged_structure_continuation_keeps_the_page_budget_of_page_one() -> TestResul
     // The continuation names no page_bytes and runs under the larger default.
     let second = page_of(&project, Some(&token), None, &manager)?;
 
-    assert_eq!(first.page.page_bytes, SMALL_PAGE);
-    assert_eq!(second.page.page_bytes, SMALL_PAGE);
-    assert!(second.page.bytes_used <= SMALL_PAGE);
-    assert_eq!(second.page.limited_by, PageLimit::PageBytes);
+    ensure_eq(
+        &first.page.page_bytes,
+        &SMALL_PAGE,
+        "first.page.page_bytes == SMALL_PAGE",
+    )?;
+    ensure_eq(
+        &second.page.page_bytes,
+        &SMALL_PAGE,
+        "second.page.page_bytes == SMALL_PAGE",
+    )?;
+    ensure(
+        second.page.bytes_used <= SMALL_PAGE,
+        "second.page.bytes_used <= SMALL_PAGE",
+    )?;
+    ensure_eq(
+        &second.page.limited_by,
+        &PageLimit::PageBytes,
+        "second.page.limited_by == PageLimit::PageBytes",
+    )?;
     second.page.cursor.as_ref().check("still several pages")?;
     Ok(())
 }
