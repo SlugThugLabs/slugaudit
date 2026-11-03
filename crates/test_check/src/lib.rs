@@ -167,3 +167,81 @@ impl<T: fmt::Debug, E> CheckErr<T, E> for Result<T, E> {
         }
     }
 }
+
+/// Replacement for `assert!`: returns a [`TestError`] naming the caller's
+/// `file:line` and `what` when `condition` is false.
+///
+/// # Errors
+///
+/// Returns the [`TestError`] when `condition` is `false`.
+#[track_caller]
+pub fn ensure(condition: bool, what: impl fmt::Display) -> TestResult {
+    let location = Location::caller();
+    if condition {
+        Ok(())
+    } else {
+        Err(TestError::new(
+            location,
+            &what.to_string(),
+            "condition was false".to_owned(),
+        ))
+    }
+}
+
+/// Replacement for `assert_eq!`: returns a [`TestError`] naming the caller's
+/// `file:line`, `what`, and both values when `left != right`.
+///
+/// The error text is `<file>:<line>: <what>: expected left == right`, then
+/// `left: {left:?}` and `right: {right:?}` on their own lines.
+///
+/// # Errors
+///
+/// Returns the [`TestError`] when `left == right` is false.
+#[track_caller]
+pub fn ensure_eq<L, R>(left: L, right: R, what: impl fmt::Display) -> TestResult
+where
+    L: PartialEq<R> + fmt::Debug,
+    R: fmt::Debug,
+{
+    let location = Location::caller();
+    let outcome = if left == right {
+        Ok(())
+    } else {
+        Err(TestError::new(
+            location,
+            &what.to_string(),
+            format!("expected left == right\nleft: {left:?}\nright: {right:?}"),
+        ))
+    };
+    drop(left);
+    outcome
+}
+
+/// Replacement for `assert_ne!`: returns a [`TestError`] naming the caller's
+/// `file:line`, `what`, and both values when `left == right`.
+///
+/// The error text is `<file>:<line>: <what>: expected left != right`, then
+/// `left: {left:?}` and `right: {right:?}` on their own lines.
+///
+/// # Errors
+///
+/// Returns the [`TestError`] when `left != right` is false.
+#[track_caller]
+pub fn ensure_ne<L, R>(left: L, right: R, what: impl fmt::Display) -> TestResult
+where
+    L: PartialEq<R> + fmt::Debug,
+    R: fmt::Debug,
+{
+    let location = Location::caller();
+    let outcome = if left == right {
+        Err(TestError::new(
+            location,
+            &what.to_string(),
+            format!("expected left != right\nleft: {left:?}\nright: {right:?}"),
+        ))
+    } else {
+        Ok(())
+    };
+    drop(left);
+    outcome
+}

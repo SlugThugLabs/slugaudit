@@ -15,3 +15,13 @@ disallowed-methods = [
     { path = "core::result::Result::unwrap_or_else", reason = "return the error, or record and return it beside the result" },
     { path = "core::result::Result::unwrap_or_default", reason = "return the error, or record and return it beside the result" },
 ]
+
+# Owner decision (2026-11-03): no panics anywhere, tests included, and no swallowed errors; a failed assert, an out-of-range index and an overflow are panics or silent wrong answers.
+disallowed-macros = [
+    { path = "std::assert", reason = "use slugaudit_test_check::ensure, which returns an error with file:line" },
+    { path = "std::assert_eq", reason = "use slugaudit_test_check::ensure_eq, which returns an error with file:line" },
+    { path = "std::assert_ne", reason = "use slugaudit_test_check::ensure_ne, which returns an error with file:line" },
+    { path = "std::debug_assert", reason = "use slugaudit_test_check::ensure, or return an error with check()" },
+    { path = "std::debug_assert_eq", reason = "use slugaudit_test_check::ensure_eq, or return an error with check()" },
+    { path = "std::debug_assert_ne", reason = "use slugaudit_test_check::ensure_ne, or return an error with check()" },
+]
