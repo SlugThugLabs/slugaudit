@@ -10,7 +10,7 @@ use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::{stored_paths, write};
 use rusqlite::OptionalExtension;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 struct FileRow {
@@ -67,6 +67,60 @@ fn resolved_target(connection: &Connection, from: &str) -> TestResult<Option<Str
         .flatten())
 }
 
+/// What the first sync of the polyglot project must have stored: malformed
+/// source as evidence, an inert binary file, and resolved import edges.
+fn assert_first_sync_evidence(connection: &Connection) -> TestResult {
+    // Malformed source is recorded as evidence, not silently treated as a
+    // clean parse.
+    let broken = file_row(connection, "pkg/broken.py")?;
+    ensure_eq(
+        &broken.parse_outcome,
+        &"SyntaxErrors",
+        "broken.parse_outcome == \"SyntaxErrors\"",
+    )?;
+    ensure(
+        !diagnostic_messages(connection, "pkg/broken.py")?.is_empty(),
+        "a malformed file must produce at least one Diagnostic evidence row",
+    )?;
+
+    // The binary file is classified and inert: no content, no language, and
+    // (implicitly, via foreign key cascade behavior elsewhere) no evidence.
+    let logo = file_row(connection, "assets/logo.png")?;
+    ensure_eq(&logo.file_kind, &"binary", "logo.file_kind == \"binary\"")?;
+    ensure_eq(&logo.content, &None, "logo.content == None")?;
+    ensure_eq(&logo.language, &None, "logo.language == None")?;
+    let logo_evidence: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
+             WHERE f.path = 'assets/logo.png'",
+            [],
+            |row| row.get(0),
+        )
+        .check("count logo evidence")?;
+    ensure_eq(&logo_evidence, &0, "a binary file must carry no evidence")?;
+
+    // The real Python cross-module import resolves.
+    ensure_eq(
+        &resolved_target(connection, "pkg/main.py")?.as_deref(),
+        &Some("pkg/helper.py"),
+        "resolved_target(connection, \"pkg/main.py\")?.as_deref() == Some(\"pkg/helper.py\")",
+    )?;
+
+    // Both directions of the circular JS import pair resolve independently;
+    // nothing loops or panics resolving a cycle.
+    ensure_eq(
+        &resolved_target(connection, "src/circular_a.js")?.as_deref(),
+        &Some("src/circular_b.js"),
+        "resolved_target(connection, \"src/circular_a.js\")?.as_deref() == Some(\"src/circular_b.js\")",
+    )?;
+    ensure_eq(
+        &resolved_target(connection, "src/circular_b.js")?.as_deref(),
+        &Some("src/circular_a.js"),
+        "resolved_target(connection, \"src/circular_b.js\")?.as_deref() == Some(\"src/circular_a.js\")",
+    )?;
+    Ok(())
+}
+
 #[test]
 fn a_realistic_polyglot_project_syncs_correctly_end_to_end() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
@@ -110,50 +164,10 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() -> TestResult {
         &crate::progress::NoopProgressSink,
     )
     .check("first publish")?;
-    assert_eq!(first.added, 10);
-    assert_eq!(first.deleted, 0);
+    ensure_eq(&first.added, &10, "first.added == 10")?;
+    ensure_eq(&first.deleted, &0, "first.deleted == 0")?;
 
-    // Malformed source is recorded as evidence, not silently treated as a
-    // clean parse.
-    let broken = file_row(&connection, "pkg/broken.py")?;
-    assert_eq!(broken.parse_outcome, "SyntaxErrors");
-    assert!(
-        !diagnostic_messages(&connection, "pkg/broken.py")?.is_empty(),
-        "a malformed file must produce at least one Diagnostic evidence row"
-    );
-
-    // The binary file is classified and inert: no content, no language, and
-    // (implicitly, via foreign key cascade behavior elsewhere) no evidence.
-    let logo = file_row(&connection, "assets/logo.png")?;
-    assert_eq!(logo.file_kind, "binary");
-    assert_eq!(logo.content, None);
-    assert_eq!(logo.language, None);
-    let logo_evidence: i64 = connection
-        .query_row(
-            "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
-             WHERE f.path = 'assets/logo.png'",
-            [],
-            |row| row.get(0),
-        )
-        .check("count logo evidence")?;
-    assert_eq!(logo_evidence, 0, "a binary file must carry no evidence");
-
-    // The real Python cross-module import resolves.
-    assert_eq!(
-        resolved_target(&connection, "pkg/main.py")?.as_deref(),
-        Some("pkg/helper.py")
-    );
-
-    // Both directions of the circular JS import pair resolve independently;
-    // nothing loops or panics resolving a cycle.
-    assert_eq!(
-        resolved_target(&connection, "src/circular_a.js")?.as_deref(),
-        Some("src/circular_b.js")
-    );
-    assert_eq!(
-        resolved_target(&connection, "src/circular_b.js")?.as_deref(),
-        Some("src/circular_a.js")
-    );
+    assert_first_sync_evidence(&connection)?;
 
     // --- Second sync: a deletion, and a rename simulated as delete+add. ---
     fs::remove_file(project.path().join("to_delete.py")).check("delete file")?;
@@ -167,30 +181,50 @@ fn a_realistic_polyglot_project_syncs_correctly_end_to_end() -> TestResult {
         &crate::progress::NoopProgressSink,
     )
     .check("second publish")?;
-    assert_eq!(
-        second.deleted, 2,
-        "the outright deletion and the old half of the rename both count as deletions"
-    );
-    assert_eq!(
-        second.added, 1,
+    ensure_eq(
+        &second.deleted,
+        &2,
+        "the outright deletion and the old half of the rename both count as deletions",
+    )?;
+    ensure_eq(
+        &second.added,
+        &1,
         "this codebase does not track renames as a distinct operation: \
-         the new half of the rename is just an Added file with the same content"
-    );
+         the new half of the rename is just an Added file with the same content",
+    )?;
 
     let paths = stored_paths(&connection)?;
-    assert!(!paths.contains(&"to_delete.py".to_owned()));
-    assert!(!paths.contains(&"old_name.py".to_owned()));
-    assert!(paths.contains(&"new_name.py".to_owned()));
+    ensure(
+        !paths.contains(&"to_delete.py".to_owned()),
+        "!paths.contains(&\"to_delete.py\".to_owned())",
+    )?;
+    ensure(
+        !paths.contains(&"old_name.py".to_owned()),
+        "!paths.contains(&\"old_name.py\".to_owned())",
+    )?;
+    ensure(
+        paths.contains(&"new_name.py".to_owned()),
+        "paths.contains(&\"new_name.py\".to_owned())",
+    )?;
     let renamed = file_row(&connection, "new_name.py")?;
-    assert_eq!(renamed.content.as_deref(), Some("y = 2\n"));
+    ensure_eq(
+        &renamed.content.as_deref(),
+        &Some("y = 2\n"),
+        "renamed.content.as_deref() == Some(\"y = 2\\n\")",
+    )?;
 
     // Everything untouched by the second sync is still intact.
-    assert_eq!(
-        resolved_target(&connection, "src/circular_a.js")?.as_deref(),
-        Some("src/circular_b.js")
-    );
+    ensure_eq(
+        &resolved_target(&connection, "src/circular_a.js")?.as_deref(),
+        &Some("src/circular_b.js"),
+        "resolved_target(&connection, \"src/circular_a.js\")?.as_deref() == Some(\"src/circular_b.js\")",
+    )?;
     let logo_after: FileRow = file_row(&connection, "assets/logo.png")?;
-    assert_eq!(logo_after.file_kind, "binary");
+    ensure_eq(
+        &logo_after.file_kind,
+        &"binary",
+        "logo_after.file_kind == \"binary\"",
+    )?;
     Ok(())
 }
 
@@ -232,14 +266,27 @@ fn a_published_file_row_carries_its_path_derived_class() -> TestResult {
             )
             .check(&format!("a row for {path}"))
     };
-    assert_eq!(class_of("src/auth.rs")?.0, "authored");
-    assert_eq!(class_of("src/generated/api.rs")?.0, "generated");
-    assert_eq!(class_of("vendor/dep/lib.rs")?.0, "vendored");
+    ensure_eq(
+        &class_of("src/auth.rs")?.0,
+        &"authored",
+        "class_of(\"src/auth.rs\")?.0 == \"authored\"",
+    )?;
+    ensure_eq(
+        &class_of("src/generated/api.rs")?.0,
+        &"generated",
+        "class_of(\"src/generated/api.rs\")?.0 == \"generated\"",
+    )?;
+    ensure_eq(
+        &class_of("vendor/dep/lib.rs")?.0,
+        &"vendored",
+        "class_of(\"vendor/dep/lib.rs\")?.0 == \"vendored\"",
+    )?;
     let (huge_class, huge_kind) = class_of("vendor/dep/huge.rs")?;
-    assert_eq!(huge_kind, "skipped", "the oversize file was never read");
-    assert_eq!(
-        huge_class, "vendored",
-        "a skipped file's class is derived from its path, not its content"
-    );
+    ensure_eq(&huge_kind, &"skipped", "the oversize file was never read")?;
+    ensure_eq(
+        &huge_class,
+        &"vendored",
+        "a skipped file's class is derived from its path, not its content",
+    )?;
     Ok(())
 }

@@ -6,7 +6,7 @@
 use super::ResultStoreSlot;
 use crate::store::open_existing;
 use crate::sync::test_support::{create_project, stored_paths, sync_project, write};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 use std::path::Path;
 
 const RESULTS: &str = ".planning/slugaudit/results";
@@ -30,14 +30,14 @@ fn plant_store_files(root: &Path) -> TestResult<(ResultStoreSlot, Vec<String>)> 
         ));
     }
     planted.sort();
-    assert!(
+    ensure(
         planted.iter().any(|path| has_extension(path, "lock")),
-        "the owner lock exists: {planted:?}"
-    );
-    assert!(
+        format!("the owner lock exists: {planted:?}"),
+    )?;
+    ensure(
         planted.iter().any(|path| path.ends_with("stray-result.db")),
-        "the stray result file exists: {planted:?}"
-    );
+        format!("the stray result file exists: {planted:?}"),
+    )?;
     Ok((slot, planted))
 }
 
@@ -63,17 +63,17 @@ fn result_store_proof_results_dir_and_lock_file_are_not_discovered() -> TestResu
 
     let connection = open_existing(&synced.database_path).check("open the index")?;
     let paths = stored_paths(&connection)?;
-    assert_eq!(paths, ["lib.rs"], "planted files: {planted:?}");
+    ensure_eq(&paths, &["lib.rs"], format!("planted files: {planted:?}"))?;
     let (discovered, _skipped) =
         crate::sync::discovery::discover(project.path()).check("discovery succeeds")?;
     let discovered: Vec<String> = discovered
         .into_iter()
         .map(|file| file.relative_path)
         .collect();
-    assert!(
+    ensure(
         discovered.iter().all(|path| !mentions_results(path)),
-        "discovered: {discovered:?}"
-    );
+        format!("discovered: {discovered:?}"),
+    )?;
     Ok(())
 }
 
@@ -96,12 +96,16 @@ fn result_store_proof_sync_after_the_store_opens_does_not_index_it() -> TestResu
         )
         .check("sync succeeds")?;
 
-    assert_ne!(first.revision_id, second.revision_id, "the edit published");
+    ensure_ne(
+        &first.revision_id,
+        &second.revision_id,
+        "the edit published",
+    )?;
     let connection = open_existing(&second.database_path).check("open the index")?;
-    assert_eq!(
-        stored_paths(&connection)?,
-        ["lib.rs"],
-        "planted files: {planted:?}"
-    );
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &["lib.rs"],
+        format!("planted files: {planted:?}"),
+    )?;
     Ok(())
 }

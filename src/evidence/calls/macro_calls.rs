@@ -13,8 +13,10 @@ use crate::model::{EvidenceItem, EvidenceOrigin, PositionOverflow};
 use std::rc::Rc;
 use tree_sitter_language_pack::Node;
 
-const PREFIX: &str = "fn __slug_macro() { __slug_probe(";
-const SUFFIX: &str = "); }";
+mod frame;
+use frame::{
+    Fragment, PREFIX, SUFFIX, absolute_offset, nested_macro_range, within_synthetic_frame,
+};
 
 /// How many macro invocations may nest inside one another before the
 /// extraction stops reparsing. Each level reparses its whole body, so a file
@@ -32,15 +34,6 @@ pub(super) struct MacroCalls {
     pub(super) rows: Vec<(usize, usize, EvidenceItem)>,
     pub(super) capped: bool,
     pub(super) timed_out: bool,
-}
-
-/// One reparsed fragment: the synthetic text, its frame in the source, and
-/// how many macros it sits inside. Shared by every pending node of its tree.
-struct Fragment {
-    wrapped: String,
-    start: usize,
-    end: usize,
-    macro_depth: u32,
 }
 
 /// One node waiting on the scan stack, with its depth in its own fragment's
@@ -131,15 +124,26 @@ fn scan(
         } else {
             caller.clone()
         };
+        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
+        // would mean the depth bound was passed, which the scan reports as cut.
+        let Some(child_depth) = depth.checked_add(1) else {
+            out.capped = true;
+            continue;
+        };
         crate::evidence::push_children(&mut pending, &node, |child| Pending {
             node: child,
             fragment: Rc::clone(&fragment),
-            depth: depth + 1,
+            depth: child_depth,
             caller: below.clone(),
         });
         if in_frame && let Some(nested) = nested_macro_range(&node, &fragment) {
-            let nested = (nested, fragment.macro_depth + 1);
-            open_fragment(context, nested, caller, &mut pending, out);
+            // A failed increment is past `MAX_MACRO_DEPTH`, which caps the scan.
+            match fragment.macro_depth.checked_add(1) {
+                Some(nested_depth) => {
+                    open_fragment(context, (nested, nested_depth), caller, &mut pending, out);
+                }
+                None => out.capped = true,
+            }
         }
     }
     Ok(())
@@ -191,13 +195,6 @@ fn open_fragment(
     });
 }
 
-/// True when the node's byte range sits inside the probe body of the
-/// synthetic frame (not in the `PREFIX`/`SUFFIX` scaffolding itself).
-fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
-    node.start_byte() >= PREFIX.len()
-        && node.end_byte() <= wrapped.len().saturating_sub(SUFFIX.len())
-}
-
 /// Builds one call row for a `call_expression`/`macro_invocation` node mapped
 /// back to original-source coordinates, or `None` when the node is the probe
 /// wrapper itself, has no callee, or falls outside the fragment. An error
@@ -211,8 +208,13 @@ fn emit_call_row(
 ) -> Result<Option<(usize, usize, EvidenceItem)>, NodeError> {
     let wrapped = fragment.wrapped.as_str();
     let macro_call = node.kind() == "macro_invocation";
-    let start = fragment.start + node.start_byte() - PREFIX.len();
-    let end = fragment.start + node.end_byte() - PREFIX.len();
+    // An offset that cannot be mapped back lies outside the fragment.
+    let (Some(start), Some(end)) = (
+        absolute_offset(fragment.start, node.start_byte()),
+        absolute_offset(fragment.start, node.end_byte()),
+    ) else {
+        return Ok(None);
+    };
     if end > fragment.end {
         return Ok(None);
     }
@@ -244,18 +246,4 @@ fn emit_call_row(
     };
     // The key is assigned by `calls::emit_call`, after its dedup.
     Ok(Some((start, end, call_item(String::new(), site))))
-}
-
-/// A nested macro still owns an opaque token tree after the outer fragment is
-/// reparsed. Returns its contents' range in absolute source coordinates, so
-/// the scan reparses it with the caller in effect at the macro, or
-/// `None` when `node` is not a macro with a non-empty body inside the frame.
-fn nested_macro_range(node: &Node, fragment: &Fragment) -> Option<(usize, usize)> {
-    if node.kind() != "macro_invocation" {
-        return None;
-    }
-    let tokens = named_children(node).find(|n| n.kind() == "token_tree")?;
-    let start = fragment.start + tokens.start_byte() + 1 - PREFIX.len();
-    let end = fragment.start + tokens.end_byte().saturating_sub(1) - PREFIX.len();
-    (end <= fragment.end && start < end).then_some((start, end))
 }

@@ -1,6 +1,7 @@
 use super::*;
+use crate::evidence::tests::field;
 use crate::model::{EvidenceKind, EvidenceOrigin};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// `extract` also reports whether a walker stopped at the depth cap. These
 /// tests are about the items, so they take the first half; the cap has its
@@ -23,15 +24,28 @@ message = \"hi\"\n    \
 return message\n";
     let items = extract_items("python", source)?;
 
-    assert!(kinds(&items).contains(&&EvidenceKind::Structure));
-    assert!(kinds(&items).contains(&&EvidenceKind::Import));
-    assert!(kinds(&items).contains(&&EvidenceKind::Comment));
+    ensure(
+        kinds(&items).contains(&&EvidenceKind::Structure),
+        "kinds(&items).contains(&&EvidenceKind::Structure)",
+    )?;
+    ensure(
+        kinds(&items).contains(&&EvidenceKind::Import),
+        "kinds(&items).contains(&&EvidenceKind::Import)",
+    )?;
+    ensure(
+        kinds(&items).contains(&&EvidenceKind::Comment),
+        "kinds(&items).contains(&&EvidenceKind::Comment)",
+    )?;
 
     let structure = items
         .iter()
         .find(|item| item.kind == EvidenceKind::Structure)
         .check("a structure item")?;
-    assert_eq!(structure.payload["name"], "greet");
+    ensure_eq(
+        field(&structure.payload, "name"),
+        &"greet",
+        "structure.payload[\"name\"] == \"greet\"",
+    )?;
     Ok(())
 }
 
@@ -45,17 +59,18 @@ fn extracts_rust_structure_and_a_nested_child_gets_a_distinct_key() -> TestResul
         .filter(|item| item.kind == EvidenceKind::Structure)
         .map(|item| item.key.as_str())
         .collect();
-    assert!(
+    ensure(
         structure_keys.len() >= 2,
-        "expected at least struct + impl/method"
-    );
-    assert_eq!(
-        structure_keys.len(),
-        structure_keys
+        "expected at least struct + impl/method",
+    )?;
+    ensure_eq(
+        &structure_keys.len(),
+        &(structure_keys
             .iter()
             .collect::<std::collections::HashSet<_>>()
-            .len()
-    );
+            .len()),
+        "structure_keys.len() == structure_keys .iter() .collect::<std::collections::HashSet<_>>() .len()",
+    )?;
     Ok(())
 }
 
@@ -73,12 +88,12 @@ fn a_source_nested_past_the_walk_bound_is_truncated_not_aborted() -> TestResult 
     let (items, depth_capped) =
         extract("python", &source).check("a deep source is truncated, not a failure")?;
 
-    assert!(
+    ensure(
         depth_capped,
         "a walk that stopped at the bound must report it, or the extraction \
-         claims a completeness it did not reach"
-    );
-    assert!(!items.is_empty(), "the walk still yields what it reached");
+         claims a completeness it did not reach",
+    )?;
+    ensure(!items.is_empty(), "the walk still yields what it reached")?;
     Ok(())
 }
 
@@ -98,8 +113,8 @@ fn a_rust_macro_nested_past_the_macro_bound_is_reported_partial_not_aborted() ->
     let (items, depth_capped) =
         extract("rust", &source).check("a deep macro is truncated, not a failure")?;
 
-    assert!(depth_capped, "a macro scan cut short must be reported");
-    assert!(!items.is_empty(), "the walk still yields what it reached");
+    ensure(depth_capped, "a macro scan cut short must be reported")?;
+    ensure(!items.is_empty(), "the walk still yields what it reached")?;
     Ok(())
 }
 
@@ -109,12 +124,13 @@ fn a_rust_macro_nested_within_the_bound_is_fully_scanned() -> TestResult {
 
     let (items, depth_capped) = extract("rust", source).check("extract")?;
 
-    assert!(!depth_capped);
-    assert!(
+    ensure(!depth_capped, "!depth_capped")?;
+    ensure(
         items
             .iter()
-            .any(|item| item.payload["callee_name"] == "expect")
-    );
+            .any(|item| *field(&item.payload, "callee_name") == "expect"),
+        "items .iter() .any(|item| item.payload[\"callee_name\"] == \"expect\")",
+    )?;
     Ok(())
 }
 
@@ -135,19 +151,21 @@ fn a_multi_megabyte_single_line_file_indexes_in_linear_time() -> TestResult {
         .iter()
         .filter(|item| item.kind == EvidenceKind::Call)
         .count();
-    assert_eq!(calls, 20_000);
-    assert!(
+    ensure_eq(&calls, &20_000, "calls == 20_000")?;
+    ensure(
         started.elapsed() < std::time::Duration::from_secs(20),
-        "indexing took {:?}",
-        started.elapsed()
-    );
+        format!("indexing took {:?}", started.elapsed()),
+    )?;
     Ok(())
 }
 
 #[test]
 fn malformed_source_still_produces_diagnostics() -> TestResult {
     let items = extract_items("rust", "fn broken( {\n")?;
-    assert!(kinds(&items).contains(&&EvidenceKind::Diagnostic));
+    ensure(
+        kinds(&items).contains(&&EvidenceKind::Diagnostic),
+        "kinds(&items).contains(&&EvidenceKind::Diagnostic)",
+    )?;
     Ok(())
 }
 
@@ -155,10 +173,13 @@ fn malformed_source_still_produces_diagnostics() -> TestResult {
 fn every_item_carries_a_span_or_an_explicit_missing_reason() -> TestResult {
     let source = "fn a() {}\nfn b() {}\n";
     let items = extract_items("rust", source)?;
-    assert!(!items.is_empty());
+    ensure(!items.is_empty(), "!items.is_empty()")?;
     for item in &items {
         match &item.span {
-            SpanAvailability::Present(span) => assert!(span.end_byte >= span.start_byte),
+            SpanAvailability::Present(span) => ensure(
+                span.end_byte >= span.start_byte,
+                "span.end_byte >= span.start_byte",
+            )?,
             SpanAvailability::NormalizerUnavailable
             | SpanAvailability::PackOmitted
             | SpanAvailability::DerivedEvidence => {}
@@ -171,13 +192,13 @@ fn every_item_carries_a_span_or_an_explicit_missing_reason() -> TestResult {
 fn unknown_language_is_a_typed_error_not_a_panic() -> TestResult {
     let err =
         extract("not-a-real-language", "irrelevant").check_err("unknown language should fail")?;
-    assert!(
+    ensure(
         matches!(
             err,
             ExtractError::Pack(PackError::Download(_) | PackError::LanguageNotFound(_))
         ),
-        "expected Download or LanguageNotFound error, got: {err:?}"
-    );
+        format!("expected Download or LanguageNotFound error, got: {err:?}"),
+    )?;
     Ok(())
 }
 
@@ -192,20 +213,25 @@ fn rust_let_bindings_surface_as_variable_symbols() -> TestResult {
     let vars: Vec<&EvidenceItem> = items
         .iter()
         .filter(|item| {
-            item.kind == EvidenceKind::Symbol && item.payload["kind"].as_str() == Some("Variable")
+            item.kind == EvidenceKind::Symbol
+                && field(&item.payload, "kind").as_str() == Some("Variable")
         })
         .collect();
 
     let names: Vec<&str> = vars
         .iter()
-        .map(|item| item.payload["name"].as_str().check("name is a string"))
+        .map(|item| {
+            field(&item.payload, "name")
+                .as_str()
+                .check("name is a string")
+        })
         .collect::<TestResult<_>>()?;
 
     // `first` and `second` are parameters; `winner` is a let binding.
-    assert!(
+    ensure(
         names.contains(&"winner"),
-        "expected the let binding `winner`, got {names:?}"
-    );
+        format!("expected the let binding `winner`, got {names:?}"),
+    )?;
     Ok(())
 }
 
@@ -218,20 +244,24 @@ fn rust_parameters_surface_as_variable_symbols() -> TestResult {
         .iter()
         .filter(|item| {
             item.kind == EvidenceKind::Symbol
-                && item.payload["kind"].as_str() == Some("Variable")
+                && field(&item.payload, "kind").as_str() == Some("Variable")
                 && item.origin == EvidenceOrigin::GenericWalker
         })
-        .map(|item| item.payload["name"].as_str().check("name is a string"))
+        .map(|item| {
+            field(&item.payload, "name")
+                .as_str()
+                .check("name is a string")
+        })
         .collect::<TestResult<_>>()?;
 
-    assert!(
+    ensure(
         names.contains(&"name"),
-        "expected param `name`, got {names:?}"
-    );
-    assert!(
+        format!("expected param `name`, got {names:?}"),
+    )?;
+    ensure(
         names.contains(&"age"),
-        "expected param `age`, got {names:?}"
-    );
+        format!("expected param `age`, got {names:?}"),
+    )?;
     Ok(())
 }
 
@@ -244,23 +274,27 @@ fn rust_struct_fields_surface_as_field_symbols() -> TestResult {
         .iter()
         .filter(|item| {
             item.kind == EvidenceKind::Symbol
-                && item.payload["kind"].as_str() == Some(r#"Other("Field")"#)
+                && field(&item.payload, "kind").as_str() == Some(r#"Other("Field")"#)
         })
         .collect();
 
     let names: Vec<&str> = fields
         .iter()
-        .map(|item| item.payload["name"].as_str().check("name is a string"))
+        .map(|item| {
+            field(&item.payload, "name")
+                .as_str()
+                .check("name is a string")
+        })
         .collect::<TestResult<_>>()?;
 
-    assert!(
+    ensure(
         names.contains(&"name"),
-        "expected field `name`, got {names:?}"
-    );
-    assert!(
+        format!("expected field `name`, got {names:?}"),
+    )?;
+    ensure(
         names.contains(&"age"),
-        "expected field `age`, got {names:?}"
-    );
+        format!("expected field `age`, got {names:?}"),
+    )?;
     Ok(())
 }
 
@@ -274,13 +308,17 @@ fn binding_names_are_sliced_from_source_not_hardcoded() -> TestResult {
     let names: Vec<&str> = items
         .iter()
         .filter(|item| item.kind == EvidenceKind::Symbol)
-        .map(|item| item.payload["name"].as_str().check("name is a string"))
+        .map(|item| {
+            field(&item.payload, "name")
+                .as_str()
+                .check("name is a string")
+        })
         .collect::<TestResult<_>>()?;
 
-    assert!(names.contains(&"file_path"), "got {names:?}");
-    assert!(names.contains(&"filepath"), "got {names:?}");
-    assert!(names.contains(&"file_path_len"), "got {names:?}");
-    assert!(names.contains(&"filepath_len"), "got {names:?}");
+    ensure(names.contains(&"file_path"), format!("got {names:?}"))?;
+    ensure(names.contains(&"filepath"), format!("got {names:?}"))?;
+    ensure(names.contains(&"file_path_len"), format!("got {names:?}"))?;
+    ensure(names.contains(&"filepath_len"), format!("got {names:?}"))?;
     Ok(())
 }
 
@@ -294,13 +332,17 @@ fn python_assignments_surface_as_variable_symbols() -> TestResult {
         .filter(|item| {
             item.kind == EvidenceKind::Symbol && item.origin == EvidenceOrigin::GenericWalker
         })
-        .map(|item| item.payload["name"].as_str().check("name is a string"))
+        .map(|item| {
+            field(&item.payload, "name")
+                .as_str()
+                .check("name is a string")
+        })
         .collect::<TestResult<_>>()?;
 
-    assert!(
+    ensure(
         names.contains(&"file_path") && names.contains(&"filepath"),
-        "expected both near-duplicate python bindings, got {names:?}"
-    );
+        format!("expected both near-duplicate python bindings, got {names:?}"),
+    )?;
     Ok(())
 }
 
@@ -315,13 +357,13 @@ fn pack_covered_languages_never_double_report_imports_via_the_generic_walker() -
         .iter()
         .filter(|item| item.kind == EvidenceKind::Import)
         .collect();
-    assert!(!import_items.is_empty(), "the pack finds the imports");
-    assert!(
+    ensure(!import_items.is_empty(), "the pack finds the imports")?;
+    ensure(
         import_items
             .iter()
             .all(|item| item.origin != EvidenceOrigin::GenericWalker),
-        "pack-covered languages must not re-extract imports with the generic walker"
-    );
+        "pack-covered languages must not re-extract imports with the generic walker",
+    )?;
     Ok(())
 }
 
@@ -341,7 +383,7 @@ fn binding_extraction_gracefully_degrades_for_an_unsupported_language() -> TestR
             item.kind == EvidenceKind::Symbol && item.origin == EvidenceOrigin::GenericWalker
         })
         .count();
-    assert_eq!(binding_count, 0, "no bindings to extract here");
+    ensure_eq(&binding_count, &0, "no bindings to extract here")?;
     Ok(())
 }
 
@@ -357,12 +399,12 @@ fn a_walker_parser_failure_marks_the_extraction_truncated() -> TestResult {
     let extraction = extract_extra_walkers("no-such-language-for-walker-test", &input, true)
         .check("run the walkers")?;
 
-    assert!(extraction.items.is_empty());
-    assert!(!extraction.timed_out, "no deadline, so no timeout");
-    assert!(
+    ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
+    ensure(!extraction.timed_out, "no deadline, so no timeout")?;
+    ensure(
         extraction.truncated,
-        "a failed parser setup must not read as a complete extraction"
-    );
+        "a failed parser setup must not read as a complete extraction",
+    )?;
     Ok(())
 }
 
@@ -400,30 +442,39 @@ fn a_wide_rust_node_is_walked_in_linear_time() -> TestResult {
     let extraction = extract_extra_walkers("rust", &input, true).check("run the walkers")?;
 
     let elapsed = started.elapsed();
-    assert!(
+    ensure(
         !extraction.timed_out,
-        "the walk timed out after {elapsed:?}"
-    );
-    assert!(!extraction.truncated);
+        format!("the walk timed out after {elapsed:?}"),
+    )?;
+    ensure(!extraction.truncated, "!extraction.truncated")?;
     let calls: Vec<&EvidenceItem> = extraction
         .items
         .iter()
         .filter(|item| item.kind == EvidenceKind::Call)
         .collect();
     // Every `f(1)` in both nodes, plus the `vec!` invocation itself.
-    assert_eq!(calls.len(), 2 * WIDE_NODE_ELEMENTS + 1);
-    assert!(calls.iter().all(|item| item.payload["caller"] == "run"));
+    ensure_eq(
+        &calls.len(),
+        &(2 * WIDE_NODE_ELEMENTS + 1),
+        "calls.len() == 2 * WIDE_NODE_ELEMENTS + 1",
+    )?;
+    ensure(
+        calls
+            .iter()
+            .all(|item| *field(&item.payload, "caller") == "run"),
+        "calls.iter().all(|item| item.payload[\"caller\"] == \"run\")",
+    )?;
     let bindings: Vec<&serde_json::Value> = extraction
         .items
         .iter()
         .filter(|item| item.kind == EvidenceKind::Symbol)
-        .map(|item| &item.payload["name"])
+        .map(|item| field(&item.payload, "name"))
         .collect();
-    assert_eq!(bindings, ["a", "b"]);
-    assert!(
+    ensure_eq(&bindings, &["a", "b"], "bindings == [\"a\", \"b\"]")?;
+    ensure(
         elapsed < std::time::Duration::from_secs(5),
-        "walking {WIDE_NODE_ELEMENTS}-wide nodes took {elapsed:?}"
-    );
+        format!("walking {WIDE_NODE_ELEMENTS}-wide nodes took {elapsed:?}"),
+    )?;
     Ok(())
 }
 
@@ -456,189 +507,11 @@ fn a_walk_past_its_deadline_is_timed_out_not_truncated() -> TestResult {
     )
     .check("walk the imports")?;
 
-    assert!(out.items.is_empty(), "{:?}", out.items);
-    assert!(out.timed_out);
-    assert!(!out.truncated);
+    ensure(out.items.is_empty(), format!("{:?}", out.items))?;
+    ensure(out.timed_out, "out.timed_out")?;
+    ensure(!out.truncated, "!out.truncated")?;
     Ok(())
 }
 
-/// The stack the stack-safety tests run extraction on: deliberately an eighth
-/// of the smallest stack production extracts on (2 MiB, see
-/// `crate::evidence::MAX_WALK_DEPTH`), so a regression trips here long before
-/// it can abort the server.
-const SMALL_TEST_STACK: usize = 256 * 1024;
-
-/// Runs `extract(language, source)` on a thread with `SMALL_TEST_STACK`. A
-/// stack overflow is not a panic: it aborts the whole test process, which is
-/// exactly the failure these tests exist to catch.
-fn extract_on_small_stack(
-    language: &'static str,
-    source: String,
-) -> TestResult<(Vec<EvidenceItem>, bool)> {
-    std::thread::Builder::new()
-        .stack_size(SMALL_TEST_STACK)
-        .spawn(move || extract(language, &source))
-        .check("spawn small-stack thread")?
-        .join()
-        .map_err(|panic| format!("{panic:?}"))
-        .check("extraction thread panicked")?
-        .check("extract")
-}
-
-/// `levels` nested `m!(...)` invocations, each wrapping its body in `parens`
-/// parentheses: every level reparses its body and walks a fresh synthetic tree
-/// just under the per-tree bound.
-fn nested_macro_source(levels: usize, parens: usize) -> String {
-    let open = format!("m!({}", "(".repeat(parens));
-    let close = format!("{})", ")".repeat(parens));
-    format!(
-        "fn run() {{ {}v.expect(){}; }}\n",
-        open.repeat(levels),
-        close.repeat(levels)
-    )
-}
-
-/// Reproducer: 30 macro levels x 480 parens, a 29 KB file. If the macro
-/// bound (64) and the tree-walk bound (512) multiplied instead of sharing one
-/// budget, it would abort a release build on a 2 MiB thread; on this 256 KiB
-/// stack that shows as the test process aborting with "has overflowed its
-/// stack".
-#[test]
-fn a_rust_file_of_nested_paren_heavy_macros_is_partial_on_a_small_stack() -> TestResult {
-    let (items, depth_capped) = extract_on_small_stack("rust", nested_macro_source(30, 480))?;
-
-    assert!(depth_capped, "the cut must be reported as Partial");
-    assert!(!items.is_empty(), "the walk still yields what it reached");
-    Ok(())
-}
-
-#[test]
-fn a_deeper_nested_macro_variant_is_partial_on_a_small_stack() -> TestResult {
-    let (_, depth_capped) = extract_on_small_stack("rust", nested_macro_source(200, 505))?;
-
-    assert!(depth_capped, "the cut must be reported as Partial");
-    Ok(())
-}
-
-#[test]
-fn deep_non_macro_nesting_is_partial_on_a_small_stack() -> TestResult {
-    let nesting = 20_000;
-    let rust = format!(
-        "fn run() {{ let x = {}f(1){}; }}\n",
-        "g(".repeat(nesting),
-        ")".repeat(nesting)
-    );
-    let python = format!("x = {}1{}\n", "(".repeat(nesting), ")".repeat(nesting));
-
-    let (_, rust_capped) = extract_on_small_stack("rust", rust)?;
-    let (_, python_capped) = extract_on_small_stack("python", python)?;
-
-    assert!(rust_capped, "a cut Rust call walk must be reported");
-    assert!(python_capped, "a cut binding walk must be reported");
-    Ok(())
-}
-
-/// Real code nests a few macros a few expressions deep; sharing one recursion
-/// budget across macro re-entry must not mark such a file Partial.
-#[test]
-fn a_moderately_nested_real_world_rust_file_is_not_partial() -> TestResult {
-    let source = r#"
-mod outer {
-    impl Server {
-        fn handle(&self, request: Request) -> Result<Response, Error> {
-            for item in request.items.iter().filter(|i| i.enabled) {
-                match item.kind {
-                    Kind::A => {
-                        if let Some(value) = item.value.as_ref() {
-                            tracing::info!(
-                                value = %format!("{}", vec![value.len(), helper(compute(value.get(0)))].len()),
-                                "handled"
-                            );
-                            assert_eq!(check(value), Ok(()), "{}", format!("{:?}", value.clone()));
-                        }
-                    }
-                    _ => println!("{}", format!("{}", write!(out, "{}", item.name.trim()).is_ok())),
-                }
-            }
-            Ok(Response::new(vec![json!({"a": [1, 2, {"b": nested(call(x))}]})]))
-        }
-    }
-}
-"#;
-
-    let (items, depth_capped) = extract_on_small_stack("rust", source.to_owned())?;
-
-    assert!(!depth_capped, "ordinary nesting must stay Full");
-    for name in ["compute", "check", "trim", "nested"] {
-        assert!(
-            items.iter().any(|item| item.payload["callee_name"] == name),
-            "the call inside the macros, {name}, must still be recovered"
-        );
-    }
-    Ok(())
-}
-
-/// SlugAudit's own walkers use constant stack, but the language pack's JSON
-/// value extraction recurses (bounded at its own depth 512) and is the deepest
-/// stack user measured on the extraction path: 1646 KiB in a debug build,
-/// 455 KiB in release (pack 1.18.0, Rust 1.97.1). This pins that
-/// it still fits the smallest production stack (2 MiB), so a pack bump that
-/// deepens it fails here instead of aborting the server.
-#[test]
-fn a_json_file_nested_past_the_pack_bound_fits_the_production_stack() -> TestResult {
-    let nesting = 20_000;
-    let source = format!("{}1{}", "[".repeat(nesting), "]".repeat(nesting));
-
-    let (_, depth_capped) = std::thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(move || extract("json", &source))
-        .check("spawn production-size thread")?
-        .join()
-        .map_err(|panic| format!("{panic:?}"))
-        .check("extraction thread panicked")?
-        .check("extract")?;
-
-    assert!(
-        depth_capped,
-        "returning at all is the point; the walker cut is still reported"
-    );
-    Ok(())
-}
-
-/// The pack caches one parser per language per thread, and a parse cancelled
-/// by the progress callback leaves that parser to resume the cancelled
-/// document on its next use (tree-sitter requires `reset()`, which the pack's
-/// `process()` does not call). A bounded extraction therefore must not run
-/// on a thread whose cached parser it can poison: the file parsed next on
-/// the same thread would be read against the wrong source (a
-/// slice-out-of-bounds panic inside the pack).
-#[test]
-fn a_parse_cut_at_the_deadline_does_not_corrupt_the_next_parse_on_the_same_thread() -> TestResult {
-    let generous = Deadline::after(std::time::Duration::from_mins(10));
-    let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
-    let big = line.repeat(400 * 1024 / line.len());
-    extract_within("rust", "pub fn warm() {}\n", Some(&generous))
-        .check("warm the cached parser")?;
-
-    let cut = extract_within(
-        "rust",
-        &big,
-        Some(&Deadline::after(std::time::Duration::from_millis(20))),
-    );
-    let next = extract_within("rust", "pub fn after() {}\n", Some(&generous))
-        .check("the next file parses normally")?;
-
-    assert!(
-        matches!(cut, Err(ExtractError::Pack(PackError::ParseTimeout { .. }))),
-        "the large parse is cancelled by its 20 ms budget"
-    );
-    let names: Vec<&str> = next
-        .items
-        .iter()
-        .filter(|item| item.kind == EvidenceKind::Structure)
-        .filter_map(|item| item.payload["name"].as_str())
-        .collect();
-    assert_eq!(names, ["after"]);
-    assert!(!next.timed_out);
-    Ok(())
-}
+#[path = "normalize_stack_tests.rs"]
+mod stack;

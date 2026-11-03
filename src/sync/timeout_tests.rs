@@ -11,7 +11,7 @@ use crate::sync::discovery::{discover, discover_with_deadline};
 use crate::sync::sample::sample_all_with_deadline;
 use crate::sync::test_support::{stored_paths, write};
 use crate::util::Deadline;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::time::Duration;
 
 fn tiny_budget() -> Deadline {
@@ -28,14 +28,14 @@ fn discovery_times_out_when_the_walk_budget_is_exhausted() -> TestResult {
 
     let error = discover_with_deadline(project.path(), &tiny_budget())
         .check_err("a spent budget must abort discovery")?;
-    assert!(
+    ensure(
         matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
-        "expected TimeBudgetExceeded, got {error:?}"
-    );
-    assert!(
+        format!("expected TimeBudgetExceeded, got {error:?}"),
+    )?;
+    ensure(
         error.to_string().contains("wall-clock time budget"),
-        "error should name the budget: {error}"
-    );
+        format!("error should name the budget: {error}"),
+    )?;
     Ok(())
 }
 
@@ -44,7 +44,7 @@ fn discovery_with_a_generous_budget_succeeds() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "a.rs", b"fn a() {}")?;
     let (files, _skipped) = discover(project.path()).check("discover")?;
-    assert_eq!(files.len(), 1);
+    ensure_eq(&files.len(), &1, "files.len() == 1")?;
     Ok(())
 }
 
@@ -64,10 +64,10 @@ fn sampling_times_out_when_the_budget_is_exhausted() -> TestResult {
     let Err(error) = result else {
         return Err("a spent budget must abort sampling".to_owned()).check("unexpected outcome");
     };
-    assert!(
+    ensure(
         matches!(error, PublishError::TimeBudgetExceeded { .. }),
-        "expected TimeBudgetExceeded, got {error:?}"
-    );
+        format!("expected TimeBudgetExceeded, got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -92,21 +92,21 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() -> TestResult {
 
     let error = result.check_err("a spent budget must abort the publish")?;
     let message = error.to_string();
-    assert!(
+    ensure(
         message.contains("wall-clock time budget"),
-        "error should name the budget: {error:?}"
-    );
+        format!("error should name the budget: {error:?}"),
+    )?;
     // The budget may be caught by discovery or by sampling depending on
     // which check runs first, so accept either variant — the point is that
     // a pathological repo can never stall the tool call.
-    assert!(
+    ensure(
         matches!(
             error,
             PublishError::TimeBudgetExceeded { .. }
                 | PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
         ),
-        "expected a time-budget error, got {error:?}"
-    );
+        format!("expected a time-budget error, got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -126,10 +126,10 @@ fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() -> TestResult {
 
     let error = discover_with_deadline(project.path(), &tiny_budget())
         .check_err("a spent budget must abort discovery mid-walk")?;
-    assert!(
+    ensure(
         matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
-        "expected TimeBudgetExceeded, got {error:?}"
-    );
+        format!("expected TimeBudgetExceeded, got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -155,17 +155,19 @@ fn analyze_under_a_spent_sync_deadline_records_parse_timeout_without_parsing() -
     .check("analyze the file")?;
 
     result.run.validate().check("the parser run validates")?;
-    assert_eq!(
-        result.run.outcome,
-        crate::model::ParseOutcome::Failed {
-            reason: "parse_timeout".to_owned()
-        }
-    );
-    assert_eq!(
-        result.run.completeness,
-        crate::model::ExtractionCompleteness::ContentOnly
-    );
-    assert!(result.evidence.is_empty(), "nothing was parsed");
+    ensure_eq(
+        &result.run.outcome,
+        &crate::model::ParseOutcome::Failed {
+            reason: "parse_timeout".to_owned(),
+        },
+        "result.run.outcome == crate::model::ParseOutcome::Failed { reason: \"parse_timeout\".to_owned() }",
+    )?;
+    ensure_eq(
+        &result.run.completeness,
+        &crate::model::ExtractionCompleteness::ContentOnly,
+        "result.run.completeness == crate::model::ExtractionCompleteness::ContentOnly",
+    )?;
+    ensure(result.evidence.is_empty(), "nothing was parsed")?;
     Ok(())
 }
 
@@ -194,18 +196,23 @@ fn a_parse_that_outlives_the_sync_budget_is_cancelled_and_recorded_parse_timeout
     .check("analyze the file")?;
     let elapsed = started.elapsed();
 
-    assert_eq!(
-        result.run.outcome,
-        crate::model::ParseOutcome::Failed {
-            reason: "parse_timeout".to_owned()
-        }
-    );
-    assert_eq!(
-        result.run.completeness,
-        crate::model::ExtractionCompleteness::ContentOnly
-    );
-    assert!(result.evidence.is_empty());
-    assert!(elapsed < Duration::from_secs(1), "analyze took {elapsed:?}");
+    ensure_eq(
+        &result.run.outcome,
+        &crate::model::ParseOutcome::Failed {
+            reason: "parse_timeout".to_owned(),
+        },
+        "result.run.outcome == crate::model::ParseOutcome::Failed { reason: \"parse_timeout\".to_owned() }",
+    )?;
+    ensure_eq(
+        &result.run.completeness,
+        &crate::model::ExtractionCompleteness::ContentOnly,
+        "result.run.completeness == crate::model::ExtractionCompleteness::ContentOnly",
+    )?;
+    ensure(result.evidence.is_empty(), "result.evidence.is_empty()")?;
+    ensure(
+        elapsed < Duration::from_secs(1),
+        format!("analyze took {elapsed:?}"),
+    )?;
     Ok(())
 }
 
@@ -238,17 +245,17 @@ fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() -> TestResult
     )
     .check_err("the sync budget ran out during the parse")?;
 
-    assert!(
+    ensure(
         matches!(
             error,
             PublishError::TimeBudgetExceeded { .. }
                 | PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
         ),
-        "expected a time-budget error, got {error:?}"
-    );
-    assert!(
+        format!("expected a time-budget error, got {error:?}"),
+    )?;
+    ensure(
         stored_paths(&connection)?.is_empty(),
-        "nothing was published"
-    );
+        "nothing was published",
+    )?;
     Ok(())
 }

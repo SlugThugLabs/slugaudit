@@ -5,7 +5,7 @@
 use super::*;
 use crate::store::open_read_write;
 use crate::sync::test_support::write;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 #[derive(Debug)]
@@ -64,7 +64,11 @@ fn a_python_relative_import_resolves_to_the_real_sibling_file() -> TestResult {
                 .map(|e| (&e.from, &e.to, &e.kind))
                 .collect::<Vec<_>>()
         ))?;
-    assert_eq!(resolved.to.as_deref(), Some("pkg/helper.py"));
+    ensure_eq(
+        &resolved.to.as_deref(),
+        &Some("pkg/helper.py"),
+        "resolved.to.as_deref() == Some(\"pkg/helper.py\")",
+    )?;
     Ok(())
 }
 
@@ -93,7 +97,11 @@ fn a_rust_crate_use_path_resolves_to_the_real_module_file() -> TestResult {
         .iter()
         .find(|edge| edge.from == "src/main.rs" && edge.kind == "Resolved")
         .check("a resolved edge")?;
-    assert_eq!(resolved.to.as_deref(), Some("src/helper.rs"));
+    ensure_eq(
+        &resolved.to.as_deref(),
+        &Some("src/helper.rs"),
+        "resolved.to.as_deref() == Some(\"src/helper.rs\")",
+    )?;
     Ok(())
 }
 
@@ -121,8 +129,8 @@ fn an_external_crate_use_is_recorded_as_external_with_no_target() -> TestResult 
         .iter()
         .find(|edge| edge.from == "src/main.rs")
         .check("an edge for main.rs")?;
-    assert_eq!(external.kind, "External");
-    assert_eq!(external.to, None);
+    ensure_eq(&external.kind, &"External", "external.kind == \"External\"")?;
+    ensure_eq(&external.to, &None, "external.to == None")?;
     Ok(())
 }
 
@@ -157,12 +165,20 @@ fn a_modified_file_gets_its_edges_replaced_not_duplicated() -> TestResult {
         .iter()
         .filter(|edge| edge.from == "pkg/main.py")
         .collect();
-    assert_eq!(
-        from_main.len(),
-        1,
-        "the stale edge to a.py must be gone, not accumulated alongside the new one"
-    );
-    assert_eq!(from_main[0].to.as_deref(), Some("pkg/b.py"));
+    ensure_eq(
+        &from_main.len(),
+        &1,
+        "the stale edge to a.py must be gone, not accumulated alongside the new one",
+    )?;
+    ensure_eq(
+        &from_main
+            .first()
+            .check("from_main[0] exists")?
+            .to
+            .as_deref(),
+        &Some("pkg/b.py"),
+        "from_main[0].to.as_deref() == Some(\"pkg/b.py\")",
+    )?;
     Ok(())
 }
 
@@ -201,18 +217,18 @@ fn generic_walker_languages_get_edges_through_the_full_pipeline() -> TestResult 
     .check("publish")?;
 
     let all = edges(&connection)?;
-    let assert_edge = |from: &str, to: &str| {
-        assert!(
-            all.iter().any(|edge| edge.from == from
-                && edge.kind == "Resolved"
-                && edge.to.as_deref() == Some(to)),
-            "expected a Resolved edge {from} -> {to} among {all:?}"
-        );
+    let assert_edge = |from: &str, to: &str| -> TestResult {
+        ensure(
+            all.iter().any(|edge| {
+                edge.from == from && edge.kind == "Resolved" && edge.to.as_deref() == Some(to)
+            }),
+            format!("expected a Resolved edge {from} -> {to} among {all:?}"),
+        )
     };
-    assert_edge("lib/main.dart", "helper.dart");
-    assert_edge("main.c", "local.h");
-    assert_edge("Program.cs", "Core/Helper.cs");
-    assert_edge("main.jl", "Helper.jl");
+    assert_edge("lib/main.dart", "helper.dart")?;
+    assert_edge("main.c", "local.h")?;
+    assert_edge("Program.cs", "Core/Helper.cs")?;
+    assert_edge("main.jl", "Helper.jl")?;
 
     // swift's module import is honestly External (no project file), not
     // faked as resolved.
@@ -220,8 +236,12 @@ fn generic_walker_languages_get_edges_through_the_full_pipeline() -> TestResult 
         .iter()
         .find(|edge| edge.from == "App.swift")
         .check("an edge for App.swift")?;
-    assert_eq!(swift_edge.kind, "External");
-    assert_eq!(swift_edge.to, None);
+    ensure_eq(
+        &swift_edge.kind,
+        &"External",
+        "swift_edge.kind == \"External\"",
+    )?;
+    ensure_eq(&swift_edge.to, &None, "swift_edge.to == None")?;
     Ok(())
 }
 
@@ -240,11 +260,12 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() -> TestResult {
         &crate::progress::NoopProgressSink,
     )
     .check("first publish")?;
-    assert!(
+    ensure(
         edges(&connection)?
             .iter()
-            .any(|edge| edge.kind == "Resolved")
-    );
+            .any(|edge| edge.kind == "Resolved"),
+        "edges(&connection)? .iter() .any(|edge| edge.kind == \"Resolved\")",
+    )?;
 
     fs::remove_file(project.path().join("pkg/helper.py")).check("delete target")?;
     publish(
@@ -255,12 +276,12 @@ fn a_deleted_target_file_cascades_away_its_incoming_edge() -> TestResult {
     )
     .check("second publish")?;
 
-    assert!(
+    ensure(
         !edges(&connection)?
             .iter()
             .any(|edge| edge.to.as_deref() == Some("pkg/helper.py")),
-        "an edge pointing at a deleted file must not survive"
-    );
+        "an edge pointing at a deleted file must not survive",
+    )?;
     Ok(())
 }
 
@@ -296,28 +317,33 @@ fn an_import_to_a_discovered_but_oversize_skipped_file_resolves() -> TestResult 
     )
     .check("publish")?;
 
-    assert!(
+    ensure(
         report
             .skipped
             .iter()
             .any(|file| file.absolute_path.ends_with("pkg/helper.py")),
-        "helper.py must be skipped as oversize, got {:?}",
-        report.skipped
-    );
+        format!(
+            "helper.py must be skipped as oversize, got {:?}",
+            report.skipped
+        ),
+    )?;
 
     let all = edges(&connection)?;
     let imported = all
         .iter()
         .find(|edge| edge.from == "pkg/main.py")
         .check(&format!("an edge from pkg/main.py among {all:?}"))?;
-    assert_eq!(
-        imported.kind, "Resolved",
-        "an import of a discovered-but-skipped file must not be reported Unresolved: {all:?}"
-    );
-    assert_eq!(
-        imported.to.as_deref(),
-        Some("pkg/helper.py"),
-        "the skipped file's existence row is the edge's resolved target: {all:?}"
-    );
+    ensure_eq(
+        &imported.kind,
+        &"Resolved",
+        format!(
+            "an import of a discovered-but-skipped file must not be reported Unresolved: {all:?}"
+        ),
+    )?;
+    ensure_eq(
+        &imported.to.as_deref(),
+        &Some("pkg/helper.py"),
+        format!("the skipped file's existence row is the edge's resolved target: {all:?}"),
+    )?;
     Ok(())
 }

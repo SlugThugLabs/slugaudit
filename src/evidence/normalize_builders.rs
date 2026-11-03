@@ -17,7 +17,6 @@ pub(super) fn flatten_structure(
     let mut pending = vec![root];
     while let Some(item) = pending.pop() {
         let key = format!("structure:{counter}");
-        *counter += 1;
         items.push(EvidenceItem {
             key,
             kind: EvidenceKind::Structure,
@@ -31,6 +30,10 @@ pub(super) fn flatten_structure(
                 "signature": item.signature,
             }),
         });
+        // The next key number is the count of rows pushed so far: one row is
+        // pushed per key, so this equals the previous number plus one and
+        // cannot overflow (a `Vec` holds at most `isize::MAX` elements).
+        *counter = items.len();
         pending.extend(item.children.iter().rev());
     }
     Ok(())

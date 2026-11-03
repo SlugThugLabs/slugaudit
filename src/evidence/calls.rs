@@ -204,8 +204,14 @@ fn walk(
             }
         }
         let below = caller_below(&node, &kind, input.source, &caller);
+        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
+        // would mean the depth bound was passed, which the walk reports as cut.
+        let Some(child_depth) = depth.checked_add(1) else {
+            out.truncated = true;
+            continue;
+        };
         crate::evidence::push_children(&mut pending, &node, |child| {
-            (child, depth + 1, below.clone())
+            (child, child_depth, below.clone())
         });
     }
     Ok(())
@@ -224,7 +230,12 @@ fn emit_call(
 ) -> Result<(), PositionOverflow> {
     let macro_call = node.kind() == "macro_invocation";
     let key = format!("call:{counter}");
-    *counter += 1;
+    let Some(next) = counter.checked_add(1) else {
+        tracing::warn!("call key counter exhausted; extraction is partial");
+        out.truncated = true;
+        return Ok(());
+    };
+    *counter = next;
     if seen.insert((node.start_byte(), node.end_byte())) {
         let site = CallSite {
             language: "rust",
@@ -244,8 +255,13 @@ fn emit_call(
     let recovered = macro_calls::extract(node, input, parts.caller.as_deref())?;
     for (start, end, mut item) in recovered.rows {
         if seen.insert((start, end)) {
+            let Some(next) = counter.checked_add(1) else {
+                tracing::warn!("call key counter exhausted; extraction is partial");
+                out.truncated = true;
+                break;
+            };
             item.key = format!("call:{counter}");
-            *counter += 1;
+            *counter = next;
             out.items.push(item);
         }
     }

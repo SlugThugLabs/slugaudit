@@ -2,7 +2,7 @@
 //! (a panic payload is not `Display`, so `Check` cannot take it directly).
 //! `#[cfg(test)]`-only; shared by the store and sync tests.
 
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::any::Any;
 
 /// The text of a panic payload: the message for `panic!("..")` and
@@ -48,7 +48,11 @@ mod tests {
     fn a_finished_thread_returns_its_value() -> TestResult {
         let handle = std::thread::spawn(|| 7);
 
-        assert_eq!(join_checked(handle, "join")?, 7);
+        ensure_eq(
+            &join_checked(handle, "join")?,
+            &7,
+            "join_checked(handle, \"join\")? == 7",
+        )?;
         Ok(())
     }
 
@@ -60,17 +64,25 @@ mod tests {
 
         let error = join_checked(handle, "join").check_err("a panicked thread is an error")?;
 
-        assert!(error.to_string().ends_with("join: boom"), "{error}");
+        ensure(
+            error.to_string().ends_with("join: boom"),
+            format!("{error}"),
+        )?;
         Ok(())
     }
 
     #[test]
     fn a_non_text_panic_gets_a_fixed_description() -> TestResult {
-        assert_eq!(
-            panic_message(&42_u8),
-            "the thread panicked with a non-text payload"
-        );
-        assert_eq!(panic_message(&"static text"), "static text");
+        ensure_eq(
+            &panic_message(&42_u8),
+            &"the thread panicked with a non-text payload",
+            "panic_message(&42_u8) == \"the thread panicked with a non-text payload\"",
+        )?;
+        ensure_eq(
+            &panic_message(&"static text"),
+            &"static text",
+            "panic_message(&\"static text\") == \"static text\"",
+        )?;
         Ok(())
     }
 }

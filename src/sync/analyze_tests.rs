@@ -3,7 +3,7 @@ use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
 use crate::parse::fetch_gate::test_controls;
 use crate::sync::analyze_results::COOLDOWN_REASON;
 use crate::sync::analyze_seam::forced_failure;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 
 /// `analyze` under the default `max_parse_bytes` and a deadline no test
 /// parse comes near; shadows the glob import.
@@ -26,14 +26,22 @@ fn generous_deadline() -> Deadline {
 fn sampled_content_with_no_detectable_language_is_content_only() -> TestResult {
     let result = analyze("README", Some("plain text"))?;
 
-    assert_eq!(result.run.availability, ParserAvailability::Unavailable);
-    assert_eq!(result.run.outcome, ParseOutcome::NotAttempted);
-    assert!(!result.language_detected);
-    assert_eq!(
-        result.run.completeness,
-        ExtractionCompleteness::ContentOnly,
-        "the text is indexed, so 'Unavailable' would read as 'no content'"
-    );
+    ensure_eq(
+        &result.run.availability,
+        &ParserAvailability::Unavailable,
+        "result.run.availability == ParserAvailability::Unavailable",
+    )?;
+    ensure_eq(
+        &result.run.outcome,
+        &ParseOutcome::NotAttempted,
+        "result.run.outcome == ParseOutcome::NotAttempted",
+    )?;
+    ensure(!result.language_detected, "!result.language_detected")?;
+    ensure_eq(
+        &result.run.completeness,
+        &ExtractionCompleteness::ContentOnly,
+        "the text is indexed, so 'Unavailable' would read as 'no content'",
+    )?;
     result.run.validate().check("the parser run validates")?;
     Ok(())
 }
@@ -42,9 +50,17 @@ fn sampled_content_with_no_detectable_language_is_content_only() -> TestResult {
 fn content_free_binary_text_is_unavailable() -> TestResult {
     let result = analyze("main.rs", None)?;
 
-    assert_eq!(result.run.availability, ParserAvailability::Unavailable);
-    assert_eq!(result.run.completeness, ExtractionCompleteness::Unavailable);
-    assert!(result.evidence.is_empty());
+    ensure_eq(
+        &result.run.availability,
+        &ParserAvailability::Unavailable,
+        "result.run.availability == ParserAvailability::Unavailable",
+    )?;
+    ensure_eq(
+        &result.run.completeness,
+        &ExtractionCompleteness::Unavailable,
+        "result.run.completeness == ExtractionCompleteness::Unavailable",
+    )?;
+    ensure(result.evidence.is_empty(), "result.evidence.is_empty()")?;
     result.run.validate().check("the parser run validates")?;
     Ok(())
 }
@@ -52,10 +68,22 @@ fn content_free_binary_text_is_unavailable() -> TestResult {
 #[test]
 fn a_supported_language_produces_real_evidence() -> TestResult {
     let result = analyze("lib.rs", Some("pub fn a() {}"))?;
-    assert_eq!(result.language.as_deref(), Some("rust"));
-    assert_eq!(result.run.availability, ParserAvailability::Available);
-    assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
-    assert!(!result.evidence.is_empty());
+    ensure_eq(
+        &result.language.as_deref(),
+        &Some("rust"),
+        "result.language.as_deref() == Some(\"rust\")",
+    )?;
+    ensure_eq(
+        &result.run.availability,
+        &ParserAvailability::Available,
+        "result.run.availability == ParserAvailability::Available",
+    )?;
+    ensure_eq(
+        &result.run.outcome,
+        &ParseOutcome::Succeeded,
+        "result.run.outcome == ParseOutcome::Succeeded",
+    )?;
+    ensure(!result.evidence.is_empty(), "!result.evidence.is_empty()")?;
     result.run.validate().check("the parser run validates")?;
     Ok(())
 }
@@ -64,7 +92,7 @@ fn a_supported_language_produces_real_evidence() -> TestResult {
 fn malformed_source_reports_syntax_errors_with_a_real_count() -> TestResult {
     let result = analyze("lib.rs", Some("fn broken( {\n"))?;
     match result.run.outcome {
-        ParseOutcome::SyntaxErrors { count } => assert!(count > 0),
+        ParseOutcome::SyntaxErrors { count } => ensure(count > 0, "count > 0")?,
         other => {
             return Err(format!("expected SyntaxErrors, got {other:?}"))
                 .check("unexpected outcome");
@@ -78,12 +106,16 @@ fn malformed_source_reports_syntax_errors_with_a_real_count() -> TestResult {
 fn a_cleanly_parsed_file_reports_full_extraction() -> TestResult {
     let result = analyze("lib.rs", Some("pub fn a() {}\n"))?;
 
-    assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
-    assert_eq!(
-        result.run.completeness,
-        ExtractionCompleteness::Full,
-        "nothing degraded the extraction, so it must not report Partial"
-    );
+    ensure_eq(
+        &result.run.outcome,
+        &ParseOutcome::Succeeded,
+        "result.run.outcome == ParseOutcome::Succeeded",
+    )?;
+    ensure_eq(
+        &result.run.completeness,
+        &ExtractionCompleteness::Full,
+        "nothing degraded the extraction, so it must not report Partial",
+    )?;
     Ok(())
 }
 
@@ -91,16 +123,15 @@ fn a_cleanly_parsed_file_reports_full_extraction() -> TestResult {
 fn syntax_error_diagnostics_degrade_extraction_to_partial() -> TestResult {
     let result = analyze("lib.rs", Some("fn broken( {\n"))?;
 
-    assert!(
+    ensure(
         matches!(result.run.outcome, ParseOutcome::SyntaxErrors { .. }),
-        "expected a degraded parse, got {:?}",
-        result.run.outcome
-    );
-    assert_eq!(
-        result.run.completeness,
-        ExtractionCompleteness::Partial,
-        "an error tree means extraction covered only part of the file"
-    );
+        format!("expected a degraded parse, got {:?}", result.run.outcome),
+    )?;
+    ensure_eq(
+        &result.run.completeness,
+        &ExtractionCompleteness::Partial,
+        "an error tree means extraction covered only part of the file",
+    )?;
     Ok(())
 }
 
@@ -123,8 +154,14 @@ fn every_produced_run_satisfies_its_own_invariant() -> TestResult {
 fn load_failure_classification_is_disjoint_from_parse_failure() -> TestResult {
     let load_failure = PackError::LanguageNotFound("x".into());
     let parse_failure = PackError::ParseFailed;
-    assert!(is_load_failure(&load_failure));
-    assert!(!is_load_failure(&parse_failure));
+    ensure(
+        is_load_failure(&load_failure),
+        "is_load_failure(&load_failure)",
+    )?;
+    ensure(
+        !is_load_failure(&parse_failure),
+        "!is_load_failure(&parse_failure)",
+    )?;
     Ok(())
 }
 
@@ -142,27 +179,30 @@ fn a_parser_load_failure_logs_the_relative_path_not_the_library_path() -> TestRe
         load_failed_result(relative, "rust".to_owned(), &error);
     })?;
 
-    assert!(
+    ensure(
         logs.contains("capture liveness control for parser_load"),
-        "the capture must see this thread's events, captured: {logs}"
-    );
-    assert!(logs.contains("parser failed to load"), "got: {logs}");
-    assert!(
+        format!("the capture must see this thread's events, captured: {logs}"),
+    )?;
+    ensure(
+        logs.contains("parser failed to load"),
+        format!("got: {logs}"),
+    )?;
+    ensure(
         logs.contains("operation=\"parser_load\""),
-        "the record must name the phase: {logs}"
-    );
-    assert!(
+        format!("the record must name the phase: {logs}"),
+    )?;
+    ensure(
         logs.contains("error_kind=\"dynamic_load\""),
-        "the record must carry the static error category: {logs}"
-    );
-    assert!(
+        format!("the record must carry the static error category: {logs}"),
+    )?;
+    ensure(
         logs.contains(&format!("path={relative}")),
-        "the relative path must identify the file: {logs}"
-    );
-    assert!(
+        format!("the relative path must identify the file: {logs}"),
+    )?;
+    ensure(
         !logs.contains(raw_library_path) && !logs.contains("private-user"),
-        "the pack's absolute library path must not be logged: {logs}"
-    );
+        format!("the pack's absolute library path must not be logged: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -172,17 +212,28 @@ fn a_grammar_download_error_is_recorded_as_load_failed() -> TestResult {
 
     let result = analyze("lib.rs", Some("pub fn a() {}"))?;
 
-    assert!(
+    ensure(
         matches!(
             result.run.availability,
             ParserAvailability::LoadFailed { .. }
         ),
-        "got {:?}",
-        result.run
-    );
-    assert_eq!(result.run.outcome, ParseOutcome::NotAttempted);
-    assert_eq!(result.run.completeness, ExtractionCompleteness::ContentOnly);
-    assert_eq!(result.language.as_deref(), Some("rust"));
+        format!("got {:?}", result.run),
+    )?;
+    ensure_eq(
+        &result.run.outcome,
+        &ParseOutcome::NotAttempted,
+        "result.run.outcome == ParseOutcome::NotAttempted",
+    )?;
+    ensure_eq(
+        &result.run.completeness,
+        &ExtractionCompleteness::ContentOnly,
+        "result.run.completeness == ExtractionCompleteness::ContentOnly",
+    )?;
+    ensure_eq(
+        &result.language.as_deref(),
+        &Some("rust"),
+        "result.language.as_deref() == Some(\"rust\")",
+    )?;
     result.run.validate().check("the parser run validates")?;
     Ok(())
 }
@@ -200,7 +251,10 @@ fn every_grammar_fetch_error_variant_is_a_load_failure() -> TestResult {
         PackError::Io(std::io::Error::other("x")),
     ];
     for error in &fetch_errors {
-        assert!(is_load_failure(error), "{error:?} must be a load failure");
+        ensure(
+            is_load_failure(error),
+            format!("{error:?} must be a load failure"),
+        )?;
     }
     Ok(())
 }
@@ -211,12 +265,15 @@ fn an_unrelated_parse_error_stays_failed_not_load_failed() -> TestResult {
 
     let result = analyze("lib.rs", Some("pub fn a() {}"))?;
 
-    assert_eq!(result.run.availability, ParserAvailability::Available);
-    assert!(
+    ensure_eq(
+        &result.run.availability,
+        &ParserAvailability::Available,
+        "result.run.availability == ParserAvailability::Available",
+    )?;
+    ensure(
         matches!(result.run.outcome, ParseOutcome::Failed { .. }),
-        "got {:?}",
-        result.run
-    );
+        format!("got {:?}", result.run),
+    )?;
     result.run.validate().check("the parser run validates")?;
     Ok(())
 }
@@ -253,10 +310,11 @@ fn project_with_failed_download() -> TestResult<(
             .check("publish with the download failing")?
             .revision_id
     };
-    assert_eq!(
-        stored_run(&connection, "a.rs")?,
-        ("LoadFailed".to_owned(), "NotAttempted".to_owned())
-    );
+    ensure_eq(
+        &stored_run(&connection, "a.rs")?,
+        &("LoadFailed".to_owned(), "NotAttempted".to_owned()),
+        "stored_run(&connection, \"a.rs\")? == (\"LoadFailed\".to_owned(), \"NotAttempted\".to_owned())",
+    )?;
     // The failed fetch closed the gate; these callers test the retry itself.
     test_controls::elapse_cooldown();
     Ok((project, db_dir, connection, revision))
@@ -274,11 +332,12 @@ fn a_load_failed_file_is_reparsed_by_a_full_publish_with_unchanged_content() -> 
     )
     .check("second publish with loading allowed")?;
 
-    assert_eq!(report.modified, 1, "{report:?}");
-    assert_eq!(
-        stored_run(&connection, "a.rs")?,
-        ("Available".to_owned(), "Succeeded".to_owned())
-    );
+    ensure_eq(&report.modified, &1, format!("{report:?}"))?;
+    ensure_eq(
+        &stored_run(&connection, "a.rs")?,
+        &("Available".to_owned(), "Succeeded".to_owned()),
+        "stored_run(&connection, \"a.rs\")? == (\"Available\".to_owned(), \"Succeeded\".to_owned())",
+    )?;
     Ok(())
 }
 
@@ -294,9 +353,13 @@ fn a_succeeded_file_with_unchanged_content_is_still_skipped_by_the_next_sync() -
     )
     .check("second publish")?;
 
-    assert_eq!(report.revision_id, revision, "no new revision");
-    assert_eq!((report.added, report.modified), (0, 0));
-    assert_eq!(report.unchanged, 2);
+    ensure_eq(&report.revision_id, &revision, "no new revision")?;
+    ensure_eq(
+        &(report.added, report.modified),
+        &(0, 0),
+        "(report.added, report.modified) == (0, 0)",
+    )?;
+    ensure_eq(&report.unchanged, &2, "report.unchanged == 2")?;
     Ok(())
 }
 
@@ -334,24 +397,24 @@ fn synced_with_failing_fetch() -> TestResult<(
 fn a_second_file_in_the_same_sync_does_not_reach_the_loader_after_a_fetch_failure() -> TestResult {
     let (_manager, _project, synced) = synced_with_failing_fetch()?;
 
-    assert_eq!(forced_failure::calls(), 1, "one failed fetch, then none");
+    ensure_eq(&forced_failure::calls(), &1, "one failed fetch, then none")?;
     let connection = crate::store::open_read_write(&synced.database_path).check("open db")?;
     for path in ["a.rs", "b.rs"] {
-        assert_eq!(
-            stored_run(&connection, path)?,
-            ("LoadFailed".to_owned(), "NotAttempted".to_owned()),
-            "{path}"
-        );
+        ensure_eq(
+            &stored_run(&connection, path)?,
+            &("LoadFailed".to_owned(), "NotAttempted".to_owned()),
+            path.to_string(),
+        )?;
     }
     let reasons = [
         stored_reason(&connection, "a.rs")?,
         stored_reason(&connection, "b.rs")?,
     ];
-    assert_eq!(
-        reasons.iter().filter(|r| **r == COOLDOWN_REASON).count(),
-        1,
-        "exactly the file after the failure carries the cool-down reason: {reasons:?}"
-    );
+    ensure_eq(
+        &reasons.iter().filter(|r| **r == COOLDOWN_REASON).count(),
+        &1,
+        format!("exactly the file after the failure carries the cool-down reason: {reasons:?}"),
+    )?;
     Ok(())
 }
 
@@ -363,12 +426,12 @@ fn an_unchanged_load_failed_file_publishes_no_revision_during_the_cooldown() -> 
 
     let second = sync_project(&manager, &project)?;
 
-    assert_eq!(second.revision_id, first.revision_id, "no new revision");
-    assert_eq!(
-        forced_failure::calls(),
-        calls_after_first_sync,
-        "no loader call"
-    );
+    ensure_eq(&second.revision_id, &first.revision_id, "no new revision")?;
+    ensure_eq(
+        &forced_failure::calls(),
+        &calls_after_first_sync,
+        "no loader call",
+    )?;
     Ok(())
 }
 
@@ -380,14 +443,18 @@ fn a_load_failed_file_is_retried_and_parses_once_the_cooldown_has_elapsed() -> T
 
     let second = sync_project(&manager, &project)?;
 
-    assert_ne!(second.revision_id, first.revision_id, "the retry publishes");
+    ensure_ne(
+        &second.revision_id,
+        &first.revision_id,
+        "the retry publishes",
+    )?;
     let connection = crate::store::open_read_write(&second.database_path).check("open db")?;
     for path in ["a.rs", "b.rs"] {
-        assert_eq!(
-            stored_run(&connection, path)?,
-            ("Available".to_owned(), "Succeeded".to_owned()),
-            "{path}"
-        );
+        ensure_eq(
+            &stored_run(&connection, path)?,
+            &("Available".to_owned(), "Succeeded".to_owned()),
+            path.to_string(),
+        )?;
     }
     Ok(())
 }
@@ -397,12 +464,18 @@ fn a_failed_retry_after_the_cooldown_starts_a_new_cooldown() -> TestResult {
     let _forced = forced_failure::force(|| PackError::Download("offline".into()));
     analyze("a.rs", Some("fn a() {}"))?;
     test_controls::elapse_cooldown();
-    assert!(crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?);
+    ensure(
+        crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?,
+        "crate::parse::fetch_gate::load_failed_retry_due().check(\"read the fetch gate\")?",
+    )?;
 
     analyze("a.rs", Some("fn a() {}"))?;
 
-    assert!(!crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?);
-    assert_eq!(forced_failure::calls(), 2);
+    ensure(
+        !crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?,
+        "!crate::parse::fetch_gate::load_failed_retry_due().check(\"read the fetch gate\")?",
+    )?;
+    ensure_eq(&forced_failure::calls(), &2, "forced_failure::calls() == 2")?;
     Ok(())
 }
 
@@ -416,8 +489,16 @@ fn a_grammar_already_on_the_host_still_parses_during_the_cooldown() -> TestResul
 
     let result = analyze("b.rs", Some("fn b() {}"))?;
 
-    assert_eq!(result.run.availability, ParserAvailability::Available);
-    assert_eq!(result.run.outcome, ParseOutcome::Succeeded);
+    ensure_eq(
+        &result.run.availability,
+        &ParserAvailability::Available,
+        "result.run.availability == ParserAvailability::Available",
+    )?;
+    ensure_eq(
+        &result.run.outcome,
+        &ParseOutcome::Succeeded,
+        "result.run.outcome == ParseOutcome::Succeeded",
+    )?;
     Ok(())
 }
 
@@ -427,11 +508,17 @@ fn a_load_failure_that_is_not_a_fetch_failure_does_not_close_the_gate() -> TestR
 
     let result = analyze("a.rs", Some("fn a() {}"))?;
 
-    assert!(matches!(
-        result.run.availability,
-        ParserAvailability::LoadFailed { .. }
-    ));
-    assert!(crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?);
+    ensure(
+        matches!(
+            result.run.availability,
+            ParserAvailability::LoadFailed { .. }
+        ),
+        "matches!( result.run.availability, ParserAvailability::LoadFailed { .. } )",
+    )?;
+    ensure(
+        crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?,
+        "crate::parse::fetch_gate::load_failed_retry_due().check(\"read the fetch gate\")?",
+    )?;
     Ok(())
 }
 
@@ -461,101 +548,5 @@ fn count(connection: &rusqlite::Connection, sql: &str) -> TestResult<i64> {
         .check("count query")
 }
 
-#[test]
-fn prose_files_yield_no_diagnostics_and_stay_queryable() -> TestResult {
-    let (_project, _db, connection) = published(&[
-        ("README.md", "# T\n\n```rust\nfn unterminated( {\n"),
-        ("notes.txt", "needle in plain text\n"),
-    ])?;
-
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM evidence WHERE kind = 'Diagnostic'"
-        )?,
-        0
-    );
-    assert_eq!(count(&connection, "SELECT COUNT(*) FROM evidence")?, 0);
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM files WHERE content LIKE '%unterminated(%' \
-             OR content LIKE '%needle%'"
-        )?,
-        2
-    );
-    assert_eq!(
-        stored_run(&connection, "notes.txt")?,
-        ("Unavailable".to_owned(), "NotAttempted".to_owned())
-    );
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM files WHERE language = 'prose' AND language_detected = 1 \
-             AND extraction_completeness = 'ContentOnly'"
-        )?,
-        2
-    );
-    Ok(())
-}
-
-#[test]
-fn an_ignore_file_yields_no_diagnostics_and_never_reaches_the_loader() -> TestResult {
-    let before = forced_failure::calls();
-
-    let (_project, _db, connection) = published(&[
-        (".gitignore", "target/\n.planning/slugaudit/\n"),
-        ("lib.rs", "pub fn a() {}\n"),
-    ])?;
-
-    assert_eq!(
-        forced_failure::calls(),
-        before + 1,
-        "only lib.rs was parsed"
-    );
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM evidence e JOIN files f ON f.id = e.file_id \
-             WHERE f.path = '.gitignore'"
-        )?,
-        0
-    );
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM files WHERE path = '.gitignore' AND language = 'prose' \
-             AND extraction_completeness = 'ContentOnly'"
-        )?,
-        1
-    );
-    Ok(())
-}
-
-#[test]
-fn indexing_only_prose_files_never_reaches_the_loader() -> TestResult {
-    let before = forced_failure::calls();
-
-    let _published = published(&[("a.md", "# a\n"), ("b.txt", "b\n"), ("c.rst", "c\n====\n")])?;
-
-    assert_eq!(
-        forced_failure::calls(),
-        before,
-        "prose must not load a grammar"
-    );
-    Ok(())
-}
-
-#[test]
-fn a_yaml_tab_indentation_error_yields_one_diagnostic_row() -> TestResult {
-    let (_project, _db, connection) = published(&[("ci.yaml", "a:\n\t- b\n")])?;
-
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM evidence WHERE kind = 'Diagnostic'"
-        )?,
-        1
-    );
-    Ok(())
-}
+#[path = "analyze_prose_tests.rs"]
+mod prose;

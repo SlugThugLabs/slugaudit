@@ -5,7 +5,7 @@ use crate::store::open_read_write;
 use crate::sync::publish::publish;
 use crate::sync::test_support::write;
 use crate::util::now_unix;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn now_unix_tracks_real_wall_clock_time() -> TestResult {
@@ -20,11 +20,13 @@ fn now_unix_tracks_real_wall_clock_time() -> TestResult {
         .as_secs();
 
     let value = u64::try_from(value).check("a real current timestamp is never negative")?;
-    assert!(
+    ensure(
         (before..=after).contains(&value),
-        "now_unix() must return the real current time, not a fixed constant: \
+        format!(
+            "now_unix() must return the real current time, not a fixed constant: \
          expected within [{before}, {after}], got {value}"
-    );
+        ),
+    )?;
     Ok(())
 }
 
@@ -44,8 +46,11 @@ fn a_first_publish_of_more_files_than_the_sqlite_variable_limit_completes() -> T
     let stored: i64 = connection
         .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))
         .check("count files")?;
-    assert_eq!(stored, file_count);
-    assert!(!report.revision_id.is_empty());
+    ensure_eq(&stored, &file_count, "stored == file_count")?;
+    ensure(
+        !report.revision_id.is_empty(),
+        "!report.revision_id.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -75,10 +80,10 @@ fn a_publish_revision_database_failure_is_the_database_variant() -> TestResult {
     .check_err("a database without the schema cannot publish a revision")?;
 
     match error {
-        RevisionError::Database(error) => assert!(
+        RevisionError::Database(error) => ensure(
             error.to_string().contains("no such table: revisions"),
-            "the source error must be preserved: {error}"
-        ),
+            format!("the source error must be preserved: {error}"),
+        )?,
         other => {
             return Err(format!("expected RevisionError::Database, got {other:?}"))
                 .check("unexpected outcome");
@@ -134,11 +139,12 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() -> TestResult {
 
     match error {
         RevisionError::InvalidParserRun { path, reason } => {
-            assert_eq!(path, "bad.rs");
-            assert_eq!(
-                reason,
-                "an unavailable parser cannot report a parse outcome"
-            );
+            ensure_eq(&path, &"bad.rs", "path == \"bad.rs\"")?;
+            ensure_eq(
+                &reason,
+                &"an unavailable parser cannot report a parse outcome",
+                "reason == \"an unavailable parser cannot report a parse outcome\"",
+            )?;
         }
         other => {
             return Err(format!(
@@ -152,7 +158,15 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() -> TestResult {
 
 #[test]
 fn a_baseline_label_is_the_revision_id_or_none() -> TestResult {
-    assert_eq!(baseline_label(Some("rev-1")), "rev-1");
-    assert_eq!(baseline_label(None), "none");
+    ensure_eq(
+        &baseline_label(Some("rev-1")),
+        &"rev-1",
+        "baseline_label(Some(\"rev-1\")) == \"rev-1\"",
+    )?;
+    ensure_eq(
+        &baseline_label(None),
+        &"none",
+        "baseline_label(None) == \"none\"",
+    )?;
     Ok(())
 }

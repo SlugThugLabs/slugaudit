@@ -2,7 +2,7 @@
 //! deleted on an unknown answer.
 
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn orphan_file() -> TestResult<(tempfile::TempDir, PathBuf)> {
     let dir = tempfile::tempdir().check("temp dir")?;
@@ -22,10 +22,14 @@ fn lock_presence_reads_not_found_as_absent_and_other_errors_as_errors() -> TestR
     let broken =
         lock_presence(Err(io::Error::other("EIO"))).check_err("an I/O error is not absence")?;
 
-    assert!(present);
-    assert!(!absent);
-    assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
-    assert_eq!(broken.to_string(), "EIO");
+    ensure(present, "present")?;
+    ensure(!absent, "!absent")?;
+    ensure_eq(
+        &denied.kind(),
+        &io::ErrorKind::PermissionDenied,
+        "denied.kind() == io::ErrorKind::PermissionDenied",
+    )?;
+    ensure_eq(&broken.to_string(), &"EIO", "broken.to_string() == \"EIO\"")?;
     Ok(())
 }
 
@@ -40,19 +44,20 @@ fn sweep_orphan_keeps_the_file_and_records_the_error_when_the_lock_check_failed(
         &mut outcome,
     );
 
-    assert!(
+    ensure(
         path.exists(),
-        "the file must not be deleted on a failed check"
-    );
-    assert_eq!(outcome.removed_files, 0);
-    assert_eq!(outcome.errors, 1);
-    assert_eq!(
-        outcome.first_error.as_deref(),
-        Some(
+        "the file must not be deleted on a failed check",
+    )?;
+    ensure_eq(&outcome.removed_files, &0, "outcome.removed_files == 0")?;
+    ensure_eq(&outcome.errors, &1, "outcome.errors == 1")?;
+    ensure_eq(
+        &outcome.first_error.as_deref(),
+        &Some(
             "check for a lock before removing a result file: \
-             permission denied"
-        )
-    );
+             permission denied",
+        ),
+        "outcome.first_error.as_deref() == Some( \"check for a lock before removing a result file: \\ permission denied\" )",
+    )?;
     Ok(())
 }
 
@@ -63,8 +68,12 @@ fn sweep_orphan_keeps_the_file_when_a_lock_exists() -> TestResult {
 
     sweep_orphan(&path, Ok(true), &mut outcome);
 
-    assert!(path.exists());
-    assert_eq!(outcome, SweepOutcome::default());
+    ensure(path.exists(), "path.exists()")?;
+    ensure_eq(
+        &outcome,
+        &SweepOutcome::default(),
+        "outcome == SweepOutcome::default()",
+    )?;
     Ok(())
 }
 
@@ -75,8 +84,8 @@ fn sweep_orphan_removes_the_file_only_when_the_lock_is_known_absent() -> TestRes
 
     sweep_orphan(&path, Ok(false), &mut outcome);
 
-    assert!(!path.exists());
-    assert_eq!(outcome.removed_files, 1);
-    assert_eq!(outcome.errors, 0);
+    ensure(!path.exists(), "!path.exists()")?;
+    ensure_eq(&outcome.removed_files, &1, "outcome.removed_files == 1")?;
+    ensure_eq(&outcome.errors, &0, "outcome.errors == 0")?;
     Ok(())
 }

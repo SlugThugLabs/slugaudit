@@ -83,10 +83,17 @@ impl ResultStore {
         conn.execute_batch("BEGIN").map_err(|error| {
             ResultStoreError::from_sqlite("begin the result transaction", error)
         })?;
+        let param_count = spec
+            .columns
+            .len()
+            .checked_add(2)
+            .ok_or(ResultStoreError::Invalid {
+                reason: "a result needs between 1 and 1000 columns",
+            })?;
         let insert_sql = format!(
             "INSERT INTO rows (ord, nonfinite, {}) VALUES (?{})",
             result_file::column_list(spec.columns.len()),
-            (1..=spec.columns.len() + 2)
+            (1..=param_count)
                 .map(|n| n.to_string())
                 .collect::<Vec<_>>()
                 .join(", ?")
@@ -188,9 +195,30 @@ impl ResultWriter<'_> {
             .prepare_cached(&self.insert_sql)
             .and_then(|mut statement| statement.execute(params.as_slice()))
             .map_err(|error| ResultStoreError::from_sqlite("insert a result row", error))?;
-        self.next_ord += 1;
-        self.rows_since_check += 1;
-        self.bytes_since_check += cells.iter().map(Cell::payload_len).sum::<usize>();
+        self.next_ord = self
+            .next_ord
+            .checked_add(1)
+            .ok_or(ResultStoreError::Invalid {
+                reason: "too many rows",
+            })?;
+        self.rows_since_check =
+            self.rows_since_check
+                .checked_add(1)
+                .ok_or(ResultStoreError::Invalid {
+                    reason: "too many rows",
+                })?;
+        let row_bytes = cells
+            .iter()
+            .try_fold(0usize, |total, cell| total.checked_add(cell.payload_len()))
+            .ok_or(ResultStoreError::Invalid {
+                reason: "a row is too large to measure",
+            })?;
+        self.bytes_since_check =
+            self.bytes_since_check
+                .checked_add(row_bytes)
+                .ok_or(ResultStoreError::Invalid {
+                    reason: "a row is too large to measure",
+                })?;
         if self.rows_since_check >= BATCH_ROWS || self.bytes_since_check >= BATCH_BYTES {
             self.checkpoint()?;
         }
@@ -200,7 +228,12 @@ impl ResultWriter<'_> {
     /// After each batch: consult the fault seam, then abort once this file
     /// alone exceeds the whole budget.
     fn checkpoint(&mut self) -> Result<(), ResultStoreError> {
-        self.batches += 1;
+        self.batches = self
+            .batches
+            .checked_add(1)
+            .ok_or(ResultStoreError::Invalid {
+                reason: "too many batches",
+            })?;
         self.rows_since_check = 0;
         self.bytes_since_check = 0;
         #[cfg(test)]

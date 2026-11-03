@@ -1,6 +1,6 @@
 use super::harness_tests::*;
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn round_trip(cells: &[Cell]) -> TestResult<StoredRow> {
     let fx = fixture(1 << 30)?;
@@ -37,8 +37,8 @@ fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() -> Tes
 
     let row = round_trip(&cells)?;
 
-    assert_eq!(row.cells, cells);
-    assert!(row.nonfinite.is_empty());
+    ensure_eq(&row.cells, &cells, "row.cells == cells")?;
+    ensure(row.nonfinite.is_empty(), "row.nonfinite.is_empty()")?;
     Ok(())
 }
 
@@ -46,9 +46,12 @@ fn result_store_fidelity_matrix_round_trips_every_storage_class_exactly() -> Tes
 fn result_store_negative_zero_keeps_its_sign_bit() -> TestResult {
     let row = round_trip(&[Cell::Real(-0.0)])?;
 
-    match row.cells[0] {
-        Cell::Real(value) => assert!(value.is_sign_negative() && value == 0.0, "{value}"),
-        ref other => {
+    match row.cells.first().check("row.cells[0] exists")? {
+        Cell::Real(value) => ensure(
+            value.is_sign_negative() && *value == 0.0,
+            format!("{value}"),
+        )?,
+        other => {
             return Err(format!("expected a real, got {other:?}")).check("unexpected outcome");
         }
     }
@@ -59,8 +62,16 @@ fn result_store_negative_zero_keeps_its_sign_bit() -> TestResult {
 fn result_store_nan_is_stored_as_null_and_marked() -> TestResult {
     let row = round_trip(&[Cell::Int(1), Cell::Real(f64::NAN)])?;
 
-    assert_eq!(row.cells, vec![Cell::Int(1), Cell::Null]);
-    assert_eq!(row.nonfinite, vec![(1, NonFinite::NaN)]);
+    ensure_eq(
+        &row.cells,
+        &vec![Cell::Int(1), Cell::Null],
+        "row.cells == vec![Cell::Int(1), Cell::Null]",
+    )?;
+    ensure_eq(
+        &row.nonfinite,
+        &vec![(1, NonFinite::NaN)],
+        "row.nonfinite == vec![(1, NonFinite::NaN)]",
+    )?;
     Ok(())
 }
 
@@ -72,18 +83,20 @@ fn result_store_infinities_are_stored_natively_and_marked() -> TestResult {
         Cell::Real(2.0),
     ])?;
 
-    assert_eq!(
-        row.cells,
-        vec![
+    ensure_eq(
+        &row.cells,
+        &vec![
             Cell::Real(f64::INFINITY),
             Cell::Real(f64::NEG_INFINITY),
-            Cell::Real(2.0)
-        ]
-    );
-    assert_eq!(
-        row.nonfinite,
-        vec![(0, NonFinite::Infinity), (1, NonFinite::NegInfinity)]
-    );
+            Cell::Real(2.0),
+        ],
+        "row.cells == vec![ Cell::Real(f64::INFINITY), Cell::Real(f64::NEG_INFINITY), Cell::Real(2.0) ]",
+    )?;
+    ensure_eq(
+        &row.nonfinite,
+        &vec![(0, NonFinite::Infinity), (1, NonFinite::NegInfinity)],
+        "row.nonfinite == vec![(0, NonFinite::Infinity), (1, NonFinite::NegInfinity)]",
+    )?;
     Ok(())
 }
 
@@ -95,14 +108,14 @@ fn result_store_a_row_of_the_wrong_width_is_invalid_and_poisons_the_writer() -> 
     let wrong = writer.push(&[Cell::Null]);
     let after = writer.push(&[Cell::Null, Cell::Null]);
 
-    assert!(
+    ensure(
         matches!(wrong, Err(ResultStoreError::Invalid { .. })),
-        "{wrong:?}"
-    );
-    assert!(
+        format!("{wrong:?}"),
+    )?;
+    ensure(
         matches!(after, Err(ResultStoreError::Invalid { .. })),
-        "{after:?}"
-    );
+        format!("{after:?}"),
+    )?;
     Ok(())
 }
 
@@ -116,8 +129,14 @@ fn result_store_a_result_without_columns_or_with_too_many_is_invalid() -> TestRe
         ..spec(&["x"])
     });
 
-    assert!(matches!(none, Err(ResultStoreError::Invalid { .. })));
-    assert!(matches!(many, Err(ResultStoreError::Invalid { .. })));
+    ensure(
+        matches!(none, Err(ResultStoreError::Invalid { .. })),
+        "matches!(none, Err(ResultStoreError::Invalid { .. }))",
+    )?;
+    ensure(
+        matches!(many, Err(ResultStoreError::Invalid { .. })),
+        "matches!(many, Err(ResultStoreError::Invalid { .. }))",
+    )?;
     Ok(())
 }
 
@@ -173,24 +192,31 @@ fn result_store_typed_rows_round_trip_through_materialize_with_their_meta() -> T
         .map(|row| Pair::from_values(&row.cells).check("from_values"))
         .collect::<TestResult<Vec<Pair>>>()?;
 
-    assert_eq!(typed.len(), 5);
-    assert_eq!(
-        typed[3],
-        Pair {
+    ensure_eq(&typed.len(), &5, "typed.len() == 5")?;
+    ensure_eq(
+        typed.get(3).check("typed[3] exists")?,
+        &Pair {
             name: "n3".to_owned(),
-            count: 3
-        }
-    );
-    assert_eq!(page.next_ord, None);
-    assert_eq!(
-        page.meta.columns,
-        vec!["name".to_owned(), "count".to_owned()]
-    );
-    assert_eq!(
-        (page.meta.tool.as_str(), page.meta.revision_id.as_str()),
-        ("leads", "rev-9")
-    );
-    assert_eq!(page.meta.completeness, complete());
+            count: 3,
+        },
+        "typed[3] == Pair { name: \"n3\".to_owned(), count: 3 }",
+    )?;
+    ensure_eq(&page.next_ord, &None, "page.next_ord == None")?;
+    ensure_eq(
+        &page.meta.columns,
+        &vec!["name".to_owned(), "count".to_owned()],
+        "page.meta.columns == vec![\"name\".to_owned(), \"count\".to_owned()]",
+    )?;
+    ensure_eq(
+        &(page.meta.tool.as_str(), page.meta.revision_id.as_str()),
+        &("leads", "rev-9"),
+        "(page.meta.tool.as_str(), page.meta.revision_id.as_str()) == (\"leads\", \"rev-9\")",
+    )?;
+    ensure_eq(
+        &page.meta.completeness,
+        &complete(),
+        "page.meta.completeness == complete()",
+    )?;
     Ok(())
 }
 
@@ -204,11 +230,11 @@ fn result_store_typed_read_surfaces_a_layout_mismatch() -> TestResult {
         .read_page(handle.id, 0, |_| Take::Yes)
         .check("read_page")?;
 
-    let result = Pair::from_values(&page.rows[0].cells);
+    let result = Pair::from_values(&page.rows.first().check("page.rows[0] exists")?.cells);
 
-    assert!(
+    ensure(
         matches!(result, Err(ResultStoreError::Invalid { .. })),
-        "{result:?}"
-    );
+        format!("{result:?}"),
+    )?;
     Ok(())
 }

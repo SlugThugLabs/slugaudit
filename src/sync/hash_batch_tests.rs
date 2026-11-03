@@ -3,7 +3,7 @@
 use super::*;
 use crate::sync::discovery::FileKind;
 use crate::sync::test_support::write;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn indexed(project: &std::path::Path, relative_path: &str) -> DiscoveredFile {
     DiscoveredFile {
@@ -17,8 +17,8 @@ fn indexed(project: &std::path::Path, relative_path: &str) -> DiscoveredFile {
 fn hashing_an_empty_file_list_returns_empty_results() -> TestResult {
     let deadline = Deadline::after(std::time::Duration::from_secs(10));
     let (identities, skips) = hash_all_with_deadline(&[], 1024, &deadline).check("empty hash")?;
-    assert!(identities.is_empty());
-    assert!(skips.is_empty());
+    ensure(identities.is_empty(), "identities.is_empty()")?;
+    ensure(skips.is_empty(), "skips.is_empty()")?;
     Ok(())
 }
 
@@ -40,8 +40,8 @@ fn hashing_normal_files_produces_identities_in_discovery_order() -> TestResult {
         .iter()
         .map(|identity| identity.relative_path.as_str())
         .collect();
-    assert_eq!(paths, ["a.rs", "b.rs"]);
-    assert!(skips.is_empty());
+    ensure_eq(&paths, &["a.rs", "b.rs"], "paths == [\"a.rs\", \"b.rs\"]")?;
+    ensure(skips.is_empty(), "skips.is_empty()")?;
     Ok(())
 }
 
@@ -55,21 +55,30 @@ fn an_oversized_file_is_skipped_with_the_hash_error_message() -> TestResult {
     let (identities, skips) =
         hash_all_with_deadline(&discovered, 10, &deadline).check("hash batch")?;
 
-    assert!(identities.is_empty());
+    ensure(identities.is_empty(), "identities.is_empty()")?;
     let [skip] = skips.as_slice() else {
         return Err(format!("expected one skip, got {skips:?}")).check("skips");
     };
-    assert_eq!(skip.code, SKIP_REASON_OVERSIZE);
-    assert_eq!(skip.absolute_path, project.path().join("big.rs"));
+    ensure_eq(
+        &skip.code,
+        &SKIP_REASON_OVERSIZE,
+        "skip.code == SKIP_REASON_OVERSIZE",
+    )?;
+    ensure_eq(
+        &skip.absolute_path,
+        &project.path().join("big.rs"),
+        "skip.absolute_path == project.path().join(\"big.rs\")",
+    )?;
     // The bounded read stops at the cap + 1, so the size is a lower bound.
-    assert_eq!(
-        skip.reason,
-        format!(
+    ensure_eq(
+        &skip.reason,
+        &format!(
             "{} exceeds the 10-byte per-file hash ceiling; at least 11 bytes were read \
              before the cap stopped the read",
             project.path().join("big.rs").display()
-        )
-    );
+        ),
+        "skip.reason == format!( \"{} exceeds the 10-byte per-file hash ceiling; at least 11 bytes were read \\ before the cap stopped the read\", project.path().join(\"big.rs\").display() )",
+    )?;
     Ok(())
 }
 
@@ -83,10 +92,10 @@ fn an_expired_deadline_aborts_with_time_budget_exceeded_naming_the_hashing() -> 
     let error =
         hash_all_with_deadline(&discovered, 1024, &deadline).check_err("deadline must trip")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::TimeBudgetExceeded { path, .. } if path == " while hashing slow.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -103,10 +112,10 @@ fn a_file_deleted_since_the_walk_is_a_change_the_hash_pass_reports() -> TestResu
     let error = hash_all_with_deadline(&discovered, 1024, &deadline)
         .check_err("a vanished file must fail the pass")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -120,10 +129,10 @@ fn a_file_the_hash_pass_cannot_read_fails_with_its_read_error() -> TestResult {
     let error = hash_all_with_deadline(&discovered, 1024, &deadline)
         .check_err("a directory cannot be hashed")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::Sample(crate::sync::sample::SampleError::Read { path, .. })
             if *path == project.path().join("dir.rs")),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }

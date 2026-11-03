@@ -108,13 +108,19 @@ fn force_content_repairs(
         if !present.contains(path.as_str()) || !already.insert(path.clone()) {
             continue;
         }
-        diff.modified += 1;
         diff.unchanged = diff.unchanged.saturating_sub(1);
         diff.changes.push(FileChange {
             relative_path: path.clone(),
             status: ChangeStatus::Modified,
         });
     }
+    // Recounted rather than incremented: it is the number of `Modified`
+    // changes, each repair above added exactly one.
+    diff.modified = diff
+        .changes
+        .iter()
+        .filter(|change| change.status == ChangeStatus::Modified)
+        .count();
     diff.changes
         .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 }

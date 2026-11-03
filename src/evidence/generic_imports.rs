@@ -111,7 +111,15 @@ pub(super) fn walk_imports(
             // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
             // trailing newline in the statement node's byte range.
             match super::node_text(input.source, node.start_byte(), node.end_byte()) {
-                Ok(text) => push_import(text.trim(), &node, input.lines, &mut out.items, counter)?,
+                Ok(text) => {
+                    let Some(next) = counter.checked_add(1) else {
+                        tracing::warn!("import key counter exhausted; extraction is partial");
+                        out.truncated = true;
+                        break;
+                    };
+                    push_import(text.trim(), &node, input.lines, &mut out.items, *counter)?;
+                    *counter = next;
+                }
                 Err(error) => {
                     tracing::warn!(%error, "import statement skipped; extraction is partial");
                     out.truncated = true;
@@ -123,9 +131,15 @@ pub(super) fn walk_imports(
         // nesting, but don't re-emit the same statement. Guarded by the
         // child's own kind so a non-import child (e.g. a string literal) is
         // never skipped.
+        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
+        // would mean the depth bound was passed, which the walk reports as cut.
+        let Some(child_depth) = depth.checked_add(1) else {
+            out.truncated = true;
+            continue;
+        };
         super::push_children(&mut pending, &node, |child| {
             let nested = is_import && is_import_statement_kind(&child.kind());
-            (child, depth + 1, nested)
+            (child, child_depth, nested)
         });
     }
     Ok(())
@@ -136,10 +150,9 @@ fn push_import(
     node: &Node,
     lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
-    counter: &mut usize,
+    key_number: usize,
 ) -> Result<(), crate::model::PositionOverflow> {
-    let key = format!("generic_import:{counter}");
-    *counter += 1;
+    let key = format!("generic_import:{key_number}");
     items.push(EvidenceItem {
         key,
         kind: EvidenceKind::Import,

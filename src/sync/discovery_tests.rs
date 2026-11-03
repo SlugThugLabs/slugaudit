@@ -1,6 +1,6 @@
 use super::*;
 use crate::sync::test_support::write;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
 #[test]
@@ -16,10 +16,11 @@ fn discovers_source_config_and_doc_files_in_sorted_order() -> TestResult {
         .iter()
         .map(|file| file.relative_path.as_str())
         .collect();
-    assert_eq!(
-        paths,
-        vec![".github/workflows/ci.yml", "README.md", "src/main.rs"]
-    );
+    ensure_eq(
+        &paths,
+        &vec![".github/workflows/ci.yml", "README.md", "src/main.rs"],
+        "paths == vec![\".github/workflows/ci.yml\", \"README.md\", \"src/main.rs\"]",
+    )?;
     Ok(())
 }
 
@@ -34,8 +35,12 @@ fn classifies_binary_files_without_dropping_them() -> TestResult {
     )?;
 
     let (files, _skipped) = discover(root).check("discover")?;
-    assert_eq!(files.len(), 1);
-    assert_eq!(files[0].kind, FileKind::Binary);
+    ensure_eq(&files.len(), &1, "files.len() == 1")?;
+    ensure_eq(
+        &files.first().check("files[0] exists")?.kind,
+        &FileKind::Binary,
+        "files[0].kind == FileKind::Binary",
+    )?;
     Ok(())
 }
 
@@ -51,7 +56,7 @@ fn excludes_the_activation_directory() -> TestResult {
         .iter()
         .map(|file| file.relative_path.as_str())
         .collect();
-    assert_eq!(paths, vec!["src/lib.rs"]);
+    ensure_eq(&paths, &vec!["src/lib.rs"], "paths == vec![\"src/lib.rs\"]")?;
     Ok(())
 }
 
@@ -68,10 +73,11 @@ fn indexes_a_planning_directory_that_only_shares_the_activation_prefix() -> Test
         .iter()
         .map(|file| file.relative_path.as_str())
         .collect();
-    assert_eq!(
-        paths,
-        vec![".planning/slugaudit-notes/x.md", ".planning/slugauditx"]
-    );
+    ensure_eq(
+        &paths,
+        &vec![".planning/slugaudit-notes/x.md", ".planning/slugauditx"],
+        "paths == vec![\".planning/slugaudit-notes/x.md\", \".planning/slugauditx\"]",
+    )?;
     Ok(())
 }
 
@@ -87,7 +93,7 @@ fn excludes_git_internals() -> TestResult {
         .iter()
         .map(|file| file.relative_path.as_str())
         .collect();
-    assert_eq!(paths, vec!["src/lib.rs"]);
+    ensure_eq(&paths, &vec!["src/lib.rs"], "paths == vec![\"src/lib.rs\"]")?;
     Ok(())
 }
 
@@ -106,7 +112,11 @@ fn honors_gitignore_content() -> TestResult {
         .collect();
     // .gitignore itself is a legitimate config file and stays indexed;
     // only the file it excludes, ignored.txt, is missing.
-    assert_eq!(paths, vec![".gitignore", "kept.txt"]);
+    ensure_eq(
+        &paths,
+        &vec![".gitignore", "kept.txt"],
+        "paths == vec![\".gitignore\", \"kept.txt\"]",
+    )?;
     Ok(())
 }
 
@@ -133,27 +143,27 @@ fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() -> TestR
     std::fs::write(root.join("good.txt"), b"content").check("write a normal file")?;
 
     let (files, skipped) = discover(root).check("a bad filename must not fail the whole walk")?;
-    assert_eq!(
-        files.len(),
-        1,
-        "the good file must still be discovered despite the bad one"
-    );
-    assert_eq!(
-        skipped.len(),
-        1,
-        "the bad filename must be recorded as skipped"
-    );
-    let skipped_file = &skipped[0];
-    assert_eq!(
-        skipped_file.absolute_path,
-        root.join(&bad_name),
-        "the skip must name the file that was left out"
-    );
-    assert_eq!(
-        skipped_file.reason,
-        DiscoveryError::NonUtf8Path(root.join(&bad_name)).to_string(),
-        "the skip reason must be the typed non-UTF-8 reason, not a generic one"
-    );
+    ensure_eq(
+        &files.len(),
+        &1,
+        "the good file must still be discovered despite the bad one",
+    )?;
+    ensure_eq(
+        &skipped.len(),
+        &1,
+        "the bad filename must be recorded as skipped",
+    )?;
+    let skipped_file = &skipped.first().check("skipped[0] exists")?;
+    ensure_eq(
+        &skipped_file.absolute_path,
+        &root.join(&bad_name),
+        "the skip must name the file that was left out",
+    )?;
+    ensure_eq(
+        &skipped_file.reason,
+        &DiscoveryError::NonUtf8Path(root.join(&bad_name)).to_string(),
+        "the skip reason must be the typed non-UTF-8 reason, not a generic one",
+    )?;
     Ok(())
 }
 
@@ -170,22 +180,25 @@ fn a_path_outside_the_root_is_skipped_with_the_not_relative_reason() -> TestResu
     let skipped = strip_project_prefix(directory.path(), &outside_file)
         .check_err("a path outside the root must be reported, not stripped")?;
 
-    assert_eq!(
-        skipped.absolute_path, outside_file,
-        "the skip must carry the path that could not be made relative"
-    );
-    assert_eq!(
-        skipped.reason,
-        DiscoveryError::NotRelative(outside_file.clone()).to_string(),
-        "the skip reason must be the typed not-relative reason"
-    );
-    assert!(
+    ensure_eq(
+        &skipped.absolute_path,
+        &outside_file,
+        "the skip must carry the path that could not be made relative",
+    )?;
+    ensure_eq(
+        &skipped.reason,
+        &DiscoveryError::NotRelative(outside_file.clone()).to_string(),
+        "the skip reason must be the typed not-relative reason",
+    )?;
+    ensure(
         skipped
             .reason
             .contains("is not relative to the project root"),
-        "the reason must explain why the file was left out: {}",
-        skipped.reason
-    );
+        format!(
+            "the reason must explain why the file was left out: {}",
+            skipped.reason
+        ),
+    )?;
     Ok(())
 }
 
@@ -205,13 +218,14 @@ fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() -> TestRes
     write(root, "lib.rs", b"pub fn a() {}\n")?;
 
     let (first, _skipped) = discover(root).check("first discover")?;
-    assert_eq!(
-        first
+    ensure_eq(
+        &(first
             .iter()
             .map(|f| f.relative_path.as_str())
-            .collect::<Vec<_>>(),
-        vec!["lib.rs"]
-    );
+            .collect::<Vec<_>>()),
+        &vec!["lib.rs"],
+        "first .iter() .map(|f| f.relative_path.as_str()) .collect::<Vec<_>>() == vec![\"lib.rs\"]",
+    )?;
 
     // Outside the project root entirely, so a NUL byte here would prove
     // the walker actually dereferenced the link if it ever got sniffed.
@@ -229,11 +243,11 @@ fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() -> TestRes
     // path is safely skipped, not silently reindexed as if it still held
     // lib.rs's real content, and never dereferenced into the target
     // living outside `root`.
-    assert_eq!(
-        second,
-        Vec::new(),
-        "a path replaced by a symlink must be skipped, not reindexed or dereferenced"
-    );
+    ensure_eq(
+        &second,
+        &Vec::new(),
+        "a path replaced by a symlink must be skipped, not reindexed or dereferenced",
+    )?;
     Ok(())
 }
 
@@ -257,11 +271,13 @@ fn scratch_and_temp_files_are_excluded_from_discovery() -> TestResult {
 
     let (files, _skipped) = discover(root).check("discover")?;
     let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
-    assert_eq!(
-        paths,
-        vec!["src/lib.rs"],
-        "only the real source file should be discovered, scratch/temp files must be excluded, got: {paths:?}"
-    );
+    ensure_eq(
+        &paths,
+        &vec!["src/lib.rs"],
+        format!(
+            "only the real source file should be discovered, scratch/temp files must be excluded, got: {paths:?}"
+        ),
+    )?;
     Ok(())
 }
 
@@ -273,7 +289,10 @@ fn sniff_kind_reports_an_error_for_a_missing_file() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let error = sniff_kind(&directory.path().join("missing.rs"))
         .check_err("a missing file must be a reported error, not a panic")?;
-    assert!(matches!(error, DiscoveryError::Read { .. }));
+    ensure(
+        matches!(error, DiscoveryError::Read { .. }),
+        "matches!(error, DiscoveryError::Read { .. })",
+    )?;
     Ok(())
 }
 
@@ -288,7 +307,10 @@ fn sniff_kind_reports_an_error_for_an_unreadable_path() -> TestResult {
     fs::create_dir(&dir).check("create dir")?;
 
     let error = sniff_kind(&dir).check_err("reading a directory must error")?;
-    assert!(matches!(error, DiscoveryError::Read { .. }));
+    ensure(
+        matches!(error, DiscoveryError::Read { .. }),
+        "matches!(error, DiscoveryError::Read { .. })",
+    )?;
     Ok(())
 }
 
@@ -311,15 +333,15 @@ fn a_listed_file_deleted_before_its_sniff_fails_discovery_as_vanished() -> TestR
     )
     .check_err("a vanished file must fail discovery")?;
 
-    assert!(
+    ensure(
         matches!(&error, DiscoveryError::Vanished { relative_path } if relative_path == "src/gone.rs"),
-        "got {error:?}"
-    );
-    assert!(discovered.is_empty());
-    assert!(
+        format!("got {error:?}"),
+    )?;
+    ensure(discovered.is_empty(), "discovered.is_empty()")?;
+    ensure(
         skipped.is_empty(),
-        "no skip for a vanished file: {skipped:?}"
-    );
+        format!("no skip for a vanished file: {skipped:?}"),
+    )?;
     Ok(())
 }
 
@@ -336,14 +358,15 @@ fn a_listed_file_that_cannot_be_read_is_skipped_as_unreadable() -> TestResult {
     collect_file_entry(root, &root.join("dir.rs"), &mut discovered, &mut skipped)
         .check("an unreadable file is a skip, not a failure")?;
 
-    assert!(discovered.is_empty());
+    ensure(discovered.is_empty(), "discovered.is_empty()")?;
     let [skip] = skipped.as_slice() else {
         return Err(format!("expected one skip, got {skipped:?}")).check("skips");
     };
-    assert_eq!(
-        skip.code,
-        crate::sync::revision_skipped::SKIP_REASON_UNREADABLE
-    );
+    ensure_eq(
+        &skip.code,
+        &crate::sync::revision_skipped::SKIP_REASON_UNREADABLE,
+        "skip.code == crate::sync::revision_skipped::SKIP_REASON_UNREADABLE",
+    )?;
     Ok(())
 }
 
@@ -357,14 +380,14 @@ fn a_missing_project_root_fails_discovery_with_the_walk_error() -> TestResult {
 
     let error = discover(&missing).check_err("an unlistable root must fail discovery")?;
 
-    assert!(
+    ensure(
         matches!(error, DiscoveryError::Walk(_)),
-        "the typed walk failure must survive, got {error:?}"
-    );
-    assert!(
+        format!("the typed walk failure must survive, got {error:?}"),
+    )?;
+    ensure(
         error.to_string().contains("failed to walk project files"),
-        "the failure must name the walk: {error}"
-    );
+        format!("the failure must name the walk: {error}"),
+    )?;
     Ok(())
 }
 
@@ -390,20 +413,22 @@ fn a_walk_error_is_returned_with_the_failing_subdirectory_not_the_root() -> Test
         .check_err("a walk error must fail discovery")?;
 
     match error {
-        DiscoveryError::Walk(error) => assert_eq!(
-            crate::ignore_rules::ignore_error_path(&error),
-            Some(failing.as_path()),
-            "the failure must name the directory the walker could not read"
-        ),
+        DiscoveryError::Walk(error) => ensure_eq(
+            &crate::ignore_rules::ignore_error_path(&error),
+            &Some(failing.as_path()),
+            "the failure must name the directory the walker could not read",
+        )?,
         other => {
             return Err(format!("expected DiscoveryError::Walk, got {other:?}"))
                 .check("unexpected outcome");
         }
     }
-    assert!(
+    ensure(
         discovered.is_empty() && skipped.is_empty(),
-        "a walk error is not a per-file skip: discovered={discovered:?} skipped={skipped:?}"
-    );
+        format!(
+            "a walk error is not a per-file skip: discovered={discovered:?} skipped={skipped:?}"
+        ),
+    )?;
     Ok(())
 }
 
@@ -421,12 +446,17 @@ fn a_malformed_gitignore_fails_discovery_instead_of_dropping_its_rules() -> Test
 
     match error {
         DiscoveryError::IgnoreRules { kind, path } => {
-            assert_eq!(kind, "glob", "the static category names the parse failure");
+            ensure_eq(
+                &kind,
+                &"glob",
+                "the static category names the parse failure",
+            )?;
             let path = path.check("the walker names the ignore file")?;
-            assert_eq!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".gitignore")
-            );
+            ensure_eq(
+                &path.file_name().and_then(|name| name.to_str()),
+                &Some(".gitignore"),
+                "path.file_name().and_then(|name| name.to_str()) == Some(\".gitignore\")",
+            )?;
         }
         other => {
             return Err(format!(
@@ -465,15 +495,15 @@ fn a_failed_walk_publishes_no_revision_and_deletes_no_stored_rows() -> TestResul
     let error = publish(&mut connection, &root, "1.0", &NoopProgressSink)
         .check_err("an unlistable root must fail the publish")?;
 
-    assert!(
+    ensure(
         matches!(error, PublishError::Discovery(DiscoveryError::Walk(_))),
-        "the publish must carry the typed discovery failure: {error:?}"
-    );
-    assert_eq!(
-        stored_paths(&connection)?,
-        ["a.rs"],
-        "no stored row may be deleted by a partial walk"
-    );
+        format!("the publish must carry the typed discovery failure: {error:?}"),
+    )?;
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &["a.rs"],
+        "no stored row may be deleted by a partial walk",
+    )?;
     let current: String = connection
         .query_row(
             "SELECT revision_id FROM revisions WHERE is_current = 1",
@@ -481,9 +511,10 @@ fn a_failed_walk_publishes_no_revision_and_deletes_no_stored_rows() -> TestResul
             |row| row.get(0),
         )
         .check("read the current revision")?;
-    assert_eq!(
-        current, first.revision_id,
-        "no revision may be published from a partial walk"
-    );
+    ensure_eq(
+        &current,
+        &first.revision_id,
+        "no revision may be published from a partial walk",
+    )?;
     Ok(())
 }

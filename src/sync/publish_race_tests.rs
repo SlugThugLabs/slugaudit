@@ -7,7 +7,7 @@ use crate::store::open_read_write;
 use crate::store::test_capture::capture_at_level;
 use crate::store::test_join::join_checked;
 use crate::sync::test_support::{stored_paths, write};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 // --- File-changed-during-sample (TOCTOU) coverage ---
 
@@ -35,10 +35,10 @@ fn a_file_changed_after_sampling_is_detected_and_rejected() -> TestResult {
     write(project.path(), "lib.rs", b"changed after sampling\n")?;
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
-    assert!(
+    ensure(
         matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
-        "expected ChangedDuringSample, got {result:?}"
-    );
+        format!("expected ChangedDuringSample, got {result:?}"),
+    )?;
     Ok(())
 }
 
@@ -62,14 +62,17 @@ fn a_file_that_became_unreadable_after_sampling_fails_with_its_real_cause_not_as
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
 
-    assert!(
+    ensure(
         matches!(
             &result,
             Err(PublishError::Sample(sample::SampleError::Read { .. }))
         ),
-        "expected the read error, got {result:?}"
-    );
-    assert!(!is_retryable(&result.check_err("revalidation fails")?));
+        format!("expected the read error, got {result:?}"),
+    )?;
+    ensure(
+        !is_retryable(&result.check_err("revalidation fails")?),
+        "!is_retryable(&result.check_err(\"revalidation fails\")?)",
+    )?;
     Ok(())
 }
 
@@ -89,10 +92,10 @@ fn a_file_deleted_after_sampling_is_reported_as_changed_during_sample() -> TestR
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
 
-    assert!(
+    ensure(
         matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
-        "a vanished file is a change a fresh sample resolves, got {result:?}"
-    );
+        format!("a vanished file is a change a fresh sample resolves, got {result:?}"),
+    )?;
     Ok(())
 }
 
@@ -117,10 +120,10 @@ fn a_file_that_stopped_being_utf8_after_sampling_is_reported_as_changed_during_s
 
     let result = revalidate_unchanged_since_sample(&discovered, &upserts, &limits, &deadline);
 
-    assert!(
+    ensure(
         matches!(&result, Err(PublishError::ChangedDuringSample { path }) if path == "lib.rs"),
-        "a file that is no longer UTF-8 has changed, got {result:?}"
-    );
+        format!("a file that is no longer UTF-8 has changed, got {result:?}"),
+    )?;
     Ok(())
 }
 
@@ -160,22 +163,25 @@ fn a_file_deleted_between_discovery_and_hashing_is_retried_and_left_out_of_the_r
 
     let report = result.check("the publish converges after re-walking")?;
     hook.outcome()?;
-    assert_eq!(stored_paths(&connection)?, vec!["keep.rs"]);
-    assert_eq!(report.added, 1, "only the file still on disk is added");
-    assert!(
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &vec!["keep.rs"],
+        "stored_paths(&connection)? == vec![\"keep.rs\"]",
+    )?;
+    ensure_eq(&report.added, &1, "only the file still on disk is added")?;
+    ensure(
         report.skipped.is_empty(),
-        "a deleted file is not a skipped file: {:?}",
-        report.skipped
-    );
+        format!("a deleted file is not a skipped file: {:?}", report.skipped),
+    )?;
     let retry_line = logs
         .lines()
         .find(|line| line.contains("publish retrying"))
         .check("the deletion must be retried")?;
-    assert!(
+    ensure(
         retry_line.contains("error_kind=\"changed_during_sample\"")
             && retry_line.contains("path=gone.rs"),
-        "got: {retry_line}"
-    );
+        format!("got: {retry_line}"),
+    )?;
     Ok(())
 }
 
@@ -234,11 +240,15 @@ fn a_file_changed_mid_sample_is_retried_and_the_final_revision_reflects_the_late
             |row| row.get(0),
         )
         .check("read content")?;
-    assert_eq!(
-        content, "version two\n",
-        "published content must be the latest sample, not the stale first one"
-    );
-    assert!(report.revision_id.starts_with("rev-"));
+    ensure_eq(
+        &content,
+        &"version two\n",
+        "published content must be the latest sample, not the stale first one",
+    )?;
+    ensure(
+        report.revision_id.starts_with("rev-"),
+        "report.revision_id.starts_with(\"rev-\")",
+    )?;
     Ok(())
 }
 
@@ -307,18 +317,19 @@ fn two_connections_publishing_concurrently_the_loser_retries_and_converges() -> 
     let report_a = join_checked(handle, "thread A joins")??.check("A converges after retrying")?;
     hook.outcome()?;
 
-    assert_eq!(
-        report_a.revision_id, report_b.revision_id,
-        "A's retry must land on the same revision B already published, not fork a duplicate"
-    );
+    ensure_eq(
+        &report_a.revision_id,
+        &report_b.revision_id,
+        "A's retry must land on the same revision B already published, not fork a duplicate",
+    )?;
     let connection = open_read_write(&db_path).check("open db (final)")?;
     let mut paths = stored_paths(&connection)?;
     paths.sort();
-    assert_eq!(
-        paths,
-        vec!["a.rs", "b.rs", "c.rs"],
-        "no concurrent writer's filesystem change may be lost"
-    );
+    ensure_eq(
+        &paths,
+        &vec!["a.rs", "b.rs", "c.rs"],
+        "no concurrent writer's filesystem change may be lost",
+    )?;
     Ok(())
 }
 
@@ -380,10 +391,11 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() ->
     let report_a = join_checked(handle, "thread A joins")??.check("A converges without error")?;
     hook.outcome()?;
 
-    assert_eq!(
-        report_a.revision_id, report_b.revision_id,
-        "a no-op retry must return the actual current revision, not error or diverge"
-    );
+    ensure_eq(
+        &report_a.revision_id,
+        &report_b.revision_id,
+        "a no-op retry must return the actual current revision, not error or diverge",
+    )?;
     Ok(())
 }
 
@@ -421,13 +433,13 @@ fn a_retry_logs_the_changed_file_under_a_path_field() -> TestResult {
         .lines()
         .find(|line| line.contains("publish retrying"))
         .check("the changed-during-sample hazard must log a retry")?;
-    assert!(
+    ensure(
         retry_line.contains("error_kind=\"changed_during_sample\""),
-        "got: {retry_line}"
-    );
-    assert!(
+        format!("got: {retry_line}"),
+    )?;
+    ensure(
         retry_line.contains("path=lib.rs"),
-        "the path must identify the file: {retry_line}"
-    );
+        format!("the path must identify the file: {retry_line}"),
+    )?;
     Ok(())
 }

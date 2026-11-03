@@ -7,30 +7,35 @@ use super::*;
 use crate::store::open_read_write;
 use crate::store::test_join::join_checked;
 use crate::sync::test_support::{stored_paths, write};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn is_retryable_is_true_only_for_the_two_documented_race_hazards() -> TestResult {
-    assert!(is_retryable(&PublishError::Revision(
-        RevisionError::StaleBaseline {
+    ensure(
+        is_retryable(&PublishError::Revision(RevisionError::StaleBaseline {
             expected: "rev-1".into(),
             found: "rev-2".into(),
-        }
-    )));
-    assert!(is_retryable(&PublishError::ChangedDuringSample {
-        path: "a.rs".into()
-    }));
+        })),
+        "is_retryable(&PublishError::Revision( RevisionError::StaleBaseline { expected: \"rev-1\".into(), found: \"rev-2\".into(), } ))",
+    )?;
+    ensure(
+        is_retryable(&PublishError::ChangedDuringSample {
+            path: "a.rs".into(),
+        }),
+        "is_retryable(&PublishError::ChangedDuringSample { path: \"a.rs\".into() })",
+    )?;
 
-    assert!(!is_retryable(&PublishError::ImportTooLarge {
-        total: 1,
-        limit: 0
-    }));
-    assert!(!is_retryable(&PublishError::Revision(
-        RevisionError::InvalidParserRun {
+    ensure(
+        !is_retryable(&PublishError::ImportTooLarge { total: 1, limit: 0 }),
+        "!is_retryable(&PublishError::ImportTooLarge { total: 1, limit: 0 })",
+    )?;
+    ensure(
+        !is_retryable(&PublishError::Revision(RevisionError::InvalidParserRun {
             path: "a.rs".into(),
             reason: "x",
-        }
-    )));
+        })),
+        "!is_retryable(&PublishError::Revision( RevisionError::InvalidParserRun { path: \"a.rs\".into(), reason: \"x\", } ))",
+    )?;
     Ok(())
 }
 
@@ -57,7 +62,7 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() -> TestR
         max_total_import_bytes: 4,
         ..ResourceLimits::default()
     };
-    assert!(
+    ensure(
         matches!(
             sample_all_with_deadline(
                 &discovered,
@@ -67,8 +72,8 @@ fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() -> TestR
             ),
             Err(PublishError::ImportTooLarge { .. })
         ),
-        "one byte over the limit must be rejected"
-    );
+        "one byte over the limit must be rejected",
+    )?;
     Ok(())
 }
 
@@ -88,7 +93,10 @@ fn arm_permanent_racer(
     let hook_root = root.clone();
     let hook_handles = std::sync::Arc::clone(handles);
     let handle = race_hook::set(&hook_root, race_hook::RacePoint::BeforeCommit, move || {
-        let count = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let count = attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            .checked_add(1)
+            .check("attempt count fits")?;
         write(&root, &format!("racer-{count}.rs"), b"fn racer() {}\n")?;
         let mut racer = open_read_write(&db_path).check("open racer db")?;
         publish(
@@ -155,25 +163,29 @@ fn retry_gives_up_after_exactly_max_cas_retries_and_never_hangs() -> TestResult 
     )?;
 
     join_checked(worker, "the publishing thread")??;
-    assert_eq!(
-        attempts.load(std::sync::atomic::Ordering::SeqCst),
-        MAX_CAS_RETRIES + 1,
+    ensure_eq(
+        &attempts.load(std::sync::atomic::Ordering::SeqCst),
+        &(MAX_CAS_RETRIES + 1),
         "must make exactly one initial attempt plus MAX_CAS_RETRIES retries \
-         before giving up, no more and no fewer"
-    );
-    assert!(
+         before giving up, no more and no fewer",
+    )?;
+    ensure(
         matches!(
             result,
             Err(PublishError::Revision(RevisionError::StaleBaseline { .. }))
         ),
-        "must give up with a StaleBaseline error after exhausting retries, got {result:?}"
-    );
+        format!("must give up with a StaleBaseline error after exhausting retries, got {result:?}"),
+    )?;
     let handles = std::mem::take(
         &mut *crate::util::lock(&handles, "racer hook handles").check("lock the handles")?,
     );
     // Every attempt fired one racer, and each racer re-armed the next; the
     // last one armed never fires because publish() gave up.
-    assert_eq!(handles.len(), MAX_CAS_RETRIES + 2);
+    ensure_eq(
+        &handles.len(),
+        &(MAX_CAS_RETRIES + 2),
+        "handles.len() == MAX_CAS_RETRIES + 2",
+    )?;
     for handle in handles.iter().take(MAX_CAS_RETRIES + 1) {
         handle.outcome()?;
     }
@@ -212,15 +224,16 @@ fn one_bad_file_does_not_block_publishing_the_rest_of_the_project() -> TestResul
     )
     .check("publish must succeed despite one bad file")?;
 
-    assert_eq!(
-        report.added, 1,
-        "the good file must still be indexed, not blocked by the unrelated bad file"
-    );
-    assert_eq!(
-        report.skipped.len(),
-        1,
-        "the bad file must be recorded as skipped, not silently dropped or fatal"
-    );
+    ensure_eq(
+        &report.added,
+        &1,
+        "the good file must still be indexed, not blocked by the unrelated bad file",
+    )?;
+    ensure_eq(
+        &report.skipped.len(),
+        &1,
+        "the bad file must be recorded as skipped, not silently dropped or fatal",
+    )?;
     Ok(())
 }
 
@@ -251,21 +264,33 @@ fn one_oversized_file_does_not_block_publishing_the_rest_of_the_project() -> Tes
     )
     .check("publish must succeed despite one oversized file")?;
 
-    assert_eq!(
-        report.added, 2,
+    ensure_eq(
+        &report.added,
+        &2,
         "the good file is indexed and the oversize file gets an existence row; \
-         neither is blocked by the other"
-    );
-    assert_eq!(
-        report.skipped.len(),
-        1,
-        "the oversized file must be recorded as skipped, not silently dropped or fatal"
-    );
-    assert!(
-        report.skipped[0].reason.contains("ceiling"),
-        "skip reason names the ceiling: {}",
-        report.skipped[0].reason
-    );
+         neither is blocked by the other",
+    )?;
+    ensure_eq(
+        &report.skipped.len(),
+        &1,
+        "the oversized file must be recorded as skipped, not silently dropped or fatal",
+    )?;
+    ensure(
+        report
+            .skipped
+            .first()
+            .check("report.skipped[0] exists")?
+            .reason
+            .contains("ceiling"),
+        format!(
+            "skip reason names the ceiling: {}",
+            report
+                .skipped
+                .first()
+                .check("report.skipped[0] exists")?
+                .reason
+        ),
+    )?;
     Ok(())
 }
 
@@ -297,16 +322,17 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() -> Test
         &limits,
     )
     .check("first publish")?;
-    assert_eq!(
-        first.added, 2,
-        "the indexed file and the skipped file's existence row are both new"
-    );
-    assert_eq!(first.deleted, 0);
-    assert_eq!(
-        stored_paths(&connection)?,
-        ["good.rs", "huge.rs"],
-        "the skipped file must have an existence row"
-    );
+    ensure_eq(
+        &first.added,
+        &2,
+        "the indexed file and the skipped file's existence row are both new",
+    )?;
+    ensure_eq(&first.deleted, &0, "first.deleted == 0")?;
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &["good.rs", "huge.rs"],
+        "the skipped file must have an existence row",
+    )?;
 
     let second = crate::sync::publish_with_limits(
         &mut connection,
@@ -317,15 +343,21 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() -> Test
     )
     .check("second publish")?;
 
-    assert_eq!(
-        second.revision_id, first.revision_id,
-        "an unchanged tree — skipped file included — must not publish a new revision"
-    );
-    assert_eq!(
-        second.deleted, 0,
-        "a skipped file exists on disk and must never be classified as deleted"
-    );
-    assert_eq!(stored_paths(&connection)?, ["good.rs", "huge.rs"]);
+    ensure_eq(
+        &second.revision_id,
+        &first.revision_id,
+        "an unchanged tree — skipped file included — must not publish a new revision",
+    )?;
+    ensure_eq(
+        &second.deleted,
+        &0,
+        "a skipped file exists on disk and must never be classified as deleted",
+    )?;
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &["good.rs", "huge.rs"],
+        "stored_paths(&connection)? == [\"good.rs\", \"huge.rs\"]",
+    )?;
     let (kind, reason): (String, Option<String>) = connection
         .query_row(
             "SELECT file_kind, skip_reason FROM files WHERE path = 'huge.rs'",
@@ -333,8 +365,12 @@ fn a_skipped_file_keeps_its_row_and_is_not_deleted_by_the_next_publish() -> Test
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .check("skipped row survives")?;
-    assert_eq!(kind, "skipped");
-    assert_eq!(reason.as_deref(), Some("oversize"));
+    ensure_eq(&kind, &"skipped", "kind == \"skipped\"")?;
+    ensure_eq(
+        &reason.as_deref(),
+        &Some("oversize"),
+        "reason.as_deref() == Some(\"oversize\")",
+    )?;
     Ok(())
 }
 
@@ -368,7 +404,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() ->
             |row| row.get(0),
         )
         .check("count evidence before")?;
-    assert!(evidence_before > 0, "an indexed file carries evidence");
+    ensure(evidence_before > 0, "an indexed file carries evidence")?;
 
     std::fs::write(project.path().join("grow.rs"), vec![b'x'; 100_000])
         .check("grow the file past the ceiling")?;
@@ -384,7 +420,7 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() ->
     )
     .check("second publish")?;
 
-    assert_eq!(second.modified, 1, "grow.rs changed on disk");
+    ensure_eq(&second.modified, &1, "grow.rs changed on disk")?;
     let (kind, reason, content, completeness, outcome): (
         String,
         Option<String>,
@@ -407,11 +443,19 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() ->
             },
         )
         .check("grow.rs row")?;
-    assert_eq!(kind, "skipped");
-    assert_eq!(reason.as_deref(), Some("oversize"));
-    assert_eq!(content, None, "no content survives the flip to skipped");
-    assert_eq!(completeness, "Unavailable");
-    assert_eq!(outcome, "NotAttempted");
+    ensure_eq(&kind, &"skipped", "kind == \"skipped\"")?;
+    ensure_eq(
+        &reason.as_deref(),
+        &Some("oversize"),
+        "reason.as_deref() == Some(\"oversize\")",
+    )?;
+    ensure_eq(&content, &None, "no content survives the flip to skipped")?;
+    ensure_eq(
+        &completeness,
+        &"Unavailable",
+        "completeness == \"Unavailable\"",
+    )?;
+    ensure_eq(&outcome, &"NotAttempted", "outcome == \"NotAttempted\"")?;
     let evidence_after: i64 = connection
         .query_row(
             "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
@@ -420,10 +464,11 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() ->
             |row| row.get(0),
         )
         .check("count evidence after")?;
-    assert_eq!(
-        evidence_after, 0,
-        "the evidence of content nobody retained must be deleted"
-    );
+    ensure_eq(
+        &evidence_after,
+        &0,
+        "the evidence of content nobody retained must be deleted",
+    )?;
     let lib_kind: String = connection
         .query_row(
             "SELECT file_kind FROM files WHERE path = 'lib.rs'",
@@ -431,148 +476,9 @@ fn a_file_that_grows_past_the_ceiling_becomes_a_skipped_row_without_content() ->
             |row| row.get(0),
         )
         .check("lib.rs row")?;
-    assert_eq!(lib_kind, "indexed", "the untouched file is unaffected");
+    ensure_eq(&lib_kind, &"indexed", "the untouched file is unaffected")?;
     Ok(())
 }
 
-#[test]
-fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestResult {
-    let corrupt_db = PublishError::Database(rusqlite::Error::SqliteFailure(
-        rusqlite::ffi::Error {
-            code: rusqlite::ffi::ErrorCode::DatabaseCorrupt,
-            extended_code: 11,
-        },
-        Some("database disk image is malformed".into()),
-    ));
-    assert!(corrupt_db.is_corruption());
-
-    let corrupt_rev =
-        PublishError::Revision(RevisionError::Database(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error {
-                code: rusqlite::ffi::ErrorCode::DatabaseCorrupt,
-                extended_code: 11,
-            },
-            None,
-        )));
-    assert!(corrupt_rev.is_corruption());
-
-    assert!(!PublishError::Database(rusqlite::Error::QueryReturnedNoRows).is_corruption());
-    assert!(
-        !PublishError::Revision(RevisionError::Database(
-            rusqlite::Error::QueryReturnedNoRows
-        ))
-        .is_corruption()
-    );
-    assert!(
-        !PublishError::Revision(RevisionError::StaleBaseline {
-            expected: "rev-1".into(),
-            found: "rev-2".into(),
-        })
-        .is_corruption()
-    );
-    assert!(
-        !PublishError::TimeBudgetExceeded {
-            path: String::new(),
-            elapsed_ms: 100,
-        }
-        .is_corruption()
-    );
-    assert!(
-        !PublishError::SamplingResultLost {
-            path: "a.rs".into(),
-            reason: "channel closed".into(),
-        }
-        .is_corruption()
-    );
-    Ok(())
-}
-
-#[test]
-fn publish_error_budget_elapsed() -> TestResult {
-    let budget_pub = PublishError::TimeBudgetExceeded {
-        path: " a.rs".into(),
-        elapsed_ms: 42,
-    };
-    let budget_disc =
-        PublishError::Discovery(discovery::DiscoveryError::TimeBudgetExceeded { elapsed_ms: 84 });
-    let changed = PublishError::ChangedDuringSample {
-        path: "changed.rs".into(),
-    };
-    assert_eq!(budget_pub.budget_elapsed_ms(), Some(42));
-    assert_eq!(budget_disc.budget_elapsed_ms(), Some(84));
-    assert_eq!(changed.budget_elapsed_ms(), None);
-    Ok(())
-}
-
-#[test]
-fn a_file_that_vanished_during_discovery_becomes_the_retryable_tree_change() -> TestResult {
-    let error = PublishError::from(discovery::DiscoveryError::Vanished {
-        relative_path: "gone.rs".into(),
-    });
-
-    assert!(
-        matches!(&error, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
-        "got {error:?}"
-    );
-    assert!(is_retryable(&error));
-    Ok(())
-}
-
-#[test]
-fn a_read_after_the_walk_is_a_tree_change_only_when_the_file_is_gone() -> TestResult {
-    let gone = PublishError::read_after_walk(
-        "gone.rs",
-        std::path::PathBuf::from("/p/gone.rs"),
-        std::io::Error::from(std::io::ErrorKind::NotFound),
-    );
-    let denied = PublishError::read_after_walk(
-        "denied.rs",
-        std::path::PathBuf::from("/p/denied.rs"),
-        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
-    );
-
-    assert!(
-        matches!(&gone, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
-        "got {gone:?}"
-    );
-    assert!(
-        matches!(&denied, PublishError::Sample(sample::SampleError::Read { path, source })
-            if *path == std::path::Path::new("/p/denied.rs")
-                && source.kind() == std::io::ErrorKind::PermissionDenied),
-        "got {denied:?}"
-    );
-    assert!(!is_retryable(&denied));
-    Ok(())
-}
-
-#[test]
-fn unrepresentable_paths_storage_and_replacement_roundtrip() -> TestResult {
-    let db_dir = tempfile::tempdir().check("db dir")?;
-    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
-
-    let initial = stored_unrepresentable_paths(&connection).check("read empty stored")?;
-    assert!(initial.is_empty());
-
-    let mut set_a = HashSet::new();
-    set_a.insert(vec![0xFF, 0xFE]);
-    replace_unrepresentable_paths(&mut connection, &set_a).check("insert unrepresentable")?;
-    assert_eq!(
-        stored_unrepresentable_paths(&connection).check("read unrepresentable")?,
-        set_a
-    );
-
-    replace_unrepresentable_paths(&mut connection, &set_a).check("no-op unrepresentable")?;
-    assert_eq!(
-        stored_unrepresentable_paths(&connection).check("read unrepresentable")?,
-        set_a
-    );
-
-    let empty = HashSet::new();
-    replace_unrepresentable_paths(&mut connection, &empty).check("clear unrepresentable")?;
-    assert!(
-        stored_unrepresentable_paths(&connection)
-            .check("read cleared")?
-            .is_empty()
-    );
-    Ok(())
-}
+#[path = "publish_error_class_tests.rs"]
+mod error_class;

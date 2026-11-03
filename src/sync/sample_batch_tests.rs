@@ -3,7 +3,7 @@
 use super::*;
 use crate::sync::discovery::FileKind;
 use crate::sync::test_support::write;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn indexed(project: &std::path::Path, relative_path: &str) -> DiscoveredFile {
     DiscoveredFile {
@@ -34,10 +34,10 @@ fn a_file_deleted_since_the_walk_is_a_change_the_sample_pass_reports() -> TestRe
     )
     .check_err("a vanished file must fail the pass")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -55,11 +55,11 @@ fn a_file_the_sample_pass_cannot_read_fails_with_its_read_error() -> TestResult 
     )
     .check_err("a directory cannot be sampled")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::Sample(SampleError::Read { path, .. })
             if *path == project.path().join("dir.rs")),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -88,18 +88,23 @@ fn per_file_skips_are_returned_sorted_with_their_codes() -> TestResult {
     .check("sample")?;
 
     let sampled_paths: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
-    assert_eq!(sampled_paths, ["c-ok.rs"]);
+    ensure_eq(
+        &sampled_paths,
+        &["c-ok.rs"],
+        "sampled_paths == [\"c-ok.rs\"]",
+    )?;
     let codes: Vec<(std::path::PathBuf, &str)> = skipped
         .iter()
         .map(|skip| (skip.absolute_path.clone(), skip.code))
         .collect();
-    assert_eq!(
-        codes,
-        [
+    ensure_eq(
+        &codes,
+        &[
             (project.path().join("a-big.rs"), SKIP_REASON_OVERSIZE),
             (project.path().join("b-not-utf8.rs"), SKIP_REASON_NOT_UTF8),
-        ]
-    );
+        ],
+        "codes == [ (project.path().join(\"a-big.rs\"), SKIP_REASON_OVERSIZE), (project.path().join(\"b-not-utf8.rs\"), SKIP_REASON_NOT_UTF8), ]",
+    )?;
     Ok(())
 }
 
@@ -117,10 +122,10 @@ fn an_expired_deadline_names_the_file_being_processed() -> TestResult {
     )
     .check_err("the deadline must trip")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::TimeBudgetExceeded { path, .. } if path == " while processing lib.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -132,7 +137,7 @@ fn claim_bytes_accepts_up_to_the_limit_and_refuses_past_it() -> TestResult {
     claim_bytes(&total, 4, 10).check("exactly at the limit")?;
     let error = claim_bytes(&total, 1, 10).check_err("one byte past the limit")?;
 
-    assert!(
+    ensure(
         matches!(
             error,
             PublishError::ImportTooLarge {
@@ -140,12 +145,12 @@ fn claim_bytes_accepts_up_to_the_limit_and_refuses_past_it() -> TestResult {
                 limit: 10
             }
         ),
-        "got {error:?}"
-    );
-    assert_eq!(
-        total.load(Ordering::Acquire),
-        10,
-        "a refused claim adds nothing"
-    );
+        format!("got {error:?}"),
+    )?;
+    ensure_eq(
+        &total.load(Ordering::Acquire),
+        &10,
+        "a refused claim adds nothing",
+    )?;
     Ok(())
 }
