@@ -1,5 +1,6 @@
 //! A snapshot of the store's state and decisions, for `health`.
 
+use super::error::ResultStoreError;
 use super::owner::SweepOutcome;
 use super::registry::{Registry, ResultClass};
 
@@ -48,7 +49,7 @@ impl Registry {
         now: i64,
         grace_secs: u64,
         sweep: &SweepOutcome,
-    ) -> StoreStats {
+    ) -> Result<StoreStats, ResultStoreError> {
         let mut stats = StoreStats {
             budget_bytes,
             admitted_bytes: self.admitted_bytes,
@@ -67,9 +68,17 @@ impl Registry {
                 ResultClass::Idle => &mut stats.idle,
                 ResultClass::Delivered => &mut stats.delivered,
             };
-            slot.results += 1;
-            slot.bytes += entry.bytes;
+            // The class totals sum the entries that `admitted_bytes` already
+            // counts, so an overflow is inconsistent bookkeeping.
+            let (Some(results), Some(bytes)) = (
+                slot.results.checked_add(1),
+                slot.bytes.checked_add(entry.bytes),
+            ) else {
+                return Err(ResultStoreError::corrupt("result class totals overflow"));
+            };
+            slot.results = results;
+            slot.bytes = bytes;
         }
-        stats
+        Ok(stats)
     }
 }

@@ -8,7 +8,7 @@ use crate::evidence::to_row;
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
 use crate::store::test_capture::capture_warns;
 use crate::store::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn foreign_keys_are_enabled_on_a_read_write_connection() -> TestResult {
@@ -17,7 +17,7 @@ fn foreign_keys_are_enabled_on_a_read_write_connection() -> TestResult {
     let enabled: i64 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .check("read pragma")?;
-    assert_eq!(enabled, 1);
+    ensure_eq(&enabled, &1, "enabled == 1")?;
     Ok(())
 }
 
@@ -30,10 +30,10 @@ fn a_read_only_connection_cannot_write() -> TestResult {
     let read_only = open_existing(&path).check("open read-only")?;
     let result = read_only.execute("DELETE FROM files", []);
     let err = result.check_err("read-only connection must reject writes")?;
-    assert!(
+    ensure(
         err.to_string().to_lowercase().contains("readonly"),
-        "expected readonly error, got: {err}"
-    );
+        format!("expected readonly error, got: {err}"),
+    )?;
     Ok(())
 }
 
@@ -41,7 +41,10 @@ fn a_read_only_connection_cannot_write() -> TestResult {
 fn read_only_open_fails_against_a_missing_database() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let result = open_existing(&directory.path().join("missing.db"));
-    assert!(matches!(result, Err(StoreError::Open(_))));
+    ensure(
+        matches!(result, Err(StoreError::Open(_))),
+        "matches!(result, Err(StoreError::Open(_)))",
+    )?;
     Ok(())
 }
 
@@ -57,10 +60,10 @@ fn a_corrupted_database_file_fails_closed_with_a_typed_error() -> TestResult {
     std::fs::write(&path, b"not a sqlite database, just garbage bytes").check("write garbage")?;
 
     let result = open_read_write(&path);
-    assert!(
+    ensure(
         matches!(result, Err(StoreError::Configure(_))),
-        "expected a typed Configure error, got {result:?}"
-    );
+        format!("expected a typed Configure error, got {result:?}"),
+    )?;
     Ok(())
 }
 
@@ -72,18 +75,18 @@ fn a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only() -> TestRe
     let link_path = directory.path().join("project.db");
     std::os::unix::fs::symlink(&real_target, &link_path).check("create symlink")?;
 
-    assert!(matches!(
-        open_read_write(&link_path),
-        Err(StoreError::Symlink)
-    ));
-    assert!(matches!(
-        open_existing(&link_path),
-        Err(StoreError::Symlink)
-    ));
-    assert!(
+    ensure(
+        matches!(open_read_write(&link_path), Err(StoreError::Symlink)),
+        "matches!( open_read_write(&link_path), Err(StoreError::Symlink) )",
+    )?;
+    ensure(
+        matches!(open_existing(&link_path), Err(StoreError::Symlink)),
+        "matches!( open_existing(&link_path), Err(StoreError::Symlink) )",
+    )?;
+    ensure(
         !real_target.exists(),
-        "the symlink target must never be created/opened"
-    );
+        "the symlink target must never be created/opened",
+    )?;
     Ok(())
 }
 
@@ -98,7 +101,7 @@ fn a_newly_created_database_gets_owner_only_permissions() -> TestResult {
     // Literal `0o600` (owner-only) instead of importing `PRIVATE_MODE` —
     // the constant stays module-private, and `0o600` is the canonical
     // mode for owner-only file permissions.
-    assert_eq!(mode, 0o600);
+    ensure_eq(&mode, &0o600, "mode == 0o600")?;
     Ok(())
 }
 
@@ -125,7 +128,11 @@ fn the_wal_and_shm_sidecars_are_owner_only_like_the_database() -> TestResult {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o600, "{name} must be owner-only, got {mode:o}");
+        ensure_eq(
+            &mode,
+            &0o600,
+            format!("{name} must be owner-only, got {mode:o}"),
+        )?;
     }
     Ok(())
 }
@@ -147,13 +154,14 @@ fn a_db_path_replaced_by_a_symlink_after_a_successful_open_is_rejected_on_the_ne
     // A real, legitimate first open succeeds and migrates the schema.
     let connection = open_read_write(&path).check("first open on a real file succeeds")?;
     drop(connection);
-    assert!(
+    ensure(
         !path
             .symlink_metadata()
             .check("symlink metadata readable")?
             .file_type()
-            .is_symlink()
-    );
+            .is_symlink(),
+        "!path .symlink_metadata() .check(\"symlink metadata readable\")? .file_type() .is_symlink()",
+    )?;
 
     // The path is now replaced by a symlink pointing elsewhere, as a
     // TOCTOU attacker (or a racing process) might.
@@ -161,12 +169,18 @@ fn a_db_path_replaced_by_a_symlink_after_a_successful_open_is_rejected_on_the_ne
     std::fs::remove_file(&path).check("remove the real file")?;
     std::os::unix::fs::symlink(&elsewhere, &path).check("replace it with a symlink")?;
 
-    assert!(matches!(open_read_write(&path), Err(StoreError::Symlink)));
-    assert!(matches!(open_existing(&path), Err(StoreError::Symlink)));
-    assert!(
+    ensure(
+        matches!(open_read_write(&path), Err(StoreError::Symlink)),
+        "matches!(open_read_write(&path), Err(StoreError::Symlink))",
+    )?;
+    ensure(
+        matches!(open_existing(&path), Err(StoreError::Symlink)),
+        "matches!(open_existing(&path), Err(StoreError::Symlink))",
+    )?;
+    ensure(
         !elsewhere.exists(),
-        "the symlink target must never be created/opened through the replaced path"
-    );
+        "the symlink target must never be created/opened through the replaced path",
+    )?;
     Ok(())
 }
 
@@ -187,16 +201,21 @@ fn a_symlinked_db_open_emits_a_warning_for_auditing() -> TestResult {
     std::os::unix::fs::symlink(&real_target, &link_path).check("create symlink")?;
 
     let (result, logs) = capture_warns(|| open_read_write(&link_path))?;
-    assert!(matches!(result, Err(StoreError::Symlink)));
-    assert!(
+    ensure(
+        matches!(result, Err(StoreError::Symlink)),
+        "matches!(result, Err(StoreError::Symlink))",
+    )?;
+    ensure(
         logs.contains("symlink"),
-        "the warn event must be tagged with reason=symlink, captured logs: {logs}"
-    );
-    assert!(
+        format!("the warn event must be tagged with reason=symlink, captured logs: {logs}"),
+    )?;
+    ensure(
         logs.contains(link_path.display().to_string().as_str()),
-        "the warn event must include the symlinked path so an operator can \
+        format!(
+            "the warn event must include the symlinked path so an operator can \
          locate which file triggered the rejection, captured logs: {logs}"
-    );
+        ),
+    )?;
     Ok(())
 }
 
@@ -218,23 +237,31 @@ fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() -> TestResult 
     result
         .as_ref()
         .check("sanity: the open itself must succeed")?;
-    assert!(
+    ensure(
         logs.contains("capture liveness control"),
-        "the capture must see this thread's events, or the absence checks \
+        format!(
+            "the capture must see this thread's events, or the absence checks \
          below prove nothing, captured logs: {logs}"
-    );
-    assert!(
+        ),
+    )?;
+    ensure(
         !logs.contains("\"symlink\""),
-        "a successful local open must not log the symlink-rejection warning, captured logs: {logs}"
-    );
-    assert!(
+        format!(
+            "a successful local open must not log the symlink-rejection warning, captured logs: {logs}"
+        ),
+    )?;
+    ensure(
         !logs.contains("\"insecure_permissions\""),
-        "a successful local open must not log the insecure-permissions warning, captured logs: {logs}"
-    );
-    assert!(
+        format!(
+            "a successful local open must not log the insecure-permissions warning, captured logs: {logs}"
+        ),
+    )?;
+    ensure(
         !logs.contains("\"network_filesystem\""),
-        "a successful local open must not log the network-filesystem warning, captured logs: {logs}"
-    );
+        format!(
+            "a successful local open must not log the network-filesystem warning, captured logs: {logs}"
+        ),
+    )?;
     Ok(())
 }
 
@@ -336,10 +363,10 @@ fn evidence_kind_check_rejects_an_unmodeled_kind() -> TestResult {
 
     let err =
         result.check_err("an unmodeled evidence kind must be rejected by the CHECK constraint")?;
-    assert!(
+    ensure(
         err.to_string().to_lowercase().contains("constraint"),
-        "expected constraint error, got: {err}"
-    );
+        format!("expected constraint error, got: {err}"),
+    )?;
     Ok(())
 }
 
@@ -360,7 +387,7 @@ fn a_null_byte_len_is_storable_and_distinct_from_an_empty_file() -> TestResult {
             )
             .check("read the size")
     };
-    assert_eq!(size(&connection)?, Some(0), "an empty file stores 0");
+    ensure_eq(&size(&connection)?, &Some(0), "an empty file stores 0")?;
 
     connection
         .execute(
@@ -370,7 +397,7 @@ fn a_null_byte_len_is_storable_and_distinct_from_an_empty_file() -> TestResult {
         )
         .check("a skipped row may carry an unknown size")?;
 
-    assert_eq!(size(&connection)?, None, "an unknown size stays NULL");
+    ensure_eq(&size(&connection)?, &None, "an unknown size stays NULL")?;
     Ok(())
 }
 
@@ -414,12 +441,13 @@ fn every_evidence_kind_text_passes_the_kind_check() -> TestResult {
     let mut allowed = kind_check_allowed_values(&connection)?;
     inserted_kinds.sort();
     allowed.sort();
-    assert_eq!(
-        allowed, inserted_kinds,
+    ensure_eq(
+        &allowed,
+        &inserted_kinds,
         "left is the evidence.kind allow-list SQLite installed from src/store/schema.sql, \
          right is the text src/evidence/sql.rs::kind_text produces: the CHECK must list \
-         exactly these strings"
-    );
+         exactly these strings",
+    )?;
     Ok(())
 }
 
@@ -440,10 +468,10 @@ fn a_database_under_a_symlinked_parent_directory_opens_for_both_modes() -> TestR
     let read_only = open_existing(&path);
 
     read_only.as_ref().check("`read_only` is ok")?;
-    assert!(
+    ensure(
         real.join("project.db").is_file(),
-        "the database lands in the real directory"
-    );
+        "the database lands in the real directory",
+    )?;
     Ok(())
 }
 
@@ -470,16 +498,16 @@ fn the_line_functions_run_on_both_connection_modes() -> TestResult {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .check(&format!("{label}: the functions must pass the guard"))?;
-        assert_eq!(lines, (3, "b\nc".to_owned()), "{label}");
+        ensure_eq(&lines, &(3, "b\nc".to_owned()), label.to_string())?;
 
-        assert!(
+        ensure(
             connection
                 .query_row("SELECT load_extension('libnothing')", [], |row| {
                     row.get::<_, Option<String>>(0)
                 })
                 .is_err(),
-            "{label} must not load extensions"
-        );
+            format!("{label} must not load extensions"),
+        )?;
     }
     Ok(())
 }
@@ -490,7 +518,10 @@ fn a_connection_that_cannot_enter_wal_mode_fails_configuration() -> TestResult {
 
     let result = super::configure(&connection);
 
-    assert!(matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == "memory"));
+    ensure(
+        matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == "memory"),
+        "matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == \"memory\")",
+    )?;
     Ok(())
 }
 
@@ -500,9 +531,9 @@ fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() 
         .join("a".repeat(300))
         .join("project.db");
 
-    assert!(matches!(
-        super::reject_symlink(&path),
-        Err(StoreError::Inspect(_))
-    ));
+    ensure(
+        matches!(super::reject_symlink(&path), Err(StoreError::Inspect(_))),
+        "matches!( super::reject_symlink(&path), Err(StoreError::Inspect(_)) )",
+    )?;
     Ok(())
 }

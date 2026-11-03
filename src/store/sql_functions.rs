@@ -129,12 +129,11 @@ fn count_lines(text: &str) -> usize {
     text.split_inclusive('\n').count()
 }
 
-fn next_newline(bytes: &[u8], from: usize) -> Option<usize> {
-    bytes
-        .get(from..)?
-        .iter()
-        .position(|byte| *byte == b'\n')
-        .map(|offset| from + offset)
+/// The offset just past the next `\n` at or after `from`, or `None` when
+/// there is none (or `from` is past the end).
+fn after_next_newline(bytes: &[u8], from: usize) -> Option<usize> {
+    let offset = bytes.get(from..)?.iter().position(|byte| *byte == b'\n')?;
+    from.checked_add(offset)?.checked_add(1)
 }
 
 /// Lines `start..=end` (1-based, `1 <= start <= end`) exactly as in `text`,
@@ -144,8 +143,8 @@ fn slice_lines(text: &str, start: i64, end: i64) -> &str {
     let bytes = text.as_bytes();
     let mut cursor = 0;
     for _ in 1..start {
-        match next_newline(bytes, cursor) {
-            Some(newline) => cursor = newline + 1,
+        match after_next_newline(bytes, cursor) {
+            Some(after) => cursor = after,
             None => return "",
         }
     }
@@ -155,8 +154,8 @@ fn slice_lines(text: &str, start: i64, end: i64) -> &str {
     let begin = cursor;
     let mut stop = bytes.len();
     for _ in start..=end {
-        if let Some(newline) = next_newline(bytes, cursor) {
-            cursor = newline + 1;
+        if let Some(after) = after_next_newline(bytes, cursor) {
+            cursor = after;
             stop = cursor;
         } else {
             stop = bytes.len();

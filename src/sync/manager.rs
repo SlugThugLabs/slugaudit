@@ -165,7 +165,7 @@ impl SourceSyncManager {
 mod recovery_tests {
     use super::*;
     use crate::progress::NoopProgressSink;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure_eq};
 
     /// A valid database whose metadata names a different project root is
     /// stale, and the recovery path discards it. When the database path is a
@@ -200,11 +200,16 @@ mod recovery_tests {
 
         let discard_error = std::fs::remove_file(&database_path)
             .check_err("the directory at the database path must not unlink")?;
-        assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-        assert_eq!(
-            error.message,
-            format!("discarding the stale project database: {discard_error}")
-        );
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+        )?;
+        ensure_eq(
+            &error.message,
+            &format!("discarding the stale project database: {discard_error}"),
+            "error.message == format!(\"discarding the stale project database: {discard_error}\")",
+        )?;
         Ok(())
     }
 }

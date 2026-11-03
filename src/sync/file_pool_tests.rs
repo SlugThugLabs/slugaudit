@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::sync::discovery::FileKind;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::PathBuf;
 
 const TEST_PASS: Pass = Pass {
@@ -42,7 +42,7 @@ fn an_empty_file_set_never_calls_the_pass() -> TestResult {
         Err(PublishError::InvalidParserPackVersion("called".to_owned()))
     })
     .check("an empty run")?;
-    assert!(outcomes.is_empty());
+    ensure(outcomes.is_empty(), "outcomes.is_empty()")?;
     Ok(())
 }
 
@@ -56,7 +56,7 @@ fn outcomes_come_back_in_file_order_whichever_worker_finished_first() -> TestRes
     .check("run the pool")?;
 
     let expected: Vec<(usize, String)> = (0..200).map(|idx| (idx, format!("f{idx}.rs"))).collect();
-    assert_eq!(outcomes, expected);
+    ensure_eq(&outcomes, &expected, "outcomes == expected")?;
     Ok(())
 }
 
@@ -75,10 +75,10 @@ fn a_per_file_error_fails_the_run_with_that_error() -> TestResult {
     })
     .check_err("the failing file must fail the run")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::ChangedDuringSample { path } if path == "f1.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -94,10 +94,10 @@ fn a_spent_deadline_names_the_pass_activity_and_the_file() -> TestResult {
     )
     .check_err("the deadline must trip")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::TimeBudgetExceeded { path, .. } if path == " while testing f0.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -105,14 +105,14 @@ fn a_spent_deadline_names_the_pass_activity_and_the_file() -> TestResult {
 fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() -> TestResult {
     let error = time_budget_error("processing", "src/lib.rs", Duration::from_millis(1500));
 
-    assert!(
+    ensure(
         matches!(
             &error,
             PublishError::TimeBudgetExceeded { path, elapsed_ms: 1500 }
                 if path == " while processing src/lib.rs"
         ),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -131,10 +131,10 @@ fn an_outcome_that_cannot_be_delivered_fails_the_run_with_the_file_named() -> Te
     let recorded = lock(&pool.error_slot, "test")
         .check("lock the error slot")?
         .take();
-    assert!(
+    ensure(
         matches!(&recorded, Some(PublishError::SamplingResultLost { path, .. }) if path == "f0.rs"),
-        "got {recorded:?}"
-    );
+        format!("got {recorded:?}"),
+    )?;
     Ok(())
 }
 
@@ -153,13 +153,13 @@ fn a_channel_outcome_with_an_out_of_range_index_fails_the_run() -> TestResult {
         .collect(&rx)
         .check_err("an out-of-range index must fail the run")?;
 
-    assert!(
+    ensure(
         matches!(
             error,
             PublishError::SamplingIndexOutOfRange { index: 1, total: 1 }
         ),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -178,10 +178,10 @@ fn a_file_with_no_delivered_outcome_fails_the_run() -> TestResult {
         .collect(&rx)
         .check_err("a missing outcome must fail the run")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::SamplingResultLost { path, .. } if path == "f1.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -207,14 +207,14 @@ fn a_later_error_is_logged_once_under_the_pass_and_the_first_is_returned() -> Te
     let (tx, rx) = mpsc::channel::<(usize, ())>();
     drop(tx);
     let returned = pool.collect(&rx).check_err("the run fails")?;
-    assert!(
+    ensure(
         matches!(returned, PublishError::ImportTooLarge { .. }),
-        "the first error must stay the returned one: {returned:?}"
-    );
-    assert!(
+        format!("the first error must stay the returned one: {returned:?}"),
+    )?;
+    ensure(
         logs.contains("control-line-superseded-error-probe"),
-        "the capture must be live: {logs}"
-    );
+        format!("the capture must be live: {logs}"),
+    )?;
     let logged: Vec<&str> = logs
         .lines()
         .filter(|line| line.contains(SUPERSEDED_PATH))
@@ -232,7 +232,10 @@ fn a_later_error_is_logged_once_under_the_pass_and_the_first_is_returned() -> Te
         "changed on disk after being sampled",
         "a later worker failure was discarded",
     ] {
-        assert!(line.contains(expected), "missing {expected}: {line}");
+        ensure(
+            line.contains(expected),
+            format!("missing {expected}: {line}"),
+        )?;
     }
     Ok(())
 }

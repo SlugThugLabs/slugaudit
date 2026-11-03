@@ -1,6 +1,6 @@
 use super::*;
 use crate::sync::publish::PublishError;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -23,9 +23,21 @@ fn sample_file_accepts_a_file_exactly_at_the_cap() -> TestResult {
 
     let sample = sample_file(&file, &limits).check("the per-file cap is inclusive")?;
 
-    assert_eq!(sample.byte_len, body.len() as u64);
-    assert_eq!(sample.identity, hash::hash_bytes("at-cap.rs", body));
-    assert_eq!(sample.content.as_deref(), Some("fn at_cap() {}"));
+    ensure_eq(
+        &sample.byte_len,
+        &(body.len() as u64),
+        "sample.byte_len == body.len() as u64",
+    )?;
+    ensure_eq(
+        &sample.identity,
+        &hash::hash_bytes("at-cap.rs", body),
+        "sample.identity == hash::hash_bytes(\"at-cap.rs\", body)",
+    )?;
+    ensure_eq(
+        &sample.content.as_deref(),
+        &Some("fn at_cap() {}"),
+        "sample.content.as_deref() == Some(\"fn at_cap() {}\")",
+    )?;
     Ok(())
 }
 
@@ -50,11 +62,12 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() -> TestResult {
         SampleError::TooLarge {
             observed, limit, ..
         } => {
-            assert_eq!(
-                observed, 17,
-                "the stat size is reported as a lower bound, not truncated"
-            );
-            assert_eq!(limit, 16);
+            ensure_eq(
+                &observed,
+                &17,
+                "the stat size is reported as a lower bound, not truncated",
+            )?;
+            ensure_eq(&limit, &16, "limit == 16")?;
         }
         other => {
             return Err(format!("expected SampleError::TooLarge, got {other:?}"))
@@ -90,22 +103,22 @@ fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size
         SampleError::TooLarge {
             observed, limit, ..
         } => {
-            assert_eq!(observed, 11, "the bounded read stops at the cap + 1");
-            assert_eq!(limit, 10);
+            ensure_eq(&observed, &11, "the bounded read stops at the cap + 1")?;
+            ensure_eq(&limit, &10, "limit == 10")?;
         }
         other => {
             return Err(format!("expected SampleError::TooLarge, got {other:?}"))
                 .check("unexpected outcome");
         }
     }
-    assert!(
+    ensure(
         message.contains("at least 11 bytes"),
-        "the report must state a lower bound: {message}"
-    );
-    assert!(
+        format!("the report must state a lower bound: {message}"),
+    )?;
+    ensure(
         !message.contains("is 11 bytes"),
-        "the bounded read length is not the file's size: {message}"
-    );
+        format!("the bounded read length is not the file's size: {message}"),
+    )?;
     Ok(())
 }
 
@@ -163,7 +176,11 @@ fn parallel_sampling_preserves_discovered_index_ordering() -> TestResult {
         .iter()
         .map(|d| d.relative_path.as_str())
         .collect();
-    assert_eq!(actual, expected, "sample indices mirror discovered indices");
+    ensure_eq(
+        &actual,
+        &expected,
+        "sample indices mirror discovered indices",
+    )?;
     Ok(())
 }
 
@@ -191,10 +208,10 @@ fn parallel_sampling_total_byte_cap_is_enforced_atomically() -> TestResult {
         .check_err("total-byte cap must fire under this many large files")?;
     match err {
         PublishError::ImportTooLarge { total, limit } => {
-            assert!(
+            ensure(
                 total > limit,
-                "observed total {total} must exceed limit {limit}"
-            );
+                format!("observed total {total} must exceed limit {limit}"),
+            )?;
         }
         _ => {
             return Err(
@@ -238,19 +255,36 @@ fn oversized_files_are_skipped_and_returned_not_fatal() -> TestResult {
     let (samples, skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
         .check("an oversized file must be skipped, not fatal")?;
 
-    assert_eq!(samples.len(), 1, "only the in-cap file is sampled");
-    assert_eq!(samples[0].relative_path, "small.rs");
-    assert_eq!(
-        skipped.len(),
-        1,
-        "the oversized file is reported as skipped"
-    );
-    assert_eq!(skipped[0].absolute_path, discovered[0].absolute_path);
-    assert!(
-        skipped[0].reason.contains("per-file import ceiling"),
-        "skip reason names the ceiling: {}",
-        skipped[0].reason
-    );
+    ensure_eq(&samples.len(), &1, "only the in-cap file is sampled")?;
+    ensure_eq(
+        &samples.first().check("samples[0] exists")?.relative_path,
+        &"small.rs",
+        "samples[0].relative_path == \"small.rs\"",
+    )?;
+    ensure_eq(
+        &skipped.len(),
+        &1,
+        "the oversized file is reported as skipped",
+    )?;
+    ensure_eq(
+        &skipped.first().check("skipped[0] exists")?.absolute_path,
+        &discovered
+            .first()
+            .check("discovered[0] exists")?
+            .absolute_path,
+        "skipped[0].absolute_path == discovered[0].absolute_path",
+    )?;
+    ensure(
+        skipped
+            .first()
+            .check("skipped[0] exists")?
+            .reason
+            .contains("per-file import ceiling"),
+        format!(
+            "skip reason names the ceiling: {}",
+            skipped.first().check("skipped[0] exists")?.reason
+        ),
+    )?;
     Ok(())
 }
 
@@ -303,11 +337,11 @@ fn parallel_sampling_emits_one_progress_event_per_file() -> TestResult {
     sample_all_with_deadline(&discovered, &limits, &counter, &deadline)
         .check("samples should succeed")?;
 
-    assert_eq!(
-        counter.0.load(std::sync::atomic::Ordering::Relaxed),
-        discovered.len(),
-        "one Sampling event per file"
-    );
+    ensure_eq(
+        &counter.0.load(std::sync::atomic::Ordering::Relaxed),
+        &discovered.len(),
+        "one Sampling event per file",
+    )?;
     Ok(())
 }
 
@@ -327,9 +361,17 @@ fn a_failed_stat_records_an_unknown_size_and_the_stat_failed_reason() -> TestRes
     let record = skipped_record("plain.rs/inner.rs", &unstatable, "oversize")
         .check("a stat failure other than NotFound is recorded, not fatal")?;
 
-    assert_eq!(record.byte_len, None, "an unknown size is not 0");
-    assert_eq!(record.modified_unix_seconds, None);
-    assert_eq!(record.reason, "stat_failed");
+    ensure_eq(&record.byte_len, &None, "an unknown size is not 0")?;
+    ensure_eq(
+        &record.modified_unix_seconds,
+        &None,
+        "record.modified_unix_seconds == None",
+    )?;
+    ensure_eq(
+        &record.reason,
+        &"stat_failed",
+        "record.reason == \"stat_failed\"",
+    )?;
     Ok(())
 }
 
@@ -341,10 +383,10 @@ fn a_skipped_file_deleted_since_the_walk_is_a_change_to_the_tree() -> TestResult
     let error = skipped_record("vanished.rs", &vanished, "oversize")
         .check_err("a vanished skipped file must not be recorded")?;
 
-    assert!(
+    ensure(
         matches!(&error, PublishError::ChangedDuringSample { path } if path == "vanished.rs"),
-        "got {error:?}"
-    );
+        format!("got {error:?}"),
+    )?;
     Ok(())
 }
 
@@ -356,14 +398,19 @@ fn a_real_empty_skipped_file_records_zero_bytes_and_keeps_its_reason() -> TestRe
 
     let record = skipped_record("empty.rs", &empty, "unreadable").check("record empty file")?;
 
-    assert_eq!(record.byte_len, Some(0));
-    assert_eq!(record.reason, "unreadable");
+    ensure_eq(&record.byte_len, &Some(0), "record.byte_len == Some(0)")?;
+    ensure_eq(
+        &record.reason,
+        &"unreadable",
+        "record.reason == \"unreadable\"",
+    )?;
     let unknown = skipped_record("empty.rs", &unstatable_path(dir.path())?, "unreadable")
         .check("record unstatable file")?;
-    assert_ne!(
-        record.identity.content_hash, unknown.identity.content_hash,
-        "empty and unknown-size files must not share an identity"
-    );
+    ensure_ne(
+        &record.identity.content_hash,
+        &unknown.identity.content_hash,
+        "empty and unknown-size files must not share an identity",
+    )?;
     Ok(())
 }
 
@@ -379,15 +426,15 @@ fn a_skipped_record_for_a_statable_file_does_not_warn() -> TestResult {
     })?;
     let record = record.check("record a statable file")?;
 
-    assert_eq!(record.byte_len, Some(5));
-    assert!(
+    ensure_eq(&record.byte_len, &Some(5), "record.byte_len == Some(5)")?;
+    ensure(
         logs.contains("control-line-probe-skipped-record"),
-        "capture liveness control"
-    );
-    assert!(
+        "capture liveness control",
+    )?;
+    ensure(
         !logs.contains("stat failed for a skipped file"),
-        "a readable file must not warn:\n{logs}"
-    );
+        format!("a readable file must not warn:\n{logs}"),
+    )?;
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 use super::harness_tests::*;
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use uuid::Uuid;
 
 #[test]
@@ -13,12 +13,16 @@ fn result_store_a_cursor_round_trips_in_the_exact_documented_form() -> TestResul
     let decoded = fx.store.decode_cursor(&token).check("decode")?;
 
     let prefix = "v1.";
-    assert!(
+    ensure(
         token.starts_with(prefix) && token.ends_with(&format!(".{}.7", handle.id)),
-        "{token}"
-    );
-    assert_eq!(token.split('.').count(), 4);
-    assert_eq!(decoded, cursor);
+        &token,
+    )?;
+    ensure_eq(
+        &token.split('.').count(),
+        &4,
+        "token.split('.').count() == 4",
+    )?;
+    ensure_eq(&decoded, &cursor, "decoded == cursor")?;
     Ok(())
 }
 
@@ -30,8 +34,12 @@ fn result_store_a_cursor_reads_the_page_it_names() -> TestResult {
 
     let page = read_token(&fx.store, &token).check("read")?;
 
-    assert_eq!(page.rows.first().map(|row| row.ord), Some(4));
-    assert_eq!(page.rows.len(), 6);
+    ensure_eq(
+        &page.rows.first().map(|row| row.ord),
+        &Some(4),
+        "page.rows.first().map(|row| row.ord) == Some(4)",
+    )?;
+    ensure_eq(&page.rows.len(), &6, "page.rows.len() == 6")?;
     Ok(())
 }
 
@@ -41,7 +49,10 @@ fn result_store_every_malformed_cursor_is_unknown() -> TestResult {
     let handle = write_rows(&fx.store, 10, 3).check("write")?;
     let good = fx.store.cursor(handle.id, 1).to_string();
     let parts: Vec<&str> = good.split('.').collect();
-    let (nonce, result) = (parts[1], parts[2]);
+    let (nonce, result) = (
+        parts.get(1).check("parts[1] exists")?,
+        parts.get(2).check("parts[2] exists")?,
+    );
     let cases = [
         String::new(),
         "v2.".to_owned() + &good[3..],
@@ -62,18 +73,19 @@ fn result_store_every_malformed_cursor_is_unknown() -> TestResult {
     for token in &cases {
         let outcome = fx.store.decode_cursor(token);
 
-        assert!(
+        ensure(
             matches!(outcome, Err(ResultStoreError::Unknown)),
-            "{token:?}: {outcome:?}"
-        );
+            format!("{token:?}: {outcome:?}"),
+        )?;
     }
-    assert_eq!(
-        fx.store
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .unknown_cursors,
-        cases.len() as u64
-    );
+        &(cases.len() as u64),
+        "fx.store .stats() .check(\"read the store counters\")? .unknown_cursors == cases.len() as u64",
+    )?;
     Ok(())
 }
 
@@ -85,10 +97,10 @@ fn result_store_a_cursor_from_another_process_is_unknown() -> TestResult {
 
     let outcome = read_token(&two.store, &foreign);
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Unknown)),
-        "{outcome:?}"
-    );
+        format!("{outcome:?}"),
+    )?;
     Ok(())
 }
 
@@ -100,17 +112,18 @@ fn result_store_a_valid_cursor_for_a_reclaimed_result_is_expired() -> TestResult
 
     let outcome = read_token(&fx.store, &token);
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Expired)),
-        "{outcome:?}"
-    );
-    assert_eq!(
-        fx.store
+        format!("{outcome:?}"),
+    )?;
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .expired_cursors,
-        1
-    );
+        &1,
+        "fx.store .stats() .check(\"read the store counters\")? .expired_cursors == 1",
+    )?;
     Ok(())
 }
 
@@ -122,9 +135,9 @@ fn result_store_a_cursor_past_the_row_count_is_unknown() -> TestResult {
 
     let outcome = read_token(&fx.store, &token);
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Unknown)),
-        "{outcome:?}"
-    );
+        format!("{outcome:?}"),
+    )?;
     Ok(())
 }

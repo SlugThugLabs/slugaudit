@@ -90,6 +90,7 @@ pub(crate) fn publish_with_limits(
             && is_retryable(error)
             && attempt < MAX_CAS_RETRIES
             && deadline.exceeded().is_none()
+            && let Some(next_attempt) = attempt.checked_add(1)
         {
             // Name the retry by category and the real path; the
             // error's Display carries the changed file's path.
@@ -104,7 +105,7 @@ pub(crate) fn publish_with_limits(
             } else {
                 tracing::info!(attempt, error_kind, "publish retrying");
             }
-            attempt += 1;
+            attempt = next_attempt;
             continue;
         }
         if let Ok(report) = &result {

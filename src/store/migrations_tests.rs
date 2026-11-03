@@ -1,7 +1,7 @@
 use super::*;
 use crate::store::connection::{StoreError, open_read_write};
 use crate::store::test_join::join_checked;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn applies_schema_to_a_fresh_database() -> TestResult {
@@ -15,12 +15,16 @@ fn applies_schema_to_a_fresh_database() -> TestResult {
             |row| row.get(0),
         )
         .check("query sqlite_master")?;
-    assert_eq!(table_count, 1);
+    ensure_eq(&table_count, &1, "table_count == 1")?;
 
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .check("user_version")?;
-    assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    ensure_eq(
+        &version,
+        &CURRENT_SCHEMA_VERSION,
+        "version == CURRENT_SCHEMA_VERSION",
+    )?;
     Ok(())
 }
 
@@ -34,7 +38,11 @@ fn applying_schema_twice_is_idempotent() -> TestResult {
     let version: i64 = second
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .check("read version")?;
-    assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    ensure_eq(
+        &version,
+        &CURRENT_SCHEMA_VERSION,
+        "version == CURRENT_SCHEMA_VERSION",
+    )?;
     Ok(())
 }
 
@@ -51,7 +59,7 @@ fn schema_has_no_risk_pattern_table() -> TestResult {
             |row| row.get(0),
         )
         .check("query sqlite_master")?;
-    assert_eq!(count, 0);
+    ensure_eq(&count, &0, "count == 0")?;
     Ok(())
 }
 
@@ -66,17 +74,21 @@ fn rejects_a_database_from_a_newer_schema_version() -> TestResult {
     drop(connection);
 
     let reopened = open_read_write(&path);
-    assert!(matches!(
-        reopened,
-        Err(StoreError::Migration(
-            MigrationError::UnsupportedVersion { .. }
-        ))
-    ));
-    assert!(
+    ensure(
+        matches!(
+            reopened,
+            Err(StoreError::Migration(
+                MigrationError::UnsupportedVersion { .. }
+            ))
+        ),
+        "matches!( reopened, Err(StoreError::Migration( MigrationError::UnsupportedVersion { .. } )) )",
+    )?;
+    ensure(
         reopened
             .check_err("a database from a newer version is refused")?
-            .is_corruption()
-    );
+            .is_corruption(),
+        "reopened .check_err(\"a database from a newer version is refused\")? .is_corruption()",
+    )?;
     Ok(())
 }
 
@@ -89,17 +101,20 @@ fn rejects_an_outdated_v1_database_and_marks_as_corruption_for_discard() -> Test
         .pragma_update(None, "user_version", 1_i64)
         .check("rewind version to v1")?;
     let err = ensure_current_schema(&mut connection).check_err("must reject v1")?;
-    assert!(matches!(
-        err,
-        MigrationError::UnsupportedVersion {
-            found: 1,
-            supported: CURRENT_SCHEMA_VERSION
-        }
-    ));
-    assert!(
+    ensure(
+        matches!(
+            err,
+            MigrationError::UnsupportedVersion {
+                found: 1,
+                supported: CURRENT_SCHEMA_VERSION
+            }
+        ),
+        "matches!( err, MigrationError::UnsupportedVersion { found: 1, supported: CURRENT_SCHEMA_VERSION } )",
+    )?;
+    ensure(
         err.is_corruption(),
-        "must flag as corruption for auto-rebuild"
-    );
+        "must flag as corruption for auto-rebuild",
+    )?;
     Ok(())
 }
 
@@ -112,17 +127,20 @@ fn rejects_an_outdated_v2_database_and_marks_as_corruption_for_discard() -> Test
         .pragma_update(None, "user_version", 2_i64)
         .check("rewind version to v2")?;
     let err = ensure_current_schema(&mut connection).check_err("must reject v2")?;
-    assert!(matches!(
-        err,
-        MigrationError::UnsupportedVersion {
-            found: 2,
-            supported: CURRENT_SCHEMA_VERSION
-        }
-    ));
-    assert!(
+    ensure(
+        matches!(
+            err,
+            MigrationError::UnsupportedVersion {
+                found: 2,
+                supported: CURRENT_SCHEMA_VERSION
+            }
+        ),
+        "matches!( err, MigrationError::UnsupportedVersion { found: 2, supported: CURRENT_SCHEMA_VERSION } )",
+    )?;
+    ensure(
         err.is_corruption(),
-        "must flag as corruption for auto-rebuild"
-    );
+        "must flag as corruption for auto-rebuild",
+    )?;
     Ok(())
 }
 
@@ -135,11 +153,11 @@ fn a_file_that_is_not_a_database_fails_reading_the_version_as_corruption() -> Te
 
     let err = ensure_current_schema(&mut connection).check_err("garbage must not migrate")?;
 
-    assert!(
+    ensure(
         matches!(err, MigrationError::ReadVersion(_)),
-        "expected ReadVersion, got {err:?}"
-    );
-    assert!(err.is_corruption(), "garbage must be discarded and rebuilt");
+        format!("expected ReadVersion, got {err:?}"),
+    )?;
+    ensure(err.is_corruption(), "garbage must be discarded and rebuilt")?;
     Ok(())
 }
 
@@ -155,14 +173,14 @@ fn a_read_only_fresh_database_fails_applying_the_schema_without_claiming_corrupt
 
     let err = ensure_current_schema(&mut connection).check_err("read-only cannot migrate")?;
 
-    assert!(
+    ensure(
         matches!(err, MigrationError::Apply(_)),
-        "expected Apply, got {err:?}"
-    );
-    assert!(
+        format!("expected Apply, got {err:?}"),
+    )?;
+    ensure(
         !err.is_corruption(),
-        "a read-only handle is an operational failure, not a corrupt file to discard"
-    );
+        "a read-only handle is an operational failure, not a corrupt file to discard",
+    )?;
     Ok(())
 }
 
@@ -176,7 +194,11 @@ fn ensure_current_schema_can_be_invoked_twice_without_error() -> TestResult {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .check("user_version")?;
-    assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    ensure_eq(
+        &version,
+        &CURRENT_SCHEMA_VERSION,
+        "version == CURRENT_SCHEMA_VERSION",
+    )?;
     Ok(())
 }
 
@@ -193,7 +215,11 @@ fn pragma_user_version_round_trips_via_optional() -> TestResult {
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .check("read user_version")?;
-    assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    ensure_eq(
+        &version,
+        &CURRENT_SCHEMA_VERSION,
+        "version == CURRENT_SCHEMA_VERSION",
+    )?;
     Ok(())
 }
 
@@ -251,16 +277,16 @@ fn schema_init_does_not_overwrite_a_foreign_version_set_while_it_waited() -> Tes
     let result = ensure_current_schema(&mut connection);
     join_checked(releaser, "creator thread")??;
 
-    assert!(
+    ensure(
         matches!(
             result,
             Err(MigrationError::UnsupportedVersion { found: 99, .. })
         ),
-        "{result:?}"
-    );
+        format!("{result:?}"),
+    )?;
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .check("version")?;
-    assert_eq!(version, 99);
+    ensure_eq(&version, &99, "version == 99")?;
     Ok(())
 }

@@ -76,9 +76,12 @@ pub(super) fn sample_all_with_deadline(
     let total_bytes = AtomicU64::new(0);
     let outcomes = file_pool::run(discovered, deadline, SAMPLE_PASS, |idx, file| {
         let outcome = sample_one(file, limits, &total_bytes)?;
+        let current = idx
+            .checked_add(1)
+            .ok_or(PublishError::SamplingIndexOutOfRange { index: idx, total })?;
         sink.emit(ProgressEvent::Sampling {
             phase: "publishing",
-            current: idx + 1,
+            current,
             total,
         });
         Ok(outcome)

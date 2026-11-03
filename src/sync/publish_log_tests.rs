@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::sync::{discovery, sample};
-use slugaudit_test_check::{CheckErr, TestResult};
+use slugaudit_test_check::{CheckErr, TestResult, ensure_eq};
 
 #[test]
 fn a_sampling_index_error_maps_to_its_static_category_without_a_path() -> TestResult {
@@ -10,8 +10,12 @@ fn a_sampling_index_error_maps_to_its_static_category_without_a_path() -> TestRe
 
     let (error_kind, path) = failure_fields(&error);
 
-    assert_eq!(error_kind, "sampling_index_out_of_range");
-    assert_eq!(path, None);
+    ensure_eq(
+        &error_kind,
+        &"sampling_index_out_of_range",
+        "error_kind == \"sampling_index_out_of_range\"",
+    )?;
+    ensure_eq(&path, &None, "path == None")?;
     Ok(())
 }
 
@@ -157,11 +161,11 @@ fn every_publish_failure_maps_to_its_kind_and_path() -> TestResult {
     let mut cases = discovery_log_field_cases();
     cases.extend(publish_log_field_cases()?);
     for (error, kind, path) in &cases {
-        assert_eq!(
-            failure_fields(error),
-            (*kind, path.map(Path::new)),
-            "log fields of {error:?}"
-        );
+        ensure_eq(
+            &failure_fields(error),
+            &(*kind, path.map(Path::new)),
+            format!("log fields of {error:?}"),
+        )?;
     }
     Ok(())
 }

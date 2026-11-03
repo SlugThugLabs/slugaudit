@@ -30,11 +30,19 @@ pub struct SweepOutcome {
     pub first_error: Option<String>,
 }
 
+/// Adds one to a sweep tally. A tally counts directory entries the sweep
+/// visited, so it cannot approach `usize::MAX`; if it ever did, holding at
+/// the maximum is the intended meaning of a stats tally ("at least this
+/// many"), which is why this saturates instead of failing the sweep.
+fn tally(count: &mut usize) {
+    *count = count.saturating_add(1);
+}
+
 impl SweepOutcome {
     /// Counts a failure and logs it once, with its cause.
     fn failed(&mut self, context: &'static str, error: &io::Error) {
         tracing::warn!(context, error = %error, "result store sweep problem; paging stays enabled");
-        self.errors += 1;
+        tally(&mut self.errors);
         self.first_error
             .get_or_insert_with(|| format!("{context}: {error}"));
     }
@@ -42,7 +50,7 @@ impl SweepOutcome {
     /// Removes one file; a file that is already gone is not a failure.
     pub(super) fn remove(&mut self, path: &Path, context: &'static str) {
         match std::fs::remove_file(path) {
-            Ok(()) => self.removed_files += 1,
+            Ok(()) => tally(&mut self.removed_files),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => self.failed(context, &error),
         }
@@ -219,7 +227,7 @@ fn sweep_owner(
             }
             outcome.remove(lock_path, "remove a dead owner's lock file");
         }
-        Err(std::fs::TryLockError::WouldBlock) => outcome.live_owners_skipped += 1,
+        Err(std::fs::TryLockError::WouldBlock) => tally(&mut outcome.live_owners_skipped),
         Err(std::fs::TryLockError::Error(error)) => {
             outcome.failed("lock another session's lock", &error);
         }

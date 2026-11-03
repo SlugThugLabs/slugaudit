@@ -48,7 +48,9 @@ pub(super) mod forced_failure {
     }
 
     pub(super) fn count_call() {
-        CALLS.with(|calls| calls.set(calls.get() + 1));
+        // A test-seam call counter on one thread: it cannot approach
+        // `usize::MAX`, and holding at the maximum is its intended meaning.
+        CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     }
 
     /// How many times this thread reached the pack loader.

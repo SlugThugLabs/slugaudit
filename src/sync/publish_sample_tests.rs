@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::sync::discovery::{DiscoveredFile, FileKind};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::path::PathBuf;
 
 fn file(path: &str) -> DiscoveredFile {
@@ -44,7 +44,11 @@ fn parser_version_change_samples_every_hashed_file() -> TestResult {
     let discovered = [file("a.rs"), file("b.rs"), file("unhashed.rs")];
     let identities = [identity("a.rs", "h1"), identity("b.rs", "h2")];
     let picked = files_to_sample(&discovered, &identities, &[], true);
-    assert_eq!(paths(&picked), vec!["a.rs", "b.rs"]);
+    ensure_eq(
+        &paths(&picked),
+        &vec!["a.rs", "b.rs"],
+        "paths(&picked) == vec![\"a.rs\", \"b.rs\"]",
+    )?;
     Ok(())
 }
 
@@ -68,7 +72,11 @@ fn unchanged_parser_samples_only_changed_hashed_files() -> TestResult {
         change("gone.rs", ChangeStatus::Deleted),
     ];
     let picked = files_to_sample(&discovered, &identities, &changes, false);
-    assert_eq!(paths(&picked), vec!["added.rs", "modified.rs"]);
+    ensure_eq(
+        &paths(&picked),
+        &vec!["added.rs", "modified.rs"],
+        "paths(&picked) == vec![\"added.rs\", \"modified.rs\"]",
+    )?;
     Ok(())
 }
 
@@ -77,7 +85,10 @@ fn deleted_change_is_never_sampled() -> TestResult {
     let discovered = [file("a.rs")];
     let identities = [identity("a.rs", "h1")];
     let changes = [change("a.rs", ChangeStatus::Deleted)];
-    assert!(files_to_sample(&discovered, &identities, &changes, false).is_empty());
+    ensure(
+        files_to_sample(&discovered, &identities, &changes, false).is_empty(),
+        "files_to_sample(&discovered, &identities, &changes, false).is_empty()",
+    )?;
     Ok(())
 }
 
@@ -102,7 +113,9 @@ fn mismatched_sample_hash_is_changed_during_sample() -> TestResult {
     let samples = [sample_of("a.rs", "h1"), sample_of("b.rs", "other")];
     let identities = [identity("a.rs", "h1"), identity("b.rs", "h2")];
     match check_samples_match_pass1(&samples, &identities) {
-        Err(PublishError::ChangedDuringSample { path }) => assert_eq!(path, "b.rs"),
+        Err(PublishError::ChangedDuringSample { path }) => {
+            ensure_eq(&path, &"b.rs", "path == \"b.rs\"")?;
+        }
         other => {
             return Err(format!("expected ChangedDuringSample, got {other:?}"))
                 .check("unexpected outcome");

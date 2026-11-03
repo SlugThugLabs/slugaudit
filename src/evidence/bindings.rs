@@ -82,8 +82,13 @@ pub(super) fn walk_bindings(
         if let Some(binding) = binding_kind(&node.kind()) {
             match identifier_name(&node, input.source) {
                 Ok(Some(name)) => {
+                    let Some(next) = counter.checked_add(1) else {
+                        tracing::warn!("binding key counter exhausted; extraction is partial");
+                        out.truncated = true;
+                        break;
+                    };
                     let item = binding_item(&node, binding, &name, *counter, input.lines)?;
-                    *counter += 1;
+                    *counter = next;
                     out.items.push(item);
                 }
                 Ok(None) => {}
@@ -93,7 +98,13 @@ pub(super) fn walk_bindings(
                 }
             }
         }
-        super::push_children(&mut pending, &node, |child| (child, depth + 1));
+        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
+        // would mean the depth bound was passed, which the walk reports as cut.
+        let Some(child_depth) = depth.checked_add(1) else {
+            out.truncated = true;
+            continue;
+        };
+        super::push_children(&mut pending, &node, |child| (child, child_depth));
     }
     Ok(())
 }
@@ -189,8 +200,12 @@ fn first_identifier_descendant(
             ));
         }
     }
+    // `depth < 3` here; an increment that fails is past the depth bound.
+    let Some(next_depth) = depth.checked_add(1) else {
+        return Ok(None);
+    };
     for child in named_children(node) {
-        if let Some(name) = first_identifier_descendant(&child, source, depth + 1)? {
+        if let Some(name) = first_identifier_descendant(&child, source, next_depth)? {
             return Ok(Some(name));
         }
     }

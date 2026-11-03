@@ -2,7 +2,7 @@
 //! and the completeness downgrade `to_file_record` applies.
 use super::*;
 use crate::model::{EvidenceLimits, ExtractionCompleteness};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn item_with_content_bytes(index: usize, content_len: usize) -> EvidenceItem {
     // A bare JSON string payload serializes as `"` + content + `"`, so its
@@ -25,9 +25,10 @@ fn has_truncation_marker(items: &[EvidenceItem]) -> bool {
 fn total_payload_bytes(items: &[EvidenceItem]) -> TestResult<usize> {
     let mut total = 0;
     for item in items.iter().filter(|item| item.key != "evidence:truncated") {
-        total += serde_json::to_vec(&item.payload)
+        let payload_len = serde_json::to_vec(&item.payload)
             .check("encode payload")?
             .len();
+        total = usize::checked_add(total, payload_len).check("payload total fits")?;
     }
     Ok(total)
 }
@@ -56,21 +57,25 @@ fn reproduces_the_5_326_990_byte_cumulative_overflow() -> TestResult {
             .check("payload serializes")?
             .len();
     }
-    assert_eq!(
-        serialized, 5_326_990,
-        "fixture must reproduce the exact reported overflow size"
-    );
+    ensure_eq(
+        &serialized,
+        &5_326_990,
+        "fixture must reproduce the exact reported overflow size",
+    )?;
 
-    assert!(apply_evidence_limits(&mut items, &limits));
+    ensure(
+        apply_evidence_limits(&mut items, &limits),
+        "apply_evidence_limits(&mut items, &limits)",
+    )?;
 
-    assert!(
+    ensure(
         total_payload_bytes(&items)? <= limits.evidence.max_payload_bytes_per_file,
-        "cumulative payload must never exceed the per-file cap"
-    );
-    assert!(
+        "cumulative payload must never exceed the per-file cap",
+    )?;
+    ensure(
         has_truncation_marker(&items),
-        "truncation must be recorded as evidence"
-    );
+        "truncation must be recorded as evidence",
+    )?;
     Ok(())
 }
 
@@ -80,13 +85,20 @@ fn evidence_within_every_cap_is_untouched() -> TestResult {
     let mut items: Vec<EvidenceItem> = (0..5).map(|i| item_with_content_bytes(i, 100)).collect();
     let original = items.clone();
 
-    assert!(!apply_evidence_limits(&mut items, &limits));
+    ensure(
+        !apply_evidence_limits(&mut items, &limits),
+        "!apply_evidence_limits(&mut items, &limits)",
+    )?;
 
-    assert_eq!(
-        items, original,
-        "nothing should change when every cap is satisfied"
-    );
-    assert!(!has_truncation_marker(&items));
+    ensure_eq(
+        &items,
+        &original,
+        "nothing should change when every cap is satisfied",
+    )?;
+    ensure(
+        !has_truncation_marker(&items),
+        "!has_truncation_marker(&items)",
+    )?;
     Ok(())
 }
 
@@ -105,11 +117,20 @@ fn an_oversized_single_item_is_dropped_and_recorded() -> TestResult {
         item_with_content_bytes(1, 500),
     ];
 
-    assert!(apply_evidence_limits(&mut items, &limits));
+    ensure(
+        apply_evidence_limits(&mut items, &limits),
+        "apply_evidence_limits(&mut items, &limits)",
+    )?;
 
-    assert_eq!(items.len(), 2, "the kept item plus the truncation marker");
-    assert!(items.iter().any(|item| item.key == "structure:0"));
-    assert!(has_truncation_marker(&items));
+    ensure_eq(&items.len(), &2, "the kept item plus the truncation marker")?;
+    ensure(
+        items.iter().any(|item| item.key == "structure:0"),
+        "items.iter().any(|item| item.key == \"structure:0\")",
+    )?;
+    ensure(
+        has_truncation_marker(&items),
+        "has_truncation_marker(&items)",
+    )?;
     Ok(())
 }
 
@@ -125,12 +146,18 @@ fn item_count_cap_truncates_and_reserves_room_for_the_marker() -> TestResult {
     };
     let mut items: Vec<EvidenceItem> = (0..10).map(|i| item_with_content_bytes(i, 10)).collect();
 
-    assert!(apply_evidence_limits(&mut items, &limits));
+    ensure(
+        apply_evidence_limits(&mut items, &limits),
+        "apply_evidence_limits(&mut items, &limits)",
+    )?;
 
     // Cap is 3; one slot is reserved for the marker itself, so at most 2
     // real items survive plus the marker — never more than the cap total.
-    assert!(items.len() <= 3);
-    assert!(has_truncation_marker(&items));
+    ensure(items.len() <= 3, "items.len() <= 3")?;
+    ensure(
+        has_truncation_marker(&items),
+        "has_truncation_marker(&items)",
+    )?;
     Ok(())
 }
 
@@ -146,11 +173,20 @@ fn cumulative_byte_cap_stops_before_the_file_cap_not_after() -> TestResult {
     };
     let mut items: Vec<EvidenceItem> = (0..10).map(|i| item_with_content_bytes(i, 300)).collect();
 
-    assert!(apply_evidence_limits(&mut items, &limits));
+    ensure(
+        apply_evidence_limits(&mut items, &limits),
+        "apply_evidence_limits(&mut items, &limits)",
+    )?;
 
-    assert!(total_payload_bytes(&items)? <= limits.evidence.max_payload_bytes_per_file);
-    assert!(items.len() < 10, "later items must have been dropped");
-    assert!(has_truncation_marker(&items));
+    ensure(
+        total_payload_bytes(&items)? <= limits.evidence.max_payload_bytes_per_file,
+        "total_payload_bytes(&items)? <= limits.evidence.max_payload_bytes_per_file",
+    )?;
+    ensure(items.len() < 10, "later items must have been dropped")?;
+    ensure(
+        has_truncation_marker(&items),
+        "has_truncation_marker(&items)",
+    )?;
     Ok(())
 }
 
@@ -180,8 +216,15 @@ fn evidence_limit_truncation_downgrades_a_full_run_to_partial() -> TestResult {
     let record =
         to_file_record(sample, &limits, &generous_deadline()).check("build the file record")?;
 
-    assert!(has_truncation_marker(&record.evidence));
-    assert_eq!(record.run.completeness, ExtractionCompleteness::Partial);
+    ensure(
+        has_truncation_marker(&record.evidence),
+        "has_truncation_marker(&record.evidence)",
+    )?;
+    ensure_eq(
+        &record.run.completeness,
+        &ExtractionCompleteness::Partial,
+        "record.run.completeness == ExtractionCompleteness::Partial",
+    )?;
     Ok(())
 }
 
@@ -202,8 +245,15 @@ fn a_full_run_within_every_evidence_cap_stays_full() -> TestResult {
     let record = to_file_record(sample, &ResourceLimits::default(), &generous_deadline())
         .check("build the file record")?;
 
-    assert!(!has_truncation_marker(&record.evidence));
-    assert_eq!(record.run.completeness, ExtractionCompleteness::Full);
+    ensure(
+        !has_truncation_marker(&record.evidence),
+        "!has_truncation_marker(&record.evidence)",
+    )?;
+    ensure_eq(
+        &record.run.completeness,
+        &ExtractionCompleteness::Full,
+        "record.run.completeness == ExtractionCompleteness::Full",
+    )?;
     Ok(())
 }
 
@@ -214,21 +264,27 @@ fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_we
     let with = truncation_evidence(5, 2, 1, 2);
 
     let message = |item: &EvidenceItem| -> TestResult<String> {
-        Ok(item.payload["message"]
-            .as_str()
+        Ok(item
+            .payload
+            .get("message")
+            .and_then(serde_json::Value::as_str)
             .check("the truncation marker has a text message")?
             .to_owned())
     };
-    assert!(!message(&without)?.contains("failed to serialize"));
-    assert!(
+    ensure(
+        !message(&without)?.contains("failed to serialize"),
+        "!message(&without)?.contains(\"failed to serialize\")",
+    )?;
+    ensure(
         message(&with)?.contains("2 item(s) failed to serialize"),
-        "{}",
-        message(&with)?
-    );
-    assert!(
+        &message(&with)?,
+    )?;
+    ensure(
         message(&with)?.contains("0 item(s) dropped by the item-count"),
-        "unmeasurable items must not be double-counted as cap drops: {}",
-        message(&with)?
-    );
+        format!(
+            "unmeasurable items must not be double-counted as cap drops: {}",
+            message(&with)?
+        ),
+    )?;
     Ok(())
 }

@@ -1,6 +1,7 @@
 use super::*;
+use crate::evidence::tests::field;
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, SpanAvailability};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// Runs only the generic import walker over `source` parsed as `language`,
 /// without the rest of the evidence pipeline. A parser that cannot be built,
@@ -41,35 +42,39 @@ fn import_sources(items: &[EvidenceItem]) -> Vec<&str> {
 fn kotlin_import_header_is_captured() -> TestResult {
     let items = extract_generic_imports("kotlin", "import kotlin.math.max\nimport util.Helper\n")?;
     let sources = import_sources(&items);
-    assert_eq!(
-        sources,
-        vec!["import kotlin.math.max", "import util.Helper"]
-    );
-    assert!(
+    ensure_eq(
+        &sources,
+        &vec!["import kotlin.math.max", "import util.Helper"],
+        "sources == vec![\"import kotlin.math.max\", \"import util.Helper\"]",
+    )?;
+    ensure(
         items
             .iter()
-            .all(|i| i.origin == EvidenceOrigin::GenericWalker)
-    );
+            .all(|i| i.origin == EvidenceOrigin::GenericWalker),
+        "items .iter() .all(|i| i.origin == EvidenceOrigin::GenericWalker)",
+    )?;
     Ok(())
 }
 
 #[test]
 fn swift_import_declaration_is_captured() -> TestResult {
     let items = extract_generic_imports("swift", "import Foundation\nimport MyModule\n")?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["import Foundation", "import MyModule"]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["import Foundation", "import MyModule"],
+        "import_sources(&items) == vec![\"import Foundation\", \"import MyModule\"]",
+    )?;
     Ok(())
 }
 
 #[test]
 fn csharp_using_directive_is_captured() -> TestResult {
     let items = extract_generic_imports("csharp", "using System.IO;\nusing MyApp.Core;\n")?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["using System.IO;", "using MyApp.Core;"]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["using System.IO;", "using MyApp.Core;"],
+        "import_sources(&items) == vec![\"using System.IO;\", \"using MyApp.Core;\"]",
+    )?;
     Ok(())
 }
 
@@ -80,40 +85,43 @@ fn dart_import_specification_is_captured() -> TestResult {
         "import 'dart:async';\nimport '../util.dart';\nimport 'package:foo/bar.dart';\n",
     )?;
     let sources = import_sources(&items);
-    assert!(
+    ensure(
         sources.contains(&"import '../util.dart';"),
-        "expected the relative dart import among {sources:?}"
-    );
+        format!("expected the relative dart import among {sources:?}"),
+    )?;
     Ok(())
 }
 
 #[test]
 fn julia_import_and_using_are_captured() -> TestResult {
     let items = extract_generic_imports("julia", "using LinearAlgebra\nimport Pkg\n")?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["using LinearAlgebra", "import Pkg"]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["using LinearAlgebra", "import Pkg"],
+        "import_sources(&items) == vec![\"using LinearAlgebra\", \"import Pkg\"]",
+    )?;
     Ok(())
 }
 
 #[test]
 fn c_preproc_include_is_captured() -> TestResult {
     let items = extract_generic_imports("c", "#include <stdio.h>\n#include \"local.h\"\n")?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["#include <stdio.h>", "#include \"local.h\""]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["#include <stdio.h>", "#include \"local.h\""],
+        "import_sources(&items) == vec![\"#include <stdio.h>\", \"#include \\\"local.h\\\"\"]",
+    )?;
     Ok(())
 }
 
 #[test]
 fn cpp_preproc_include_is_captured() -> TestResult {
     let items = extract_generic_imports("cpp", "#include <vector>\n#include \"util.hpp\"\n")?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["#include <vector>", "#include \"util.hpp\""]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["#include <vector>", "#include \"util.hpp\""],
+        "import_sources(&items) == vec![\"#include <vector>\", \"#include \\\"util.hpp\\\"\"]",
+    )?;
     Ok(())
 }
 
@@ -123,20 +131,22 @@ fn haskell_import_is_captured() -> TestResult {
         "haskell",
         "import Data.List\nimport qualified Data.Map as M\n",
     )?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["import Data.List", "import qualified Data.Map as M"]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["import Data.List", "import qualified Data.Map as M"],
+        "import_sources(&items) == vec![\"import Data.List\", \"import qualified Data.Map as M\"]",
+    )?;
     Ok(())
 }
 
 #[test]
 fn perl_use_statement_is_captured() -> TestResult {
     let items = extract_generic_imports("perl", "use strict;\nuse lib 'lib';\n")?;
-    assert_eq!(
-        import_sources(&items),
-        vec!["use strict;", "use lib 'lib';"]
-    );
+    ensure_eq(
+        &import_sources(&items),
+        &vec!["use strict;", "use lib 'lib';"],
+        "import_sources(&items) == vec![\"use strict;\", \"use lib 'lib';\"]",
+    )?;
     Ok(())
 }
 
@@ -144,10 +154,10 @@ fn perl_use_statement_is_captured() -> TestResult {
 fn php_namespace_use_is_captured() -> TestResult {
     let items = extract_generic_imports("php", "<?php\nuse Foo\\Bar\\Baz;\nuse MyApp\\Core;\n")?;
     let sources = import_sources(&items);
-    assert!(
+    ensure(
         sources.contains(&"use Foo\\Bar\\Baz;"),
-        "expected the php namespace use among {sources:?}"
-    );
+        format!("expected the php namespace use among {sources:?}"),
+    )?;
     Ok(())
 }
 
@@ -189,11 +199,11 @@ fn c7_no_imports_source_produces_no_import_items_in_any_matrix_language() -> Tes
         ("java", "int f() { return 1; }\n"),
     ] {
         let items = extract_generic_imports(language, source)?;
-        assert_eq!(
-            import_sources(&items),
-            Vec::<&str>::new(),
-            "{language}: a function with no imports must produce no Import items"
-        );
+        ensure_eq(
+            &import_sources(&items),
+            &(Vec::<&str>::new()),
+            format!("{language}: a function with no imports must produce no Import items"),
+        )?;
     }
     Ok(())
 }
@@ -232,11 +242,11 @@ fn c7_matrix_languages_still_capture_their_real_imports() -> TestResult {
         ),
     ] {
         let items = extract_generic_imports(language, source)?;
-        assert_eq!(
-            import_sources(&items),
-            expected,
-            "{language}: the real import statement must still be captured"
-        );
+        ensure_eq(
+            &import_sources(&items),
+            &expected,
+            format!("{language}: the real import statement must still be captured"),
+        )?;
     }
     Ok(())
 }
@@ -244,12 +254,26 @@ fn c7_matrix_languages_still_capture_their_real_imports() -> TestResult {
 #[test]
 fn spans_are_present_and_payloads_are_pack_shaped() -> TestResult {
     let items = extract_generic_imports("swift", "import Foundation\n")?;
-    assert_eq!(items.len(), 1);
-    assert!(matches!(items[0].span, SpanAvailability::Present(_)));
-    assert_eq!(
-        items[0].payload["is_wildcard"],
-        serde_json::Value::Bool(false)
-    );
-    assert_eq!(items[0].payload["items"], serde_json::Value::Array(vec![]));
+    ensure_eq(&items.len(), &1, "items.len() == 1")?;
+    ensure(
+        matches!(
+            items.first().check("items[0] exists")?.span,
+            SpanAvailability::Present(_)
+        ),
+        "matches!(items[0].span, SpanAvailability::Present(_))",
+    )?;
+    ensure_eq(
+        field(
+            &items.first().check("items[0] exists")?.payload,
+            "is_wildcard",
+        ),
+        &serde_json::Value::Bool(false),
+        "items[0].payload[\"is_wildcard\"] == serde_json::Value::Bool(false)",
+    )?;
+    ensure_eq(
+        field(&items.first().check("items[0] exists")?.payload, "items"),
+        &serde_json::Value::Array(vec![]),
+        "items[0].payload[\"items\"] == serde_json::Value::Array(vec![])",
+    )?;
     Ok(())
 }

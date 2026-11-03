@@ -1,6 +1,6 @@
 use super::harness_tests::*;
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 const ROWS: usize = 200;
 const PAYLOAD: usize = 1000;
@@ -49,21 +49,31 @@ fn result_store_admission_reclaims_delivered_oldest_first_before_any_idle() -> T
 
     let fourth = write_at(&fx, 60)?;
 
-    assert!(
+    ensure(
         !registered(&fx, &second)?,
-        "the oldest delivered result goes first"
-    );
-    assert!(registered(&fx, &first)? && registered(&fx, &third)? && registered(&fx, &fourth)?);
+        "the oldest delivered result goes first",
+    )?;
+    ensure(
+        registered(&fx, &first)? && registered(&fx, &third)? && registered(&fx, &fourth)?,
+        "registered(&fx, &first)? && registered(&fx, &third)? && registered(&fx, &fourth)?",
+    )?;
 
     let fifth = write_at(&fx, 70)?;
 
-    assert!(
+    ensure(
         !registered(&fx, &first)?,
-        "the next delivered result goes before any idle one"
-    );
-    assert!(registered(&fx, &third)? && registered(&fx, &fourth)? && registered(&fx, &fifth)?);
+        "the next delivered result goes before any idle one",
+    )?;
+    ensure(
+        registered(&fx, &third)? && registered(&fx, &fourth)? && registered(&fx, &fifth)?,
+        "registered(&fx, &third)? && registered(&fx, &fourth)? && registered(&fx, &fifth)?",
+    )?;
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (2, 0));
+    ensure_eq(
+        &(stats.reclaimed_delivered, stats.reclaimed_idle),
+        &(2, 0),
+        "(stats.reclaimed_delivered, stats.reclaimed_idle) == (2, 0)",
+    )?;
     Ok(())
 }
 
@@ -84,21 +94,31 @@ fn result_store_admission_reclaims_idle_results_by_last_access_not_creation_orde
 
     let fourth = write_at(&fx, 40 + GRACE_SECS_SIGNED + 100)?;
 
-    assert!(
+    ensure(
         !registered(&fx, &second)?,
-        "the least recently accessed goes first"
-    );
-    assert!(registered(&fx, &first)? && registered(&fx, &third)? && registered(&fx, &fourth)?);
+        "the least recently accessed goes first",
+    )?;
+    ensure(
+        registered(&fx, &first)? && registered(&fx, &third)? && registered(&fx, &fourth)?,
+        "registered(&fx, &first)? && registered(&fx, &third)? && registered(&fx, &fourth)?",
+    )?;
 
     let fifth = write_at(&fx, 40 + GRACE_SECS_SIGNED + 101)?;
 
-    assert!(
+    ensure(
         !registered(&fx, &third)?,
-        "then the next least recently accessed"
-    );
-    assert!(registered(&fx, &first)? && registered(&fx, &fourth)? && registered(&fx, &fifth)?);
+        "then the next least recently accessed",
+    )?;
+    ensure(
+        registered(&fx, &first)? && registered(&fx, &fourth)? && registered(&fx, &fifth)?,
+        "registered(&fx, &first)? && registered(&fx, &fourth)? && registered(&fx, &fifth)?",
+    )?;
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!((stats.reclaimed_delivered, stats.reclaimed_idle), (0, 2));
+    ensure_eq(
+        &(stats.reclaimed_delivered, stats.reclaimed_idle),
+        &(0, 2),
+        "(stats.reclaimed_delivered, stats.reclaimed_idle) == (0, 2)",
+    )?;
     Ok(())
 }
 
@@ -113,11 +133,14 @@ fn result_store_a_re_activated_result_is_protected_from_idle_reclaim() -> TestRe
 
     let c = write_at(&fx, 20 + GRACE_SECS_SIGNED + 100)?;
 
-    assert!(
+    ensure(
         !registered(&fx, &b)?,
-        "the idle result goes, not the active one"
-    );
-    assert!(registered(&fx, &a)? && registered(&fx, &c)?);
+        "the idle result goes, not the active one",
+    )?;
+    ensure(
+        registered(&fx, &a)? && registered(&fx, &c)?,
+        "registered(&fx, &a)? && registered(&fx, &c)?",
+    )?;
     Ok(())
 }
 
@@ -132,13 +155,20 @@ fn result_store_an_active_result_is_never_reclaimed_and_full_names_the_active_co
     fx.set_time(30);
     let refused = write_rows(&fx.store, ROWS, PAYLOAD);
 
-    assert!(
+    ensure(
         matches!(refused, Err(ResultStoreError::Full { active_count: 2 })),
-        "{refused:?}"
-    );
-    assert!(survives(&fx, &a)? && survives(&fx, &b)?);
+        format!("{refused:?}"),
+    )?;
+    ensure(
+        survives(&fx, &a)? && survives(&fx, &b)?,
+        "survives(&fx, &a)? && survives(&fx, &b)?",
+    )?;
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!((stats.refused_full, stats.active.results), (1, 2));
+    ensure_eq(
+        &(stats.refused_full, stats.active.results),
+        &(1, 2),
+        "(stats.refused_full, stats.active.results) == (1, 2)",
+    )?;
     Ok(())
 }
 
@@ -154,13 +184,16 @@ fn result_store_a_refused_result_reclaims_nothing_and_leaves_no_file() -> TestRe
     fx.set_time(30);
     let refused = write_rows(&fx.store, ROWS * 3 / 2, PAYLOAD);
 
-    assert!(
+    ensure(
         matches!(refused, Err(ResultStoreError::Full { active_count: 1 })),
-        "{refused:?}"
-    );
-    assert!(survives(&fx, &delivered)?, "a refusal destroys nothing");
-    assert!(survives(&fx, &active)?);
-    assert!(db_files(&fx.results_dir())?.is_empty());
+        format!("{refused:?}"),
+    )?;
+    ensure(survives(&fx, &delivered)?, "a refusal destroys nothing")?;
+    ensure(survives(&fx, &active)?, "survives(&fx, &active)?")?;
+    ensure(
+        db_files(&fx.results_dir())?.is_empty(),
+        "db_files(&fx.results_dir())?.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -171,12 +204,16 @@ fn result_store_a_result_bigger_than_the_whole_budget_is_too_large() -> TestResu
 
     let refused = write_rows(&fx.store, ROWS, PAYLOAD);
 
-    assert!(
+    ensure(
         matches!(refused, Err(ResultStoreError::TooLarge)),
-        "{refused:?}"
-    );
+        format!("{refused:?}"),
+    )?;
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!((stats.refused_too_large, stats.admitted_bytes), (1, 0));
+    ensure_eq(
+        &(stats.refused_too_large, stats.admitted_bytes),
+        &(1, 0),
+        "(stats.refused_too_large, stats.admitted_bytes) == (1, 0)",
+    )?;
     Ok(())
 }
 
@@ -194,9 +231,12 @@ fn result_store_admitted_bytes_never_exceed_the_budget_under_churn() -> TestResu
         }
 
         let stats = fx.store.stats().check("read the store counters")?;
-        assert!(stats.admitted_bytes <= budget, "step {step}: {stats:?}");
+        ensure(
+            stats.admitted_bytes <= budget,
+            format!("step {step}: {stats:?}"),
+        )?;
         let held = stats.active.bytes + stats.idle.bytes + stats.delivered.bytes;
-        assert_eq!(held, stats.admitted_bytes);
+        ensure_eq(&held, &stats.admitted_bytes, "held == stats.admitted_bytes")?;
     }
     Ok(())
 }
@@ -213,16 +253,25 @@ fn result_store_stats_report_budget_classes_and_bytes() -> TestResult {
 
     let stats = fx.store.stats().check("read the store counters")?;
 
-    assert_eq!(stats.budget_bytes, unit * 4);
-    assert_eq!(
-        (
+    ensure_eq(
+        &stats.budget_bytes,
+        &(unit * 4),
+        "stats.budget_bytes == unit * 4",
+    )?;
+    ensure_eq(
+        &(
             stats.delivered.results,
             stats.idle.results,
-            stats.active.results
+            stats.active.results,
         ),
-        (1, 1, 1)
-    );
-    assert_eq!(stats.admitted_bytes, unit * 3);
+        &(1, 1, 1),
+        "( stats.delivered.results, stats.idle.results, stats.active.results ) == (1, 1, 1)",
+    )?;
+    ensure_eq(
+        &stats.admitted_bytes,
+        &(unit * 3),
+        "stats.admitted_bytes == unit * 3",
+    )?;
     Ok(())
 }
 
@@ -236,12 +285,18 @@ fn result_store_a_refused_admission_releases_the_incoming_file_and_connection() 
 
     let refused = write_rows(&fx.store, ROWS, PAYLOAD);
 
-    assert!(
+    ensure(
         matches!(refused, Err(ResultStoreError::Full { active_count: 1 })),
-        "{:?}",
-        refused.err()
-    );
-    assert!(db_files(&fx.results_dir())?.is_empty());
-    assert_eq!(deleted_descriptors_under(fx.dir.path())?.len(), 1);
+        format!("{:?}", refused.err()),
+    )?;
+    ensure(
+        db_files(&fx.results_dir())?.is_empty(),
+        "db_files(&fx.results_dir())?.is_empty()",
+    )?;
+    ensure_eq(
+        &deleted_descriptors_under(fx.dir.path())?.len(),
+        &1,
+        "deleted_descriptors_under(fx.dir.path())?.len() == 1",
+    )?;
     Ok(())
 }

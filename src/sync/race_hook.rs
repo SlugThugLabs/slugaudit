@@ -134,7 +134,7 @@ pub(crate) fn fire(_root: &Path, _point: RacePoint) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
     #[test]
     fn a_hook_armed_through_a_symlinked_root_fires_for_either_spelling() -> TestResult {
@@ -157,11 +157,11 @@ mod tests {
         })?;
         fire(&link, RacePoint::BeforeCommit);
 
-        assert_eq!(
-            fired.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "set and fire must agree on the root whichever spelling each side uses"
-        );
+        ensure_eq(
+            &fired.load(std::sync::atomic::Ordering::SeqCst),
+            &2,
+            "set and fire must agree on the root whichever spelling each side uses",
+        )?;
         first_handle.outcome()?;
         second_handle.outcome()
     }
@@ -172,10 +172,10 @@ mod tests {
         let handle = set(root.path(), RacePoint::AfterDiscovery, || Ok(()))?;
 
         fire(root.path(), RacePoint::BeforeCommit);
-        assert!(
+        ensure(
             handle.outcome().is_err(),
-            "a hook must not fire at another point"
-        );
+            "a hook must not fire at another point",
+        )?;
         fire(root.path(), RacePoint::AfterDiscovery);
         handle.outcome()
     }
@@ -192,10 +192,10 @@ mod tests {
         let error = handle
             .outcome()
             .check_err("a failed hook must fail its handle")?;
-        assert!(
+        ensure(
             error.to_string().contains("hook step failed"),
-            "the handle must carry the hook's own error: {error}"
-        );
+            format!("the handle must carry the hook's own error: {error}"),
+        )?;
         Ok(())
     }
 
@@ -207,10 +207,10 @@ mod tests {
         let error = handle
             .outcome()
             .check_err("an unfired hook must fail its handle")?;
-        assert!(
+        ensure(
             error.to_string().contains("the race hook fired"),
-            "got: {error}"
-        );
+            format!("got: {error}"),
+        )?;
         Ok(())
     }
 }

@@ -106,6 +106,14 @@ pub(super) struct Counters {
     pub(super) expired_cursors: u64,
 }
 
+/// Adds one to a tally that the stats report. A tally counts events of one
+/// process, so it cannot approach `u64::MAX`; if it ever did, holding at the
+/// maximum is the intended meaning ("at least this many"), which is why this
+/// saturates instead of failing the operation that is being counted.
+pub(super) fn tally(count: &mut u64) {
+    *count = count.saturating_add(1);
+}
+
 /// A result removed to make room; dropped by the caller outside the lock.
 pub(super) struct Reclaimed {
     pub(super) id: ResultId,
@@ -142,7 +150,7 @@ impl Registry {
         grace_secs: u64,
     ) -> Result<Vec<Reclaimed>, Refused> {
         if entry.bytes > budget {
-            self.counters.refused_too_large += 1;
+            tally(&mut self.counters.refused_too_large);
             return Err(Refused {
                 error: ResultStoreError::TooLarge,
                 entry: Box::new(entry),
@@ -160,10 +168,23 @@ impl Registry {
         let mut reclaimed = Vec::with_capacity(plan.len());
         for (victim, class) in plan {
             if let Some(removed) = self.entries.remove(&victim) {
-                self.admitted_bytes -= removed.bytes;
+                // The plan only names results whose bytes are within
+                // `admitted_bytes`, so a failure here is inconsistent
+                // bookkeeping, not input.
+                self.admitted_bytes = match self.admitted_bytes.checked_sub(removed.bytes) {
+                    Some(remaining) => remaining,
+                    None => {
+                        return Err(Refused {
+                            error: ResultStoreError::corrupt(
+                                "admitted bytes are below a stored result's size",
+                            ),
+                            entry: Box::new(entry),
+                        });
+                    }
+                };
                 match class {
-                    ResultClass::Delivered => self.counters.reclaimed_delivered += 1,
-                    _ => self.counters.reclaimed_idle += 1,
+                    ResultClass::Delivered => tally(&mut self.counters.reclaimed_delivered),
+                    _ => tally(&mut self.counters.reclaimed_idle),
                 }
                 reclaimed.push(Reclaimed {
                     id: victim,
@@ -172,9 +193,18 @@ impl Registry {
                 });
             }
         }
+        let (Some(next_seq), Some(admitted_bytes)) = (
+            self.next_seq.checked_add(1),
+            self.admitted_bytes.checked_add(entry.bytes),
+        ) else {
+            return Err(Refused {
+                error: ResultStoreError::corrupt("result sequence or admitted bytes overflow"),
+                entry: Box::new(entry),
+            });
+        };
         entry.seq = self.next_seq;
-        self.next_seq += 1;
-        self.admitted_bytes += entry.bytes;
+        self.next_seq = next_seq;
+        self.admitted_bytes = admitted_bytes;
         self.entries.insert(id, Arc::new(entry));
         Ok(reclaimed)
     }
@@ -200,14 +230,16 @@ impl Registry {
         // Delivered before idle, each oldest first.
         candidates.sort_by_key(|(_, class, entry)| (*class == ResultClass::Idle, entry.age_key()));
         for (id, class, entry) in candidates {
-            used -= entry.bytes;
+            used = used.checked_sub(entry.bytes).ok_or_else(|| {
+                ResultStoreError::corrupt("admitted bytes are below a stored result's size")
+            })?;
             plan.push((id, class));
             if used.saturating_add(bytes) <= budget {
                 return Ok(plan);
             }
         }
         let active_count = self.count_class(ResultClass::Active, now, grace_secs);
-        self.counters.refused_full += 1;
+        tally(&mut self.counters.refused_full);
         Err(ResultStoreError::Full { active_count })
     }
 

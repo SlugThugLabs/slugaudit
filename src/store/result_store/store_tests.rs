@@ -7,20 +7,22 @@ use super::super::harness_tests::{GRACE_SECS, fixture, write_rows};
 use super::*;
 use crate::store::test_capture::capture_at_level;
 use crate::util::ClockError;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tracing::Level;
 
 /// Poisons `mutex` the way a bug would: a holder unwinds inside its critical
 /// section. `resume_unwind` starts the unwind without the `panic!` macro.
-fn poison<T>(mutex: &Mutex<T>) {
+fn poison<T>(mutex: &Mutex<T>) -> TestResult {
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> TestResult {
         let _guard = mutex.lock().check("lock the fresh mutex")?;
         std::panic::resume_unwind(Box::new("simulated panic inside the critical section"));
     }));
-    assert!(unwound.is_err(), "the holder must have unwound");
-    assert!(mutex.is_poisoned(), "the unwind must poison the mutex");
+    ensure(unwound.is_err(), "the holder must have unwound")?;
+    ensure(mutex.is_poisoned(), "the unwind must poison the mutex")?;
+
+    Ok(())
 }
 
 /// A real clock error: a time before the Unix epoch.
@@ -64,53 +66,77 @@ fn lines_containing(logs: &str, needle: &str) -> usize {
 
 /// The wire form of a lock error: the plain lock error's internal error with
 /// no result store code.
-fn assert_restart_error(error: &ResultStoreError, mutex: &str) {
-    assert!(matches!(error, ResultStoreError::Lock(_)), "{error:?}");
+fn assert_restart_error(error: &ResultStoreError, mutex: &str) -> TestResult {
+    ensure(
+        matches!(error, ResultStoreError::Lock(_)),
+        format!("{error:?}"),
+    )?;
     let mapped = crate::error_codes::store_error(error);
-    assert_eq!(mapped.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert_eq!(mapped.data, None);
-    assert_eq!(
-        mapped.message,
-        format!(
+    ensure_eq(
+        &mapped.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure_eq(&mapped.data, &None, "mapped.data == None")?;
+    ensure_eq(
+        &mapped.message,
+        &format!(
             "mutex {mutex} was poisoned by a panic in an earlier holder; \
              restart the SlugAudit server"
-        )
-    );
+        ),
+        "mapped.message == format!( \"mutex {mutex} was poisoned by a panic in an earlier holder; \\ restart the SlugAudit server\" )",
+    )?;
+
+    Ok(())
 }
 
 /// The wire form of a clock error: the plain clock error's internal error with
 /// no result store code.
-fn assert_clock_error(error: &ResultStoreError) {
-    assert!(matches!(error, ResultStoreError::Clock(_)), "{error:?}");
+fn assert_clock_error(error: &ResultStoreError) -> TestResult {
+    ensure(
+        matches!(error, ResultStoreError::Clock(_)),
+        format!("{error:?}"),
+    )?;
     let mapped = crate::error_codes::store_error(error);
-    assert_eq!(mapped.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert_eq!(mapped.data, None);
-    assert!(
+    ensure_eq(
+        &mapped.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure_eq(&mapped.data, &None, "mapped.data == None")?;
+    ensure(
         mapped
             .message
             .starts_with("the system clock is before the Unix epoch"),
-        "{}",
-        mapped.message
-    );
-    assert!(
+        format!("{}", mapped.message),
+    )?;
+    ensure(
         mapped.message.ends_with("; fix the system clock"),
-        "{}",
-        mapped.message
-    );
-    assert!(!mapped.message.contains("disk is full"));
+        format!("{}", mapped.message),
+    )?;
+    ensure(
+        !mapped.message.contains("disk is full"),
+        "!mapped.message.contains(\"disk is full\")",
+    )?;
+
+    Ok(())
 }
 
 #[test]
 fn a_poisoned_registry_fails_stats_with_the_restart_error_logged_once() -> TestResult {
     let fx = fixture(1 << 30)?;
-    poison(&fx.store.registry);
+    poison(&fx.store.registry)?;
 
     let (outcome, logs) = capture_at_level(|| fx.store.stats(), Level::INFO)?;
 
     let error = outcome.check_err("a poisoned registry fails the snapshot")?;
-    assert_restart_error(&error, "result_registry");
-    assert_eq!(lines_containing(&logs, "result_registry"), 1, "{logs}");
-    assert_eq!(lines_containing(&logs, "result store unavailable"), 0);
+    assert_restart_error(&error, "result_registry")?;
+    ensure_eq(&lines_containing(&logs, "result_registry"), &1, &logs)?;
+    ensure_eq(
+        &lines_containing(&logs, "result store unavailable"),
+        &0,
+        "lines_containing(&logs, \"result store unavailable\") == 0",
+    )?;
     Ok(())
 }
 
@@ -118,7 +144,7 @@ fn a_poisoned_registry_fails_stats_with_the_restart_error_logged_once() -> TestR
 fn a_poisoned_registry_is_the_error_of_every_refusal_and_no_cursor_is_logged_refused() -> TestResult
 {
     let fx = fixture(1 << 30)?;
-    poison(&fx.store.registry);
+    poison(&fx.store.registry)?;
     let id = ResultId(Uuid::new_v4());
 
     let ((foreign, unknown, too_large), logs) = capture_at_level(
@@ -132,13 +158,17 @@ fn a_poisoned_registry_is_the_error_of_every_refusal_and_no_cursor_is_logged_ref
         Level::INFO,
     )?;
 
-    assert_restart_error(&foreign, "result_registry");
+    assert_restart_error(&foreign, "result_registry")?;
     let unknown = unknown.check("a malformed token is refused")?;
-    assert_restart_error(&unknown, "result_registry");
-    assert_restart_error(&too_large, "result_registry");
-    assert_eq!(lines_containing(&logs, "cursor refused"), 0, "{logs}");
-    assert_eq!(lines_containing(&logs, "larger than the whole budget"), 0);
-    assert_eq!(lines_containing(&logs, "result_registry"), 3, "{logs}");
+    assert_restart_error(&unknown, "result_registry")?;
+    assert_restart_error(&too_large, "result_registry")?;
+    ensure_eq(&lines_containing(&logs, "cursor refused"), &0, &logs)?;
+    ensure_eq(
+        &lines_containing(&logs, "larger than the whole budget"),
+        &0,
+        "lines_containing(&logs, \"larger than the whole budget\") == 0",
+    )?;
+    ensure_eq(&lines_containing(&logs, "result_registry"), &3, &logs)?;
     Ok(())
 }
 
@@ -149,13 +179,20 @@ fn an_unknown_cursor_on_a_healthy_store_is_unknown_and_logged_refused_once() -> 
     let (outcome, logs) = capture_at_level(|| fx.store.decode_cursor("not-a-cursor"), Level::INFO)?;
 
     let error = outcome.check_err("a malformed token is refused")?;
-    assert!(matches!(error, ResultStoreError::Unknown), "{error:?}");
-    assert_eq!(
-        lines_containing(&logs, "cursor refused: unknown"),
-        1,
-        "{logs}"
-    );
-    assert_eq!(fx.store.stats().check("stats")?.unknown_cursors, 1);
+    ensure(
+        matches!(error, ResultStoreError::Unknown),
+        format!("{error:?}"),
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "cursor refused: unknown"),
+        &1,
+        &logs,
+    )?;
+    ensure_eq(
+        &fx.store.stats().check("stats")?.unknown_cursors,
+        &1,
+        "fx.store.stats().check(\"stats\")?.unknown_cursors == 1",
+    )?;
     Ok(())
 }
 
@@ -164,7 +201,7 @@ fn a_poisoned_connection_fails_read_page_with_the_restart_error_logged_once() ->
     let fx = fixture(1 << 30)?;
     let handle = write_rows(&fx.store, 3, 4).check("write a result")?;
     let entry = fx.store.lookup(handle.id).check("look the result up")?;
-    poison(&entry.conn);
+    poison(&entry.conn)?;
 
     let (outcome, logs) = capture_at_level(
         || fx.store.read_page(handle.id, 0, |_| Take::Yes),
@@ -172,12 +209,12 @@ fn a_poisoned_connection_fails_read_page_with_the_restart_error_logged_once() ->
     )?;
 
     let error = outcome.check_err("a poisoned connection fails the read")?;
-    assert_restart_error(&error, "result_entry_connection");
-    assert_eq!(
-        lines_containing(&logs, "result_entry_connection"),
-        1,
-        "{logs}"
-    );
+    assert_restart_error(&error, "result_entry_connection")?;
+    ensure_eq(
+        &lines_containing(&logs, "result_entry_connection"),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -189,13 +226,17 @@ fn a_failing_clock_fails_stats_with_the_fix_the_clock_error_logged_once() -> Tes
 
     let (outcome, logs) = capture_at_level(|| store.stats(), Level::INFO)?;
 
-    assert_clock_error(&outcome.check_err("an unusable clock fails the snapshot")?);
-    assert_eq!(
-        lines_containing(&logs, "result store clock unusable"),
-        1,
-        "{logs}"
-    );
-    assert_eq!(lines_containing(&logs, "result store unavailable"), 0);
+    assert_clock_error(&outcome.check_err("an unusable clock fails the snapshot")?)?;
+    ensure_eq(
+        &lines_containing(&logs, "result store clock unusable"),
+        &1,
+        &logs,
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "result store unavailable"),
+        &0,
+        "lines_containing(&logs, \"result store unavailable\") == 0",
+    )?;
     Ok(())
 }
 
@@ -210,8 +251,8 @@ fn a_failing_clock_fails_admission_and_read_page_with_the_fix_the_clock_error() 
     let read = store.read_page(handle.id, 0, |_| Take::Yes);
     let written = write_rows(&store, 3, 4);
 
-    assert_clock_error(&read.check_err("a failing clock fails the read")?);
+    assert_clock_error(&read.check_err("a failing clock fails the read")?)?;
     let written = written.check_err("a failing clock fails the write")?;
-    assert_clock_error(&written);
+    assert_clock_error(&written)?;
     Ok(())
 }

@@ -5,7 +5,7 @@
 
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 /// The structured records for one sync-log operation, one per failure.
@@ -51,24 +51,37 @@ fn a_stale_project_root_discard_warn_logs_real_path() -> TestResult {
     })?;
     synced?;
 
-    assert!(
+    ensure(
         logs.contains("capture liveness control for verify_project_database"),
-        "the capture must see this thread's events, captured: {logs}"
-    );
+        format!("the capture must see this thread's events, captured: {logs}"),
+    )?;
     let records = sync_failure_records(&logs, "verify_project_database");
-    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
-    assert!(
-        records[0].contains("error_kind=\"root_mismatch\""),
-        "the record must carry the static reason category:\n{logs}"
-    );
-    assert!(
-        records[0].contains(&format!("path={expected_path}")),
-        "the discard WARN must carry the real database path:\n{logs}"
-    );
-    assert!(
-        records[0].contains(&format!("stored_root={stale_root}")),
-        "the old root must be logged as a real path:\n{logs}"
-    );
+    ensure_eq(
+        &records.len(),
+        &1,
+        format!("one failure is one record:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains("error_kind=\"root_mismatch\""),
+        format!("the record must carry the static reason category:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains(&format!("path={expected_path}")),
+        format!("the discard WARN must carry the real database path:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains(&format!("stored_root={stale_root}")),
+        format!("the old root must be logged as a real path:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -94,21 +107,31 @@ fn a_database_open_failure_warn_logs_real_path() -> TestResult {
         )
     })?;
 
-    assert!(result.is_err(), "the open failure must surface");
-    assert!(
+    ensure(result.is_err(), "the open failure must surface")?;
+    ensure(
         logs.contains("capture liveness control for open_project_database"),
-        "the capture must see this thread's events, captured: {logs}"
-    );
+        format!("the capture must see this thread's events, captured: {logs}"),
+    )?;
     let records = sync_failure_records(&logs, "open_project_database");
-    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
-    assert!(
-        records[0].contains("error_kind=\"configure\""),
-        "the record must carry the static error category:\n{logs}"
-    );
-    assert!(
-        records[0].contains(&format!("path={expected_path}")),
-        "the WARN must carry the real database path:\n{logs}"
-    );
+    ensure_eq(
+        &records.len(),
+        &1,
+        format!("one failure is one record:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains("error_kind=\"configure\""),
+        format!("the record must carry the static error category:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains(&format!("path={expected_path}")),
+        format!("the WARN must carry the real database path:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -124,20 +147,36 @@ fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() -> TestResult
     })?;
 
     let records = sync_failure_records(&logs, "open_project_database");
-    assert_eq!(records.len(), 1, "one recovery is one record:\n{logs}");
-    assert!(
-        records[0].contains(&format!("path={}", database.display())),
-        "the record must carry the real database path:\n{logs}"
-    );
-    assert!(
-        records[0].contains("error_kind=\"symlink\"")
-            && records[0].contains(&format!("error={error}")),
-        "the record must carry the category and the source error:\n{logs}"
-    );
-    assert!(
-        !records[0].contains("database_id="),
-        "the redacted database id is gone:\n{logs}"
-    );
+    ensure_eq(
+        &records.len(),
+        &1,
+        format!("one recovery is one record:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains(&format!("path={}", database.display())),
+        format!("the record must carry the real database path:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains("error_kind=\"symlink\"")
+            && records
+                .first()
+                .check("records[0] exists")?
+                .contains(&format!("error={error}")),
+        format!("the record must carry the category and the source error:\n{logs}"),
+    )?;
+    ensure(
+        !records
+            .first()
+            .check("records[0] exists")?
+            .contains("database_id="),
+        format!("the redacted database id is gone:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -158,21 +197,40 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() -> TestRe
     })?;
 
     let records = sync_failure_records(&logs, "verify_project_database");
-    assert_eq!(records.len(), 1, "one recovery is one record:\n{logs}");
-    assert!(
-        records[0].contains(&format!("path={}", database.display())),
-        "the record must carry the real database path:\n{logs}"
-    );
-    assert!(
-        records[0].contains("error_kind=\"incompatible_version\"")
-            && records[0].contains("contract_version=7")
-            && records[0].contains("schema_version=9"),
-        "the record must carry the category and versions:\n{logs}"
-    );
-    assert!(
-        !records[0].contains("database_id="),
-        "the redacted database id is gone:\n{logs}"
-    );
+    ensure_eq(
+        &records.len(),
+        &1,
+        format!("one recovery is one record:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains(&format!("path={}", database.display())),
+        format!("the record must carry the real database path:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains("error_kind=\"incompatible_version\"")
+            && records
+                .first()
+                .check("records[0] exists")?
+                .contains("contract_version=7")
+            && records
+                .first()
+                .check("records[0] exists")?
+                .contains("schema_version=9"),
+        format!("the record must carry the category and versions:\n{logs}"),
+    )?;
+    ensure(
+        !records
+            .first()
+            .check("records[0] exists")?
+            .contains("database_id="),
+        format!("the redacted database id is gone:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -188,11 +246,18 @@ fn an_open_failed_recovery_warn_logs_the_source_error() -> TestResult {
     })?;
 
     let records = sync_failure_records(&logs, "open_project_database");
-    assert_eq!(records.len(), 1, "one failure is one record:\n{logs}");
-    assert!(
-        records[0].contains(&format!("error={error}")),
-        "the record must carry the source error:\n{logs}"
-    );
+    ensure_eq(
+        &records.len(),
+        &1,
+        format!("one failure is one record:\n{logs}"),
+    )?;
+    ensure(
+        records
+            .first()
+            .check("records[0] exists")?
+            .contains(&format!("error={error}")),
+        format!("the record must carry the source error:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -210,19 +275,25 @@ fn a_missing_revision_error_names_the_real_database_path() -> TestResult {
     })?;
 
     let error = result.err().check("no revision must surface as an error")?;
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.starts_with(&format!(
             "no current revision found after sync in {}",
             database.display()
         )),
-        "the error must carry the real database path: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the error must carry the real database path: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         logs.is_empty(),
-        "a returned failure is not logged first:\n{logs}"
-    );
+        format!("a returned failure is not logged first:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -245,18 +316,20 @@ fn a_failed_revision_read_error_names_the_database_path_and_cause() -> TestResul
     let error = result
         .err()
         .check("a failed read must surface as an error")?;
-    assert!(
+    ensure(
         error.message.starts_with(&format!(
             "reading the current revision of {}: ",
             database.display()
         )),
-        "{}",
-        error.message
-    );
-    assert!(error.message.contains("revisions"), "{}", error.message);
-    assert!(
+        format!("{}", error.message),
+    )?;
+    ensure(
+        error.message.contains("revisions"),
+        format!("{}", error.message),
+    )?;
+    ensure(
         logs.is_empty(),
-        "a returned failure is not logged first:\n{logs}"
-    );
+        format!("a returned failure is not logged first:\n{logs}"),
+    )?;
     Ok(())
 }

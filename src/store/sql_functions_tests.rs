@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn connection() -> TestResult<Connection> {
     let connection = Connection::open_in_memory().check("in-memory database")?;
@@ -37,13 +37,13 @@ fn error_of_query(sql: &str, text: &str) -> TestResult<String> {
 
 #[test]
 fn line_count_follows_the_one_based_terminator_model() -> TestResult {
-    assert_eq!(count("")?, 0);
-    assert_eq!(count("a")?, 1);
-    assert_eq!(count("a\nb")?, 2);
-    assert_eq!(count("a\nb\n")?, 2);
-    assert_eq!(count("\n")?, 1);
-    assert_eq!(count("a\n\n")?, 2);
-    assert_eq!(count("a\r\nb\r\n")?, 2);
+    ensure_eq(&count("")?, &0, "count(\"\")? == 0")?;
+    ensure_eq(&count("a")?, &1, "count(\"a\")? == 1")?;
+    ensure_eq(&count("a\nb")?, &2, "count(\"a\\nb\")? == 2")?;
+    ensure_eq(&count("a\nb\n")?, &2, "count(\"a\\nb\\n\")? == 2")?;
+    ensure_eq(&count("\n")?, &1, "count(\"\\n\")? == 1")?;
+    ensure_eq(&count("a\n\n")?, &2, "count(\"a\\n\\n\")? == 2")?;
+    ensure_eq(&count("a\r\nb\r\n")?, &2, "count(\"a\\r\\nb\\r\\n\")? == 2")?;
     Ok(())
 }
 
@@ -51,21 +51,53 @@ fn line_count_follows_the_one_based_terminator_model() -> TestResult {
 fn line_range_returns_inclusive_lines_without_the_last_terminator() -> TestResult {
     let text = "one\ntwo\nthree\nfour\n";
 
-    assert_eq!(range(text, 2, 3)?, "two\nthree");
-    assert_eq!(range(text, 1, 1)?, "one");
-    assert_eq!(range(text, 4, 4)?, "four");
-    assert_eq!(range(text, 1, 4)?, "one\ntwo\nthree\nfour");
+    ensure_eq(
+        &range(text, 2, 3)?,
+        &"two\nthree",
+        "range(text, 2, 3)? == \"two\\nthree\"",
+    )?;
+    ensure_eq(&range(text, 1, 1)?, &"one", "range(text, 1, 1)? == \"one\"")?;
+    ensure_eq(
+        &range(text, 4, 4)?,
+        &"four",
+        "range(text, 4, 4)? == \"four\"",
+    )?;
+    ensure_eq(
+        &range(text, 1, 4)?,
+        &"one\ntwo\nthree\nfour",
+        "range(text, 1, 4)? == \"one\\ntwo\\nthree\\nfour\"",
+    )?;
     Ok(())
 }
 
 #[test]
 fn line_range_past_the_end_stops_at_eof_and_a_start_past_eof_is_empty() -> TestResult {
-    assert_eq!(range("a\nb", 2, 99)?, "b");
-    assert_eq!(range("a\nb\n", 2, i64::MAX)?, "b");
-    assert_eq!(range("a\nb\n", 3, 3)?, "");
-    assert_eq!(range("a\nb", 3, 4)?, "");
-    assert_eq!(range("", 1, 1)?, "");
-    assert_eq!(range("a", i64::MAX, i64::MAX)?, "");
+    ensure_eq(
+        &range("a\nb", 2, 99)?,
+        &"b",
+        "range(\"a\\nb\", 2, 99)? == \"b\"",
+    )?;
+    ensure_eq(
+        &range("a\nb\n", 2, i64::MAX)?,
+        &"b",
+        "range(\"a\\nb\\n\", 2, i64::MAX)? == \"b\"",
+    )?;
+    ensure_eq(
+        &range("a\nb\n", 3, 3)?,
+        &"",
+        "range(\"a\\nb\\n\", 3, 3)? == \"\"",
+    )?;
+    ensure_eq(
+        &range("a\nb", 3, 4)?,
+        &"",
+        "range(\"a\\nb\", 3, 4)? == \"\"",
+    )?;
+    ensure_eq(&range("", 1, 1)?, &"", "range(\"\", 1, 1)? == \"\"")?;
+    ensure_eq(
+        &range("a", i64::MAX, i64::MAX)?,
+        &"",
+        "range(\"a\", i64::MAX, i64::MAX)? == \"\"",
+    )?;
     Ok(())
 }
 
@@ -73,9 +105,17 @@ fn line_range_past_the_end_stops_at_eof_and_a_start_past_eof_is_empty() -> TestR
 fn line_range_preserves_crlf_between_lines_and_drops_the_last_one() -> TestResult {
     let text = "a\r\nb\r\nc\r\n";
 
-    assert_eq!(range(text, 1, 2)?, "a\r\nb");
-    assert_eq!(range(text, 3, 3)?, "c");
-    assert_eq!(range("a\nb\r\nc", 1, 3)?, "a\nb\r\nc");
+    ensure_eq(
+        &range(text, 1, 2)?,
+        &"a\r\nb",
+        "range(text, 1, 2)? == \"a\\r\\nb\"",
+    )?;
+    ensure_eq(&range(text, 3, 3)?, &"c", "range(text, 3, 3)? == \"c\"")?;
+    ensure_eq(
+        &range("a\nb\r\nc", 1, 3)?,
+        &"a\nb\r\nc",
+        "range(\"a\\nb\\r\\nc\", 1, 3)? == \"a\\nb\\r\\nc\"",
+    )?;
     Ok(())
 }
 
@@ -83,9 +123,17 @@ fn line_range_preserves_crlf_between_lines_and_drops_the_last_one() -> TestResul
 fn line_range_keeps_empty_lines_and_multibyte_text_intact() -> TestResult {
     let text = "héllo\n\n日本語 🦀\nend";
 
-    assert_eq!(range(text, 2, 2)?, "");
-    assert_eq!(range(text, 1, 3)?, "héllo\n\n日本語 🦀");
-    assert_eq!(range(text, 3, 4)?, "日本語 🦀\nend");
+    ensure_eq(&range(text, 2, 2)?, &"", "range(text, 2, 2)? == \"\"")?;
+    ensure_eq(
+        &range(text, 1, 3)?,
+        &"héllo\n\n日本語 🦀",
+        "range(text, 1, 3)? == \"héllo\\n\\n日本語 🦀\"",
+    )?;
+    ensure_eq(
+        &range(text, 3, 4)?,
+        &"日本語 🦀\nend",
+        "range(text, 3, 4)? == \"日本語 🦀\\nend\"",
+    )?;
     Ok(())
 }
 
@@ -98,8 +146,15 @@ fn a_78k_line_file_returns_exactly_lines_40000_to_40200() -> TestResult {
 
     let got = range(&text, 40_000, 40_200)?;
 
-    assert_eq!(got, lines[39_999..40_200].join("\n"));
-    assert_eq!(count(&text)?, 78_000);
+    ensure_eq(
+        &got,
+        &lines
+            .get(39_999..40_200)
+            .check("lines 39_999..40_200 exist")?
+            .join("\n"),
+        "got == lines[39_999..40_200].join(\"\\n\")",
+    )?;
+    ensure_eq(&count(&text)?, &78_000, "count(&text)? == 78_000")?;
     Ok(())
 }
 
@@ -116,7 +171,11 @@ fn null_inputs_give_null() -> TestResult {
         )
         .check("null calls succeed")?;
 
-    assert_eq!(values, (None, None, None, None));
+    ensure_eq(
+        &values,
+        &(None, None, None, None),
+        "values == (None, None, None, None)",
+    )?;
     Ok(())
 }
 
@@ -128,14 +187,14 @@ fn invalid_arguments_fail_with_a_clear_message() -> TestResult {
     let text_number = error_of("SELECT line_range('a', '1', 2)")?;
     let blob = error_of("SELECT line_count(x'00')")?;
 
-    assert!(start.contains("start must be at least 1"), "{start}");
-    assert!(order.contains("must not be less than start"), "{order}");
-    assert!(real.contains("start must be an INTEGER"), "{real}");
-    assert!(
+    ensure(start.contains("start must be at least 1"), &start)?;
+    ensure(order.contains("must not be less than start"), &order)?;
+    ensure(real.contains("start must be an INTEGER"), &real)?;
+    ensure(
         text_number.contains("start must be an INTEGER"),
-        "{text_number}"
-    );
-    assert!(blob.contains("must be TEXT"), "{blob}");
+        &text_number,
+    )?;
+    ensure(blob.contains("must be TEXT"), &blob)?;
     Ok(())
 }
 
@@ -146,8 +205,12 @@ fn invalid_arguments_fail_with_a_clear_message() -> TestResult {
 fn a_line_function_input_at_the_byte_cap_is_accepted() -> TestResult {
     let text = "a".repeat(MAX_LINE_FUNCTION_INPUT_BYTES);
 
-    assert_eq!(count(&text)?, 1);
-    assert_eq!(range(&text, 1, 1)?.len(), MAX_LINE_FUNCTION_INPUT_BYTES);
+    ensure_eq(&count(&text)?, &1, "count(&text)? == 1")?;
+    ensure_eq(
+        &range(&text, 1, 1)?.len(),
+        &MAX_LINE_FUNCTION_INPUT_BYTES,
+        "range(&text, 1, 1)?.len() == MAX_LINE_FUNCTION_INPUT_BYTES",
+    )?;
     Ok(())
 }
 
@@ -160,18 +223,18 @@ fn a_line_function_input_over_the_byte_cap_is_refused_with_a_static_error() -> T
     let count_error = error_of_query("SELECT line_count(?1)", &text)?;
     let range_error = error_of_query("SELECT line_range(?1, 1, 1)", &text)?;
 
-    assert!(
+    ensure(
         count_error.contains("line_count: TEXT argument exceeds"),
-        "{count_error}"
-    );
-    assert!(
+        &count_error,
+    )?;
+    ensure(
         range_error.contains("line_range: TEXT argument exceeds"),
-        "{range_error}"
-    );
-    assert!(
+        &range_error,
+    )?;
+    ensure(
         !count_error.contains("aaaa"),
-        "the error must not echo the value: {count_error}"
-    );
+        format!("the error must not echo the value: {count_error}"),
+    )?;
     Ok(())
 }
 

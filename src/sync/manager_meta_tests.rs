@@ -5,7 +5,7 @@ use crate::progress::NoopProgressSink;
 use crate::store;
 use crate::store::test_capture::capture_warns;
 use crate::sync::publish::publish;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::Path;
 use tempfile::TempDir;
 
@@ -20,7 +20,7 @@ fn open_temp_db() -> TestResult<(TempDir, rusqlite::Connection)> {
 fn current_revision_id_returns_none_when_no_revision_has_been_published() -> TestResult {
     let (_dir, connection) = open_temp_db()?;
     let revision = current_revision_id(&connection).check("query")?;
-    assert!(revision.is_none());
+    ensure(revision.is_none(), "revision.is_none()")?;
     Ok(())
 }
 
@@ -50,10 +50,10 @@ fn ensure_project_row_labels_a_mismatched_root_for_recovery() -> TestResult {
     // A stale database from a moved/copied repo must be reported as a
     // RootMismatch so the sync path can auto-recover by discarding and
     // rebuilding the disposable database.
-    assert!(
+    ensure(
         matches!(err, super::ProjectMetaError::RootMismatch { .. }),
-        "got: {err:?}",
-    );
+        format!("got: {err:?}"),
+    )?;
     Ok(())
 }
 
@@ -63,11 +63,11 @@ fn root_mismatch_converts_to_an_actionable_message() -> TestResult {
         stored_root: "/old/path".into(),
     }
     .into();
-    assert!(
+    ensure(
         err.message.contains("built for a different project root")
             && err.message.contains("/old/path"),
-        "got: {err:?}",
-    );
+        format!("got: {err:?}"),
+    )?;
     Ok(())
 }
 
@@ -85,20 +85,20 @@ fn incompatible_version_is_a_stale_database_labelled_for_recovery() -> TestResul
         )
         .check("stamp an unsupported version")?;
     let err = ensure_project_row(&mut connection, root).check_err("must error")?;
-    assert!(
+    ensure(
         matches!(err, super::ProjectMetaError::IncompatibleVersion { .. }),
-        "got: {err:?}",
-    );
+        format!("got: {err:?}"),
+    )?;
 
     let err: rmcp::ErrorData = super::ProjectMetaError::IncompatibleVersion {
         contract_version: 99,
         schema_version: 99,
     }
     .into();
-    assert!(
+    ensure(
         err.message.contains("unsupported SlugAudit") && err.message.contains("99/99"),
-        "got: {err:?}",
-    );
+        format!("got: {err:?}"),
+    )?;
     Ok(())
 }
 
@@ -121,12 +121,19 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
         "test",
     );
     let data = budget.data.check("a spent budget carries a payload")?;
-    assert_eq!(data["code"], "sync_budget_exhausted");
-    let remedy = data["remedy"].as_str().check("remedy is a string")?;
-    assert!(
+    ensure_eq(
+        data.get("code").check("the budget payload has a code")?,
+        &"sync_budget_exhausted",
+        "data[\"code\"] == \"sync_budget_exhausted\"",
+    )?;
+    let remedy = data
+        .get("remedy")
+        .and_then(serde_json::Value::as_str)
+        .check("remedy is a string")?;
+    ensure(
         remedy.contains("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS"),
-        "the remedy must name the knob: {remedy}"
-    );
+        format!("the remedy must name the knob: {remedy}"),
+    )?;
     // The same budget raised by discovery inside the publish arrives
     // wrapped, and must classify identically.
     let wrapped = map_publish_error(
@@ -136,10 +143,15 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
         ),
         "test",
     );
-    assert_eq!(
-        wrapped.data.check("wrapped budget")?["code"],
-        "sync_budget_exhausted"
-    );
+    ensure_eq(
+        wrapped
+            .data
+            .check("wrapped budget")?
+            .get("code")
+            .check("the wrapped budget payload has a code")?,
+        &"sync_budget_exhausted",
+        "wrapped.data.check(\"wrapped budget\")?[\"code\"] == \"sync_budget_exhausted\"",
+    )?;
 
     let raced = map_publish_error(
         root,
@@ -148,20 +160,25 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
         },
         "test",
     );
-    assert_eq!(
-        raced.data.check("the CAS race carries a payload")?["code"],
-        "stale_revision"
-    );
+    ensure_eq(
+        raced
+            .data
+            .check("the CAS race carries a payload")?
+            .get("code")
+            .check("the CAS race payload has a code")?,
+        &"stale_revision",
+        "raced.data.check(\"the CAS race carries a payload\")?[\"code\"] == \"stale_revision\"",
+    )?;
 
     let other = map_publish_error(
         root,
         &super::publish::PublishError::InvalidParserPackVersion("nope".to_owned()),
         "test",
     );
-    assert!(
+    ensure(
         other.data.is_none(),
-        "a failure no caller can act on differently must not carry a code"
-    );
+        "a failure no caller can act on differently must not carry a code",
+    )?;
     Ok(())
 }
 
@@ -179,16 +196,14 @@ fn a_failed_metadata_write_surfaces_the_recording_error() -> TestResult {
 
     match error {
         super::ProjectMetaError::Other(error) => {
-            assert!(
+            ensure(
                 error.message.starts_with("recording project metadata: "),
-                "got: {}",
-                error.message
-            );
-            assert!(
+                format!("got: {}", error.message),
+            )?;
+            ensure(
                 error.message.contains("no such table: project"),
-                "the source error must be preserved: {}",
-                error.message
-            );
+                format!("the source error must be preserved: {}", error.message),
+            )?;
         }
         other => {
             return Err(format!("expected ProjectMetaError::Other, got {other:?}"))
@@ -221,18 +236,16 @@ fn a_failed_metadata_read_surfaces_the_reading_error() -> TestResult {
 
     match error {
         super::ProjectMetaError::Other(error) => {
-            assert!(
+            ensure(
                 error.message.starts_with("reading project metadata: "),
-                "got: {}",
-                error.message
-            );
-            assert!(
+                format!("got: {}", error.message),
+            )?;
+            ensure(
                 error
                     .message
                     .contains("access to project.root_path is prohibited"),
-                "the source error must be preserved: {}",
-                error.message
-            );
+                format!("the source error must be preserved: {}", error.message),
+            )?;
         }
         other => {
             return Err(format!("expected ProjectMetaError::Other, got {other:?}"))
@@ -257,18 +270,19 @@ fn a_failed_database_recreation_surfaces_the_open_error() -> TestResult {
             .check("unexpected outcome");
     };
 
-    assert!(
+    ensure(
         error
             .message
             .starts_with("recreating the project database: "),
-        "got: {}",
-        error.message
-    );
-    assert!(
+        format!("got: {}", error.message),
+    )?;
+    ensure(
         error.message.contains("failed to open database"),
-        "the store's open failure must be preserved: {}",
-        error.message
-    );
+        format!(
+            "the store's open failure must be preserved: {}",
+            error.message
+        ),
+    )?;
     Ok(())
 }
 
@@ -301,36 +315,34 @@ fn a_failed_manager_publish_is_returned_with_its_context_and_not_logged_first() 
         .map_err(|error| map_publish_error(project.path(), &error, "sync"))
     })?;
 
-    assert!(
+    ensure(
         logs.contains("once-probe-capture-control"),
-        "the capture must be live: {logs}"
-    );
+        format!("the capture must be live: {logs}"),
+    )?;
     let warnings = logs
         .lines()
         .filter(|line| line.contains("WARN") && !line.contains("once-probe-capture-control"))
         .count();
-    assert_eq!(
-        warnings, 0,
-        "a returned failure is not logged first: {logs}"
-    );
+    ensure_eq(
+        &warnings,
+        &0,
+        format!("a returned failure is not logged first: {logs}"),
+    )?;
     let error = result.err().check("the trigger must fail the publish")?;
-    assert!(
+    ensure(
         error.message.contains("injected publish failure"),
-        "the cause is kept: {}",
-        error.message
-    );
-    assert!(
+        format!("the cause is kept: {}", error.message),
+    )?;
+    ensure(
         error
             .message
             .contains(&format!("root: {}", project.path().display())),
-        "the root is named: {}",
-        error.message
-    );
-    assert!(
+        format!("the root is named: {}", error.message),
+    )?;
+    ensure(
         error.message.contains("error_kind: "),
-        "the category is named: {}",
-        error.message
-    );
+        format!("the category is named: {}", error.message),
+    )?;
     Ok(())
 }
 
@@ -349,16 +361,15 @@ fn a_rebuild_whose_activation_directory_vanished_fails_without_recreating_it() -
         .err()
         .check("the rebuild must fail")?;
 
-    assert!(
+    ensure(
         error.message.contains("turned off during this call"),
-        "{}",
-        error.message
-    );
-    assert_eq!(
-        error.data.as_ref().and_then(|data| data.get("code")),
-        Some(&serde_json::json!("project_not_enabled")),
-        "{error:?}"
-    );
-    assert!(!activation.exists(), "the directory is not recreated");
+        format!("{}", error.message),
+    )?;
+    ensure_eq(
+        &error.data.as_ref().and_then(|data| data.get("code")),
+        &Some(&serde_json::json!("project_not_enabled")),
+        format!("{error:?}"),
+    )?;
+    ensure(!activation.exists(), "the directory is not recreated")?;
     Ok(())
 }

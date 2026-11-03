@@ -3,7 +3,7 @@
 
 use super::*;
 use rusqlite::{Connection, params};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn deadline() -> Deadline {
     Deadline::after(std::time::Duration::from_mins(1))
@@ -44,7 +44,7 @@ fn matching_content_is_not_reported() -> TestResult {
     insert_file(&connection, "a.rs", content, &hash)?;
 
     let mismatched = content_mismatches(&connection, &deadline()).check("check")?;
-    assert!(mismatched.is_empty(), "{mismatched:?}");
+    ensure(mismatched.is_empty(), format!("{mismatched:?}"))?;
     Ok(())
 }
 
@@ -65,7 +65,7 @@ fn edited_content_with_an_untouched_hash_is_reported() -> TestResult {
         .check("check")?
         .into_iter()
         .collect();
-    assert_eq!(mismatched, ["a.rs"]);
+    ensure_eq(&mismatched, &["a.rs"], "mismatched == [\"a.rs\"]")?;
     Ok(())
 }
 
@@ -84,7 +84,7 @@ fn rows_without_content_are_not_checked() -> TestResult {
         .check("skipped row")?;
 
     let mismatched = content_mismatches(&connection, &deadline()).check("check")?;
-    assert!(mismatched.is_empty(), "{mismatched:?}");
+    ensure(mismatched.is_empty(), format!("{mismatched:?}"))?;
     Ok(())
 }
 
@@ -97,6 +97,9 @@ fn a_spent_deadline_fails_the_check_before_comparing() -> TestResult {
 
     let error = content_mismatches(&connection, &Deadline::after(std::time::Duration::ZERO))
         .check_err("a spent budget must fail the check")?;
-    assert!(matches!(error, PublishError::TimeBudgetExceeded { .. }));
+    ensure(
+        matches!(error, PublishError::TimeBudgetExceeded { .. }),
+        "matches!(error, PublishError::TimeBudgetExceeded { .. })",
+    )?;
     Ok(())
 }

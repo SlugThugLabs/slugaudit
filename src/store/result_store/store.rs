@@ -4,7 +4,7 @@ use super::cursor::{Cursor, ResultId};
 use super::error::{ResultStoreError, UnsupportedPlatform};
 use super::limits::ResultStoreLimits;
 use super::owner::{self, SweepOutcome};
-use super::registry::{Entry, Refused, Registry, ResultMeta};
+use super::registry::{Entry, Refused, Registry, ResultMeta, tally};
 use super::stats::StoreStats;
 use crate::util::lock;
 use std::fs::File;
@@ -133,7 +133,7 @@ impl ResultStore {
     #[must_use]
     pub fn refuse_foreign_tool(&self) -> ResultStoreError {
         match self.registry() {
-            Ok(mut registry) => registry.counters.unknown_cursors += 1,
+            Ok(mut registry) => tally(&mut registry.counters.unknown_cursors),
             Err(error) => return error,
         }
         ResultStoreError::Unknown
@@ -144,7 +144,7 @@ impl ResultStore {
         if let Some(entry) = registry.entries.get(&id) {
             return Ok(Arc::clone(entry));
         }
-        registry.counters.expired_cursors += 1;
+        tally(&mut registry.counters.expired_cursors);
         drop(registry);
         tracing::info!(result = %id, "cursor refused: the result was reclaimed");
         Err(ResultStoreError::Expired)
@@ -229,7 +229,7 @@ impl ResultStore {
     /// report: `TooLarge`, or the registry's own error when it is poisoned.
     pub(super) fn refuse_too_large(&self, id: ResultId, bytes: u64) -> ResultStoreError {
         match self.registry() {
-            Ok(mut registry) => registry.counters.refused_too_large += 1,
+            Ok(mut registry) => tally(&mut registry.counters.refused_too_large),
             Err(error) => return error,
         }
         tracing::info!(result = %id, bytes, budget = self.limits.max_bytes, "result aborted: larger than the whole budget");
@@ -246,12 +246,12 @@ impl ResultStore {
         // Read before the registry is locked: a clock failure logs, and
         // nothing is logged under the guard.
         let now = self.now()?;
-        Ok(self.registry()?.snapshot(
+        self.registry()?.snapshot(
             self.limits.max_bytes,
             now,
             self.limits.active_grace_secs,
             &self.sweep,
-        ))
+        )
     }
 }
 

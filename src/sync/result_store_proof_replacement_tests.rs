@@ -15,7 +15,7 @@ use crate::tools::{
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Parameters;
 use serde::{Deserialize, Serialize};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 use std::path::PathBuf;
 
 const TOOL: &str = "proof";
@@ -72,14 +72,13 @@ fn seen(served: &Served<Totals>) -> TestResult<Seen> {
 }
 
 fn per_page() -> impl FnMut(&StoredRow) -> Take {
-    let mut taken = 0;
-    move |_| {
-        taken += 1;
-        if taken <= PAGE_ROWS {
+    let mut remaining = PAGE_ROWS;
+    move |_| match remaining.checked_sub(1) {
+        Some(left) => {
+            remaining = left;
             Take::Yes
-        } else {
-            Take::No
         }
+        None => Take::No,
     }
 }
 
@@ -167,8 +166,12 @@ impl Open {
     /// Reads the remaining pages again and compares them with the read taken
     /// before the replacement.
     fn assert_continuation_unchanged(&self) -> TestResult {
-        assert_eq!(self.before.len(), 2, "pages two and three exist");
-        assert_eq!(remaining_pages(&self.manager, &self.token)?, self.before);
+        ensure_eq(&self.before.len(), &2, "pages two and three exist")?;
+        ensure_eq(
+            &remaining_pages(&self.manager, &self.token)?,
+            &self.before,
+            "remaining_pages(&self.manager, &self.token)? == self.before",
+        )?;
         Ok(())
     }
 }
@@ -179,7 +182,11 @@ fn open_result() -> TestResult<Open> {
     let path = project.path().to_string_lossy().into_owned();
     let manager = manager();
     let first = open_first_page(&manager, &path)?;
-    assert_eq!(seen(&first)?.rows, (0..10).collect::<Vec<_>>());
+    ensure_eq(
+        &seen(&first)?.rows,
+        &((0..10).collect::<Vec<_>>()),
+        "seen(&first)?.rows == (0..10).collect::<Vec<_>>()",
+    )?;
     let token = first.page.cursor.clone().check("more pages remain")?;
     let before = remaining_pages(&manager, &token)?;
     Ok(Open {
@@ -213,11 +220,11 @@ fn result_store_proof_stale_root_replacement_keeps_the_open_result_readable() ->
 
     open.resync()?;
 
-    assert_ne!(
-        database_rows(&open, "SELECT root_path FROM project WHERE id = 1")?,
-        "/elsewhere/moved",
-        "the stale database was replaced"
-    );
+    ensure_ne(
+        &database_rows(&open, "SELECT root_path FROM project WHERE id = 1")?,
+        &"/elsewhere/moved",
+        "the stale database was replaced",
+    )?;
     open.assert_continuation_unchanged()?;
     Ok(())
 }
@@ -238,14 +245,14 @@ fn result_store_proof_incompatible_version_replacement_keeps_the_open_result_rea
 
     open.resync()?;
 
-    assert_ne!(
-        database_rows(
+    ensure_ne(
+        &database_rows(
             &open,
-            "SELECT CAST(contract_version AS TEXT) FROM project WHERE id = 1"
+            "SELECT CAST(contract_version AS TEXT) FROM project WHERE id = 1",
         )?,
-        "99",
-        "the incompatible database was replaced"
-    );
+        &"99",
+        "the incompatible database was replaced",
+    )?;
     open.assert_continuation_unchanged()?;
     Ok(())
 }
@@ -257,11 +264,11 @@ fn result_store_proof_corruption_recovery_keeps_the_open_result_readable() -> Te
 
     open.resync()?;
 
-    assert_eq!(
-        database_rows(&open, "SELECT path FROM files WHERE path = 'lib.rs'")?,
-        "lib.rs",
-        "the corrupt database was replaced by a rebuilt one"
-    );
+    ensure_eq(
+        &database_rows(&open, "SELECT path FROM files WHERE path = 'lib.rs'")?,
+        &"lib.rs",
+        "the corrupt database was replaced by a rebuilt one",
+    )?;
     open.assert_continuation_unchanged()?;
     Ok(())
 }
@@ -283,17 +290,21 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() -> Te
     )
     .check("project_control off succeeds with a result open")?;
 
-    assert_eq!(response.0.status, ProjectControlStatus::Disabled);
-    assert!(!open.database().exists(), "project.db is gone");
-    assert!(
+    ensure_eq(
+        &response.0.status,
+        &ProjectControlStatus::Disabled,
+        "response.0.status == ProjectControlStatus::Disabled",
+    )?;
+    ensure(!open.database().exists(), "project.db is gone")?;
+    ensure(
         !activation.join("results").exists(),
-        "the results directory, owner lock included, is gone"
-    );
-    assert!(
+        "the results directory, owner lock included, is gone",
+    )?;
+    ensure(
         !activation.join("config.lock").exists(),
-        "the config lock is gone"
-    );
-    assert!(!activation.exists(), "the whole directory is gone");
+        "the config lock is gone",
+    )?;
+    ensure(!activation.exists(), "the whole directory is gone")?;
     open.assert_continuation_unchanged()?;
     Ok(())
 }
@@ -313,27 +324,37 @@ fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor()
         )
         .check("project_control succeeds")
     };
-    assert_eq!(
-        control(ProjectControlAction::Off)?.0.status,
-        ProjectControlStatus::Disabled
-    );
-    assert_eq!(
-        control(ProjectControlAction::On)?.0.status,
-        ProjectControlStatus::Enabled
-    );
+    ensure_eq(
+        &control(ProjectControlAction::Off)?.0.status,
+        &ProjectControlStatus::Disabled,
+        "control(ProjectControlAction::Off)?.0.status == ProjectControlStatus::Disabled",
+    )?;
+    ensure_eq(
+        &control(ProjectControlAction::On)?.0.status,
+        &ProjectControlStatus::Enabled,
+        "control(ProjectControlAction::On)?.0.status == ProjectControlStatus::Enabled",
+    )?;
 
     let first = open_first_page(&open.manager, &open.path)?;
-    assert_eq!(seen(&first)?.rows, (0..10).collect::<Vec<_>>());
+    ensure_eq(
+        &seen(&first)?.rows,
+        &((0..10).collect::<Vec<_>>()),
+        "seen(&first)?.rows == (0..10).collect::<Vec<_>>()",
+    )?;
     let token = first.page.cursor.clone().check("more pages remain")?;
     let second = continue_with(&open.manager, &token).check("page two by cursor")?;
-    assert_eq!(seen(&second)?.rows, (10..20).collect::<Vec<_>>());
-    assert!(
+    ensure_eq(
+        &seen(&second)?.rows,
+        &((10..20).collect::<Vec<_>>()),
+        "seen(&second)?.rows == (10..20).collect::<Vec<_>>()",
+    )?;
+    ensure(
         open.project
             .path()
             .join(".planning/slugaudit/results")
             .is_dir(),
-        "results/ was recreated"
-    );
+        "results/ was recreated",
+    )?;
     Ok(())
 }
 
@@ -366,17 +387,17 @@ fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() ->
         })
         .check("checkpoint the WAL")?;
 
-    assert_eq!(
-        (busy, log, checkpointed),
-        (0, 0, 0),
-        "the checkpoint ran to completion"
-    );
+    ensure_eq(
+        &(busy, log, checkpointed),
+        &(0, 0, 0),
+        "the checkpoint ran to completion",
+    )?;
     let wal = open.database().with_extension("db-wal");
-    assert_eq!(
-        std::fs::metadata(&wal).check("the WAL file exists")?.len(),
-        0,
-        "the WAL truncated to zero bytes"
-    );
+    ensure_eq(
+        &std::fs::metadata(&wal).check("the WAL file exists")?.len(),
+        &0,
+        "the WAL truncated to zero bytes",
+    )?;
     open.assert_continuation_unchanged()?;
     Ok(())
 }

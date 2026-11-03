@@ -68,6 +68,14 @@ enum Admission {
     Stop,
 }
 
+/// Adds one to a dropped-item tally. Each item is counted at most once, so a
+/// tally cannot exceed the number of items in memory; if it ever reached
+/// `usize::MAX`, holding there is the intended meaning of a report tally
+/// ("at least this many"), which is why this saturates instead of failing.
+fn tally(count: &mut usize) {
+    *count = count.saturating_add(1);
+}
+
 impl EvidenceBudget {
     fn new(original_len: usize, limits: &ResourceLimits) -> Self {
         let cap = limits.evidence;
@@ -101,19 +109,23 @@ impl EvidenceBudget {
                     error = %error,
                     "evidence payload failed to serialize; item dropped",
                 );
-                self.unmeasurable_dropped += 1;
+                tally(&mut self.unmeasurable_dropped);
                 return Admission::Drop;
             }
         };
         if payload_bytes > self.max_payload_bytes_per_item {
-            self.oversized_dropped += 1;
+            tally(&mut self.oversized_dropped);
             return Admission::Drop;
         }
-        if self.cumulative_bytes.saturating_add(payload_bytes) > self.max_bytes {
+        let Some(cumulative) = self
+            .cumulative_bytes
+            .checked_add(payload_bytes)
+            .filter(|total| *total <= self.max_bytes)
+        else {
             self.limit_truncated = true;
             return Admission::Stop;
-        }
-        self.cumulative_bytes += payload_bytes;
+        };
+        self.cumulative_bytes = cumulative;
         self.kept.push(item);
         Admission::Keep
     }

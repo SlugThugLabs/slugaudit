@@ -1,7 +1,8 @@
+use crate::evidence::tests::field;
 use crate::evidence::{Extraction, WalkInput};
 use crate::model::LineIndex;
 use crate::util::Deadline;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// Parses `source` (unbounded) and runs the Rust call walker over it within
 /// `deadline`.
@@ -29,8 +30,8 @@ fn callers_of<'a>(
 ) -> Vec<&'a serde_json::Value> {
     calls
         .iter()
-        .filter(|item| item.payload["callee_name"] == callee)
-        .map(|item| &item.payload["caller"])
+        .filter(|item| *field(&item.payload, "callee_name") == callee)
+        .map(|item| field(&item.payload, "caller"))
         .collect()
 }
 use crate::model::EvidenceKind;
@@ -39,33 +40,48 @@ use crate::model::EvidenceKind;
 fn extracts_direct_qualified_and_macro_calls() -> TestResult {
     let source = "fn run() {\n    helper();\n    crate::worker::start();\n    println!(\"ok\");\n}\nfn helper() {}\n";
     let calls = extract_rust(source)?;
-    assert_eq!(calls.len(), 3);
-    assert!(calls.iter().all(|item| item.kind == EvidenceKind::Call));
+    ensure_eq(&calls.len(), &3, "calls.len() == 3")?;
+    ensure(
+        calls.iter().all(|item| item.kind == EvidenceKind::Call),
+        "calls.iter().all(|item| item.kind == EvidenceKind::Call)",
+    )?;
 
     let names: Vec<&str> = calls
         .iter()
         .map(|item| {
-            item.payload["callee_name"]
+            field(&item.payload, "callee_name")
                 .as_str()
                 .check("callee_name as string")
         })
         .collect::<TestResult<_>>()?;
-    assert!(names.contains(&"helper"));
-    assert!(names.contains(&"start"));
-    assert!(names.contains(&"println"));
+    ensure(names.contains(&"helper"), "names.contains(&\"helper\")")?;
+    ensure(names.contains(&"start"), "names.contains(&\"start\")")?;
+    ensure(names.contains(&"println"), "names.contains(&\"println\")")?;
 
     let run_call = calls
         .iter()
-        .find(|item| item.payload["callee_name"] == "helper")
+        .find(|item| *field(&item.payload, "callee_name") == "helper")
         .check("expected run_call helper")?;
-    assert_eq!(run_call.payload["caller"], "run");
-    assert_eq!(run_call.payload["resolution"], "unresolved-syntactic");
+    ensure_eq(
+        field(&run_call.payload, "caller"),
+        &"run",
+        "run_call.payload[\"caller\"] == \"run\"",
+    )?;
+    ensure_eq(
+        field(&run_call.payload, "resolution"),
+        &"unresolved-syntactic",
+        "run_call.payload[\"resolution\"] == \"unresolved-syntactic\"",
+    )?;
 
     let macro_call = calls
         .iter()
-        .find(|item| item.payload["callee_name"] == "println")
+        .find(|item| *field(&item.payload, "callee_name") == "println")
         .check("expected macro_call println")?;
-    assert_eq!(macro_call.payload["resolution"], "macro");
+    ensure_eq(
+        field(&macro_call.payload, "resolution"),
+        &"macro",
+        "macro_call.payload[\"resolution\"] == \"macro\"",
+    )?;
     Ok(())
 }
 
@@ -73,14 +89,22 @@ fn extracts_direct_qualified_and_macro_calls() -> TestResult {
 fn calls_have_spans_and_do_not_include_definition_names() -> TestResult {
     let source = "fn build() { make(); }\nfn make() {}\n";
     let calls = extract_rust(source)?;
-    assert_eq!(calls.len(), 1);
-    let call = &calls[0];
-    assert_eq!(call.payload["callee_text"], "make");
-    assert_eq!(call.payload["caller"], "build");
-    assert!(matches!(
-        call.span,
-        crate::model::SpanAvailability::Present(_)
-    ));
+    ensure_eq(&calls.len(), &1, "calls.len() == 1")?;
+    let call = &calls.first().check("calls[0] exists")?;
+    ensure_eq(
+        field(&call.payload, "callee_text"),
+        &"make",
+        "call.payload[\"callee_text\"] == \"make\"",
+    )?;
+    ensure_eq(
+        field(&call.payload, "caller"),
+        &"build",
+        "call.payload[\"caller\"] == \"build\"",
+    )?;
+    ensure(
+        matches!(call.span, crate::model::SpanAvailability::Present(_)),
+        "matches!( call.span, crate::model::SpanAvailability::Present(_) )",
+    )?;
     Ok(())
 }
 
@@ -94,19 +118,26 @@ fn turbofish_callees_report_the_inner_function_or_method_name() -> TestResult {
         .iter()
         .map(|item| {
             Ok((
-                item.payload["callee_name"].as_str().check("callee_name")?,
-                item.payload["callee_text"].as_str().check("callee_text")?,
-                item.payload["resolution"].as_str().check("resolution")?,
+                field(&item.payload, "callee_name")
+                    .as_str()
+                    .check("callee_name")?,
+                field(&item.payload, "callee_text")
+                    .as_str()
+                    .check("callee_text")?,
+                field(&item.payload, "resolution")
+                    .as_str()
+                    .check("resolution")?,
             ))
         })
         .collect::<TestResult<_>>()?;
-    assert_eq!(
-        named,
-        [
+    ensure_eq(
+        &named,
+        &[
             ("foo", "foo::<u8>", "unresolved-syntactic"),
             ("parse", "x.parse::<u32>", "unresolved-syntactic"),
-        ]
-    );
+        ],
+        "named == [ (\"foo\", \"foo::<u8>\", \"unresolved-syntactic\"), (\"parse\", \"x.parse::<u32>\", \"unresolved-syntactic\"), ]",
+    )?;
     Ok(())
 }
 
@@ -116,10 +147,31 @@ fn a_qualified_turbofish_callee_stays_qualified() -> TestResult {
 
     let calls = extract_rust(source)?;
 
-    assert_eq!(calls.len(), 1, "{calls:?}");
-    assert_eq!(calls[0].payload["callee_name"], "size_of");
-    assert_eq!(calls[0].payload["resolution"], "qualified-syntactic");
-    assert_eq!(calls[0].payload["confidence"], "high");
+    ensure_eq(&calls.len(), &1, format!("{calls:?}"))?;
+    ensure_eq(
+        field(
+            &calls.first().check("calls[0] exists")?.payload,
+            "callee_name",
+        ),
+        &"size_of",
+        "calls[0].payload[\"callee_name\"] == \"size_of\"",
+    )?;
+    ensure_eq(
+        field(
+            &calls.first().check("calls[0] exists")?.payload,
+            "resolution",
+        ),
+        &"qualified-syntactic",
+        "calls[0].payload[\"resolution\"] == \"qualified-syntactic\"",
+    )?;
+    ensure_eq(
+        field(
+            &calls.first().check("calls[0] exists")?.payload,
+            "confidence",
+        ),
+        &"high",
+        "calls[0].payload[\"confidence\"] == \"high\"",
+    )?;
     Ok(())
 }
 
@@ -131,17 +183,25 @@ fn a_qualified_call_inside_a_macro_has_the_same_confidence_as_outside() -> TestR
 
     let now = calls
         .iter()
-        .find(|item| item.payload["callee_name"] == "now")
+        .find(|item| *field(&item.payload, "callee_name") == "now")
         .check("the macro argument call is recovered")?;
-    assert_eq!(now.payload["resolution"], "qualified-syntactic");
-    assert_eq!(now.payload["confidence"], "high");
+    ensure_eq(
+        field(&now.payload, "resolution"),
+        &"qualified-syntactic",
+        "now.payload[\"resolution\"] == \"qualified-syntactic\"",
+    )?;
+    ensure_eq(
+        field(&now.payload, "confidence"),
+        &"high",
+        "now.payload[\"confidence\"] == \"high\"",
+    )?;
     Ok(())
 }
 
 #[test]
 fn malformed_rust_does_not_panic() -> TestResult {
     let calls = extract_rust("fn run() { helper(\n")?;
-    assert!(calls.len() <= 1);
+    ensure(calls.len() <= 1, "calls.len() <= 1")?;
     Ok(())
 }
 
@@ -164,17 +224,23 @@ fn run(a: Option<u8>, b: Option<u8>) -> u8 {
     let calls = extract_rust(source)?;
     let hits: Vec<_> = calls
         .iter()
-        .filter(|item| item.payload["callee_name"] == "unwrap")
+        .filter(|item| *field(&item.payload, "callee_name") == "unwrap")
         .collect();
-    assert_eq!(hits.len(), 8, "{calls:?}");
+    ensure_eq(&hits.len(), &8, format!("{calls:?}"))?;
     for call in &hits {
-        assert_eq!(call.payload["caller"], "run");
-        assert!(matches!(
-            call.span,
-            crate::model::SpanAvailability::Present(_)
-        ));
-        let text = call.payload["callee_text"].as_str().check("callee_text")?;
-        assert!(text.ends_with("unwrap"), "callee_text {text}");
+        ensure_eq(
+            field(&call.payload, "caller"),
+            &"run",
+            "call.payload[\"caller\"] == \"run\"",
+        )?;
+        ensure(
+            matches!(call.span, crate::model::SpanAvailability::Present(_)),
+            "matches!( call.span, crate::model::SpanAvailability::Present(_) )",
+        )?;
+        let text = field(&call.payload, "callee_text")
+            .as_str()
+            .check("callee_text")?;
+        ensure(text.ends_with("unwrap"), format!("callee_text {text}"))?;
     }
     Ok(())
 }
@@ -186,9 +252,9 @@ fn a_call_walk_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResult
 
     let extraction = walk_rust(source, Some(&spent))?;
 
-    assert!(extraction.items.is_empty());
-    assert!(extraction.timed_out);
-    assert!(!extraction.truncated);
+    ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
+    ensure(extraction.timed_out, "extraction.timed_out")?;
+    ensure(!extraction.truncated, "!extraction.truncated")?;
     Ok(())
 }
 
@@ -206,12 +272,24 @@ fn a_call_in_a_closure_has_no_caller_inside_and_outside_a_macro() -> TestResult 
 
     let null = serde_json::Value::Null;
     let run = serde_json::Value::from("run");
-    assert_eq!(callers_of(&calls, "plain"), [&null], "{calls:?}");
-    assert_eq!(callers_of(&calls, "wrapped"), [&null], "{calls:?}");
-    assert_eq!(callers_of(&calls, "direct"), [&run], "{calls:?}");
-    assert_eq!(callers_of(&calls, "in_macro"), [&run], "{calls:?}");
-    assert_eq!(callers_of(&calls, "for_each"), [&run], "{calls:?}");
-    assert_eq!(callers_of(&calls, "map"), [&run], "{calls:?}");
+    ensure_eq(&callers_of(&calls, "plain"), &[&null], format!("{calls:?}"))?;
+    ensure_eq(
+        &callers_of(&calls, "wrapped"),
+        &[&null],
+        format!("{calls:?}"),
+    )?;
+    ensure_eq(&callers_of(&calls, "direct"), &[&run], format!("{calls:?}"))?;
+    ensure_eq(
+        &callers_of(&calls, "in_macro"),
+        &[&run],
+        format!("{calls:?}"),
+    )?;
+    ensure_eq(
+        &callers_of(&calls, "for_each"),
+        &[&run],
+        format!("{calls:?}"),
+    )?;
+    ensure_eq(&callers_of(&calls, "map"), &[&run], format!("{calls:?}"))?;
     Ok(())
 }
 
@@ -227,19 +305,26 @@ fn a_call_reports_the_innermost_enclosing_function() -> TestResult {
 
     let calls = extract_rust(source)?;
 
-    assert_eq!(
-        callers_of(&calls, "deep"),
-        [&serde_json::Value::from("inner")]
-    );
-    assert_eq!(
-        callers_of(&calls, "shallow"),
-        [&serde_json::Value::from("outer")]
-    );
-    assert_eq!(
-        callers_of(&calls, "in_method"),
-        [&serde_json::Value::from("method")]
-    );
-    assert_eq!(callers_of(&calls, "top"), [&serde_json::Value::Null]);
+    ensure_eq(
+        &callers_of(&calls, "deep"),
+        &[&serde_json::Value::from("inner")],
+        "callers_of(&calls, \"deep\") == [&serde_json::Value::from(\"inner\")]",
+    )?;
+    ensure_eq(
+        &callers_of(&calls, "shallow"),
+        &[&serde_json::Value::from("outer")],
+        "callers_of(&calls, \"shallow\") == [&serde_json::Value::from(\"outer\")]",
+    )?;
+    ensure_eq(
+        &callers_of(&calls, "in_method"),
+        &[&serde_json::Value::from("method")],
+        "callers_of(&calls, \"in_method\") == [&serde_json::Value::from(\"method\")]",
+    )?;
+    ensure_eq(
+        &callers_of(&calls, "top"),
+        &[&serde_json::Value::Null],
+        "callers_of(&calls, \"top\") == [&serde_json::Value::Null]",
+    )?;
     Ok(())
 }
 
@@ -270,8 +355,8 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
     let recovered = super::macro_calls::extract(&macro_node, &input, Some("run"))
         .check("recover the macro's calls")?;
 
-    assert!(recovered.timed_out);
-    assert!(!recovered.capped);
-    assert!(recovered.rows.is_empty(), "helper() was not recovered");
+    ensure(recovered.timed_out, "recovered.timed_out")?;
+    ensure(!recovered.capped, "!recovered.capped")?;
+    ensure(recovered.rows.is_empty(), "helper() was not recovered")?;
     Ok(())
 }

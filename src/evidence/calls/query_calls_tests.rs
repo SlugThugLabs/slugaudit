@@ -6,8 +6,9 @@
 
 use super::extract;
 use crate::evidence::calls::call_queries::CALL_QUERIES;
+use crate::evidence::tests::field;
 use crate::model::{EvidenceItem, EvidenceKind, LineIndex};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// Fails, naming the language, when its grammar cannot be loaded — through
 /// the same `get_language` the extraction uses.
@@ -27,7 +28,10 @@ fn calls(language: &str, source: &str) -> TestResult<Vec<EvidenceItem>> {
     require_grammar(language)?;
     let (items, truncated) =
         crate::evidence::extract(language, source).check("extract the fixture")?;
-    assert!(!truncated, "{language} fixture extraction was cut short");
+    ensure(
+        !truncated,
+        format!("{language} fixture extraction was cut short"),
+    )?;
     Ok(items
         .into_iter()
         .filter(|item| item.kind == EvidenceKind::Call)
@@ -40,12 +44,12 @@ fn summary(rows: &[EvidenceItem]) -> TestResult<Vec<(String, i64, String)>> {
         .map(|row| {
             let stored = crate::evidence::to_row(row);
             Ok((
-                row.payload["callee_name"]
+                field(&row.payload, "callee_name")
                     .as_str()
                     .check("callee_name")?
                     .to_owned(),
                 stored.start_line.check("a stored line")?,
-                row.payload["callee_text"]
+                field(&row.payload, "callee_text")
                     .as_str()
                     .check("callee_text")?
                     .to_owned(),
@@ -68,13 +72,33 @@ fn assert_calls(
         .iter()
         .map(|(name, line, text)| ((*name).to_owned(), *line, (*text).to_owned()))
         .collect();
-    assert_eq!(summary(&rows)?, expected, "{language}: {rows:?}");
+    ensure_eq(&summary(&rows)?, &expected, format!("{language}: {rows:?}"))?;
     for row in &rows {
-        assert_eq!(row.payload["language"], language);
-        assert_eq!(row.payload["caller"], caller, "{language}: {row:?}");
-        assert_eq!(row.payload["resolution"], "unresolved-syntactic");
-        assert_eq!(row.payload["confidence"], "medium");
-        assert_eq!(crate::evidence::to_row(row).origin, "RawTree");
+        ensure_eq(
+            field(&row.payload, "language"),
+            &language,
+            "row.payload[\"language\"] == language",
+        )?;
+        ensure_eq(
+            field(&row.payload, "caller"),
+            &caller,
+            format!("{language}: {row:?}"),
+        )?;
+        ensure_eq(
+            field(&row.payload, "resolution"),
+            &"unresolved-syntactic",
+            "row.payload[\"resolution\"] == \"unresolved-syntactic\"",
+        )?;
+        ensure_eq(
+            field(&row.payload, "confidence"),
+            &"medium",
+            "row.payload[\"confidence\"] == \"medium\"",
+        )?;
+        ensure_eq(
+            &crate::evidence::to_row(row).origin,
+            &"RawTree",
+            "crate::evidence::to_row(row).origin == \"RawTree\"",
+        )?;
     }
     Ok(())
 }
@@ -263,8 +287,12 @@ fn a_c_function_returning_a_pointer_is_still_named_as_the_caller() -> TestResult
 
     let rows = calls("c", source)?;
 
-    assert_eq!(rows.len(), 1, "{rows:?}");
-    assert_eq!(rows[0].payload["caller"], "name");
+    ensure_eq(&rows.len(), &1, format!("{rows:?}"))?;
+    ensure_eq(
+        field(&rows.first().check("rows[0] exists")?.payload, "caller"),
+        &"name",
+        "rows[0].payload[\"caller\"] == \"name\"",
+    )?;
     Ok(())
 }
 
@@ -274,11 +302,12 @@ fn a_call_at_file_scope_or_in_an_anonymous_function_has_no_caller() -> TestResul
 
     let rows = calls("python", source)?;
 
-    assert_eq!(summary(&rows)?.len(), 2, "{rows:?}");
-    assert!(
-        rows.iter().all(|row| row.payload["caller"].is_null()),
-        "{rows:?}"
-    );
+    ensure_eq(&summary(&rows)?.len(), &2, format!("{rows:?}"))?;
+    ensure(
+        rows.iter()
+            .all(|row| field(&row.payload, "caller").is_null()),
+        format!("{rows:?}"),
+    )?;
     Ok(())
 }
 
@@ -291,7 +320,11 @@ fn every_embedded_call_query_compiles_with_exactly_one_callee_capture() -> TestR
             .compiled(&grammar)
             .check("the embedded query compiles")?;
 
-        assert_eq!(query.capture_names(), ["callee"], "{}", entry.language);
+        ensure_eq(
+            &query.capture_names(),
+            &["callee"],
+            entry.language.to_string(),
+        )?;
     }
     Ok(())
 }
@@ -315,9 +348,9 @@ fn a_language_without_a_call_query_yields_no_calls_and_stays_complete() -> TestR
     let extraction =
         extract("ruby", source, &LineIndex::new(source), None).check("extract ruby calls")?;
 
-    assert!(extraction.items.is_empty());
-    assert!(!extraction.truncated);
-    assert!(!extraction.timed_out);
+    ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
+    ensure(!extraction.truncated, "!extraction.truncated")?;
+    ensure(!extraction.timed_out, "!extraction.timed_out")?;
     Ok(())
 }
 
@@ -329,9 +362,9 @@ fn a_call_query_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResul
     let extraction = extract("python", PYTHON, &LineIndex::new(PYTHON), Some(&spent))
         .check("extract python calls")?;
 
-    assert!(extraction.items.is_empty());
-    assert!(extraction.timed_out);
-    assert!(!extraction.truncated);
+    ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
+    ensure(extraction.timed_out, "extraction.timed_out")?;
+    ensure(!extraction.truncated, "!extraction.truncated")?;
     Ok(())
 }
 
@@ -339,9 +372,9 @@ fn a_call_query_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResul
 fn call_languages_are_rust_and_every_embedded_query_language() -> TestResult {
     let languages: Vec<&str> = super::super::call_languages().collect();
 
-    assert_eq!(
-        languages,
-        [
+    ensure_eq(
+        &languages,
+        &[
             "rust",
             "python",
             "javascript",
@@ -349,8 +382,9 @@ fn call_languages_are_rust_and_every_embedded_query_language() -> TestResult {
             "tsx",
             "go",
             "java",
-            "c"
-        ]
-    );
+            "c",
+        ],
+        "languages == [ \"rust\", \"python\", \"javascript\", \"typescript\", \"tsx\", \"go\", \"java\", \"c\" ]",
+    )?;
     Ok(())
 }

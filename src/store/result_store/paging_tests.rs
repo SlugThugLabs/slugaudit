@@ -1,6 +1,6 @@
 use super::harness_tests::*;
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn result_store_the_same_ordinal_read_twice_returns_identical_rows() -> TestResult {
@@ -16,9 +16,13 @@ fn result_store_the_same_ordinal_read_twice_returns_identical_rows() -> TestResu
         .read_page(handle.id, 20, |_| Take::Yes)
         .check("second")?;
 
-    assert_eq!(first.rows, second.rows);
-    assert_eq!(first.rows.len(), 30);
-    assert_eq!(first.rows[0].ord, 20);
+    ensure_eq(&first.rows, &second.rows, "first.rows == second.rows")?;
+    ensure_eq(&first.rows.len(), &30, "first.rows.len() == 30")?;
+    ensure_eq(
+        &first.rows.first().check("first.rows[0] exists")?.ord,
+        &20,
+        "first.rows[0].ord == 20",
+    )?;
     Ok(())
 }
 
@@ -26,18 +30,17 @@ fn result_store_the_same_ordinal_read_twice_returns_identical_rows() -> TestResu
 fn walk(store: &ResultStore, id: ResultId, page_rows: usize) -> TestResult<(Vec<u64>, usize)> {
     let (mut seen, mut pages, mut from) = (Vec::new(), 0, 0);
     loop {
-        let mut taken = 0;
+        let mut remaining = page_rows;
         let page = store
-            .read_page(id, from, |_| {
-                taken += 1;
-                if taken <= page_rows {
+            .read_page(id, from, |_| match remaining.checked_sub(1) {
+                Some(left) => {
+                    remaining = left;
                     Take::Yes
-                } else {
-                    Take::No
                 }
+                None => Take::No,
             })
             .check("page")?;
-        pages += 1;
+        pages = usize::checked_add(pages, 1).check("page count fits")?;
         seen.extend(page.rows.iter().map(|row| row.ord));
         match page.next_ord {
             Some(next) => from = next,
@@ -51,17 +54,25 @@ fn result_store_pages_are_disjoint_and_cover_the_result_once_at_every_boundary()
     let fx = fixture(1 << 30)?;
     for rows in [0_usize, 1, 999, 1000, 1001, 2500] {
         let handle = write_rows(&fx.store, rows, 3).check("write")?;
-        assert_eq!(handle.row_count, rows as u64);
+        ensure_eq(
+            &handle.row_count,
+            &(rows as u64),
+            "handle.row_count == rows as u64",
+        )?;
         for page_rows in [1_usize, 7, 100, 1000, 3000] {
             let (seen, pages) = walk(&fx.store, handle.id, page_rows)?;
 
             let expected: Vec<u64> = (0..rows as u64).collect();
-            assert_eq!(seen, expected, "rows={rows} page_rows={page_rows}");
-            assert_eq!(
-                pages,
-                rows.div_ceil(page_rows).max(1),
-                "rows={rows} page_rows={page_rows}"
-            );
+            ensure_eq(
+                &seen,
+                &expected,
+                format!("rows={rows} page_rows={page_rows}"),
+            )?;
+            ensure_eq(
+                &pages,
+                &rows.div_ceil(page_rows).max(1),
+                format!("rows={rows} page_rows={page_rows}"),
+            )?;
         }
     }
     Ok(())
@@ -74,17 +85,18 @@ fn result_store_an_ordinal_past_the_row_count_is_unknown() -> TestResult {
 
     let result = fx.store.read_page(handle.id, 6, |_| Take::Yes);
 
-    assert!(
+    ensure(
         matches!(result, Err(ResultStoreError::Unknown)),
-        "{result:?}"
-    );
-    assert_eq!(
-        fx.store
+        format!("{result:?}"),
+    )?;
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .unknown_cursors,
-        1
-    );
+        &1,
+        "fx.store .stats() .check(\"read the store counters\")? .unknown_cursors == 1",
+    )?;
     Ok(())
 }
 
@@ -98,9 +110,9 @@ fn result_store_the_ordinal_at_the_row_count_is_an_empty_final_page() -> TestRes
         .read_page(handle.id, 5, |_| Take::Yes)
         .check("page")?;
 
-    assert!(page.rows.is_empty());
-    assert_eq!(page.next_ord, None);
-    assert_eq!(page.row_count, 5);
+    ensure(page.rows.is_empty(), "page.rows.is_empty()")?;
+    ensure_eq(&page.next_ord, &None, "page.next_ord == None")?;
+    ensure_eq(&page.row_count, &5, "page.row_count == 5")?;
     Ok(())
 }
 
@@ -109,20 +121,25 @@ fn result_store_an_idle_result_is_still_readable_and_active_again_after_one_read
     let fx = fixture(1 << 30)?;
     let handle = write_rows(&fx.store, 10, 3).check("write")?;
     fx.set_time(1_000 + GRACE_SECS_SIGNED + 1);
-    assert_eq!(
-        fx.store
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .idle
             .results,
-        1
-    );
+        &1,
+        "fx.store .stats() .check(\"read the store counters\")? .idle .results == 1",
+    )?;
 
     let page = touch(&fx.store, handle.id)?;
 
-    assert_eq!(page.rows.len(), 1);
+    ensure_eq(&page.rows.len(), &1, "page.rows.len() == 1")?;
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!((stats.active.results, stats.idle.results), (1, 0));
+    ensure_eq(
+        &(stats.active.results, stats.idle.results),
+        &(1, 0),
+        "(stats.active.results, stats.idle.results) == (1, 0)",
+    )?;
     Ok(())
 }
 
@@ -136,7 +153,11 @@ fn result_store_the_grace_boundary_is_inclusive() -> TestResult {
     fx.set_time(1_000 + GRACE_SECS_SIGNED + 1);
     let after = fx.store.stats().check("read the store counters")?;
 
-    assert_eq!((at.active.results, after.idle.results), (1, 1));
+    ensure_eq(
+        &(at.active.results, after.idle.results),
+        &(1, 1),
+        "(at.active.results, after.idle.results) == (1, 1)",
+    )?;
     Ok(())
 }
 
@@ -145,21 +166,30 @@ fn result_store_serving_the_last_page_marks_the_result_delivered() -> TestResult
     let fx = fixture(1 << 30)?;
     let handle = write_rows(&fx.store, 10, 3).check("write")?;
     touch(&fx.store, handle.id)?;
-    assert_eq!(
-        fx.store
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .delivered
             .results,
-        0
-    );
+        &0,
+        "fx.store .stats() .check(\"read the store counters\")? .delivered .results == 0",
+    )?;
 
     read_all(&fx.store, handle.id)?;
 
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!((stats.delivered.results, stats.active.results), (1, 0));
+    ensure_eq(
+        &(stats.delivered.results, stats.active.results),
+        &(1, 0),
+        "(stats.delivered.results, stats.active.results) == (1, 0)",
+    )?;
     // A delivered result stays readable for a final-page retry.
-    assert_eq!(read_all(&fx.store, handle.id)?.len(), 10);
+    ensure_eq(
+        &read_all(&fx.store, handle.id)?.len(),
+        &10,
+        "read_all(&fx.store, handle.id)?.len() == 10",
+    )?;
     Ok(())
 }
 
@@ -177,10 +207,10 @@ fn result_store_a_result_without_complete_state_is_not_addressable() -> TestResu
         .check("registered as incomplete")?;
     let result = fx.store.read_page(handle.id, 0, |_| Take::Yes);
 
-    assert!(
+    ensure(
         matches!(result, Err(ResultStoreError::Unknown)),
-        "{result:?}"
-    );
+        format!("{result:?}"),
+    )?;
     Ok(())
 }
 
@@ -194,8 +224,10 @@ fn result_store_a_writer_dropped_before_finish_leaves_no_trace() -> TestResult {
     }
     // The file is unlinked at creation; its descriptor still names the id.
     let open = deleted_descriptors_under(fx.dir.path())?;
-    assert_eq!(open.len(), 1, "the open writer holds one descriptor");
-    let stem = open[0]
+    ensure_eq(&open.len(), &1, "the open writer holds one descriptor")?;
+    let stem = open
+        .first()
+        .check("open[0] exists")?
         .trim_end_matches(" (deleted)")
         .rsplit('/')
         .next()
@@ -208,20 +240,27 @@ fn result_store_a_writer_dropped_before_finish_leaves_no_trace() -> TestResult {
     drop(writer);
 
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!(
-        (
+    ensure_eq(
+        &(
             stats.active.results + stats.idle.results + stats.delivered.results,
-            stats.admitted_bytes
+            stats.admitted_bytes,
         ),
-        (0, 0)
-    );
+        &(0, 0),
+        "( stats.active.results + stats.idle.results + stats.delivered.results, stats.admitted_bytes ) == (0, 0)",
+    )?;
     let outcome = read_token(&fx.store, &fx.store.cursor(id, 0).to_string());
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Expired)),
-        "{outcome:?}"
-    );
-    assert!(db_files(&fx.results_dir())?.is_empty());
-    assert!(deleted_descriptors_under(fx.dir.path())?.is_empty());
+        format!("{outcome:?}"),
+    )?;
+    ensure(
+        db_files(&fx.results_dir())?.is_empty(),
+        "db_files(&fx.results_dir())?.is_empty()",
+    )?;
+    ensure(
+        deleted_descriptors_under(fx.dir.path())?.is_empty(),
+        "deleted_descriptors_under(fx.dir.path())?.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -230,22 +269,26 @@ fn result_store_tool_of_names_the_producer_without_renewing_or_marking() -> Test
     let fx = fixture(1 << 30)?;
     let handle = write_rows(&fx.store, 10, 3).check("write")?;
     fx.set_time(1_000 + GRACE_SECS_SIGNED + 1);
-    assert_eq!(
-        fx.store
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .idle
             .results,
-        1,
-        "idle before the call"
-    );
+        &1,
+        "idle before the call",
+    )?;
 
     let tool = fx.store.tool_of(handle.id).check("tool")?;
 
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!(tool, "query");
-    assert_eq!((stats.idle.results, stats.active.results), (1, 0));
-    assert_eq!(stats.delivered.results, 0);
+    ensure_eq(&tool, &"query", "tool == \"query\"")?;
+    ensure_eq(
+        &(stats.idle.results, stats.active.results),
+        &(1, 0),
+        "(stats.idle.results, stats.active.results) == (1, 0)",
+    )?;
+    ensure_eq(&stats.delivered.results, &0, "stats.delivered.results == 0")?;
     Ok(())
 }
 
@@ -256,14 +299,18 @@ fn result_store_tool_of_a_reclaimed_result_is_expired_and_counted_once() -> Test
 
     let error = fx.store.tool_of(stale).check_err("not registered")?;
 
-    assert!(matches!(error, ResultStoreError::Expired));
-    assert_eq!(
-        fx.store
+    ensure(
+        matches!(error, ResultStoreError::Expired),
+        "matches!(error, ResultStoreError::Expired)",
+    )?;
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .expired_cursors,
-        1
-    );
+        &1,
+        "fx.store .stats() .check(\"read the store counters\")? .expired_cursors == 1",
+    )?;
     Ok(())
 }
 
@@ -281,10 +328,22 @@ fn result_store_first_row_is_offered_to_accept_but_always_taken() -> TestResult 
         })
         .check("page")?;
 
-    assert_eq!(asked, vec![2, 3], "the first row is offered, then the next");
-    assert_eq!(page.rows.len(), 1, "a No on the first row still yields it");
-    assert_eq!(page.rows[0].ord, 2);
-    assert_eq!(page.next_ord, Some(3));
+    ensure_eq(
+        &asked,
+        &vec![2, 3],
+        "the first row is offered, then the next",
+    )?;
+    ensure_eq(
+        &page.rows.len(),
+        &1,
+        "a No on the first row still yields it",
+    )?;
+    ensure_eq(
+        &page.rows.first().check("page.rows[0] exists")?.ord,
+        &2,
+        "page.rows[0].ord == 2",
+    )?;
+    ensure_eq(&page.next_ord, &Some(3), "page.next_ord == Some(3)")?;
     Ok(())
 }
 
@@ -302,9 +361,9 @@ fn result_store_offering_the_first_row_with_yes_everywhere_offers_every_row() ->
         })
         .check("page")?;
 
-    assert_eq!(asked, vec![1, 2, 3, 4]);
-    assert_eq!(page.rows.len(), 4);
-    assert_eq!(page.next_ord, None);
+    ensure_eq(&asked, &vec![1, 2, 3, 4], "asked == vec![1, 2, 3, 4]")?;
+    ensure_eq(&page.rows.len(), &4, "page.rows.len() == 4")?;
+    ensure_eq(&page.next_ord, &None, "page.next_ord == None")?;
     Ok(())
 }
 
@@ -315,8 +374,16 @@ fn result_store_meta_of_returns_the_stored_meta_without_serving() -> TestResult 
 
     let meta = fx.store.meta_of(handle.id).check("meta")?;
 
-    assert_eq!(meta.tool, "query");
-    assert_eq!(meta.columns, vec!["id".to_owned(), "payload".to_owned()]);
-    assert_eq!(meta.completeness, complete());
+    ensure_eq(&meta.tool, &"query", "meta.tool == \"query\"")?;
+    ensure_eq(
+        &meta.columns,
+        &vec!["id".to_owned(), "payload".to_owned()],
+        "meta.columns == vec![\"id\".to_owned(), \"payload\".to_owned()]",
+    )?;
+    ensure_eq(
+        &meta.completeness,
+        &complete(),
+        "meta.completeness == complete()",
+    )?;
     Ok(())
 }

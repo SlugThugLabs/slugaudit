@@ -120,8 +120,9 @@ fn decode_row(raw: &rusqlite::Row<'_>, columns: usize) -> Result<StoredRow, Resu
         .map_err(|_| ResultStoreError::corrupt("negative row ordinal"))?;
     let marks: Option<String> = raw.get(1).map_err(read)?;
     let mut cells = Vec::with_capacity(columns);
-    for index in 0..columns {
-        cells.push(match raw.get_ref(index + 2).map_err(read)? {
+    // Cell columns follow the ordinal and the non-finite marks.
+    for index in (2..).take(columns) {
+        cells.push(match raw.get_ref(index).map_err(read)? {
             ValueRef::Null => Cell::Null,
             ValueRef::Integer(value) => Cell::Int(value),
             ValueRef::Real(value) => Cell::Real(value),

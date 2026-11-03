@@ -148,12 +148,12 @@ pub(super) fn configure(connection: &Connection) -> Result<(), StoreError> {
 /// database at once would otherwise fail one of them. Once WAL is set it
 /// persists in the file, so the retry only matters for the first open.
 pub(super) fn enable_wal(connection: &Connection, budget: Duration) -> Result<(), StoreError> {
-    let deadline = std::time::Instant::now() + budget;
+    let started = std::time::Instant::now();
     let granted: String = loop {
         match connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
             Ok(granted) => break granted,
             Err(error) if is_contention(&error) => {
-                if std::time::Instant::now() >= deadline {
+                if started.elapsed() >= budget {
                     tracing::warn!(
                         target: "slugaudit::store",
                         budget_ms = budget.as_millis(),

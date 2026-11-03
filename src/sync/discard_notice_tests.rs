@@ -1,7 +1,7 @@
 use crate::store::test_capture::capture_warns;
 use crate::sync::SourceSyncManager;
 use crate::sync::test_support::{create_project, sync_project, write_file};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn database(project: &tempfile::TempDir) -> std::path::PathBuf {
     project.path().join(".planning/slugaudit/project.db")
@@ -29,14 +29,20 @@ fn discard_surface_schema_mismatch_reports_the_cause_and_logs_once() -> TestResu
     let synced = synced?;
 
     let notice = synced.discard.check("the rebuild is reported")?;
-    assert!(
+    ensure(
         notice.cause.contains("corrupt or outdated"),
-        "cause was {}",
-        notice.cause
-    );
+        format!("cause was {}", notice.cause),
+    )?;
     let warns: Vec<&str> = logs.lines().filter(|line| line.contains("WARN")).collect();
-    assert_eq!(warns.len(), 1, "one WARN for one discard: {logs}");
-    assert!(warns[0].contains("error="), "the cause is logged: {logs}");
+    ensure_eq(
+        &warns.len(),
+        &1,
+        format!("one WARN for one discard: {logs}"),
+    )?;
+    ensure(
+        warns.first().check("warns[0] exists")?.contains("error="),
+        format!("the cause is logged: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -49,13 +55,13 @@ fn discard_surface_corrupt_database_reports_the_cause() -> TestResult {
     let synced = synced?;
 
     let notice = synced.discard.check("the rebuild is reported")?;
-    assert!(
-        notice.cause.contains("corrupt or outdated"),
-        "{}",
-        notice.cause
-    );
+    ensure(notice.cause.contains("corrupt or outdated"), &notice.cause)?;
     let warns: Vec<&str> = logs.lines().filter(|line| line.contains("WARN")).collect();
-    assert_eq!(warns.len(), 1, "one WARN for one discard: {logs}");
+    ensure_eq(
+        &warns.len(),
+        &1,
+        format!("one WARN for one discard: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -76,11 +82,10 @@ fn discard_surface_stale_root_reports_the_cause() -> TestResult {
     let synced = synced?;
 
     let notice = synced.discard.check("the rebuild is reported")?;
-    assert!(
+    ensure(
         notice.cause.contains("different project root"),
-        "{}",
-        notice.cause
-    );
+        &notice.cause,
+    )?;
     Ok(())
 }
 
@@ -91,11 +96,11 @@ fn discard_surface_normal_sync_reports_nothing() -> TestResult {
     let (synced, logs) = capture_warns(|| sync_project(&manager, &project))?;
     let synced = synced?;
 
-    assert_eq!(synced.discard, None);
-    assert!(
+    ensure_eq(&synced.discard, &None, "synced.discard == None")?;
+    ensure(
         !logs.contains("WARN"),
-        "no warning on a normal sync: {logs}"
-    );
+        format!("no warning on a normal sync: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -107,6 +112,6 @@ fn discard_surface_is_reported_only_by_the_call_that_discarded() -> TestResult {
     let second = sync_project(&manager, &project)?;
 
     first.discard.as_ref().check("`first.discard` is present")?;
-    assert_eq!(second.discard, None);
+    ensure_eq(&second.discard, &None, "second.discard == None")?;
     Ok(())
 }

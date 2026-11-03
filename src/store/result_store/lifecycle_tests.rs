@@ -1,24 +1,29 @@
 use super::harness_tests::*;
 use super::*;
 use crate::store::test_join::join_scoped_checked;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::path::Path;
 use uuid::Uuid;
 
 #[cfg(target_os = "linux")]
 fn assert_no_leftovers(fx: &Fixture) -> TestResult {
-    assert!(db_files(&fx.results_dir())?.is_empty());
-    assert_eq!(
-        deleted_descriptors_under(fx.dir.path())?,
-        Vec::<String>::new()
-    );
-    assert_eq!(
-        fx.store
+    ensure(
+        db_files(&fx.results_dir())?.is_empty(),
+        "db_files(&fx.results_dir())?.is_empty()",
+    )?;
+    ensure_eq(
+        &deleted_descriptors_under(fx.dir.path())?,
+        &(Vec::<String>::new()),
+        "deleted_descriptors_under(fx.dir.path())? == Vec::<String>::new()",
+    )?;
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .admitted_bytes,
-        0
-    );
+        &0,
+        "fx.store .stats() .check(\"read the store counters\")? .admitted_bytes == 0",
+    )?;
     Ok(())
 }
 
@@ -30,18 +35,19 @@ fn result_store_an_over_budget_write_aborts_itself_and_leaves_no_file_or_descrip
 
     let outcome = write_rows(&fx.store, 2_500, 100);
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::TooLarge)),
-        "{outcome:?}"
-    );
+        format!("{outcome:?}"),
+    )?;
     assert_no_leftovers(&fx)?;
-    assert_eq!(
-        fx.store
+    ensure_eq(
+        &fx.store
             .stats()
             .check("read the store counters")?
             .refused_too_large,
-        1
-    );
+        &1,
+        "fx.store .stats() .check(\"read the store counters\")? .refused_too_large == 1",
+    )?;
     Ok(())
 }
 
@@ -63,14 +69,18 @@ fn result_store_a_failure_after_the_first_batch_leaves_nothing_and_the_next_writ
     }
     drop(writer);
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Unavailable { .. })),
-        "{outcome:?}"
-    );
+        format!("{outcome:?}"),
+    )?;
     assert_no_leftovers(&fx)?;
 
     let next = write_rows(&fx.store, 1_500, 5).check("the store still works")?;
-    assert_eq!(read_all(&fx.store, next.id)?.len(), 1_500);
+    ensure_eq(
+        &read_all(&fx.store, next.id)?.len(),
+        &1_500,
+        "read_all(&fx.store, next.id)?.len() == 1_500",
+    )?;
     Ok(())
 }
 
@@ -98,10 +108,10 @@ fn result_store_a_full_disk_is_unavailable_and_keeps_the_sqlite_source() -> Test
     let sqlite = source
         .downcast_ref::<rusqlite::Error>()
         .check("sqlite source")?;
-    assert!(
+    ensure(
         matches!(sqlite, rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::DiskFull),
-        "{sqlite:?}"
-    );
+        format!("{sqlite:?}"),
+    )?;
     assert_no_leftovers(&fx)?;
     Ok(())
 }
@@ -142,12 +152,15 @@ fn result_store_a_process_abort_mid_write_leaves_no_result_file() -> TestResult 
         .status()
         .check("spawn the helper")?;
 
-    assert_eq!(
-        status.signal(),
-        Some(6),
-        "the helper must die of SIGABRT: {status:?}"
-    );
-    assert!(db_files(&dir.path().join("results"))?.is_empty());
+    ensure_eq(
+        &status.signal(),
+        &Some(6),
+        format!("the helper must die of SIGABRT: {status:?}"),
+    )?;
+    ensure(
+        db_files(&dir.path().join("results"))?.is_empty(),
+        "db_files(&dir.path().join(\"results\"))?.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -195,18 +208,20 @@ fn result_store_open_sweeps_the_files_and_lock_of_a_dead_owner() -> TestResult {
     let session = Uuid::new_v4();
     let store = open_in(dir.path(), session)?;
 
-    assert_eq!(
-        listing(dir.path())?,
-        vec![format!("{}.lock", session.hyphenated())]
-    );
-    assert_eq!(
-        store
+    ensure_eq(
+        &listing(dir.path())?,
+        &vec![format!("{}.lock", session.hyphenated())],
+        "listing(dir.path())? == vec![format!(\"{}.lock\", session.hyphenated())]",
+    )?;
+    ensure_eq(
+        &store
             .stats()
             .check("read the store counters")?
             .sweep
             .removed_files,
-        3
-    );
+        &3,
+        "store .stats() .check(\"read the store counters\")? .sweep .removed_files == 3",
+    )?;
     Ok(())
 }
 
@@ -220,15 +235,19 @@ fn result_store_open_leaves_the_files_of_a_live_owner() -> TestResult {
 
     let second = open_in(dir.path(), Uuid::new_v4())?;
 
-    assert!(listing(dir.path())?.contains(&in_flight));
-    assert_eq!(
-        second
+    ensure(
+        listing(dir.path())?.contains(&in_flight),
+        "listing(dir.path())?.contains(&in_flight)",
+    )?;
+    ensure_eq(
+        &second
             .stats()
             .check("read the store counters")?
             .sweep
             .live_owners_skipped,
-        1
-    );
+        &1,
+        "second .stats() .check(\"read the store counters\")? .sweep .live_owners_skipped == 1",
+    )?;
     drop(live);
     Ok(())
 }
@@ -241,15 +260,19 @@ fn result_store_open_sweeps_a_result_file_with_no_lock_file() -> TestResult {
 
     let store = open_in(dir.path(), Uuid::new_v4())?;
 
-    assert!(!listing(dir.path())?.contains(&orphan));
-    assert_eq!(
-        store
+    ensure(
+        !listing(dir.path())?.contains(&orphan),
+        "!listing(dir.path())?.contains(&orphan)",
+    )?;
+    ensure_eq(
+        &store
             .stats()
             .check("read the store counters")?
             .sweep
             .removed_files,
-        1
-    );
+        &1,
+        "store .stats() .check(\"read the store counters\")? .sweep .removed_files == 1",
+    )?;
     Ok(())
 }
 
@@ -262,15 +285,19 @@ fn result_store_open_never_sweeps_its_own_sessions_files() -> TestResult {
 
     let store = open_in(dir.path(), session)?;
 
-    assert!(listing(dir.path())?.contains(&own));
-    assert_eq!(
-        store
+    ensure(
+        listing(dir.path())?.contains(&own),
+        "listing(dir.path())?.contains(&own)",
+    )?;
+    ensure_eq(
+        &store
             .stats()
             .check("read the store counters")?
             .sweep
             .removed_files,
-        0
-    );
+        &0,
+        "store .stats() .check(\"read the store counters\")? .sweep .removed_files == 0",
+    )?;
     Ok(())
 }
 
@@ -283,7 +310,10 @@ fn result_store_open_leaves_files_that_are_not_ours() -> TestResult {
     open_in(dir.path(), Uuid::new_v4())?;
 
     let names = listing(dir.path())?;
-    assert!(names.contains(&"notes.db".to_owned()) && names.contains(&"readme.txt".to_owned()));
+    ensure(
+        names.contains(&"notes.db".to_owned()) && names.contains(&"readme.txt".to_owned()),
+        "names.contains(&\"notes.db\".to_owned()) && names.contains(&\"readme.txt\".to_owned())",
+    )?;
     Ok(())
 }
 
@@ -298,20 +328,22 @@ fn result_store_a_sweep_removal_failure_is_counted_and_keeps_the_first_error() -
         outcome.remove(&not_a_file, "remove the zz-sweep-probe file");
     })?;
 
-    assert_eq!(outcome.errors, 1);
-    assert!(
+    ensure_eq(&outcome.errors, &1, "outcome.errors == 1")?;
+    ensure(
         outcome
             .first_error
             .as_deref()
-            .is_some_and(|e| e.starts_with("remove the zz-sweep-probe file"))
-    );
-    assert_eq!(
-        logs.lines()
+            .is_some_and(|e| e.starts_with("remove the zz-sweep-probe file")),
+        "outcome .first_error .as_deref() .is_some_and(|e| e.starts_with(\"remove the zz-sweep-probe file\"))",
+    )?;
+    ensure_eq(
+        &logs
+            .lines()
             .filter(|l| l.contains("zz-sweep-probe"))
             .count(),
-        1,
-        "{logs}"
-    );
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -323,11 +355,10 @@ fn result_store_a_second_open_of_the_same_session_is_unavailable() -> TestResult
 
     let second = ResultStore::open(dir.path(), session, limits(1 << 30));
 
-    assert!(
+    ensure(
         matches!(second, Err(ResultStoreError::Unavailable { .. })),
-        "{:?}",
-        second.err()
-    );
+        format!("{:?}", second.err()),
+    )?;
     drop(first);
     Ok(())
 }
@@ -341,15 +372,15 @@ fn result_store_open_refuses_a_symlinked_results_directory() -> TestResult {
 
     let outcome = ResultStore::open(dir.path(), Uuid::new_v4(), limits(1 << 30));
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Unavailable { .. })),
-        "{:?}",
-        outcome.err()
-    );
-    assert_eq!(
-        std::fs::read_dir(elsewhere.path()).check("list")?.count(),
-        0
-    );
+        format!("{:?}", outcome.err()),
+    )?;
+    ensure_eq(
+        &std::fs::read_dir(elsewhere.path()).check("list")?.count(),
+        &0,
+        "std::fs::read_dir(elsewhere.path()).check(\"list\")?.count() == 0",
+    )?;
     Ok(())
 }
 
@@ -371,7 +402,11 @@ fn result_store_the_directory_is_private_and_the_lock_file_is_0600() -> TestResu
         .check("entry")?;
     let lock_mode = lock.metadata().check("meta")?.permissions().mode() & 0o777;
 
-    assert_eq!((dir_mode, lock_mode), (0o700, 0o600));
+    ensure_eq(
+        &(dir_mode, lock_mode),
+        &(0o700, 0o600),
+        "(dir_mode, lock_mode) == (0o700, 0o600)",
+    )?;
     Ok(())
 }
 
@@ -379,11 +414,18 @@ fn result_store_the_directory_is_private_and_the_lock_file_is_0600() -> TestResu
 fn result_store_dropping_the_store_removes_its_lock_file() -> TestResult {
     let dir = tempfile::tempdir().check("temp dir")?;
     let store = open_in(dir.path(), Uuid::new_v4())?;
-    assert_eq!(listing(dir.path())?.len(), 1);
+    ensure_eq(
+        &listing(dir.path())?.len(),
+        &1,
+        "listing(dir.path())?.len() == 1",
+    )?;
 
     drop(store);
 
-    assert!(listing(dir.path())?.is_empty());
+    ensure(
+        listing(dir.path())?.is_empty(),
+        "listing(dir.path())?.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -413,7 +455,11 @@ fn run_threads(fx: &Fixture) -> TestResult<(Vec<ResultHandle>, Vec<Vec<ResultHan
                 let id = handle.id;
                 scope.spawn(move || -> TestResult {
                     for _ in 0..5 {
-                        assert_eq!(read_all(store, id)?.len(), 500);
+                        ensure_eq(
+                            &read_all(store, id)?.len(),
+                            &500,
+                            "read_all(store, id)?.len() == 500",
+                        )?;
                     }
                     Ok(())
                 })
@@ -448,14 +494,27 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
 
     let all: Vec<&ResultHandle> = seeded.iter().chain(written.iter().flatten()).collect();
     let stats = fx.store.stats().check("read the store counters")?;
-    assert_eq!(all.len(), 16);
-    assert_eq!(stats.active.results + stats.delivered.results, 16);
-    assert_eq!(
-        stats.admitted_bytes,
-        all.iter().map(|h| h.bytes).sum::<u64>()
-    );
+    ensure_eq(&all.len(), &16, "all.len() == 16")?;
+    ensure_eq(
+        &stats
+            .active
+            .results
+            .checked_add(stats.delivered.results)
+            .check("result counts fit")?,
+        &16,
+        "stats.active.results + stats.delivered.results == 16",
+    )?;
+    ensure_eq(
+        &stats.admitted_bytes,
+        &(all.iter().map(|h| h.bytes).sum::<u64>()),
+        "stats.admitted_bytes == all.iter().map(|h| h.bytes).sum::<u64>()",
+    )?;
     for handle in written.iter().flatten() {
-        assert_eq!(read_all(&fx.store, handle.id)?.len(), 1_200);
+        ensure_eq(
+            &read_all(&fx.store, handle.id)?.len(),
+            &1_200,
+            "read_all(&fx.store, handle.id)?.len() == 1_200",
+        )?;
     }
     Ok(())
 }
@@ -478,11 +537,14 @@ fn result_store_open_refuses_a_symlinked_lock_file() -> TestResult {
 
     let outcome = ResultStore::open(dir.path(), session, limits(1 << 30));
 
-    assert!(
+    ensure(
         matches!(outcome, Err(ResultStoreError::Unavailable { .. })),
-        "{:?}",
-        outcome.err()
-    );
-    assert_eq!(std::fs::read(&target).check("target intact")?, b"keep");
+        format!("{:?}", outcome.err()),
+    )?;
+    ensure_eq(
+        &std::fs::read(&target).check("target intact")?,
+        &b"keep",
+        "std::fs::read(&target).check(\"target intact\")? == b\"keep\"",
+    )?;
     Ok(())
 }

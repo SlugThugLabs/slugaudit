@@ -111,7 +111,6 @@ fn run(
     let options = QueryCursorOptions::new().progress_callback(&mut progress);
     let mut matches =
         cursor.matches_with_options(query, tree.root_node(), source.as_bytes(), options);
-    let mut counter = 0usize;
     while let Some(found) = matches.next() {
         if spent(deadline) {
             out.timed_out = true;
@@ -120,8 +119,10 @@ fn run(
         for capture in found.captures {
             match call_site(entry, capture.node, source, lines) {
                 Ok(Some(site)) => {
-                    out.items.push(call_item(format!("call:{counter}"), site));
-                    counter += 1;
+                    // Every row is pushed here and nowhere else, so its key
+                    // number is the count of rows before it.
+                    let key = format!("call:{}", out.items.len());
+                    out.items.push(call_item(key, site));
                 }
                 Ok(None) => {
                     tracing::warn!(

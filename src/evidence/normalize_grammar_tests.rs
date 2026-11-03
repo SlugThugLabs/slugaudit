@@ -11,8 +11,9 @@
 //! sibling test module.
 
 use super::*;
+use crate::evidence::tests::field;
 use crate::model::EvidenceKind;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
 // --- Grammar-matrix validation ---
 //
@@ -34,9 +35,9 @@ fn field_names(items: &[EvidenceItem]) -> Vec<&str> {
         .iter()
         .filter(|item| {
             item.kind == EvidenceKind::Symbol
-                && item.payload["kind"].as_str() == Some(r#"Other("Field")"#)
+                && field(&item.payload, "kind").as_str() == Some(r#"Other("Field")"#)
         })
-        .filter_map(|item| item.payload["name"].as_str())
+        .filter_map(|item| field(&item.payload, "name").as_str())
         .collect()
 }
 
@@ -45,11 +46,11 @@ fn c7_field_declaration_kinds_surface_exactly_the_members_in_rust() -> TestResul
     let source = "struct S { a: i32, b: String }\n";
     let items = extract_items("rust", source)?;
     let names = field_names(&items);
-    assert_eq!(
-        names,
-        vec!["a", "b"],
-        "exact members, no container duplicate"
-    );
+    ensure_eq(
+        &names,
+        &vec!["a", "b"],
+        "exact members, no container duplicate",
+    )?;
     Ok(())
 }
 
@@ -65,11 +66,11 @@ fn c7_field_declaration_kinds_surface_exactly_the_members_in_go_and_c_family() -
     ] {
         let items = extract_items(language, source)?;
         let names = field_names(&items);
-        assert_eq!(
-            names,
-            vec!["a", "b"],
-            "{language}: exact members, no duplicate"
-        );
+        ensure_eq(
+            &names,
+            &vec!["a", "b"],
+            format!("{language}: exact members, no duplicate"),
+        )?;
     }
     Ok(())
 }
@@ -82,11 +83,11 @@ fn c7_property_declaration_kinds_surface_exactly_the_members_in_swift_and_kotlin
     ] {
         let items = extract_items(language, source)?;
         let names = field_names(&items);
-        assert_eq!(
-            names,
-            vec!["a", "b"],
-            "{language}: exact members, no duplicate"
-        );
+        ensure_eq(
+            &names,
+            &vec!["a", "b"],
+            format!("{language}: exact members, no duplicate"),
+        )?;
     }
     Ok(())
 }
@@ -103,11 +104,11 @@ fn c7_field_definition_kinds_surface_exactly_the_members_in_javascript_and_types
     ] {
         let items = extract_items(language, source)?;
         let names = field_names(&items);
-        assert_eq!(
-            names,
-            vec!["a", "b"],
-            "{language}: exact members, no duplicate"
-        );
+        ensure_eq(
+            &names,
+            &vec!["a", "b"],
+            format!("{language}: exact members, no duplicate"),
+        )?;
     }
     Ok(())
 }
@@ -127,11 +128,11 @@ fn c7_languages_without_field_declaration_kinds_produce_no_field_symbols() -> Te
         ("perl", "my $a = 1;\n"),
     ] {
         let items = extract_items(language, source)?;
-        assert_eq!(
-            field_names(&items),
-            Vec::<&str>::new(),
-            "{language}: no field kinds in this grammar, so no Field symbols"
-        );
+        ensure_eq(
+            &field_names(&items),
+            &(Vec::<&str>::new()),
+            format!("{language}: no field kinds in this grammar, so no Field symbols"),
+        )?;
     }
     Ok(())
 }
@@ -162,11 +163,11 @@ fn c7_plain_function_source_produces_no_field_symbols_in_any_matrix_language() -
         ("java", "int f() { return 1; }\n"),
     ] {
         let items = extract_items(language, source)?;
-        assert_eq!(
-            field_names(&items),
-            Vec::<&str>::new(),
-            "{language}: a function with no members must produce no Field symbols"
-        );
+        ensure_eq(
+            &field_names(&items),
+            &(Vec::<&str>::new()),
+            format!("{language}: a function with no members must produce no Field symbols"),
+        )?;
     }
     Ok(())
 }

@@ -5,7 +5,7 @@ use super::*;
 use crate::store::open_read_write;
 use crate::store::test_capture::capture_warns;
 use crate::sync::test_support::{stored_paths, write};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::fs;
 
 #[test]
@@ -28,7 +28,7 @@ fn invalid_utf8_is_recorded_as_a_skipped_file_not_a_lossy_copy() -> TestResult {
     )
     .check("publish")?;
 
-    assert_eq!(report.skipped.len(), 1, "the non-UTF-8 file is reported");
+    ensure_eq(&report.skipped.len(), &1, "the non-UTF-8 file is reported")?;
     let (kind, reason, content): (String, Option<String>, Option<String>) = connection
         .query_row(
             "SELECT file_kind, skip_reason, content FROM files WHERE path = 'garbled.txt'",
@@ -36,12 +36,17 @@ fn invalid_utf8_is_recorded_as_a_skipped_file_not_a_lossy_copy() -> TestResult {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .check("read the skipped row")?;
-    assert_eq!(kind, "skipped");
-    assert_eq!(reason.as_deref(), Some("not_utf8"));
-    assert_eq!(
-        content, None,
-        "a lossy copy would break the rule that content hashes to its stored hash"
-    );
+    ensure_eq(&kind, &"skipped", "kind == \"skipped\"")?;
+    ensure_eq(
+        &reason.as_deref(),
+        &Some("not_utf8"),
+        "reason.as_deref() == Some(\"not_utf8\")",
+    )?;
+    ensure_eq(
+        &content,
+        &None,
+        "a lossy copy would break the rule that content hashes to its stored hash",
+    )?;
     let evidence: i64 = connection
         .query_row(
             "SELECT count(*) FROM evidence e JOIN files f ON f.id = e.file_id \
@@ -50,7 +55,7 @@ fn invalid_utf8_is_recorded_as_a_skipped_file_not_a_lossy_copy() -> TestResult {
             |row| row.get(0),
         )
         .check("count evidence")?;
-    assert_eq!(evidence, 0, "no evidence for content nobody retained");
+    ensure_eq(&evidence, &0, "no evidence for content nobody retained")?;
 
     let second_report = publish(
         &mut connection,
@@ -59,13 +64,14 @@ fn invalid_utf8_is_recorded_as_a_skipped_file_not_a_lossy_copy() -> TestResult {
         &crate::progress::NoopProgressSink,
     )
     .check("second publish on unchanged project with non-utf8 file")?;
-    assert_eq!(
-        second_report.revision_id, report.revision_id,
-        "an unchanged project with non-UTF-8 files must early-exit on the same revision"
-    );
-    assert_eq!(second_report.modified, 0);
-    assert_eq!(second_report.added, 0);
-    assert_eq!(second_report.deleted, 0);
+    ensure_eq(
+        &second_report.revision_id,
+        &report.revision_id,
+        "an unchanged project with non-UTF-8 files must early-exit on the same revision",
+    )?;
+    ensure_eq(&second_report.modified, &0, "second_report.modified == 0")?;
+    ensure_eq(&second_report.added, &0, "second_report.added == 0")?;
+    ensure_eq(&second_report.deleted, &0, "second_report.deleted == 0")?;
     Ok(())
 }
 
@@ -84,10 +90,14 @@ fn first_sync_publishes_every_discovered_file() -> TestResult {
         &crate::progress::NoopProgressSink,
     )
     .check("publish")?;
-    assert_eq!(report.added, 2);
-    assert_eq!(report.modified, 0);
-    assert_eq!(report.deleted, 0);
-    assert_eq!(stored_paths(&connection)?, vec!["README.md", "src/main.rs"]);
+    ensure_eq(&report.added, &2, "report.added == 2")?;
+    ensure_eq(&report.modified, &0, "report.modified == 0")?;
+    ensure_eq(&report.deleted, &0, "report.deleted == 0")?;
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &vec!["README.md", "src/main.rs"],
+        "stored_paths(&connection)? == vec![\"README.md\", \"src/main.rs\"]",
+    )?;
     Ok(())
 }
 
@@ -113,10 +123,14 @@ fn unchanged_sync_reuses_the_current_revision_and_touches_nothing() -> TestResul
     )
     .check("second publish")?;
 
-    assert_eq!(first.revision_id, second.revision_id);
-    assert_eq!(second.added, 0);
-    assert_eq!(second.modified, 0);
-    assert_eq!(second.unchanged, 1);
+    ensure_eq(
+        &first.revision_id,
+        &second.revision_id,
+        "first.revision_id == second.revision_id",
+    )?;
+    ensure_eq(&second.added, &0, "second.added == 0")?;
+    ensure_eq(&second.modified, &0, "second.modified == 0")?;
+    ensure_eq(&second.unchanged, &1, "second.unchanged == 1")?;
     Ok(())
 }
 
@@ -143,10 +157,11 @@ fn a_parser_version_change_forces_reanalysis_despite_no_file_changes() -> TestRe
     )
     .check("second publish")?;
 
-    assert_ne!(
-        first.revision_id, second.revision_id,
-        "a parser version change must publish a new revision even with an unchanged file set"
-    );
+    ensure_ne(
+        &first.revision_id,
+        &second.revision_id,
+        "a parser version change must publish a new revision even with an unchanged file set",
+    )?;
 
     let stored_version: String = connection
         .query_row(
@@ -155,7 +170,7 @@ fn a_parser_version_change_forces_reanalysis_despite_no_file_changes() -> TestRe
             |row| row.get(0),
         )
         .check("read stored parser version")?;
-    assert_eq!(stored_version, "2.0.0");
+    ensure_eq(&stored_version, &"2.0.0", "stored_version == \"2.0.0\"")?;
     Ok(())
 }
 
@@ -184,9 +199,13 @@ fn modified_file_replaces_its_row_and_deleted_file_is_purged() -> TestResult {
         &crate::progress::NoopProgressSink,
     )
     .check("second publish")?;
-    assert_eq!(report.modified, 1);
-    assert_eq!(report.deleted, 1);
-    assert_eq!(stored_paths(&connection)?, vec!["src/main.rs"]);
+    ensure_eq(&report.modified, &1, "report.modified == 1")?;
+    ensure_eq(&report.deleted, &1, "report.deleted == 1")?;
+    ensure_eq(
+        &stored_paths(&connection)?,
+        &vec!["src/main.rs"],
+        "stored_paths(&connection)? == vec![\"src/main.rs\"]",
+    )?;
 
     let content: String = connection
         .query_row(
@@ -195,7 +214,11 @@ fn modified_file_replaces_its_row_and_deleted_file_is_purged() -> TestResult {
             |row| row.get(0),
         )
         .check("read content")?;
-    assert_eq!(content, "fn main() { changed(); }");
+    ensure_eq(
+        &content,
+        &"fn main() { changed(); }",
+        "content == \"fn main() { changed(); }\"",
+    )?;
     Ok(())
 }
 
@@ -227,10 +250,10 @@ fn a_real_rust_file_gets_real_parsed_evidence_not_a_placeholder() -> TestResult 
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .check("read file status")?;
-    assert_eq!(language, "rust");
-    assert_eq!(availability, "Available");
-    assert_eq!(outcome, "Succeeded");
-    assert_eq!(completeness, "Full", "a clean parse degraded nothing");
+    ensure_eq(&language, &"rust", "language == \"rust\"")?;
+    ensure_eq(&availability, &"Available", "availability == \"Available\"")?;
+    ensure_eq(&outcome, &"Succeeded", "outcome == \"Succeeded\"")?;
+    ensure_eq(&completeness, &"Full", "a clean parse degraded nothing")?;
 
     let structure_count: i64 = connection
         .query_row(
@@ -240,10 +263,10 @@ fn a_real_rust_file_gets_real_parsed_evidence_not_a_placeholder() -> TestResult 
             |row| row.get(0),
         )
         .check("count structure evidence")?;
-    assert!(
+    ensure(
         structure_count >= 1,
-        "expected at least the greet() function"
-    );
+        "expected at least the greet() function",
+    )?;
     Ok(())
 }
 
@@ -288,7 +311,7 @@ fn deleting_a_file_cascades_its_evidence() -> TestResult {
     let remaining_evidence: i64 = connection
         .query_row("SELECT count(*) FROM evidence", [], |row| row.get(0))
         .check("count evidence")?;
-    assert_eq!(remaining_evidence, 0);
+    ensure_eq(&remaining_evidence, &0, "remaining_evidence == 0")?;
     Ok(())
 }
 
@@ -309,10 +332,11 @@ fn an_invalid_parser_pack_version_is_rejected_by_both_publish_entry_points() -> 
         &ResourceLimits::default(),
     )
     .check_err("a non-numeric version must be rejected")?;
-    assert_eq!(
-        via_limits.to_string(),
-        "invalid parser pack version \"1.x\"; expected a non-empty numeric dotted version"
-    );
+    ensure_eq(
+        &via_limits.to_string(),
+        &"invalid parser pack version \"1.x\"; expected a non-empty numeric dotted version",
+        "via_limits.to_string() == \"invalid parser pack version \\\"1.x\\\"; expected a non-empty numeric dotted version\"",
+    )?;
 
     let via_public = publish(
         &mut connection,
@@ -322,7 +346,9 @@ fn an_invalid_parser_pack_version_is_rejected_by_both_publish_entry_points() -> 
     )
     .check_err("an empty version must be rejected")?;
     match via_public {
-        PublishError::InvalidParserPackVersion(version) => assert_eq!(version, ""),
+        PublishError::InvalidParserPackVersion(version) => {
+            ensure_eq(&version, &"", "version == \"\"")?;
+        }
         other => {
             return Err(format!("expected InvalidParserPackVersion, got {other:?}"))
                 .check("unexpected outcome");
@@ -352,10 +378,10 @@ fn a_publish_whose_baseline_read_fails_is_the_database_variant() -> TestResult {
     .check_err("a database without the schema cannot read the baseline revision")?;
 
     match error {
-        PublishError::Database(error) => assert!(
+        PublishError::Database(error) => ensure(
             error.to_string().contains("no such table: revisions"),
-            "the source error must be preserved: {error}"
-        ),
+            format!("the source error must be preserved: {error}"),
+        )?,
         other => {
             return Err(format!("expected PublishError::Database, got {other:?}"))
                 .check("unexpected outcome");
@@ -391,14 +417,14 @@ fn a_sampling_skip_logs_the_real_path_and_the_static_reason_kind() -> TestResult
 
     result.check("an oversized file is skipped, not fatal")?;
     let raw = huge.to_string_lossy();
-    assert!(
+    ensure(
         logs.contains(raw.as_ref()),
-        "the real path must identify the skipped file: {logs}"
-    );
-    assert!(
+        format!("the real path must identify the skipped file: {logs}"),
+    )?;
+    ensure(
         logs.contains("reason_kind=\"oversize\""),
-        "the static reason must be logged: {logs}"
-    );
+        format!("the static reason must be logged: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -418,31 +444,34 @@ fn honest_log_a_failed_publish_error_carries_the_real_path_and_io_cause() -> Tes
         capture_warns(|| crate::sync::manager_meta::map_publish_error(root, &error, "sync"))?;
 
     let message = mapped.message.as_ref();
-    assert!(
+    ensure(
         message.starts_with("publishing a new revision: "),
-        "{message}"
-    );
-    assert!(message.contains("error_kind: sample_read"), "{message}");
-    assert!(
+        message.to_string(),
+    )?;
+    ensure(
+        message.contains("error_kind: sample_read"),
+        message.to_string(),
+    )?;
+    ensure(
         message.contains("path: /home/private-user/secret-repo/src/lib.rs"),
-        "the real path must identify the file: {message}"
-    );
-    assert!(
+        format!("the real path must identify the file: {message}"),
+    )?;
+    ensure(
         message.contains("root: /tmp/once-probe-project"),
-        "{message}"
-    );
-    assert!(
+        message.to_string(),
+    )?;
+    ensure(
         message.contains("(sync; "),
-        "the operation is named: {message}"
-    );
-    assert!(
+        format!("the operation is named: {message}"),
+    )?;
+    ensure(
         message.contains("gone"),
-        "the underlying io cause must be kept: {message}"
-    );
-    assert!(
+        format!("the underlying io cause must be kept: {message}"),
+    )?;
+    ensure(
         logs.is_empty(),
-        "a returned failure is logged once, by log_completion: {logs}"
-    );
+        format!("a returned failure is logged once, by log_completion: {logs}"),
+    )?;
     Ok(())
 }
 
@@ -460,111 +489,28 @@ fn honest_log_a_failed_publish_error_carries_the_sqlite_cause() -> TestResult {
         capture_warns(|| crate::sync::manager_meta::map_publish_error(root, &error, "sync"))?;
 
     let message = mapped.message.as_ref();
-    assert!(message.contains("error_kind: database"), "{message}");
-    assert!(
+    ensure(
+        message.contains("error_kind: database"),
+        message.to_string(),
+    )?;
+    ensure(
         message.contains("SENTINEL_SQLITE_CAUSE"),
-        "the SQLite message must be kept: {message}"
-    );
-    assert!(
+        format!("the SQLite message must be kept: {message}"),
+    )?;
+    ensure(
         message.contains("root: /tmp/once-probe-project"),
-        "{message}"
-    );
-    assert!(!message.contains("path: "), "no path to name: {message}");
-    assert!(
+        message.to_string(),
+    )?;
+    ensure(
+        !message.contains("path: "),
+        format!("no path to name: {message}"),
+    )?;
+    ensure(
         logs.is_empty(),
-        "nothing is logged before the return: {logs}"
-    );
+        format!("nothing is logged before the return: {logs}"),
+    )?;
     Ok(())
 }
 
-/// Skip collection lives beside the diff that consumes it; these tests
-/// stay with the publish scenarios that own the "logged once" contract.
-mod publish_attempt_skip_logging {
-    use crate::store::test_capture::capture_warns;
-    use crate::sync::discovery;
-    use crate::sync::publish_diff::collect_skipped;
-    use crate::sync::revision_skipped::SKIP_REASON_STAT_FAILED;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
-    use std::collections::{BTreeMap, HashSet};
-
-    fn skipped(path: std::path::PathBuf, code: &'static str) -> discovery::SkippedFile {
-        discovery::SkippedFile {
-            absolute_path: path,
-            reason: "read failed".to_owned(),
-            code,
-        }
-    }
-
-    #[test]
-    fn a_stat_failed_skip_logs_exactly_one_warn_line() -> TestResult {
-        let root = tempfile::tempdir().check("tempdir")?;
-        // A regular file used as a directory: the stat fails with ENOTDIR,
-        // not NotFound, so the skip is recorded rather than retried.
-        std::fs::write(root.path().join("plain.rs"), b"fn plain() {}\n").check("write file")?;
-        let files = [skipped(
-            root.path().join("plain.rs").join("inner.rs"),
-            "unreadable",
-        )];
-        let mut paths = HashSet::new();
-        let mut records = BTreeMap::new();
-
-        let (result, logs) =
-            capture_warns(|| collect_skipped(root.path(), &files, None, &mut paths, &mut records))?;
-        result.check("collect the skip")?;
-
-        let lines = logs
-            .lines()
-            .filter(|line| line.contains("stat failed for a skipped file"))
-            .count();
-        assert_eq!(lines, 1, "one warn per stat-failed skip: {logs}");
-        let record = records
-            .get("plain.rs/inner.rs")
-            .check("the skip has a record")?;
-        assert_eq!(record.reason, SKIP_REASON_STAT_FAILED);
-        assert_eq!(record.byte_len, None);
-        Ok(())
-    }
-
-    #[test]
-    fn a_skip_deleted_since_the_walk_fails_the_attempt_as_a_tree_change() -> TestResult {
-        let root = tempfile::tempdir().check("tempdir")?;
-        let files = [skipped(root.path().join("vanished.rs"), "unreadable")];
-        let mut paths = HashSet::new();
-        let mut records = BTreeMap::new();
-
-        let error = collect_skipped(root.path(), &files, None, &mut paths, &mut records)
-            .check_err("a vanished skip must not be recorded")?;
-
-        assert!(
-            matches!(
-                &error,
-                crate::sync::PublishError::ChangedDuringSample { path } if path == "vanished.rs"
-            ),
-            "got {error:?}"
-        );
-        assert!(records.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn a_skip_whose_stat_succeeds_keeps_the_publish_loop_warn() -> TestResult {
-        let root = tempfile::tempdir().check("tempdir")?;
-        let present = root.path().join("present.rs");
-        std::fs::write(&present, b"fn a() {}").check("write file")?;
-        let files = [skipped(present, "unreadable")];
-        let mut paths = HashSet::new();
-        let mut records = BTreeMap::new();
-
-        let (result, logs) =
-            capture_warns(|| collect_skipped(root.path(), &files, None, &mut paths, &mut records))?;
-        result.check("collect the skip")?;
-
-        let lines = logs
-            .lines()
-            .filter(|line| line.contains("skipped file during unreadable"))
-            .count();
-        assert_eq!(lines, 1, "{logs}");
-        assert_eq!(records["present.rs"].reason, "unreadable");
-        Ok(())
-    }
-}
+#[path = "publish_skip_logging_tests.rs"]
+mod publish_attempt_skip_logging;
