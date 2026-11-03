@@ -1,5 +1,5 @@
-//! Clock and duration conversions whose failure modes are returned, logged or
-//! saturate explicitly instead of being discarded.
+//! Clock and duration conversions whose failure modes are returned or logged
+//! instead of being discarded.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -13,6 +13,12 @@ pub enum ClockError {
     /// The clock reads a time past the `i64` range of Unix seconds.
     #[error("the system clock is past the i64 range of Unix seconds: {0}")]
     OutOfRange(#[source] std::num::TryFromIntError),
+    /// A measured duration is too long for `u64` milliseconds.
+    #[error("a duration is too long for u64 milliseconds: {0}")]
+    DurationMillis(#[source] std::num::TryFromIntError),
+    /// Adding to a measured duration overflowed `Duration`.
+    #[error("a measured duration overflowed when a millisecond was added")]
+    DurationOverflow,
 }
 
 /// Whole seconds since the Unix epoch for `time`.
@@ -62,13 +68,14 @@ fn mtime_seconds_from(modified: std::io::Result<SystemTime>) -> Option<i64> {
     }
 }
 
-/// `duration` in whole milliseconds, saturating at `u64::MAX` (about 584
-/// million years) instead of overflowing.
-pub(crate) fn saturating_millis(duration: Duration) -> u64 {
-    duration
-        .as_secs()
-        .saturating_mul(1000)
-        .saturating_add(u64::from(duration.subsec_millis()))
+/// `duration` in whole milliseconds.
+///
+/// # Errors
+///
+/// Returns [`ClockError::DurationMillis`] when the milliseconds exceed
+/// `u64::MAX` (about 584 million years).
+pub(crate) fn duration_millis(duration: Duration) -> Result<u64, ClockError> {
+    u64::try_from(duration.as_millis()).map_err(ClockError::DurationMillis)
 }
 
 #[cfg(test)]
@@ -185,16 +192,17 @@ mod tests {
     }
 
     #[test]
-    fn milliseconds_are_exact_and_saturate_at_the_maximum() -> TestResult {
+    fn milliseconds_are_exact_and_an_overlong_duration_is_an_error() -> TestResult {
+        use slugaudit_test_check::{Check, CheckErr};
         ensure_eq(
-            &saturating_millis(Duration::from_millis(1_234)),
+            &duration_millis(Duration::from_millis(1_234)).check("1_234 ms fits")?,
             &1_234,
-            "saturating_millis(Duration::from_millis(1_234)) == 1_234",
+            "duration_millis(Duration::from_millis(1_234)) == 1_234",
         )?;
-        ensure_eq(
-            &saturating_millis(Duration::MAX),
-            &u64::MAX,
-            "saturating_millis(Duration::MAX) == u64::MAX",
+        let error = duration_millis(Duration::MAX).check_err("Duration::MAX overflows u64 ms")?;
+        ensure(
+            matches!(error, ClockError::DurationMillis(_)),
+            "an overlong duration is ClockError::DurationMillis",
         )?;
         Ok(())
     }

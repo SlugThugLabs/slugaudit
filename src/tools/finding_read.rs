@@ -168,7 +168,11 @@ fn respond(served: Served<()>) -> Result<Json<FindingReadResponse>, ErrorData> {
     }
     let mut bytes_used = 0usize;
     for entry in &findings {
-        bytes_used = bytes_used.saturating_add(serialized_len(entry)?);
+        bytes_used = bytes_used
+            .checked_add(serialized_len(entry)?)
+            .ok_or_else(|| {
+                ErrorData::internal_error("finding_read: the page byte count overflowed", None)
+            })?;
     }
     let mut page = served.page;
     page.bytes_used = bytes_used;

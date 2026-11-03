@@ -5,9 +5,9 @@
 use super::language_notices::untested_language_notices;
 use super::page::{Completeness, Page, PageLimit};
 use super::paginate::{Served, decode_rows};
-use super::structure::stored::{CutFacts, PageCut, StoredMatch, StructureExtra};
+use super::structure::stored::{PageCut, StoredMatch, StructureExtra};
 use super::structure::{StructureMatch, StructureResponse};
-use super::structure_source::{MAX_SNIPPET_BYTES, SourceWindow, truncate_snippet, truncate_text};
+use super::structure_source::{MAX_SNIPPET_BYTES, truncate_snippet, truncate_text};
 use crate::model::{LineIndex, PositionOverflow, position_u32};
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Json;
@@ -102,7 +102,13 @@ pub(super) fn node_to_match(
 /// The single zero-based to one-based line conversion for structure matches
 /// (tree-sitter rows are zero-based; the response is one-based, inclusive).
 fn one_based_row(zero_based: usize) -> Result<u32, PositionOverflow> {
-    position_u32(zero_based.saturating_add(1))
+    position_u32(
+        zero_based
+            .checked_add(1)
+            .ok_or(PositionOverflow::Arithmetic {
+                operation: "a one-based structure row",
+            })?,
+    )
 }
 
 /// A match position, or the internal error when it does not fit the response.
@@ -127,58 +133,6 @@ pub(super) fn capture_at<'tree>(
             None,
         )
     })
-}
-
-/// How far the scan got, as stored with the result: `Partial` when the
-/// execution budget cancelled a parse (resume after that file, which would
-/// only time out again) or the memory window ended before the matching files
-/// did (resume after the last file examined).
-pub(super) fn completeness_of(window: &SourceWindow, run: &RunOutput) -> Completeness {
-    let files_total = window
-        .files
-        .len()
-        .saturating_add(window.files_over_parse_limit)
-        .saturating_add(window.files_not_scanned) as u64;
-    let files_scanned = run.files_scanned as u64;
-    if let Some(file) = &run.parse_timed_out_file {
-        return Completeness::Partial {
-            limited_by: PageLimit::TimeBudget,
-            resume_after_file: Some(file.clone()),
-            files_scanned,
-            files_total,
-        };
-    }
-    if window.files_not_scanned > 0 {
-        return Completeness::Partial {
-            limited_by: PageLimit::ScanWindow,
-            resume_after_file: window.next_start_after_file.clone(),
-            files_scanned,
-            files_total,
-        };
-    }
-    Completeness::Complete
-}
-
-/// The extras of a finished scan.
-pub(super) fn extra_of(
-    language: String,
-    window: SourceWindow,
-    run: RunOutput,
-    cut: CutFacts,
-) -> StructureExtra {
-    StructureExtra {
-        cut,
-        language,
-        files_not_scanned: window.files_not_scanned,
-        bytes_not_scanned: window.bytes_not_scanned,
-        next_start_after_file: run
-            .parse_timed_out_file
-            .clone()
-            .or(window.next_start_after_file),
-        unparsed_files: run.unparsed_files,
-        files_over_parse_limit: window.files_over_parse_limit,
-        parse_timed_out_file: run.parse_timed_out_file,
-    }
 }
 
 /// Logs the call's facts and assembles the response from a served page.

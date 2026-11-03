@@ -18,6 +18,7 @@ use super::leads_query::MAX_DETAIL_CHARS;
 use super::mechanic::MechanicSource;
 use super::mechanic_catalog::Registered;
 use super::mechanic_scan::{self, ScanEnd, Stop, Tally};
+pub(super) use super::mechanic_scan_pass::Pass;
 use crate::project::{CachedRow, MechanicScanCache, ScanKey};
 use rmcp::ErrorData;
 use rusqlite::Transaction;
@@ -73,87 +74,12 @@ fn key_of(scope: &CacheScope<'_>, registered: &Registered, glob: Option<&str>) -
 }
 
 /// A tally derived from cached rows, which are file-contiguous in path order.
-fn tally_of(rows: &[CachedRow]) -> Tally {
+fn tally_of(rows: &[CachedRow]) -> Result<Tally, ErrorData> {
     let mut tally = Tally::default();
     for row in rows {
-        tally.record(&row.file);
+        tally.record(&row.file)?;
     }
-    tally
-}
-
-/// Rows being retained for one entry while the pass runs.
-#[derive(Default)]
-struct Retained {
-    rows: Vec<CachedRow>,
-    bytes: usize,
-    overflowed: bool,
-}
-
-/// The rows one scan pass retains for caching, with one budget shared by
-/// every entry of the pass: a call selecting many uncached entries holds at
-/// most the cache budget in total, not the budget per entry. An entry whose
-/// row would take the pass past the budget gives up its rows (and releases
-/// their bytes); it is still counted, just not cached.
-pub(super) struct Pass {
-    budget: usize,
-    bytes: usize,
-    entries: Vec<Retained>,
-}
-
-impl Pass {
-    pub(super) fn new(budget: usize, entries: usize) -> Self {
-        Self {
-            budget,
-            bytes: 0,
-            entries: (0..entries).map(|_| Retained::default()).collect(),
-        }
-    }
-
-    /// Offers one row of entry `index` for retention.
-    ///
-    /// # Errors
-    ///
-    /// An internal error when `index` names no entry of the pass.
-    pub(super) fn offer(&mut self, index: usize, row: CachedRow) -> Result<(), ErrorData> {
-        let entries = self.entries.len();
-        let keep = self
-            .entries
-            .get_mut(index)
-            .ok_or_else(|| index_out_of_range("pass entries", index, entries))?;
-        if keep.overflowed {
-            return Ok(());
-        }
-        let size = row.estimated_bytes();
-        if self.bytes.saturating_add(size) > self.budget {
-            self.bytes = self.bytes.saturating_sub(keep.bytes);
-            keep.bytes = 0;
-            keep.overflowed = true;
-            keep.rows = Vec::new();
-        } else {
-            self.bytes = self.bytes.saturating_add(size);
-            keep.bytes = keep.bytes.saturating_add(size);
-            keep.rows.push(row);
-        }
-        Ok(())
-    }
-
-    /// Estimated bytes of the rows retained right now, over all entries
-    /// (the seam the retention test reads).
-    #[cfg(test)]
-    pub(super) fn retained_bytes(&self) -> usize {
-        self.bytes
-    }
-
-    /// Entry `index`'s rows, or `None` when it gave up retaining them.
-    fn take(&mut self, index: usize) -> Option<Vec<CachedRow>> {
-        let keep = self.entries.get_mut(index)?;
-        if keep.overflowed {
-            return None;
-        }
-        self.bytes = self.bytes.saturating_sub(keep.bytes);
-        keep.bytes = 0;
-        Some(std::mem::take(&mut keep.rows))
-    }
+    Ok(tally)
 }
 
 /// The internal error for a selected entry index that names no slot of
@@ -200,7 +126,7 @@ pub(super) fn tally_cached(
                     .tallies
                     .get_mut(*index)
                     .ok_or_else(|| index_out_of_range("tallies", *index, tallies_len))? =
-                    tally_of(&rows);
+                    tally_of(&rows)?;
                 let rows_len = scanned.rows.len();
                 *scanned
                     .rows
@@ -219,7 +145,7 @@ pub(super) fn tally_cached(
         let tally = scanned.tallies.get_mut(hit.entry).ok_or_else(|| {
             super::context::internal_error("counting mechanics", "a hit named no entry")
         })?;
-        tally.record(hit.file);
+        tally.record(hit.file)?;
         pass.offer(
             hit.entry,
             CachedRow {
@@ -240,7 +166,7 @@ pub(super) fn tally_cached(
         let registered = custom
             .get(index)
             .ok_or_else(|| index_out_of_range("custom", index, custom.len()))?;
-        let Some(rows) = pass.take(index) else {
+        let Some(rows) = pass.take(index)? else {
             if !stopped {
                 scope.cache.note_too_large()?;
             }

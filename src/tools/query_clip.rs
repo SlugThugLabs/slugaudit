@@ -87,6 +87,7 @@ pub(super) fn clip_row(
     row_index: usize,
 ) -> Result<ClippedRow, ErrorData> {
     let (mut object, variables) = base_object(column_names, values)?;
+    // KEEP saturating: a base row that alone exceeds the page leaves no room for the clipped cells, and zero is exactly that room
     let room = page_bytes.saturating_sub(
         serialized_len(&object)
             .map_err(|error| internal_error("clipping an oversized query row", error))?,
@@ -154,7 +155,12 @@ fn base_object<'a>(
                 variables.push(Variable {
                     name,
                     value,
-                    cost: bytes.len().saturating_mul(2),
+                    cost: bytes.len().checked_mul(2).ok_or_else(|| {
+                        internal_error(
+                            "clipping an oversized query row",
+                            "a blob's hex length overflowed",
+                        )
+                    })?,
                     units: bytes.len(),
                 });
                 serde_json::Value::String(String::new())

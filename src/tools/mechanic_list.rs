@@ -166,11 +166,18 @@ pub(super) fn list(
                 .and_then(|listing| json_len(&listing))
             {
                 // The first row of a page is offered too and taken regardless.
-                Ok(len) if used.get() == 0 || used.get().saturating_add(len) <= budget => {
-                    used.set(used.get().saturating_add(len));
+                Ok(len) if used.get() == 0 => {
+                    used.set(len);
                     Take::Yes
                 }
-                Ok(_) => Take::No,
+                // A sum past `usize::MAX` is over any page budget.
+                Ok(len) => match used.get().checked_add(len).filter(|total| *total <= budget) {
+                    Some(total) => {
+                        used.set(total);
+                        Take::Yes
+                    }
+                    None => Take::No,
+                },
                 Err(error) => {
                     *failure.borrow_mut() = Some(error);
                     Take::No

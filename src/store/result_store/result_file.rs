@@ -118,5 +118,9 @@ pub(super) fn measure_bytes(conn: &Connection) -> Result<u64, ResultStoreError> 
         conn.pragma_query_value(None, name, |row| row.get::<_, u64>(0))
             .map_err(|error| ResultStoreError::from_sqlite("measure a result file", error))
     };
-    Ok(read("page_count")?.saturating_mul(read("page_size")?))
+    read("page_count")?
+        .checked_mul(read("page_size")?)
+        .ok_or_else(|| {
+            ResultStoreError::corrupt("a result file's page count times page size overflowed")
+        })
 }

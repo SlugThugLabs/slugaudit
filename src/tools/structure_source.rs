@@ -202,14 +202,22 @@ pub(super) fn fetch_sources_for_language(
             last_examined = Some(path);
             continue;
         }
-        if total_bytes.saturating_add(size) > bounds.window_bytes as u64 {
+        // A sum past `u64::MAX` is over any window.
+        if total_bytes
+            .checked_add(size)
+            .is_none_or(|total| total > bounds.window_bytes as u64)
+        {
             window_full = true;
             break;
         }
         let content: String = content_stmt
             .query_row([&path], |row| row.get(0))
             .map_err(|error| internal_error("reading an indexed file's content", error))?;
-        total_bytes = total_bytes.saturating_add(content.len() as u64);
+        total_bytes = total_bytes
+            .checked_add(content.len() as u64)
+            .ok_or_else(|| {
+                internal_error("counting the structure window", "the byte count overflowed")
+            })?;
         last_examined = Some(path.clone());
         files.push((path, content));
     }

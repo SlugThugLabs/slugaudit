@@ -8,9 +8,8 @@ use super::paginate::{Produced, RowSink};
 use super::query_exec::deadline_after;
 use super::structure::StructureRequest;
 use super::structure::stored::{CutFacts, StoredMatch, StructureExtra};
-use super::structure_page::{
-    OutputMode, RunOutput, capture_at, completeness_of, extra_of, node_to_match, require_captures,
-};
+use super::structure_outcome::{completeness_of, extra_of};
+use super::structure_page::{OutputMode, RunOutput, capture_at, node_to_match, require_captures};
 use super::structure_source::{WindowBounds, load_targets};
 use crate::model::{LineIndex, ResourceLimits};
 use crate::parse::budget::{Parsed, parse_within};
@@ -228,7 +227,7 @@ pub(super) fn produce(
         &mode,
         rows,
     )?;
-    let completeness = completeness_of(&window, &run);
+    let completeness = completeness_of(&window, &run)?;
     Ok(Produced {
         completeness,
         extra: extra_of(target_language, window, run, cut),

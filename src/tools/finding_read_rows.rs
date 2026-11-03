@@ -139,10 +139,11 @@ impl PageCut {
             self.used = Some(size);
             return Ok(Take::Yes);
         };
-        if used.saturating_add(size) > self.budget {
+        // A sum past `usize::MAX` is over any page budget.
+        let Some(total) = used.checked_add(size).filter(|total| *total <= self.budget) else {
             return Ok(Take::No);
-        }
-        self.used = Some(used.saturating_add(size));
+        };
+        self.used = Some(total);
         Ok(Take::Yes)
     }
 

@@ -39,6 +39,7 @@ pub(crate) fn hash_reader(
         if read == 0 {
             break;
         }
+        // KEEP saturating: `observed` is documented as a lower bound ("at least this many bytes"), which a clamped count still states
         observed = observed.saturating_add(read as u64);
         if observed > max_bytes {
             return Err(HashError::TooLarge {
@@ -83,6 +84,7 @@ pub fn hash_file(
         path: absolute_path.to_path_buf(),
         source,
     })?;
+    // KEEP saturating: at a cap of u64::MAX no read can exceed it, so reading up to u64::MAX bytes loses nothing
     let reader = file.take(max_bytes.saturating_add(1));
     hash_reader(reader, relative_path, absolute_path, max_bytes)
 }

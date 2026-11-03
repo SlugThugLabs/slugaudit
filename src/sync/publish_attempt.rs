@@ -72,7 +72,7 @@ fn hash_and_diff(
     let mut diff =
         publish_diff::diff_against_stored(connection, &identities, &skipped_records_vec, deadline)?;
     let mismatched = super::verify_stored::content_mismatches(connection, deadline)?;
-    force_content_repairs(&mut diff, &mismatched, &identities);
+    force_content_repairs(&mut diff, &mismatched, &identities)?;
 
     Ok(DiffState {
         discovered,
@@ -91,9 +91,9 @@ fn force_content_repairs(
     diff: &mut publish_diff::Diff,
     mismatched: &HashSet<String>,
     identities: &[SourceIdentity],
-) {
+) -> Result<(), PublishError> {
     if mismatched.is_empty() {
-        return;
+        return Ok(());
     }
     let present: HashSet<&str> = identities
         .iter()
@@ -108,7 +108,10 @@ fn force_content_repairs(
         if !present.contains(path.as_str()) || !already.insert(path.clone()) {
             continue;
         }
-        diff.unchanged = diff.unchanged.saturating_sub(1);
+        diff.unchanged = diff
+            .unchanged
+            .checked_sub(1)
+            .ok_or_else(|| PublishError::UnchangedCountInconsistent { path: path.clone() })?;
         diff.changes.push(FileChange {
             relative_path: path.clone(),
             status: ChangeStatus::Modified,
@@ -123,6 +126,7 @@ fn force_content_repairs(
         .count();
     diff.changes
         .sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(())
 }
 
 struct CurrentRevision {
@@ -313,3 +317,7 @@ fn commit_attempt(
         skipped,
     })
 }
+
+#[cfg(test)]
+#[path = "publish_attempt_repair_tests.rs"]
+mod repair_tests;

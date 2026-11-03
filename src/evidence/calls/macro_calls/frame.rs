@@ -19,7 +19,10 @@ pub(super) struct Fragment {
 /// synthetic frame (not in the `PREFIX`/`SUFFIX` scaffolding itself).
 pub(super) fn within_synthetic_frame(node: &Node, wrapped: &str) -> bool {
     node.start_byte() >= PREFIX.len()
-        && node.end_byte() <= wrapped.len().saturating_sub(SUFFIX.len())
+        && wrapped
+            .len()
+            .checked_sub(SUFFIX.len())
+            .is_some_and(|body_end| node.end_byte() <= body_end)
 }
 
 /// Maps a byte offset in a fragment's synthetic text back to the original
@@ -41,6 +44,6 @@ pub(super) fn nested_macro_range(node: &Node, fragment: &Fragment) -> Option<(us
     }
     let tokens = named_children(node).find(|n| n.kind() == "token_tree")?;
     let start = absolute_offset(fragment.start, tokens.start_byte().checked_add(1)?)?;
-    let end = absolute_offset(fragment.start, tokens.end_byte().saturating_sub(1))?;
+    let end = absolute_offset(fragment.start, tokens.end_byte().checked_sub(1)?)?;
     (end <= fragment.end && start < end).then_some((start, end))
 }

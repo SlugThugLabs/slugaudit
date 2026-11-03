@@ -59,10 +59,12 @@ pub(super) fn engine_limits(
     limits: &ResourceLimits,
 ) -> Result<EngineLimits, std::num::TryFromIntError> {
     let value_bytes = u64::try_from(limits.max_query_value_bytes)?;
+    // KEEP saturating: the product is clamped to the engine ceiling just below, and an overflowed product exceeds it
     let stored_bytes = limits.max_file_bytes.saturating_mul(STORED_VALUE_GROWTH);
     let value_length = value_bytes.max(stored_bytes).min(SQLITE_MAX_VALUE_BYTES);
     // The bundled SQLite's SQL-length ceiling is also 1,000,000,000
     // (`sqlite3_limit` reports it as the default, verified 2026-10-25).
+    // KEEP saturating: the sum is clamped to the engine ceiling just below, and an overflowed sum exceeds it
     let sql_length = u64::try_from(limits.max_query_sql_bytes)?
         .saturating_add(WRAPPER_OVERHEAD_BYTES)
         .min(SQLITE_MAX_VALUE_BYTES);
@@ -111,11 +113,15 @@ fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8
     tx.progress_handler(
         PROGRESS_INTERVAL,
         Some(move || {
-            steps = steps.saturating_add(PROGRESS_INTERVAL.unsigned_abs());
-            if steps > max_steps {
+            // A count past `u32::MAX` is over any step budget.
+            let Some(counted) = steps
+                .checked_add(PROGRESS_INTERVAL.unsigned_abs())
+                .filter(|counted| *counted <= max_steps)
+            else {
                 handler_reason.store(ABORT_STEP_BUDGET, Ordering::Relaxed);
                 return true;
-            }
+            };
+            steps = counted;
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 handler_reason.store(ABORT_WALL_CLOCK, Ordering::Relaxed);
                 return true;

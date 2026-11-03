@@ -60,8 +60,18 @@ pub(super) fn extract(
     let Some(tokens) = named_children(macro_node).find(|n| n.kind() == "token_tree") else {
         return Ok(out);
     };
-    let start = tokens.start_byte().saturating_add(1);
-    let end = tokens.end_byte().saturating_sub(1);
+    let start = tokens
+        .start_byte()
+        .checked_add(1)
+        .ok_or(PositionOverflow::Arithmetic {
+            operation: "the start of a macro token tree body",
+        })?;
+    let end = tokens
+        .end_byte()
+        .checked_sub(1)
+        .ok_or(PositionOverflow::Arithmetic {
+            operation: "the end of a macro token tree body",
+        })?;
     scan(input, (start, end), Ok(caller.map(Rc::from)), &mut out)?;
     Ok(out)
 }

@@ -56,6 +56,7 @@ fn collect(
         cli: cli.to_string(),
         inner,
     };
+    // KEEP saturating: a deadline already passed has no time left, and a zero wait is exactly the Timeout answer
     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(read) => read.map_err(command_error),
         Err(mpsc::RecvTimeoutError::Timeout) => Err(ConnectError::AgentTimeout {

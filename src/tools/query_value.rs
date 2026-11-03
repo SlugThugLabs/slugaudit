@@ -7,6 +7,7 @@
 //! too, beside the converted rows they describe.
 use super::context::internal_error;
 use super::query_clip::{ClippedCell, clip_row};
+use super::query_row_bound::row_serialized_lower_bound;
 use crate::store::{Cell, NonFinite, StoredRow, Take};
 use crate::util;
 use rmcp::ErrorData;
@@ -139,10 +140,15 @@ impl PageBuilder {
         let object = object_of(&self.names, values);
         let bytes = util::serialized_len(&object)
             .map_err(|error| internal_error("measuring query row size", error))?;
-        if self.used.saturating_add(bytes) > self.page_bytes {
+        // A sum past `usize::MAX` is over any page budget.
+        let Some(used) = self
+            .used
+            .checked_add(bytes)
+            .filter(|total| *total <= self.page_bytes)
+        else {
             return Ok(Take::No);
-        }
-        self.used = self.used.saturating_add(bytes);
+        };
+        self.used = used;
         self.non_finite.extend(non_finite);
         self.rows.push(object);
         Ok(Take::Yes)
@@ -286,26 +292,6 @@ pub(super) fn read_row(
         values.push(row.get(index)?);
     }
     Ok(values)
-}
-
-/// A lower bound on the serialized JSON size of one row, computed from the raw
-/// cells without converting them.
-///
-/// Object punctuation, column names and the quotes around string values are
-/// all omitted, as are NULL/integer/real contributions; a TEXT cell counts its
-/// UTF-8 byte length (JSON escaping only ever adds bytes) and a BLOB cell
-/// counts its hex length. Every omitted term is positive, so this never
-/// exceeds the exact `serialized_len(&row_to_json(..))`: a row whose bound
-/// already exceeds the page can be dropped without converting it.
-pub(super) fn row_serialized_lower_bound(values: &[SqlValue]) -> usize {
-    values.iter().fold(0usize, |total, value| {
-        let contribution = match value {
-            SqlValue::Text(text) => text.len(),
-            SqlValue::Blob(bytes) => bytes.len().saturating_mul(2),
-            SqlValue::Null | SqlValue::Integer(_) | SqlValue::Real(_) => 0,
-        };
-        total.saturating_add(contribution)
-    })
 }
 
 /// Rejects a result whose column names are not unique.

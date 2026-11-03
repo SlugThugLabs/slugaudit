@@ -144,6 +144,18 @@ fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Opti
             None,
         ),
         (
+            PublishError::ImportTotalOverflow { limit: 5 },
+            "import_total_overflow",
+            None,
+        ),
+        (
+            PublishError::UnchangedCountInconsistent {
+                path: "a.rs".into(),
+            },
+            "unchanged_count_inconsistent",
+            Some("a.rs"),
+        ),
+        (
             PublishError::SamplingIndexOutOfRange { index: 2, total: 1 },
             "sampling_index_out_of_range",
             None,

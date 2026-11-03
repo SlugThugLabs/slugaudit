@@ -47,9 +47,11 @@ impl CachedRow {
     /// The estimated bytes this row occupies in the cache.
     #[must_use]
     pub fn estimated_bytes(&self) -> usize {
+        // KEEP saturating: an estimate past usize::MAX is far over any budget and is only ever compared with one
         self.file
             .len()
             .saturating_add(self.text.len())
+            // KEEP saturating: same clamp as the addition above
             .saturating_add(ROW_OVERHEAD_BYTES)
     }
 }
@@ -75,6 +77,7 @@ pub struct ScanKey {
 
 impl ScanKey {
     fn estimated_bytes(&self) -> usize {
+        // KEEP saturating: an estimate past usize::MAX is far over any budget and is only ever compared with one
         [
             self.project.len(),
             self.revision.len(),
@@ -88,6 +91,7 @@ impl ScanKey {
             self.source.len(),
         ]
         .into_iter()
+        // KEEP saturating: same clamp as the estimate above
         .fold(ENTRY_OVERHEAD_BYTES, usize::saturating_add)
     }
 }
@@ -135,8 +139,13 @@ impl Inner {
         self.entries
             .retain(|stored| stored.key.project != project || stored.key.revision == revision);
         if self.entries.len() != before {
-            self.bytes = self.entries.iter().map(|stored| stored.bytes).sum();
+            self.recount_bytes();
         }
+    }
+
+    /// Sets `bytes` to the sum of the held entries' sizes.
+    fn recount_bytes(&mut self) {
+        self.bytes = self.entries.iter().map(|stored| stored.bytes).sum();
     }
 }
 
@@ -194,9 +203,9 @@ impl MechanicScanCache {
             .find(|stored| stored.key == *key)
             .map(|stored| Arc::clone(&stored.rows));
         if found.is_some() {
-            inner.hits = inner.hits.saturating_add(1);
+            crate::util::tally(&mut inner.hits);
         } else {
-            inner.misses = inner.misses.saturating_add(1);
+            crate::util::tally(&mut inner.misses);
         }
         Ok(found)
     }
@@ -208,29 +217,38 @@ impl MechanicScanCache {
     ///
     /// Returns [`LockPoisoned`] when the cache was poisoned.
     pub fn insert(&self, key: ScanKey, rows: Arc<Vec<CachedRow>>) -> Result<(), LockPoisoned> {
+        // KEEP saturating: an estimate past usize::MAX exceeds the budget, so the scan is skipped as too large and never stored
         let bytes = rows
             .iter()
             .map(CachedRow::estimated_bytes)
+            // KEEP saturating: same clamp as the estimate above
             .fold(key.estimated_bytes(), usize::saturating_add);
         let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
         inner.drop_stale(&key.project, &key.revision);
         if bytes > inner.budget {
-            inner.skipped_too_large = inner.skipped_too_large.saturating_add(1);
+            crate::util::tally(&mut inner.skipped_too_large);
             return Ok(());
         }
-        if let Some(position) = inner.entries.iter().position(|stored| stored.key == key)
-            && let Some(old) = inner.entries.remove(position)
-        {
-            inner.bytes = inner.bytes.saturating_sub(old.bytes);
+        if let Some(position) = inner.entries.iter().position(|stored| stored.key == key) {
+            inner.entries.remove(position);
+            inner.recount_bytes();
         }
-        while inner.bytes.saturating_add(bytes) > inner.budget {
-            let Some(oldest) = inner.entries.pop_front() else {
-                break;
-            };
-            inner.bytes = inner.bytes.saturating_sub(oldest.bytes);
-            inner.evictions = inner.evictions.saturating_add(1);
-        }
-        inner.bytes = inner.bytes.saturating_add(bytes);
+        // `bytes` fits the budget alone, so once the cache is empty the sum
+        // always fits; a sum past `usize::MAX` is over the budget like any other.
+        let total = loop {
+            match inner.bytes.checked_add(bytes) {
+                Some(total) if total <= inner.budget => break total,
+                _ => {}
+            }
+            if inner.entries.pop_front().is_some() {
+                crate::util::tally(&mut inner.evictions);
+            }
+            inner.recount_bytes();
+            if inner.entries.is_empty() {
+                break bytes;
+            }
+        };
+        inner.bytes = total;
         inner.entries.push_back(Stored { key, rows, bytes });
         Ok(())
     }
@@ -243,7 +261,7 @@ impl MechanicScanCache {
     /// Returns [`LockPoisoned`] when the cache was poisoned.
     pub fn note_too_large(&self) -> Result<(), LockPoisoned> {
         let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
-        inner.skipped_too_large = inner.skipped_too_large.saturating_add(1);
+        crate::util::tally(&mut inner.skipped_too_large);
         Ok(())
     }
 

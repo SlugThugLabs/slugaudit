@@ -260,8 +260,8 @@ fn a_full_run_within_every_evidence_cap_stays_full() -> TestResult {
 #[test]
 fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_were_some()
 -> TestResult {
-    let without = truncation_evidence(5, 3, 1, 0);
-    let with = truncation_evidence(5, 2, 1, 2);
+    let without = truncation_evidence(5, 3, 1, 0, 1);
+    let with = truncation_evidence(5, 2, 1, 2, 0);
 
     let message = |item: &EvidenceItem| -> TestResult<String> {
         Ok(item

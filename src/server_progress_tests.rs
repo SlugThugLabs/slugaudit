@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// The sampling throttle must pass the first event, drop everything inside
 /// the window, and pass again once the window elapses — the exact
@@ -10,22 +10,47 @@ fn throttle_passes_first_event_and_coalesces_within_the_window() -> TestResult {
     let throttle = Throttle::new(std::time::Duration::from_millis(100));
     let t0 = std::time::Instant::now();
 
-    ensure(throttle.should_emit(t0), "first event always passes")?;
     ensure(
-        !throttle.should_emit(t0 + std::time::Duration::from_millis(1)),
+        throttle.should_emit(t0).check("clock")?,
+        "first event always passes",
+    )?;
+    ensure(
+        !throttle
+            .should_emit(t0 + std::time::Duration::from_millis(1))
+            .check("clock")?,
         "event 1 ms in is inside the window and must be dropped",
     )?;
     ensure(
-        !throttle.should_emit(t0 + std::time::Duration::from_millis(50)),
+        !throttle
+            .should_emit(t0 + std::time::Duration::from_millis(50))
+            .check("clock")?,
         "event 50 ms in is still inside the window",
     )?;
     ensure(
-        throttle.should_emit(t0 + std::time::Duration::from_millis(101)),
+        throttle
+            .should_emit(t0 + std::time::Duration::from_millis(101))
+            .check("clock")?,
         "event after the window elapses passes and resets the clock",
     )?;
     ensure(
-        !throttle.should_emit(t0 + std::time::Duration::from_millis(102)),
+        !throttle
+            .should_emit(t0 + std::time::Duration::from_millis(102))
+            .check("clock")?,
         "a fresh window starts at the passed event",
+    )?;
+    Ok(())
+}
+
+/// A window too long for `u64` milliseconds is an error, not a clamped window.
+#[test]
+fn a_window_too_long_for_milliseconds_is_a_clock_error() -> TestResult {
+    let throttle = Throttle::new(std::time::Duration::MAX);
+    let error = throttle
+        .should_emit(std::time::Instant::now())
+        .check_err("the window does not fit u64 milliseconds")?;
+    ensure(
+        matches!(error, crate::clock::ClockError::DurationMillis(_)),
+        "the failure names the millisecond conversion",
     )?;
     Ok(())
 }

@@ -143,24 +143,39 @@ fn hex_digit(nibble: u8) -> char {
     }
 }
 
+/// Adds one to an event tally that a stats report shows. A tally holds at
+/// `u64::MAX` and never wraps: the reported value then means "at least this
+/// many", and counting an event is never a reason to fail the operation that
+/// caused it.
+pub(crate) fn tally(count: &mut u64) {
+    // KEEP saturating: a stats tally has a designed ceiling; at u64::MAX it reads "at least this many" and never wraps to a small number
+    *count = count.saturating_add(1);
+}
+
 /// The serialized JSON length of `value` in bytes, measured without
 /// materializing the string. Both response-byte budgets (`query`'s rows,
 /// `leads`' rows) are enforced against what the caller actually receives,
 /// so they measure the serialized form rather than the in-memory one.
 pub(crate) fn serialized_len<T: serde::Serialize>(value: &T) -> Result<usize, serde_json::Error> {
-    struct Counter(usize);
-    impl std::io::Write for Counter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0 = self.0.saturating_add(buf.len());
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let mut counter = Counter(0);
+    let mut counter = LengthCounter(0);
     serde_json::to_writer(&mut counter, value)?;
     Ok(counter.0)
+}
+
+/// A writer that discards its input and counts the bytes. A count past
+/// `usize::MAX` fails the write instead of reporting a wrong length.
+pub(crate) struct LengthCounter(pub(crate) usize);
+
+impl std::io::Write for LengthCounter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0 = self.0.checked_add(buf.len()).ok_or_else(|| {
+            std::io::Error::other("the serialized length overflowed a byte count")
+        })?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

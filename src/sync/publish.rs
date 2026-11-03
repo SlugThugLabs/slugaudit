@@ -63,6 +63,20 @@ pub enum PublishError {
         /// The configured per-import byte ceiling.
         limit: u64,
     },
+    /// The running import total, with the file just sampled added, does not
+    /// fit in `u64`; the ceiling is far below that, so the import is refused.
+    #[error("import total across sampled files overflowed u64, exceeding the {limit}-byte ceiling")]
+    ImportTotalOverflow {
+        /// The configured per-import byte ceiling.
+        limit: u64,
+    },
+    /// A content repair marked `path` modified, but the diff had no
+    /// unchanged file left to take it from: its counts are inconsistent.
+    #[error("{path} was repaired as modified but the diff counted no unchanged file for it")]
+    UnchangedCountInconsistent {
+        /// Project-relative path of the file being repaired.
+        path: String,
+    },
     /// The project tree changed while this attempt was reading it: a file's
     /// content changed between being sampled and the publish transaction
     /// that would have written it as current, or a file the walk listed was

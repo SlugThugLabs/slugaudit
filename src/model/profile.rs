@@ -99,6 +99,7 @@ pub(crate) const DEFAULT_RESULT_ACTIVE_GRACE_SECS: u64 = 900;
 
 /// The result store budget derived from a profile's response ceiling.
 pub(super) fn result_store_budget(max_query_response_bytes: usize) -> u64 {
+    // KEEP saturating: a budget ceiling clamped at u64::MAX behaves identically, since no result file can exceed u64::MAX bytes
     (max_query_response_bytes as u64).saturating_mul(RESULT_STORE_BUDGET_FACTOR)
 }
 

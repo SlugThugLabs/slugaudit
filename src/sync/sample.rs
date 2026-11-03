@@ -241,11 +241,8 @@ pub(super) fn truncation_evidence(
     kept_count: usize,
     oversized_dropped: usize,
     unmeasurable_dropped: usize,
+    dropped_for_cap: usize,
 ) -> EvidenceItem {
-    let dropped_for_cap = original_count
-        .saturating_sub(kept_count)
-        .saturating_sub(oversized_dropped)
-        .saturating_sub(unmeasurable_dropped);
     let unmeasurable_note = if unmeasurable_dropped > 0 {
         format!(", {unmeasurable_dropped} item(s) failed to serialize")
     } else {

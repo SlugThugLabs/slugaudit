@@ -58,6 +58,10 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
         PublishError::Lock(_) => ("lock_poisoned", None),
         PublishError::Database(_) => ("database", None),
         PublishError::ImportTooLarge { .. } => ("import_too_large", None),
+        PublishError::ImportTotalOverflow { .. } => ("import_total_overflow", None),
+        PublishError::UnchangedCountInconsistent { path } => {
+            ("unchanged_count_inconsistent", Some(Path::new(path)))
+        }
         PublishError::ChangedDuringSample { path } => {
             ("changed_during_sample", Some(Path::new(path)))
         }

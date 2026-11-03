@@ -167,6 +167,7 @@ fn the_line_index_matches_the_legacy_computation_on_generated_text() -> TestResu
     let mut state = 0x2545_F491_4F6C_DD1Du64;
     let mut text = String::new();
     for _ in 0..3000 {
+        // KEEP wrapping: a 64-bit linear congruential generator wraps by definition
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1);

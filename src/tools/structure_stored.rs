@@ -220,10 +220,15 @@ impl PageCut {
             self.cut = PageLimit::MatchCap;
             return Take::No;
         }
-        if self.bytes_used.saturating_add(bytes) > self.page_bytes {
+        // A sum past `usize::MAX` is over any page budget.
+        let Some(bytes_used) = self
+            .bytes_used
+            .checked_add(bytes)
+            .filter(|total| *total <= self.page_bytes)
+        else {
             self.cut = self.byte_cut;
             return Take::No;
-        }
+        };
         let Some(taken) = self.taken.checked_add(1) else {
             self.failure = Some(ErrorData::internal_error(
                 "structure: the taken-match count overflowed",
@@ -232,7 +237,7 @@ impl PageCut {
             return Take::No;
         };
         self.taken = taken;
-        self.bytes_used = self.bytes_used.saturating_add(bytes);
+        self.bytes_used = bytes_used;
         Take::Yes
     }
 

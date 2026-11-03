@@ -147,15 +147,15 @@ fn sample_one(
 /// [`PublishError::ImportTooLarge`] when the add would exceed `limit`.
 fn claim_bytes(total_bytes: &AtomicU64, byte_len: u64, limit: u64) -> Result<(), PublishError> {
     match total_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |prev| {
-        let next = prev.saturating_add(byte_len);
-        (next <= limit).then_some(next)
+        // A sum past `u64::MAX` is over any ceiling.
+        prev.checked_add(byte_len).filter(|next| *next <= limit)
     }) {
         Ok(_) => Ok(()),
         // `Err` carries the total this claim was refused against.
-        Err(total_before) => Err(PublishError::ImportTooLarge {
-            total: total_before.saturating_add(byte_len),
-            limit,
-        }),
+        Err(total_before) => match total_before.checked_add(byte_len) {
+            Some(total) => Err(PublishError::ImportTooLarge { total, limit }),
+            None => Err(PublishError::ImportTotalOverflow { limit }),
+        },
     }
 }
 

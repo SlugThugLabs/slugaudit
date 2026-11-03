@@ -442,3 +442,27 @@ fn join_thread_returns_a_panic_message_for_both_payload_kinds() -> TestResult {
     ensure_eq(&formatted, &"formatted 1", "formatted == \"formatted 1\"")?;
     Ok(())
 }
+
+#[test]
+fn a_length_counter_past_the_maximum_fails_the_write_with_its_cause() -> TestResult {
+    use std::io::Write;
+    let mut counter = crate::util::LengthCounter(usize::MAX);
+    let error = counter.write(b"x").check_err("the count overflows")?;
+    ensure_eq(
+        &error.to_string(),
+        &"the serialized length overflowed a byte count".to_owned(),
+        "overflow message",
+    )?;
+    ensure_eq(
+        &counter.0,
+        &usize::MAX,
+        "a failed write leaves the count unchanged",
+    )?;
+    let mut empty = crate::util::LengthCounter(usize::MAX);
+    ensure_eq(
+        &empty.write(b"").check("an empty write adds nothing")?,
+        &0,
+        "an empty write at the maximum succeeds",
+    )?;
+    Ok(())
+}

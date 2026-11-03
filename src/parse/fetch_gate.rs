@@ -72,6 +72,7 @@ mod state {
     /// saturates there: that much elapsed time is past every cool-down,
     /// which is what saturation means for a clock.
     pub(super) fn now() -> Duration {
+        // KEEP saturating: a clock reading past Duration::MAX is past every cool-down, so the clamped reading gives the same answer
         ORIGIN
             .with(Instant::elapsed)
             .saturating_add(SKEW.with(Cell::get))
@@ -89,6 +90,7 @@ mod state {
     }
 
     pub(super) fn advance(by: Duration) {
+        // KEEP saturating: a skew past Duration::MAX is past every cool-down, so the clamped skew gives the same answer
         SKEW.with(|skew| skew.set(skew.get().saturating_add(by)));
     }
 
@@ -110,7 +112,11 @@ pub(crate) fn record_fetch_failure() -> Result<(), LockPoisoned> {
 fn cooling_down() -> Result<bool, LockPoisoned> {
     let now = state::now();
     state::with_last_failure(|last| {
-        last.is_some_and(|at| now.saturating_sub(at) < GRAMMAR_FETCH_COOLDOWN)
+        // A failure stamped after `now` has not aged at all: still cooling down.
+        last.is_some_and(|at| {
+            now.checked_sub(at)
+                .is_none_or(|elapsed| elapsed < GRAMMAR_FETCH_COOLDOWN)
+        })
     })
 }
 

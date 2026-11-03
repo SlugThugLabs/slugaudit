@@ -30,11 +30,11 @@ pub struct SweepOutcome {
     pub first_error: Option<String>,
 }
 
-/// Adds one to a sweep tally. A tally counts directory entries the sweep
-/// visited, so it cannot approach `usize::MAX`; if it ever did, holding at
-/// the maximum is the intended meaning of a stats tally ("at least this
-/// many"), which is why this saturates instead of failing the sweep.
+/// Adds one to a sweep tally. A tally holds at `usize::MAX` and never wraps:
+/// the reported number then means "at least this many", and counting a
+/// directory entry is never a reason to fail the sweep.
 fn tally(count: &mut usize) {
+    // KEEP saturating: a stats tally has a designed ceiling; at usize::MAX it reads "at least this many" and never wraps to a small number
     *count = count.saturating_add(1);
 }
 

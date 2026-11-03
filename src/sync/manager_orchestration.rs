@@ -84,7 +84,7 @@ impl SourceSyncManager {
             };
         let revision_id = revision_after_sync(&connection, &database_path)?;
 
-        let duration_ms = crate::clock::saturating_millis(start.elapsed());
+        let duration_ms = crate::clock::duration_millis(start.elapsed())?;
         self.stamp_last_sync(duration_ms)?;
         tracing::debug!(
             revision_id = %revision_id,
@@ -298,7 +298,7 @@ impl SourceSyncManager {
             });
         })?;
         synced.discard = notice;
-        let duration_ms = crate::clock::saturating_millis(start.elapsed());
+        let duration_ms = crate::clock::duration_millis(start.elapsed())?;
         self.stamp_last_sync(duration_ms)?;
         sink.emit(ProgressEvent::Completed {
             phase: "ensuring_current",

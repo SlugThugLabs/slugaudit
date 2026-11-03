@@ -43,9 +43,11 @@ pub(crate) fn resolve_python_relative(
     let remainder = &text[dots..];
     // `.bar` is "one level up" — `dots - 1` because one dot means the
     // importing file's *own* package. Two dots (`..bar`) means the
-    // parent's parent, etc. Clamp at zero so a degenerate `.` (just a
-    // dot, the package marker) doesn't walk above the project root.
-    let levels_up = dots.saturating_sub(1);
+    // parent's parent, etc. Text without a leading dot is not a relative
+    // import at all.
+    let Some(levels_up) = dots.checked_sub(1) else {
+        return unresolved();
+    };
 
     let mut base_dir = crate::graph::resolve::parent_dir(importing_relative_path);
     // `parent_dir` of the root is the root, so without this check extra

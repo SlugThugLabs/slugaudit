@@ -48,8 +48,9 @@ pub(super) mod forced_failure {
     }
 
     pub(super) fn count_call() {
-        // A test-seam call counter on one thread: it cannot approach
-        // `usize::MAX`, and holding at the maximum is its intended meaning.
+        // A test-seam call counter on one thread; it holds at `usize::MAX`
+        // and never wraps.
+        // KEEP saturating: a counter with a designed ceiling reads "at least this many" at usize::MAX and never wraps to a small number
         CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
     }
 

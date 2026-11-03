@@ -96,17 +96,37 @@ impl Throttle {
 
     /// Whether an event at `now` passes. Of two threads racing for the same
     /// window, only the one whose update lands passes.
-    fn should_emit(&self, now: std::time::Instant) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::clock::ClockError`] when the time since `origin` does
+    /// not fit in whole `u64` milliseconds.
+    fn should_emit(&self, now: std::time::Instant) -> Result<bool, crate::clock::ClockError> {
         use std::sync::atomic::Ordering;
-        let at = crate::clock::saturating_millis(now.saturating_duration_since(self.origin))
-            .saturating_add(1);
+        // KEEP saturating: an instant not after the origin sits at offset zero, the first slot; the offset only orders events for coalescing
+        let since_origin = now.saturating_duration_since(self.origin);
+        let at = crate::clock::duration_millis(
+            since_origin
+                .checked_add(std::time::Duration::from_millis(1))
+                .ok_or(crate::clock::ClockError::DurationOverflow)?,
+        )?;
+        let window_ms = crate::clock::duration_millis(self.window)?;
         let last = self.last.load(Ordering::SeqCst);
-        if last != 0 && at.saturating_sub(last) < crate::clock::saturating_millis(self.window) {
-            return false;
+        if last != 0 {
+            // A racing thread may have stored a later time than `at`: that is
+            // a gap of zero, inside any non-empty window.
+            let inside_window = match at.checked_sub(last) {
+                Some(gap) => gap < window_ms,
+                None => window_ms > 0,
+            };
+            if inside_window {
+                return Ok(false);
+            }
         }
-        self.last
+        Ok(self
+            .last
             .compare_exchange(last, at, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
+            .is_ok())
     }
 }
 
@@ -143,11 +163,16 @@ impl ProgressSink for McpProgressSink {
                 // The last Sampling of a burst is allowed to be dropped:
                 // `Completed` (1.0) always sends, so a consumer never
                 // stalls at a stale intermediate percentage.
-                if !self
+                match self
                     .sampling_throttle
                     .should_emit(std::time::Instant::now())
                 {
-                    return;
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "progress throttle clock unusable; sampling update dropped");
+                        return;
+                    }
                 }
                 self.spawn_notify(fraction, format!("{phase}: {current}/{total}"));
             }

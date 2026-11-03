@@ -130,6 +130,24 @@ fn an_expired_deadline_names_the_file_being_processed() -> TestResult {
 }
 
 #[test]
+fn claim_bytes_names_a_total_that_overflows_u64() -> TestResult {
+    let total = AtomicU64::new(u64::MAX);
+
+    let error = claim_bytes(&total, 1, 10).check_err("the sum does not fit u64")?;
+
+    ensure(
+        matches!(error, PublishError::ImportTotalOverflow { limit: 10 }),
+        format!("got {error:?}"),
+    )?;
+    ensure_eq(
+        &total.load(Ordering::Acquire),
+        &u64::MAX,
+        "a refused claim leaves the total unchanged",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn claim_bytes_accepts_up_to_the_limit_and_refuses_past_it() -> TestResult {
     let total = AtomicU64::new(0);
 

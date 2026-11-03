@@ -21,6 +21,9 @@ use tree_sitter::{
     StreamingIterator, Tree,
 };
 
+/// The deepest node a query match may start at: one below the walk depth cap.
+const MAX_START_DEPTH: u32 = crate::evidence::MAX_WALK_DEPTH - 1;
+
 /// Extracts call evidence for `language` when it has an embedded call query
 /// (an empty, complete extraction otherwise). The parse and the query cursor
 /// both run within what is left of `deadline`. A position past `u32::MAX` is
@@ -107,7 +110,7 @@ fn run(
         }
     };
     let mut cursor = QueryCursor::new();
-    cursor.set_max_start_depth(Some(crate::evidence::MAX_WALK_DEPTH.saturating_sub(1)));
+    cursor.set_max_start_depth(Some(MAX_START_DEPTH));
     let options = QueryCursorOptions::new().progress_callback(&mut progress);
     let mut matches =
         cursor.matches_with_options(query, tree.root_node(), source.as_bytes(), options);

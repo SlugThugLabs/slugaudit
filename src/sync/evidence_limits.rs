@@ -27,11 +27,19 @@ pub(crate) fn apply_evidence_limits(
 ) -> bool {
     let original_len = items.len();
     let mut budget = EvidenceBudget::new(original_len, limits);
-    for item in items.drain(..) {
-        if matches!(budget.admit(item), Admission::Stop) {
-            break;
+    let dropped_for_cap = {
+        let mut source = items.drain(..);
+        let mut dropped_for_cap = 0;
+        for item in source.by_ref() {
+            if matches!(budget.admit(item), Admission::Stop) {
+                // The item that reached a cap and every item after it are
+                // dropped by that cap; counted, not derived by subtraction.
+                dropped_for_cap = std::iter::once(()).chain(source.map(|_| ())).count();
+                break;
+            }
         }
-    }
+        dropped_for_cap
+    };
     let kept_len = budget.kept.len();
     let discarded = budget.anything_discarded();
     *items = budget.kept;
@@ -41,6 +49,7 @@ pub(crate) fn apply_evidence_limits(
             kept_len,
             budget.oversized_dropped,
             budget.unmeasurable_dropped,
+            dropped_for_cap,
         ));
     }
     discarded
@@ -68,11 +77,11 @@ enum Admission {
     Stop,
 }
 
-/// Adds one to a dropped-item tally. Each item is counted at most once, so a
-/// tally cannot exceed the number of items in memory; if it ever reached
-/// `usize::MAX`, holding there is the intended meaning of a report tally
-/// ("at least this many"), which is why this saturates instead of failing.
+/// Adds one to a dropped-item tally. A tally holds at `usize::MAX` and never
+/// wraps: the reported number then means "at least this many", and counting a
+/// dropped item is never a reason to fail the file's record.
 fn tally(count: &mut usize) {
+    // KEEP saturating: a report tally has a designed ceiling; at usize::MAX it reads "at least this many" and never wraps to a small number
     *count = count.saturating_add(1);
 }
 
@@ -80,7 +89,9 @@ impl EvidenceBudget {
     fn new(original_len: usize, limits: &ResourceLimits) -> Self {
         let cap = limits.evidence;
         Self {
+            // KEEP saturating: one slot is held back for the truncation marker; a cap of zero leaves no slot for kept items, and zero is exactly that
             max_items: cap.max_items_per_file.saturating_sub(1),
+            // KEEP saturating: the marker's reserve comes off the byte cap; a cap below the reserve leaves no bytes for kept items, and zero is exactly that
             max_bytes: cap
                 .max_payload_bytes_per_file
                 .saturating_sub(TRUNCATION_MARKER_RESERVE_BYTES),

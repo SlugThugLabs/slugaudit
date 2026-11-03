@@ -196,12 +196,18 @@ fn accept(cutting: &mut Cutting, limit: Option<usize>, budget: usize, row: &Stor
             return Take::No;
         }
     };
+    // A sum past `usize::MAX` is over any page budget (the first row adds to
+    // zero, so it always has a sum).
+    let Some(total) = cutting.bytes_used.checked_add(size) else {
+        cutting.stopped_by = Some(PageLimit::PageBytes);
+        return Take::No;
+    };
     if cutting.taken > 0 {
         if limit.is_some_and(|limit| cutting.taken >= limit) {
             cutting.stopped_by = Some(PageLimit::Limit);
             return Take::No;
         }
-        if cutting.bytes_used.saturating_add(size) > budget {
+        if total > budget {
             cutting.stopped_by = Some(PageLimit::PageBytes);
             return Take::No;
         }
@@ -214,7 +220,7 @@ fn accept(cutting: &mut Cutting, limit: Option<usize>, budget: usize, row: &Stor
         return Take::No;
     };
     cutting.taken = taken;
-    cutting.bytes_used = cutting.bytes_used.saturating_add(size);
+    cutting.bytes_used = total;
     Take::Yes
 }
 

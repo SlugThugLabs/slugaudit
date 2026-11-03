@@ -83,11 +83,10 @@ impl Deadline {
     /// own allowance ran out (the operation goes on) or the operation's did
     /// (the operation is over).
     pub(crate) fn capped(&self, cap: Duration) -> (Self, BudgetBound) {
-        let remaining = self.budget.saturating_sub(self.started.elapsed());
-        if cap < remaining {
-            (Self::after(cap), BudgetBound::Unit)
-        } else {
-            (*self, BudgetBound::Operation)
+        // A budget already spent has nothing remaining, so no cap is sooner.
+        match self.budget.checked_sub(self.started.elapsed()) {
+            Some(remaining) if cap < remaining => (Self::after(cap), BudgetBound::Unit),
+            _ => (*self, BudgetBound::Operation),
         }
     }
 
@@ -99,9 +98,11 @@ impl Deadline {
     /// limit") to a parser. Saturates at `u64::MAX` milliseconds.
     pub(crate) fn remaining_millis(&self) -> Option<NonZeroU64> {
         let remaining = self.budget.checked_sub(self.started.elapsed())?;
+        // KEEP saturating: a timeout past u64::MAX milliseconds never fires either way, so the clamp changes no behavior
         let millis = remaining
             .as_secs()
             .saturating_mul(1_000)
+            // KEEP saturating: same clamp as the multiplication above
             .saturating_add(u64::from(remaining.subsec_millis()));
         NonZeroU64::new(millis)
     }

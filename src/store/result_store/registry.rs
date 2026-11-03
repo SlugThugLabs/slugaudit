@@ -12,6 +12,7 @@
 
 use super::cursor::ResultId;
 use super::error::ResultStoreError;
+use crate::util::tally;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -72,10 +73,12 @@ impl Entry {
     }
 
     pub(super) fn class(&self, now: i64, grace_secs: u64) -> ResultClass {
-        let idle_for = now.saturating_sub(self.last_access.load(Ordering::Relaxed));
+        let last_access = self.last_access.load(Ordering::Relaxed);
+        // A clock that reads earlier than the last access has not idled.
+        let idle_for = (now >= last_access).then_some(now.abs_diff(last_access));
         if self.delivered.load(Ordering::Relaxed) {
             ResultClass::Delivered
-        } else if u64::try_from(idle_for).is_ok_and(|idle| idle > grace_secs) {
+        } else if idle_for.is_some_and(|idle| idle > grace_secs) {
             ResultClass::Idle
         } else {
             ResultClass::Active
@@ -106,12 +109,10 @@ pub(super) struct Counters {
     pub(super) expired_cursors: u64,
 }
 
-/// Adds one to a tally that the stats report. A tally counts events of one
-/// process, so it cannot approach `u64::MAX`; if it ever did, holding at the
-/// maximum is the intended meaning ("at least this many"), which is why this
-/// saturates instead of failing the operation that is being counted.
-pub(super) fn tally(count: &mut u64) {
-    *count = count.saturating_add(1);
+/// Whether `used` plus `bytes` stays within `budget`; a sum past `u64::MAX`
+/// is over any budget.
+fn fits_budget(used: u64, bytes: u64, budget: u64) -> bool {
+    used.checked_add(bytes).is_some_and(|total| total <= budget)
 }
 
 /// A result removed to make room; dropped by the caller outside the lock.
@@ -218,7 +219,7 @@ impl Registry {
     ) -> Result<Vec<(ResultId, ResultClass)>, ResultStoreError> {
         let mut used = self.admitted_bytes;
         let mut plan = Vec::new();
-        if used.saturating_add(bytes) <= budget {
+        if fits_budget(used, bytes, budget) {
             return Ok(plan);
         }
         let mut candidates: Vec<_> = self
@@ -234,7 +235,7 @@ impl Registry {
                 ResultStoreError::corrupt("admitted bytes are below a stored result's size")
             })?;
             plan.push((id, class));
-            if used.saturating_add(bytes) <= budget {
+            if fits_budget(used, bytes, budget) {
                 return Ok(plan);
             }
         }

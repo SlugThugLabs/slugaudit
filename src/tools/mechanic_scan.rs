@@ -57,12 +57,26 @@ pub(super) struct Tally {
 
 impl Tally {
     /// Counts one hit in `file`; hits arrive file-contiguous, in path order.
-    pub(super) fn record(&mut self, file: &str) {
-        self.count = self.count.saturating_add(1);
+    ///
+    /// # Errors
+    ///
+    /// An internal error when a count would pass `i64::MAX`.
+    pub(super) fn record(&mut self, file: &str) -> Result<(), ErrorData> {
+        let overflow = |what: &str| {
+            super::context::internal_error("counting mechanic hits", format!("{what} overflowed"))
+        };
+        self.count = self
+            .count
+            .checked_add(1)
+            .ok_or_else(|| overflow("the hit count"))?;
         if self.last_file.as_deref() != Some(file) {
-            self.files = self.files.saturating_add(1);
+            self.files = self
+                .files
+                .checked_add(1)
+                .ok_or_else(|| overflow("the file count"))?;
             self.last_file = Some(file.to_owned());
         }
+        Ok(())
     }
 }
 
@@ -185,7 +199,9 @@ fn count_files(
             .map_err(|error| super::context::internal_error("counting the files to scan", error))?;
         let count = u64::try_from(count)
             .map_err(|error| super::context::internal_error("counting the files to scan", error))?;
-        total = total.saturating_add(count);
+        total = total.checked_add(count).ok_or_else(|| {
+            super::context::internal_error("counting the files to scan", "the count overflowed")
+        })?;
     }
     Ok(total)
 }
@@ -262,7 +278,9 @@ impl LanguageScan<'_> {
                     text: &hit.text,
                 })?;
             }
-            *scanned = scanned.saturating_add(1);
+            *scanned = scanned.checked_add(1).ok_or_else(|| {
+                super::context::internal_error("counting scanned files", "the count overflowed")
+            })?;
             last_done = Some(path);
         }
         Ok(None)
@@ -349,7 +367,10 @@ impl LanguageScan<'_> {
             }
             let line = i64::try_from(node.start_position().row)
                 .map_err(|error| super::context::internal_error("numbering a hit", error))?
-                .saturating_add(1);
+                .checked_add(1)
+                .ok_or_else(|| {
+                    super::context::internal_error("numbering a hit", "the line number overflowed")
+                })?;
             let text = content.get(node.byte_range()).ok_or_else(|| {
                 super::context::internal_error(
                     "reading a hit",

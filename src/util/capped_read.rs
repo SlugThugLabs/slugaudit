@@ -65,6 +65,7 @@ pub(crate) fn read_file_capped_bytes(
     }
     let file = std::fs::File::open(path).map_err(CappedReadError::Io)?;
     let mut bytes = Vec::with_capacity(metadata.len().min(64 * 1024) as usize);
+    // KEEP saturating: at a cap of u64::MAX no read can exceed it, so reading up to u64::MAX bytes loses nothing
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(CappedReadError::Io)?;

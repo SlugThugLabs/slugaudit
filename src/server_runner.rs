@@ -171,16 +171,30 @@ fn log_completion(
     started: std::time::Instant,
     error: Option<&ErrorData>,
 ) {
-    let elapsed_ms = crate::clock::saturating_millis(started.elapsed());
+    let elapsed_ms = match crate::clock::duration_millis(started.elapsed()) {
+        Ok(elapsed_ms) => elapsed_ms,
+        Err(error) => {
+            tracing::error!(error = %error, "tool call duration unusable; completion not recorded");
+            return;
+        }
+    };
     // `record_call` bumps the process-wide counters and returns the
     // post-bump snapshot; `counters_before` was taken before the work
     // started. The difference is the movement observed across this call's
     // lifetime — concurrent calls' bumps are included, which is why it is
     // logged as a delta and never as an absolute or as this call's share.
     let counters_after = crate::tools::ToolCounters::record_call(error.is_none(), elapsed_ms);
-    let delta = |after: u64, before: u64| after.saturating_sub(before);
-    let calls_delta = delta(counters_after.call_count, counters_before.call_count);
-    let errors_delta = delta(counters_after.error_count, counters_before.error_count);
+    let (Some(calls_delta), Some(errors_delta)) = (
+        counters_after
+            .call_count
+            .checked_sub(counters_before.call_count),
+        counters_after
+            .error_count
+            .checked_sub(counters_before.error_count),
+    ) else {
+        tracing::error!("tool counters moved backwards; completion not logged");
+        return;
+    };
     let _guard = span.enter();
     match error {
         None => tracing::info!(
