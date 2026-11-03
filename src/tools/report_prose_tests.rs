@@ -2,7 +2,7 @@
 
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 #[test]
@@ -30,9 +30,17 @@ fn prose_files_are_counted_but_never_listed_as_parser_failures() -> TestResult {
         .iter()
         .map(|file| file.path.as_str())
         .collect();
-    assert_eq!(listed, ["c.zzunknown"]);
-    assert_eq!(response.parser_failure_count, 1);
-    assert_eq!(response.completeness.prose_files_not_parsed, 2);
+    ensure_eq(&listed, &["c.zzunknown"], "listed == [\"c.zzunknown\"]")?;
+    ensure_eq(
+        &response.parser_failure_count,
+        &1,
+        "response.parser_failure_count == 1",
+    )?;
+    ensure_eq(
+        &response.completeness.prose_files_not_parsed,
+        &2,
+        "response.completeness.prose_files_not_parsed == 2",
+    )?;
     Ok(())
 }
 
@@ -54,10 +62,10 @@ fn a_freshly_enabled_project_reports_no_parser_failure_for_its_generated_gitigno
         Some(&manager),
     )
     .check("project_control on succeeds")?;
-    assert!(
+    ensure(
         project.path().join(".gitignore").is_file(),
-        "`on` wrote the .gitignore"
-    );
+        "`on` wrote the .gitignore",
+    )?;
     let response = report(
         &Parameters(ReportRequest { path }),
         &crate::progress::NoopProgressSink,
@@ -66,9 +74,20 @@ fn a_freshly_enabled_project_reports_no_parser_failure_for_its_generated_gitigno
     .check("report succeeds")?
     .0;
 
-    assert_eq!(response.parser_failure_count, 0);
-    assert!(response.parser_failure_files.is_empty());
-    assert_eq!(response.completeness.prose_files_not_parsed, 1);
+    ensure_eq(
+        &response.parser_failure_count,
+        &0,
+        "response.parser_failure_count == 0",
+    )?;
+    ensure(
+        response.parser_failure_files.is_empty(),
+        "response.parser_failure_files.is_empty()",
+    )?;
+    ensure_eq(
+        &response.completeness.prose_files_not_parsed,
+        &1,
+        "response.completeness.prose_files_not_parsed == 1",
+    )?;
     Ok(())
 }
 
@@ -103,17 +122,19 @@ fn an_untested_language_is_flagged_and_gets_exactly_one_notice() -> TestResult {
         .iter()
         .map(|count| (count.language.as_str(), count.tested))
         .collect();
-    assert_eq!(
-        tested,
-        [("prose", false), ("python", false), ("rust", true)]
-    );
-    assert_eq!(
-        response.notices,
-        [
+    ensure_eq(
+        &tested,
+        &[("prose", false), ("python", false), ("rust", true)],
+        "tested == [(\"prose\", false), (\"python\", false), (\"rust\", true)]",
+    )?;
+    ensure_eq(
+        &response.notices,
+        &[
             "python: 1 file uses an untested grammar (downloaded on first use). \
-             Only Rust is tested; treat python results as best-effort."
-        ]
-    );
+             Only Rust is tested; treat python results as best-effort.",
+        ],
+        "response.notices == [ \"python: 1 file uses an untested grammar (downloaded on first use). \\ Only Rust is tested; treat python results as best-effort.\" ]",
+    )?;
     Ok(())
 }
 
@@ -121,6 +142,9 @@ fn an_untested_language_is_flagged_and_gets_exactly_one_notice() -> TestResult {
 fn a_rust_only_project_has_no_notices() -> TestResult {
     let response = report_of(&[("lib.rs", b"pub fn a() {}\n"), ("NOTES.md", b"# notes\n")])?;
 
-    assert!(response.notices.is_empty(), "{:?}", response.notices);
+    ensure(
+        response.notices.is_empty(),
+        format!("{:?}", response.notices),
+    )?;
     Ok(())
 }

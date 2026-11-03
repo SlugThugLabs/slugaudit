@@ -121,7 +121,7 @@ impl Run<'_, '_, '_> {
                 }
                 Parsed::NoTree => {
                     self.unparsed_files.push(file_path.clone());
-                    self.files_scanned += 1;
+                    self.count_scanned_file()?;
                     continue;
                 }
             };
@@ -129,8 +129,16 @@ impl Run<'_, '_, '_> {
             if self.timed_out {
                 break;
             }
-            self.files_scanned += 1;
+            self.count_scanned_file()?;
         }
+        Ok(())
+    }
+
+    /// Counts one more finished file.
+    fn count_scanned_file(&mut self) -> Result<(), ErrorData> {
+        self.files_scanned = self.files_scanned.checked_add(1).ok_or_else(|| {
+            ErrorData::internal_error("structure: the scanned-file count overflowed", None)
+        })?;
         Ok(())
     }
 

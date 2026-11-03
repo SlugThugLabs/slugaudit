@@ -3,7 +3,7 @@
 
 use super::tests::{build_report, database_with_one_revision, insert_indexed_file};
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// A text file that is fully indexed but has no parser must appear in the
 /// report as `ContentOnly` — its content is present and readable — rather
@@ -37,17 +37,37 @@ fn parser_failure_rows_distinguish_content_only_from_a_failed_parse() -> TestRes
         .iter()
         .find(|file| file.path == "notes.txt")
         .check("indexed-but-unparsed file is listed")?;
-    assert_eq!(notes.extraction_completeness, "ContentOnly");
-    assert_eq!(notes.parser_availability, "Unavailable");
-    assert_eq!(notes.parse_outcome, "NotAttempted");
+    ensure_eq(
+        &notes.extraction_completeness,
+        &"ContentOnly",
+        "notes.extraction_completeness == \"ContentOnly\"",
+    )?;
+    ensure_eq(
+        &notes.parser_availability,
+        &"Unavailable",
+        "notes.parser_availability == \"Unavailable\"",
+    )?;
+    ensure_eq(
+        &notes.parse_outcome,
+        &"NotAttempted",
+        "notes.parse_outcome == \"NotAttempted\"",
+    )?;
 
     let broken = response
         .parser_failure_files
         .iter()
         .find(|file| file.path == "broken.rs")
         .check("genuinely failed parse is listed")?;
-    assert_eq!(broken.parse_outcome, "Failed");
-    assert_eq!(broken.parse_error_reason.as_deref(), Some("boom"));
+    ensure_eq(
+        &broken.parse_outcome,
+        &"Failed",
+        "broken.parse_outcome == \"Failed\"",
+    )?;
+    ensure_eq(
+        &broken.parse_error_reason.as_deref(),
+        &Some("boom"),
+        "broken.parse_error_reason.as_deref() == Some(\"boom\")",
+    )?;
     Ok(())
 }
 
@@ -68,8 +88,16 @@ fn parser_failure_count_equals_the_list_when_under_the_cap() -> TestResult {
     let tx = connection.transaction().check("begin transaction")?;
     let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
-    assert_eq!(response.parser_failure_files.len(), 3);
-    assert_eq!(response.parser_failure_count, 3);
+    ensure_eq(
+        &response.parser_failure_files.len(),
+        &3,
+        "response.parser_failure_files.len() == 3",
+    )?;
+    ensure_eq(
+        &response.parser_failure_count,
+        &3,
+        "response.parser_failure_count == 3",
+    )?;
     Ok(())
 }
 
@@ -91,23 +119,23 @@ fn parser_failure_count_exceeds_the_capped_list_when_over_the_cap() -> TestResul
     let tx = connection.transaction().check("begin transaction")?;
     let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
-    assert_eq!(
-        response.parser_failure_files.len(),
-        MAX_PARSER_FAILURE_FILES
-    );
-    assert_eq!(response.parser_failure_count, total);
+    ensure_eq(
+        &response.parser_failure_files.len(),
+        &MAX_PARSER_FAILURE_FILES,
+        "response.parser_failure_files.len() == MAX_PARSER_FAILURE_FILES",
+    )?;
+    ensure_eq(
+        &response.parser_failure_count,
+        &total,
+        "response.parser_failure_count == total",
+    )?;
     Ok(())
 }
 
-/// The envelope counts kinds, skip reasons, extraction completeness, and the
-/// two evidence gaps independently. Asserted over hand-built rows so each
-/// bucket is unambiguous: a `ContentOnly` row (text indexed, nothing parsed)
-/// must show up as `ContentOnly` and not as a parser failure, a skipped row
-/// must be counted as skipped rather than as either, and a row whose evidence
-/// was cut short by a cap must not read as a complete one.
-#[test]
-fn completeness_envelope_separates_kinds_reasons_and_completeness() -> TestResult {
-    let (_dir, mut connection) = database_with_one_revision()?;
+/// A database with two indexed files (one carrying the evidence-cap marker)
+/// and one skipped file.
+fn database_with_envelope_rows() -> TestResult<(tempfile::TempDir, rusqlite::Connection)> {
+    let (dir, connection) = database_with_one_revision()?;
     insert_indexed_file(
         &connection,
         "notes.txt",
@@ -149,7 +177,18 @@ fn completeness_envelope_separates_kinds_reasons_and_completeness() -> TestResul
             [],
         )
         .check("insert skipped row")?;
+    Ok((dir, connection))
+}
 
+/// The envelope counts kinds, skip reasons, extraction completeness, and the
+/// two evidence gaps independently. Asserted over hand-built rows so each
+/// bucket is unambiguous: a `ContentOnly` row (text indexed, nothing parsed)
+/// must show up as `ContentOnly` and not as a parser failure, a skipped row
+/// must be counted as skipped rather than as either, and a row whose evidence
+/// was cut short by a cap must not read as a complete one.
+#[test]
+fn completeness_envelope_separates_kinds_reasons_and_completeness() -> TestResult {
+    let (_dir, mut connection) = database_with_envelope_rows()?;
     let tx = connection.transaction().check("begin transaction")?;
     let response = build_report(&tx, "r1".to_owned()).check("build report")?;
 
@@ -161,16 +200,45 @@ fn completeness_envelope_separates_kinds_reasons_and_completeness() -> TestResul
             .find(|entry| entry.kind == kind)
             .map(|entry| entry.count)
     };
-    assert_eq!(kind_count("indexed"), Some(2));
-    assert_eq!(kind_count("skipped"), Some(1));
-    assert_eq!(response.completeness.skipped_file_count, 1);
-    assert!(response.completeness.index_partial);
-    assert_eq!(response.completeness.skipped_by_reason.len(), 1);
-    assert_eq!(
-        response.completeness.skipped_by_reason[0].reason,
-        "oversize"
-    );
-    assert_eq!(response.completeness.skipped_by_reason[0].count, 1);
+    ensure_eq(
+        &kind_count("indexed"),
+        &Some(2),
+        "kind_count(\"indexed\") == Some(2)",
+    )?;
+    ensure_eq(
+        &kind_count("skipped"),
+        &Some(1),
+        "kind_count(\"skipped\") == Some(1)",
+    )?;
+    ensure_eq(
+        &response.completeness.skipped_file_count,
+        &1,
+        "response.completeness.skipped_file_count == 1",
+    )?;
+    ensure(
+        response.completeness.index_partial,
+        "response.completeness.index_partial",
+    )?;
+    ensure_eq(
+        &response.completeness.skipped_by_reason.len(),
+        &1,
+        "response.completeness.skipped_by_reason.len() == 1",
+    )?;
+    let skipped = response
+        .completeness
+        .skipped_by_reason
+        .first()
+        .check("response.completeness.skipped_by_reason[0]")?;
+    ensure_eq(
+        &skipped.reason,
+        &"oversize",
+        "response.completeness.skipped_by_reason[0].reason == \"oversize\"",
+    )?;
+    ensure_eq(
+        &skipped.count,
+        &1,
+        "response.completeness.skipped_by_reason[0].count == 1",
+    )?;
     let completeness_for = |value: &str| {
         response
             .completeness
@@ -179,22 +247,37 @@ fn completeness_envelope_separates_kinds_reasons_and_completeness() -> TestResul
             .find(|entry| entry.extraction_completeness == value)
             .map(|entry| entry.count)
     };
-    assert_eq!(completeness_for("ContentOnly"), Some(1));
-    assert_eq!(completeness_for("Full"), Some(1));
-    assert_eq!(completeness_for("Unavailable"), Some(1));
-    assert_eq!(
-        response.completeness.indexed_files_without_evidence, 1,
+    ensure_eq(
+        &completeness_for("ContentOnly"),
+        &Some(1),
+        "completeness_for(\"ContentOnly\") == Some(1)",
+    )?;
+    ensure_eq(
+        &completeness_for("Full"),
+        &Some(1),
+        "completeness_for(\"Full\") == Some(1)",
+    )?;
+    ensure_eq(
+        &completeness_for("Unavailable"),
+        &Some(1),
+        "completeness_for(\"Unavailable\") == Some(1)",
+    )?;
+    ensure_eq(
+        &response.completeness.indexed_files_without_evidence,
+        &1,
         "notes.txt has content but no structural evidence; capped.rs has evidence and the \
-         skipped row is not an indexed gap"
-    );
-    assert_eq!(
-        response.completeness.evidence_capped_file_count, 1,
-        "capped.rs carries the truncation marker"
-    );
-    assert_eq!(
-        response.parser_failure_count, 1,
-        "a skipped file is never parsed, so it is not a parser failure"
-    );
+         skipped row is not an indexed gap",
+    )?;
+    ensure_eq(
+        &response.completeness.evidence_capped_file_count,
+        &1,
+        "capped.rs carries the truncation marker",
+    )?;
+    ensure_eq(
+        &response.parser_failure_count,
+        &1,
+        "a skipped file is never parsed, so it is not a parser failure",
+    )?;
     Ok(())
 }
 
@@ -224,6 +307,6 @@ fn a_skipped_row_without_a_skip_reason_fails_the_report_naming_the_column() -> T
         ))
         .check("unexpected outcome");
     };
-    assert_eq!(column, "skip_reason");
+    ensure_eq(&column, &"skip_reason", "column == \"skip_reason\"")?;
     Ok(())
 }

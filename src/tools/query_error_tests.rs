@@ -3,7 +3,7 @@
 //! statement's kind and failures raised on this side carry no code.
 use super::*;
 use crate::tools::test_support::activated_project;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn ask(project: &tempfile::TempDir, sql: &str) -> TestResult<ErrorData> {
     query(
@@ -27,19 +27,26 @@ fn a_query_naming_an_unknown_table_carries_sql_error_and_its_remedy() -> TestRes
 
     let error = ask(&project, "SELECT nope FROM no_such_table")?;
 
-    assert_eq!(
-        error.code,
-        rmcp::model::ErrorCode::INVALID_PARAMS,
-        "{error:?}"
-    );
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        format!("{error:?}"),
+    )?;
+    ensure(
         error.message.contains("no such table: no_such_table"),
-        "SQLite's own message is kept: {}",
-        error.message
-    );
+        format!("SQLite's own message is kept: {}", error.message),
+    )?;
     let data = error.data.check("an SQL error carries data")?;
-    assert_eq!(data["code"], "sql_error");
-    assert_eq!(data["remedy"], ErrorCode::SqlError.remedy());
+    ensure_eq(
+        &data.get("code").check("data[\"code\"]")?,
+        &"sql_error",
+        "data[\"code\"] == \"sql_error\"",
+    )?;
+    ensure_eq(
+        &data.get("remedy").check("data[\"remedy\"]")?,
+        &ErrorCode::SqlError.remedy(),
+        "data[\"remedy\"] == ErrorCode::SqlError.remedy()",
+    )?;
     Ok(())
 }
 
@@ -49,13 +56,16 @@ fn a_query_with_a_syntax_error_carries_sql_error() -> TestResult {
 
     let error = ask(&project, "SELECT FROM WHERE")?;
 
-    assert!(
+    ensure(
         error.message.contains("syntax error"),
-        "SQLite's own message is kept: {}",
-        error.message
-    );
+        format!("SQLite's own message is kept: {}", error.message),
+    )?;
     let data = error.data.check("a syntax error carries data")?;
-    assert_eq!(data["code"], "sql_error");
+    ensure_eq(
+        &data.get("code").check("data[\"code\"]")?,
+        &"sql_error",
+        "data[\"code\"] == \"sql_error\"",
+    )?;
     Ok(())
 }
 
@@ -65,12 +75,11 @@ fn a_refused_pragma_statement_keeps_its_refusal_and_carries_no_code() -> TestRes
 
     let error = ask(&project, "PRAGMA user_version")?;
 
-    assert!(
+    ensure(
         error.message.starts_with("sql was refused"),
-        "{}",
-        error.message
-    );
-    assert_eq!(error.data, None, "a refusal is not an SQL error");
+        format!("{}", error.message),
+    )?;
+    ensure_eq(&error.data, &None, "a refusal is not an SQL error")?;
     Ok(())
 }
 
@@ -80,12 +89,11 @@ fn result_store_surface_create_temp_table_through_query_is_refused() -> TestResu
 
     let error = ask(&project, "CREATE TEMP TABLE planted (x)")?;
 
-    assert!(
+    ensure(
         error.message.starts_with("sql was refused"),
-        "{}",
-        error.message
-    );
-    assert_eq!(error.data, None, "a refusal is not an SQL error");
+        format!("{}", error.message),
+    )?;
+    ensure_eq(&error.data, &None, "a refusal is not an SQL error")?;
     Ok(())
 }
 
@@ -113,22 +121,29 @@ fn a_value_over_the_per_value_cap_carries_no_sql_error_code() -> TestResult {
     .err()
     .check("an oversized value fails")?;
 
-    assert!(error.message.contains("per-value cap"), "{}", error.message);
-    assert_eq!(error.data, None, "the cap names its own fix; it is not SQL");
+    ensure(
+        error.message.contains("per-value cap"),
+        format!("{}", error.message),
+    )?;
+    ensure_eq(
+        &error.data,
+        &None,
+        "the cap names its own fix; it is not SQL",
+    )?;
     let store = manager
         .result_stores()
         .current()
         .check("the store slot")?
         .check("the store opened for the attempt")?;
     let stats = store.stats().check("read the store counters")?;
-    assert_eq!(
-        (
+    ensure_eq(
+        &(
             stats.active.results,
             stats.idle.results,
-            stats.delivered.results
+            stats.delivered.results,
         ),
-        (0, 0, 0),
-        "no partial result is left behind"
-    );
+        &(0, 0, 0),
+        "no partial result is left behind",
+    )?;
     Ok(())
 }

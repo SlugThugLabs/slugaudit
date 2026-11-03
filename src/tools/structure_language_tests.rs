@@ -4,7 +4,7 @@
 use super::*;
 use crate::error_codes::ErrorCode;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
 fn project_with(files: &[(&str, &[u8])]) -> TestResult<tempfile::TempDir> {
@@ -47,26 +47,35 @@ fn a_language_the_pack_does_not_know_is_unknown_language_naming_the_indexed_ones
     let error = ask_language(&project, "klingon", "(identifier) @name")
         .check_err("an unknown language is refused")?;
 
-    assert_eq!(
-        error.code,
-        rmcp::model::ErrorCode::INVALID_PARAMS,
-        "{error:?}"
-    );
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        format!("{error:?}"),
+    )?;
+    ensure(
         error
             .message
             .ends_with("languages indexed here: python, rust"),
-        "the hint lists the parsed languages in the index, prose excluded: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the hint lists the parsed languages in the index, prose excluded: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         !error.message.contains("klingon"),
-        "the requested name is not echoed: {}",
-        error.message
-    );
+        format!("the requested name is not echoed: {}", error.message),
+    )?;
     let data = error.data.check("the refusal carries data")?;
-    assert_eq!(data["code"], "unknown_language");
-    assert_eq!(data["remedy"], ErrorCode::UnknownLanguage.remedy());
+    ensure_eq(
+        &data.get("code").check("data[\"code\"]")?,
+        &"unknown_language",
+        "data[\"code\"] == \"unknown_language\"",
+    )?;
+    ensure_eq(
+        &data.get("remedy").check("data[\"remedy\"]")?,
+        &ErrorCode::UnknownLanguage.remedy(),
+        "data[\"remedy\"] == ErrorCode::UnknownLanguage.remedy()",
+    )?;
     Ok(())
 }
 
@@ -77,20 +86,26 @@ fn a_real_grammar_absent_from_the_project_is_unknown_language_not_a_query_error(
     let error = ask_language(&project, "python", "(function_item) @f")
         .check_err("a language with no indexed file is refused")?;
 
-    assert!(
+    ensure(
         !error.message.contains("Invalid node type"),
-        "the pack's query error must not stand in for the missing language: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the pack's query error must not stand in for the missing language: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         error.message.ends_with("languages indexed here: rust"),
-        "{}",
-        error.message
-    );
-    assert_eq!(
-        error.data.check("the refusal carries data")?["code"],
-        "unknown_language"
-    );
+        format!("{}", error.message),
+    )?;
+    ensure_eq(
+        &error
+            .data
+            .check("the refusal carries data")?
+            .get("code")
+            .check("error.data.check(\"the refusal carries data\")?[\"code\"]")?,
+        &"unknown_language",
+        "error.data.check(\"the refusal carries data\")?[\"code\"] == \"unknown_language\"",
+    )?;
     Ok(())
 }
 
@@ -102,7 +117,7 @@ fn an_indexed_language_still_runs_its_project_wide_query() -> TestResult {
         .check("an indexed language runs")?;
 
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
-    assert_eq!(names, ["a"]);
+    ensure_eq(&names, &["a"], "names == [\"a\"]")?;
     Ok(())
 }
 
@@ -120,13 +135,14 @@ fn an_untested_language_query_carries_one_notice() -> TestResult {
     )
     .check("an indexed language runs")?;
 
-    assert_eq!(
-        response.notices,
-        [
+    ensure_eq(
+        &response.notices,
+        &[
             "python: uses an untested grammar (downloaded on first use). \
-             Only Rust is tested; treat python results as best-effort."
-        ]
-    );
+             Only Rust is tested; treat python results as best-effort.",
+        ],
+        "response.notices == [ \"python: uses an untested grammar (downloaded on first use). \\ Only Rust is tested; treat python results as best-effort.\" ]",
+    )?;
     Ok(())
 }
 
@@ -140,6 +156,9 @@ fn a_rust_query_carries_no_notice() -> TestResult {
     let response = ask_language(&project, "rust", "(function_item name: (identifier) @name)")
         .check("an indexed language runs")?;
 
-    assert!(response.notices.is_empty(), "{:?}", response.notices);
+    ensure(
+        response.notices.is_empty(),
+        format!("{:?}", response.notices),
+    )?;
     Ok(())
 }

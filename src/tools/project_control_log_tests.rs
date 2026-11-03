@@ -2,7 +2,7 @@
 //! database discard WARN names the real database path.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 /// The enable-path corrupt-database discard WARN names the real database
@@ -32,22 +32,26 @@ fn on_action_corrupt_database_discard_warn_logs_the_real_path() -> TestResult {
     })?;
 
     let response = result.check("the corrupt database must be discarded and rebuilt")?;
-    assert_eq!(response.0.status, ProjectControlStatus::Enabled);
+    ensure_eq(
+        &response.0.status,
+        &ProjectControlStatus::Enabled,
+        "response.0.status == ProjectControlStatus::Enabled",
+    )?;
     let record = logs
         .lines()
         .find(|line| line.contains("operation=\"enable_project\""))
         .check(&format!("the discard record must exist:\n{logs}"))?;
-    assert!(
+    ensure(
         record.contains(&format!(" path={expected_path} ")),
-        "the discard WARN must carry the real database path:\n{logs}"
-    );
-    assert!(
+        format!("the discard WARN must carry the real database path:\n{logs}"),
+    )?;
+    ensure(
         record.contains("database is corrupt or outdated; discarding and re-importing"),
-        "the record must be the discard WARN:\n{logs}"
-    );
-    assert!(
+        format!("the record must be the discard WARN:\n{logs}"),
+    )?;
+    ensure(
         !record.contains("database_id="),
-        "the redacted database id is gone:\n{logs}"
-    );
+        format!("the redacted database id is gone:\n{logs}"),
+    )?;
     Ok(())
 }

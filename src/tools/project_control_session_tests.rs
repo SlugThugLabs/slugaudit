@@ -1,7 +1,7 @@
 //! The profile `project_control on` takes is a session setting, and `off`
 //! leaves nothing behind.
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn on_with_profile(path: &str, profile: &str) -> Parameters<ProjectControlRequest> {
     Parameters(ProjectControlRequest {
@@ -37,23 +37,24 @@ fn turning_on_with_a_profile_holds_it_in_memory_and_writes_no_config() -> TestRe
     .check("enable with a profile")?;
 
     let root = ProjectRoot::resolve(project.path()).check("resolve root")?;
-    assert_eq!(
-        project::session_profile(root.as_path()).check("read the session profile")?,
-        Some(crate::model::AuditProfile::Lean)
-    );
+    ensure_eq(
+        &project::session_profile(root.as_path()).check("read the session profile")?,
+        &Some(crate::model::AuditProfile::Lean),
+        "project::session_profile(root.as_path()).check(\"read the session profile\")? == Some(crate::model::AuditProfile::Lean)",
+    )?;
     let entries = activation_entries(&project)?;
-    assert!(
+    ensure(
         !entries.iter().any(|name| name.starts_with("config.")),
-        "no config file is written: {entries:?}"
-    );
+        format!("no config file is written: {entries:?}"),
+    )?;
     let limits = project::effective_limits(root.as_path()).check("limits")?;
-    assert_eq!(
-        limits.max_total_import_bytes,
-        crate::model::limits_for_profile(crate::model::AuditProfile::Lean)
+    ensure_eq(
+        &limits.max_total_import_bytes,
+        &crate::model::limits_for_profile(crate::model::AuditProfile::Lean)
             .check("lean")?
             .max_total_import_bytes,
-        "the session profile picks the base limits"
-    );
+        "the session profile picks the base limits",
+    )?;
     Ok(())
 }
 
@@ -70,7 +71,11 @@ fn a_per_repo_config_json_is_ignored_when_turning_on() -> TestResult {
 
     let response = control(&path, ProjectControlAction::On)?.0;
 
-    assert_eq!(response.status, ProjectControlStatus::Enabled);
+    ensure_eq(
+        &response.status,
+        &ProjectControlStatus::Enabled,
+        "response.status == ProjectControlStatus::Enabled",
+    )?;
     response
         .import
         .as_ref()
@@ -107,9 +112,16 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
 
     let off = control(&path, ProjectControlAction::Off)?.0;
 
-    assert_eq!(off.status, ProjectControlStatus::Disabled);
-    assert!(!activation.exists(), "off deletes the whole directory");
-    assert!(!project.path().join(".planning").exists());
+    ensure_eq(
+        &off.status,
+        &ProjectControlStatus::Disabled,
+        "off.status == ProjectControlStatus::Disabled",
+    )?;
+    ensure(!activation.exists(), "off deletes the whole directory")?;
+    ensure(
+        !project.path().join(".planning").exists(),
+        "!project.path().join(\".planning\").exists()",
+    )?;
     let error = crate::tools::report(
         &Parameters(crate::tools::ReportRequest { path: path.clone() }),
         &crate::progress::NoopProgressSink,
@@ -117,20 +129,20 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
     )
     .err()
     .check("a call on a project that is off fails")?;
-    assert_eq!(
-        error.data.as_ref().and_then(|data| data.get("code")),
-        Some(&serde_json::json!("project_not_enabled")),
-        "{error:?}"
-    );
-    assert!(
+    ensure_eq(
+        &error.data.as_ref().and_then(|data| data.get("code")),
+        &Some(&serde_json::json!("project_not_enabled")),
+        format!("{error:?}"),
+    )?;
+    ensure(
         !activation.exists(),
-        "the failed call must not recreate the directory"
-    );
-    assert_eq!(
-        control(&path, ProjectControlAction::Off)?.0.status,
-        ProjectControlStatus::AlreadyDisabled,
-        "a second off has nothing left to remove"
-    );
+        "the failed call must not recreate the directory",
+    )?;
+    ensure_eq(
+        &control(&path, ProjectControlAction::Off)?.0.status,
+        &ProjectControlStatus::AlreadyDisabled,
+        "a second off has nothing left to remove",
+    )?;
     Ok(())
 }
 
@@ -152,10 +164,10 @@ fn off_fails_when_the_activation_dir_cannot_be_inspected() -> TestResult {
     .err()
     .check("an uninspectable activation dir is not 'already disabled'")?;
 
-    assert_eq!(
-        error.message,
-        "disable: failed to update the activation directory: Not a directory (os error 20)",
-        "an uninspectable activation dir fails the operation with its cause"
-    );
+    ensure_eq(
+        &error.message,
+        &"disable: failed to update the activation directory: Not a directory (os error 20)",
+        "an uninspectable activation dir fails the operation with its cause",
+    )?;
     Ok(())
 }

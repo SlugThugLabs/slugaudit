@@ -1,6 +1,6 @@
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::time::Duration;
 
@@ -62,8 +62,26 @@ fn a_null_byte_len_is_returned_as_null_not_zero() -> TestResult {
         "SELECT CAST(NULL AS INTEGER) AS byte_len, 0 AS empty_len FROM files",
     )
     .check("query succeeds")?;
-    assert!(response.rows[0]["byte_len"].is_null());
-    assert_eq!(response.rows[0]["empty_len"], 0);
+    ensure(
+        response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("byte_len")
+            .check("response.rows[0][\"byte_len\"]")?
+            .is_null(),
+        "response.rows[0][\"byte_len\"].is_null()",
+    )?;
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("empty_len")
+            .check("response.rows[0][\"empty_len\"]")?,
+        &0,
+        "response.rows[0][\"empty_len\"] == 0",
+    )?;
     Ok(())
 }
 
@@ -71,10 +89,28 @@ fn a_null_byte_len_is_returned_as_null_not_zero() -> TestResult {
 fn a_plain_select_returns_real_rows() -> TestResult {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")])?;
     let response = ask(&project, "SELECT path, language FROM files").check("query succeeds")?;
-    assert_eq!(response.rows.len(), 1);
-    assert_eq!(response.rows[0]["path"], "lib.rs");
-    assert_eq!(response.rows[0]["language"], "rust");
-    assert!(response.page.complete);
+    ensure_eq(&response.rows.len(), &1, "response.rows.len() == 1")?;
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("path")
+            .check("response.rows[0][\"path\"]")?,
+        &"lib.rs",
+        "response.rows[0][\"path\"] == \"lib.rs\"",
+    )?;
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("language")
+            .check("response.rows[0][\"language\"]")?,
+        &"rust",
+        "response.rows[0][\"language\"] == \"rust\"",
+    )?;
+    ensure(response.page.complete, "response.page.complete")?;
     Ok(())
 }
 
@@ -86,8 +122,17 @@ fn a_query_with_a_trailing_line_comment_still_executes() -> TestResult {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")])?;
     let response = ask(&project, "SELECT path FROM files -- get paths")
         .check("query with trailing comment succeeds")?;
-    assert_eq!(response.rows.len(), 1);
-    assert_eq!(response.rows[0]["path"], "lib.rs");
+    ensure_eq(&response.rows.len(), &1, "response.rows.len() == 1")?;
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("path")
+            .check("response.rows[0][\"path\"]")?,
+        &"lib.rs",
+        "response.rows[0][\"path\"] == \"lib.rs\"",
+    )?;
     Ok(())
 }
 
@@ -98,14 +143,23 @@ fn joins_and_ctes_work_unlike_the_old_single_table_restriction() -> TestResult {
         &project,
         "SELECT f.path, e.kind FROM files f JOIN evidence e ON e.file_id = f.id WHERE e.kind = 'Structure'")
     .check("join query succeeds")?;
-    assert_eq!(response.rows.len(), 1);
-    assert_eq!(response.rows[0]["path"], "lib.rs");
+    ensure_eq(&response.rows.len(), &1, "response.rows.len() == 1")?;
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("path")
+            .check("response.rows[0][\"path\"]")?,
+        &"lib.rs",
+        "response.rows[0][\"path\"] == \"lib.rs\"",
+    )?;
 
     let recursive = ask(
         &project,
         "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt")
     .check("recursive CTE query succeeds")?;
-    assert_eq!(recursive.rows.len(), 5);
+    ensure_eq(&recursive.rows.len(), &5, "recursive.rows.len() == 5")?;
     Ok(())
 }
 
@@ -114,13 +168,23 @@ fn a_write_attempt_fails_and_changes_nothing() -> TestResult {
     let project = activated_project(&[("lib.rs", b"pub fn a() {}\n")])?;
     let result = ask(&project, "DELETE FROM files");
     let err = result.check_err("write attempt on read-only query must fail")?;
-    assert_eq!(
-        err.message.as_ref(),
-        "sql was refused: `query` accepts a single read-only SELECT/WITH statement"
-    );
+    ensure_eq(
+        &err.message.as_ref(),
+        &"sql was refused: `query` accepts a single read-only SELECT/WITH statement",
+        "err.message.as_ref() == \"sql was refused: `query` accepts a single read-only SELECT/WITH statement\"",
+    )?;
 
     let after = ask(&project, "SELECT count(*) AS n FROM files").check("count still works")?;
-    assert_eq!(after.rows[0]["n"], 1);
+    ensure_eq(
+        &after
+            .rows
+            .first()
+            .check("after.rows[0]")?
+            .get("n")
+            .check("after.rows[0][\"n\"]")?,
+        &1,
+        "after.rows[0][\"n\"] == 1",
+    )?;
     Ok(())
 }
 
@@ -145,11 +209,13 @@ fn an_attached_database_attempt_fails() -> TestResult {
         &project,
         &format!("ATTACH DATABASE '{}' AS other", foreign_path.display()),
     );
-    assert!(
+    ensure(
         result.is_err(),
-        "a foreign database must be refused, not attached: {:?}",
-        result.map(|response| response.rows)
-    );
+        format!(
+            "a foreign database must be refused, not attached: {:?}",
+            result.map(|response| response.rows)
+        ),
+    )?;
 
     for sql in [
         "ATTACH DATABASE ':memory:' AS other",
@@ -157,16 +223,22 @@ fn an_attached_database_attempt_fails() -> TestResult {
         "SELECT v FROM other.secrets",
     ] {
         let result = ask(&project, sql);
-        assert!(
+        ensure(
             result.is_err(),
-            "`{sql}` must be refused, not answered with 0 rows: {:?}",
-            result.map(|response| response.rows)
-        );
+            format!(
+                "`{sql}` must be refused, not answered with 0 rows: {:?}",
+                result.map(|response| response.rows)
+            ),
+        )?;
     }
 
     // Re-read through the tool: the fixture row is still the only row.
     let after = ask(&project, "SELECT path FROM files").check("the index still reads")?;
-    assert_eq!(after.rows.len(), 1, "the index changed: {:?}", after.rows);
+    ensure_eq(
+        &after.rows.len(),
+        &1,
+        format!("the index changed: {:?}", after.rows),
+    )?;
     Ok(())
 }
 
@@ -186,18 +258,17 @@ fn more_than_one_statement_is_refused_with_the_single_statement_message() -> Tes
         "SELECT '--x'; SELECT 2",
     ] {
         let error = ask(&project, sql).check_err("a second statement must be refused")?;
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{sql}");
-        assert!(
+        ensure_eq(&error.code, &rmcp::model::ErrorCode::INVALID_PARAMS, sql)?;
+        ensure(
             error
                 .message
                 .contains("only a single read-only statement is supported"),
-            "{sql}: unexpected message: {}",
-            error.message
-        );
+            format!("{sql}: unexpected message: {}", error.message),
+        )?;
     }
 
     let files = ask(&project, "SELECT path FROM files").check("the index is untouched")?;
-    assert_eq!(files.rows.len(), 1, "{:?}", files.rows);
+    ensure_eq(&files.rows.len(), &1, format!("{:?}", files.rows))?;
     Ok(())
 }
 
@@ -219,11 +290,20 @@ fn a_single_statement_with_semicolons_or_trailing_trivia_is_accepted() -> TestRe
         "SELECT 1 AS [a;b]",
     ] {
         let response = ask(&project, sql).map_err(|e| e.message).check(sql)?;
-        assert_eq!(response.rows.len(), 1, "{sql}");
-        assert!(response.page.complete, "{sql}");
+        ensure_eq(&response.rows.len(), &1, sql)?;
+        ensure(response.page.complete, sql)?;
     }
     let response = ask(&project, "SELECT ';' AS x").check("string semicolon is fine")?;
-    assert_eq!(response.rows[0]["x"], ";");
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("x")
+            .check("response.rows[0][\"x\"]")?,
+        &";",
+        "response.rows[0][\"x\"] == \";\"",
+    )?;
     Ok(())
 }
 
@@ -237,32 +317,66 @@ fn multibyte_content_never_confuses_statement_counting() -> TestResult {
 
     // A multibyte string literal with a semicolon inside is one statement.
     let response = ask(&project, "SELECT '日本語;です' AS x").check("multibyte string is fine")?;
-    assert_eq!(response.rows[0]["x"], "日本語;です");
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("x")
+            .check("response.rows[0][\"x\"]")?,
+        &"日本語;です",
+        "response.rows[0][\"x\"] == \"日本語;です\"",
+    )?;
 
     // A multibyte quoted identifier with a semicolon is one statement.
     let response = ask(&project, "SELECT 1 AS \"値;列\"").check("multibyte quoted id is fine")?;
-    assert_eq!(response.rows[0]["値;列"], 1);
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("値;列")
+            .check("response.rows[0][\"値;列\"]")?,
+        &1,
+        "response.rows[0][\"値;列\"] == 1",
+    )?;
 
     // A semicolon inside a multibyte line comment is one statement.
     let response =
         ask(&project, "SELECT 1 -- コメント ; コメント").check("multibyte comment is fine")?;
-    assert_eq!(
-        response.rows[0]
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
             .as_object()
             .check("row is an object")?
             .len(),
-        1
-    );
+        &1,
+        "response.rows[0] .as_object() .check(\"row is an object\")? .len() == 1",
+    )?;
 
     // A semicolon inside a multibyte block comment is one statement.
     let response = ask(&project, "SELECT 1 /* コメント ; コメント */ AS x")
         .check("multibyte block comment is fine")?;
-    assert_eq!(response.rows[0]["x"], 1);
+    ensure_eq(
+        &response
+            .rows
+            .first()
+            .check("response.rows[0]")?
+            .get("x")
+            .check("response.rows[0][\"x\"]")?,
+        &1,
+        "response.rows[0][\"x\"] == 1",
+    )?;
 
     // A real separator still counts even when multibyte text precedes it.
     let error = ask(&project, "SELECT '終わり'; SELECT 2")
         .check_err("a separator after multibyte content is still a separator")?;
-    assert!(error.message.contains("single read-only statement"));
+    ensure(
+        error.message.contains("single read-only statement"),
+        "error.message.contains(\"single read-only statement\")",
+    )?;
     Ok(())
 }
 
@@ -271,11 +385,10 @@ fn empty_sql_is_a_typed_error() -> TestResult {
     let project = activated_project(&[])?;
     let result = ask(&project, "   ");
     let err = result.check_err("empty sql must return ErrorData")?;
-    assert!(
+    ensure(
         err.message.contains("must not be empty"),
-        "unexpected error message: {}",
-        err.message
-    );
+        format!("unexpected error message: {}", err.message),
+    )?;
     Ok(())
 }
 
@@ -295,210 +408,36 @@ fn oversized_sql_carries_its_code_and_never_the_sql_text() -> TestResult {
         return Err("a statement over the byte cap must fail".to_owned())
             .check("unexpected outcome");
     };
-    assert!(
+    ensure(
         !error.message.contains(sentinel),
-        "the SQL text is not echoed in the message either: {}",
-        error.message
-    );
+        format!(
+            "the SQL text is not echoed in the message either: {}",
+            error.message
+        ),
+    )?;
     let data = error
         .data
         .check("an oversized statement carries a payload")?;
-    assert_eq!(data["code"], "sql_too_large");
-    let remedy = data["remedy"].as_str().check("remedy is a string")?;
-    assert!(
+    ensure_eq(
+        &data.get("code").check("data[\"code\"]")?,
+        &"sql_too_large",
+        "data[\"code\"] == \"sql_too_large\"",
+    )?;
+    let remedy = data
+        .get("remedy")
+        .check("data[\"remedy\"]")?
+        .as_str()
+        .check("remedy is a string")?;
+    ensure(
         remedy.contains("SLUGAUDIT_MAX_QUERY_SQL_BYTES"),
-        "the remedy must name the knob: {remedy}"
-    );
-    assert!(
+        format!("the remedy must name the knob: {remedy}"),
+    )?;
+    ensure(
         !serde_json::to_string(&data)
             .check("serializes")?
-            .contains(sentinel)
-    );
-    Ok(())
-}
-
-const COUNT_TO_900: &str = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL \
-    SELECT x + 1 FROM cnt WHERE x < 900) SELECT x FROM cnt";
-
-#[test]
-fn more_than_500_rows_come_back_in_one_page_when_the_byte_budget_allows() -> TestResult {
-    let project = activated_project(&[])?;
-
-    let response = ask(&project, COUNT_TO_900).check("recursive CTE query succeeds")?;
-
-    assert_eq!(response.rows.len(), 900);
-    assert!(response.page.complete);
-    assert_eq!(response.page.cursor, None);
-    Ok(())
-}
-
-#[test]
-fn a_page_is_cut_by_the_byte_budget_and_carries_a_cursor() -> TestResult {
-    let project = activated_project(&[])?;
-    let limits = ResourceLimits {
-        max_query_response_bytes: 200,
-        ..ResourceLimits::default()
-    };
-
-    let first = ask_with_limits(&project, COUNT_TO_900, &limits).check("first page")?;
-
-    assert!(!first.page.complete);
-    assert!(first.rows.len() > 1 && first.rows.len() < 900);
-    first
-        .page
-        .cursor
-        .as_ref()
-        .check("`first.page.cursor` is present")?;
-    assert_eq!(first.rows[0]["x"], 1);
-    Ok(())
-}
-
-#[test]
-fn an_agent_limit_and_offset_still_work_inside_the_subquery() -> TestResult {
-    let project = activated_project(&[])?;
-
-    let response = ask(&project, &format!("{COUNT_TO_900} LIMIT 3 OFFSET 10;"))
-        .check("the agent's own LIMIT/OFFSET is honored")?;
-
-    let xs: Vec<_> = response.rows.iter().map(|r| r["x"].clone()).collect();
-    assert_eq!(xs, [11, 12, 13]);
-    assert!(response.page.complete);
-    Ok(())
-}
-
-#[test]
-fn query_on_an_inactive_project_is_a_typed_error_not_a_panic() -> TestResult {
-    let project = tempfile::tempdir().check("project dir")?;
-    let Err(error) = ask(&project, "SELECT 1") else {
-        return Err("an inactive project must fail".to_owned()).check("unexpected outcome");
-    };
-    // The disabled state is one instruction, not one opaque failure per
-    // tool: the prose stays, and the machine-readable half says *which*
-    // state this is and which call leaves it.
-    assert!(
-        error.message.contains("not enabled"),
-        "the existing wording stays: {}",
-        error.message
-    );
-    let data = error.data.check("the disabled state carries a payload")?;
-    assert_eq!(data["code"], "project_not_enabled");
-    let remedy = data["remedy"].as_str().check("remedy is a string")?;
-    assert!(remedy.contains("project_control"), "{remedy}");
-    assert!(remedy.contains("\"action\":\"on\""), "{remedy}");
-    Ok(())
-}
-
-#[test]
-fn an_oversized_text_or_blob_value_is_rejected_before_being_expanded() -> TestResult {
-    let project = activated_project(&[])?;
-    let limits = ResourceLimits {
-        max_query_value_bytes: 1024,
-        ..ResourceLimits::default()
-    };
-    // zeroblob/printf avoid embedding a huge literal in the test source:
-    // SQLite materializes the oversized value, and the per-value cap must
-    // reject it before it is cloned or hex-expanded into JSON.
-    for sql in [
-        "SELECT zeroblob(4096) AS huge",
-        "SELECT printf('%.*c', 4096, 'x') AS huge",
-    ] {
-        let error =
-            ask_with_limits(&project, sql, &limits).check_err("oversized value is rejected")?;
-        assert!(
-            error.message.contains("per-value cap"),
-            "unexpected message for {sql}: {}",
-            error.message
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn a_pathological_query_is_aborted_by_the_step_budget() -> TestResult {
-    let project = activated_project(&[])?;
-    let limits = ResourceLimits {
-        max_query_vm_steps: 10,
-        ..ResourceLimits::default()
-    };
-    let result = ask_with_limits(
-        &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt",
-        &limits,
-    );
-    let error = result.check_err("runaway query is aborted, not run to completion")?;
-    assert!(
-        error.message.contains("step budget"),
-        "unexpected message: {}",
-        error.message
-    );
-    Ok(())
-}
-
-#[test]
-fn a_pathological_query_is_aborted_by_the_wall_clock_budget() -> TestResult {
-    let project = activated_project(&[])?;
-    // Effectively zero: by the time the progress handler first fires (every
-    // 1000 VM steps), any positive elapsed time trips this deadline, while
-    // the step budget stays at its generous default so it is not what
-    // catches the query.
-    let limits = ResourceLimits {
-        max_query_wall_clock: Duration::from_nanos(1),
-        ..ResourceLimits::default()
-    };
-    let manager = crate::sync::SourceSyncManager::default();
-    let result = query_with_limits(
-        &Parameters(QueryRequest {
-            path: Some(project.path().to_string_lossy().into_owned()),
-            sql: "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5000) SELECT x FROM cnt".to_owned(),
-            cursor: None,
-            legacy_paging: LegacyPaging::default(),
-            page_bytes: None,
-        }),
-        &limits,
-        &crate::progress::NoopProgressSink,
-        &manager,
-    )
-    .map(|Json(response)| response);
-    let error = result.check_err("runaway query is aborted, not run to completion")?;
-    assert!(
-        error.message.contains("time budget"),
-        "unexpected message: {}",
-        error.message
-    );
-    let store = manager
-        .result_stores()
-        .current()
-        .check("the store slot")?
-        .check("the store opened for the attempt")?;
-    let stats = store.stats().check("read the store counters")?;
-    assert_eq!(
-        (
-            stats.active.results,
-            stats.idle.results,
-            stats.delivered.results
-        ),
-        (0, 0, 0),
-        "no partial result is left behind"
-    );
-    Ok(())
-}
-
-#[test]
-fn results_exceeding_response_bytes_are_cut_into_pages() -> TestResult {
-    let project = activated_project(&[])?;
-    let limits = ResourceLimits {
-        max_query_response_bytes: 50,
-        ..ResourceLimits::default()
-    };
-    let response = ask_with_limits(
-        &project,
-        "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 50) SELECT printf('long_string_value_%d', x) AS s FROM cnt",
-        &limits,
-    )
-    .check("query succeeds")?;
-    assert!(!response.page.complete);
-    assert!(!response.rows.is_empty());
-    assert!(response.rows.len() < 50);
+            .contains(sentinel),
+        "!serde_json::to_string(&data) .check(\"serializes\")? .contains(sentinel)",
+    )?;
     Ok(())
 }
 
@@ -507,3 +446,6 @@ mod query_page_tests;
 
 #[path = "query_clip_tests.rs"]
 mod query_clip_tests;
+
+#[path = "query_budget_tests.rs"]
+mod budget_tests;

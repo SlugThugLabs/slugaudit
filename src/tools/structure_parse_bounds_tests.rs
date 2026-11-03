@@ -5,7 +5,7 @@ use super::*;
 use crate::tools::PageLimit;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::time::Duration;
 
 const QUERY: &str = "(function_item name: (identifier) @name)";
@@ -64,9 +64,17 @@ fn a_multi_file_scan_skips_a_file_over_max_parse_bytes_and_counts_it() -> TestRe
     let response = call(&multi_file(&project), &limits).check("structure succeeds")?;
 
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
-    assert_eq!(names, ["alpha"]);
-    assert_eq!(response.files_over_parse_limit, 1);
-    assert_eq!(response.files_not_scanned, 0);
+    ensure_eq(&names, &["alpha"], "names == [\"alpha\"]")?;
+    ensure_eq(
+        &response.files_over_parse_limit,
+        &1,
+        "response.files_over_parse_limit == 1",
+    )?;
+    ensure_eq(
+        &response.files_not_scanned,
+        &0,
+        "response.files_not_scanned == 0",
+    )?;
     Ok(())
 }
 
@@ -81,12 +89,15 @@ fn a_single_file_over_max_parse_bytes_is_refused_by_name() -> TestResult {
     let error = call(&single_file(&project, "big.rs"), &limits)
         .check_err("an oversize file must be refused")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure(
         error.message.starts_with("big.rs is ") && error.message.contains("max_parse_bytes (100)"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -117,16 +128,28 @@ fn the_window_refuses_a_file_larger_than_itself_before_loading_it() -> TestResul
     .check("the window loads")?;
 
     let loaded: Vec<&str> = window.files.iter().map(|(path, _)| path.as_str()).collect();
-    assert_eq!(
-        loaded,
-        ["a.rs"],
-        "b.rs is over the window; c.rs no longer fits"
-    );
+    ensure_eq(
+        &loaded,
+        &["a.rs"],
+        "b.rs is over the window; c.rs no longer fits",
+    )?;
     let loaded_bytes: usize = window.files.iter().map(|(_, content)| content.len()).sum();
-    assert!(loaded_bytes <= 30, "{loaded_bytes} bytes loaded");
-    assert_eq!(window.files_over_parse_limit, 1);
-    assert_eq!(window.files_not_scanned, 1);
-    assert_eq!(window.next_start_after_file.as_deref(), Some("b.rs"));
+    ensure(loaded_bytes <= 30, format!("{loaded_bytes} bytes loaded"))?;
+    ensure_eq(
+        &window.files_over_parse_limit,
+        &1,
+        "window.files_over_parse_limit == 1",
+    )?;
+    ensure_eq(
+        &window.files_not_scanned,
+        &1,
+        "window.files_not_scanned == 1",
+    )?;
+    ensure_eq(
+        &window.next_start_after_file.as_deref(),
+        &Some("b.rs"),
+        "window.next_start_after_file.as_deref() == Some(\"b.rs\")",
+    )?;
     Ok(())
 }
 
@@ -143,11 +166,23 @@ fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial(
     let response = call(&multi_file(&project), &limits).check("a partial result, not an error")?;
 
     let names: Vec<&str> = response.matches.iter().map(|m| m.text.as_str()).collect();
-    assert_eq!(names, ["alpha"]);
-    assert_eq!(response.parse_timed_out_file.as_deref(), Some("big.rs"));
-    assert_eq!(response.next_start_after_file.as_deref(), Some("big.rs"));
-    assert_eq!(response.page.limited_by, PageLimit::TimeBudget);
-    assert!(!response.page.complete, "the timed-out file remains");
+    ensure_eq(&names, &["alpha"], "names == [\"alpha\"]")?;
+    ensure_eq(
+        &response.parse_timed_out_file.as_deref(),
+        &Some("big.rs"),
+        "response.parse_timed_out_file.as_deref() == Some(\"big.rs\")",
+    )?;
+    ensure_eq(
+        &response.next_start_after_file.as_deref(),
+        &Some("big.rs"),
+        "response.next_start_after_file.as_deref() == Some(\"big.rs\")",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::TimeBudget,
+        "response.page.limited_by == PageLimit::TimeBudget",
+    )?;
+    ensure(!response.page.complete, "the timed-out file remains")?;
     Ok(())
 }
 
@@ -163,9 +198,10 @@ fn a_single_file_parse_cancelled_at_the_deadline_is_the_budget_error() -> TestRe
     let error = call(&single_file(&project, "big.rs"), &limits)
         .check_err("nothing parsed, so nothing to return")?;
 
-    assert_eq!(
-        error.message.as_ref(),
-        "structure query exceeded its execution time budget"
-    );
+    ensure_eq(
+        &error.message.as_ref(),
+        &"structure query exceeded its execution time budget",
+        "error.message.as_ref() == \"structure query exceeded its execution time budget\"",
+    )?;
     Ok(())
 }

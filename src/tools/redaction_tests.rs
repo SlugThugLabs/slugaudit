@@ -19,7 +19,7 @@ use crate::store::test_capture::capture_at_level;
 use crate::tools::test_support::activated_project;
 use crate::tools::{FindingRequest, QueryRequest, ReportRequest};
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure};
 use tracing::Level;
 
 /// Distinctive strings that must never appear in captured logs.
@@ -36,11 +36,14 @@ fn emit_capture_control() {
     tracing::debug!(control = CAPTURE_CONTROL, "redaction capture control");
 }
 
-fn assert_capture_is_live(logs: &str) {
-    assert!(
+fn assert_capture_is_live(logs: &str) -> TestResult {
+    ensure(
         logs.contains(CAPTURE_CONTROL),
-        "the DEBUG capture went blind; a leaked debug-level event would pass unseen:\n{logs}"
-    );
+        format!(
+            "the DEBUG capture went blind; a leaked debug-level event would pass unseen:\n{logs}"
+        ),
+    )?;
+    Ok(())
 }
 
 fn manager() -> crate::sync::SourceSyncManager {
@@ -70,11 +73,11 @@ fn query_logging_never_emits_sql_text() -> TestResult {
         Level::DEBUG,
     )?;
     result.check("query succeeds")?;
-    assert_capture_is_live(&logs);
-    assert!(
+    assert_capture_is_live(&logs)?;
+    ensure(
         !logs.contains(SQL_SENTINEL),
-        "the query tool leaked SQL text into logs:\n{logs}"
-    );
+        format!("the query tool leaked SQL text into logs:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -103,11 +106,11 @@ fn finding_logging_never_emits_finding_content() -> TestResult {
         Level::DEBUG,
     )?;
     result.check("finding records")?;
-    assert_capture_is_live(&logs);
-    assert!(
+    assert_capture_is_live(&logs)?;
+    ensure(
         !logs.contains(FINDING_TITLE_SENTINEL) && !logs.contains(FINDING_DESC_SENTINEL),
-        "the finding tool leaked AI-authored judgment content into logs:\n{logs}"
-    );
+        format!("the finding tool leaked AI-authored judgment content into logs:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -135,11 +138,11 @@ fn sync_and_report_logging_never_emits_source_content() -> TestResult {
         Level::DEBUG,
     )?;
     result.check("report builds")?;
-    assert_capture_is_live(&logs);
-    assert!(
+    assert_capture_is_live(&logs)?;
+    ensure(
         !logs.contains(SOURCE_SENTINEL),
-        "the sync/report path leaked source content into logs:\n{logs}"
-    );
+        format!("the sync/report path leaked source content into logs:\n{logs}"),
+    )?;
     Ok(())
 }
 
@@ -157,19 +160,21 @@ fn agent_supplied_input_never_reaches_the_error_payload() -> TestResult {
     else {
         return Err("an unknown mechanic must fail".to_owned()).check("unexpected outcome");
     };
-    assert!(
+    ensure(
         error.message.contains("SENTINEL_MECHANIC_9147"),
-        "the message still names what the caller asked for: {}",
-        error.message
-    );
+        format!(
+            "the message still names what the caller asked for: {}",
+            error.message
+        ),
+    )?;
     let payload = serde_json::to_string(&error.data).check("payload serializes")?;
-    assert!(
+    ensure(
         !payload.contains("SENTINEL_MECHANIC_9147"),
-        "the mechanic id must not reach the payload: {payload}"
-    );
-    assert!(
+        format!("the mechanic id must not reach the payload: {payload}"),
+    )?;
+    ensure(
         payload.contains("unknown_mechanic"),
-        "and the payload is the machine-readable half instead: {payload}"
-    );
+        format!("and the payload is the machine-readable half instead: {payload}"),
+    )?;
     Ok(())
 }
