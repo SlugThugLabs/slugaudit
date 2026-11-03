@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
 #[test]
 fn parser_resource_and_parse_outcome_are_independent() -> TestResult {
@@ -19,10 +19,11 @@ fn unavailable_parser_cannot_look_successful() -> TestResult {
         outcome: ParseOutcome::Succeeded,
         completeness: ExtractionCompleteness::Full,
     };
-    assert_eq!(
-        run.validate(),
-        Err("an unavailable parser cannot report a parse outcome")
-    );
+    ensure_eq(
+        &run.validate(),
+        &Err("an unavailable parser cannot report a parse outcome"),
+        "run.validate() == Err(\"an unavailable parser cannot report a parse outcome\")",
+    )?;
     Ok(())
 }
 
@@ -34,23 +35,26 @@ fn successful_parsing_cannot_claim_unavailable_extraction() -> TestResult {
         completeness: ExtractionCompleteness::Unavailable,
     };
 
-    assert_eq!(
-        run.validate(),
-        Err("successful parsing cannot have unavailable extraction")
-    );
+    ensure_eq(
+        &run.validate(),
+        &Err("successful parsing cannot have unavailable extraction"),
+        "run.validate() == Err(\"successful parsing cannot have unavailable extraction\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn sql_text_ignores_variant_payloads() -> TestResult {
-    assert_eq!(
-        ParserAvailability::LoadFailed { reason: "x".into() }.as_sql_text(),
-        "LoadFailed"
-    );
-    assert_eq!(
-        ParseOutcome::Failed { reason: "x".into() }.as_sql_text(),
-        "Failed"
-    );
+    ensure_eq(
+        &ParserAvailability::LoadFailed { reason: "x".into() }.as_sql_text(),
+        &"LoadFailed",
+        "ParserAvailability::LoadFailed { reason: \"x\".into() }.as_sql_text() == \"LoadFailed\"",
+    )?;
+    ensure_eq(
+        &ParseOutcome::Failed { reason: "x".into() }.as_sql_text(),
+        &"Failed",
+        "ParseOutcome::Failed { reason: \"x\".into() }.as_sql_text() == \"Failed\"",
+    )?;
     Ok(())
 }
 
@@ -63,7 +67,11 @@ fn error_reason_prefers_load_failure_over_parse_failure() -> TestResult {
         outcome: ParseOutcome::NotAttempted,
         completeness: ExtractionCompleteness::Unavailable,
     };
-    assert_eq!(run.error_reason().as_deref(), Some("load"));
+    ensure_eq(
+        &run.error_reason().as_deref(),
+        &Some("load"),
+        "run.error_reason().as_deref() == Some(\"load\")",
+    )?;
     Ok(())
 }
 
@@ -77,9 +85,17 @@ fn a_withheld_parse_stores_as_not_attempted_with_its_reason_code() -> TestResult
         completeness: ExtractionCompleteness::ContentOnly,
     };
 
-    assert_eq!(run.validate(), Ok(()));
-    assert_eq!(run.outcome.as_sql_text(), "NotAttempted");
-    assert_eq!(run.error_reason().as_deref(), Some("oversize_for_parse"));
+    ensure_eq(&run.validate(), &Ok(()), "run.validate() == Ok(())")?;
+    ensure_eq(
+        &run.outcome.as_sql_text(),
+        &"NotAttempted",
+        "run.outcome.as_sql_text() == \"NotAttempted\"",
+    )?;
+    ensure_eq(
+        &run.error_reason().as_deref(),
+        &Some("oversize_for_parse"),
+        "run.error_reason().as_deref() == Some(\"oversize_for_parse\")",
+    )?;
     Ok(())
 }
 
@@ -90,6 +106,6 @@ fn error_reason_is_none_when_nothing_failed() -> TestResult {
         outcome: ParseOutcome::Succeeded,
         completeness: ExtractionCompleteness::Partial,
     };
-    assert_eq!(run.error_reason(), None);
+    ensure_eq(&run.error_reason(), &None, "run.error_reason() == None")?;
     Ok(())
 }

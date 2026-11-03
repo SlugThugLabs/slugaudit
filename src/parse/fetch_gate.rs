@@ -22,18 +22,21 @@ pub(crate) const GRAMMAR_FETCH_COOLDOWN: Duration = Duration::from_mins(10);
 #[cfg(not(test))]
 mod state {
     use crate::util::LockPoisoned;
-    use std::sync::Mutex;
-    use std::time::Instant;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
 
-    static LAST_FAILURE: Mutex<Option<Instant>> = Mutex::new(None);
+    static LAST_FAILURE: Mutex<Option<Duration>> = Mutex::new(None);
+    /// The instant the gate's timeline starts at: its first use.
+    static ORIGIN: LazyLock<Instant> = LazyLock::new(Instant::now);
 
-    pub(super) fn now() -> Instant {
-        Instant::now()
+    /// The gate's clock: the time elapsed since [`ORIGIN`].
+    pub(super) fn now() -> Duration {
+        ORIGIN.elapsed()
     }
 
     /// Runs `change` on the time of the last fetch failure.
     pub(super) fn with_last_failure<T>(
-        change: impl FnOnce(&mut Option<Instant>) -> T,
+        change: impl FnOnce(&mut Option<Duration>) -> T,
     ) -> Result<T, LockPoisoned> {
         Ok(change(&mut *crate::util::lock(
             &LAST_FAILURE,
@@ -57,18 +60,26 @@ mod state {
     use std::time::{Duration, Instant};
 
     thread_local! {
-        static LAST_FAILURE: Mutex<Option<Instant>> = const { Mutex::new(None) };
+        static LAST_FAILURE: Mutex<Option<Duration>> = const { Mutex::new(None) };
         static SKEW: Cell<Duration> = const { Cell::new(Duration::ZERO) };
         static CACHED: Cell<bool> = const { Cell::new(false) };
+        /// The instant this thread's gate timeline starts at.
+        static ORIGIN: Instant = Instant::now();
     }
 
-    pub(super) fn now() -> Instant {
-        Instant::now() + SKEW.with(Cell::get)
+    /// The gate's clock: the time elapsed since this thread's origin, plus
+    /// the skew tests added. A skew that would exceed `Duration::MAX`
+    /// saturates there: that much elapsed time is past every cool-down,
+    /// which is what saturation means for a clock.
+    pub(super) fn now() -> Duration {
+        ORIGIN
+            .with(Instant::elapsed)
+            .saturating_add(SKEW.with(Cell::get))
     }
 
     /// Runs `change` on this thread's time of the last fetch failure.
     pub(super) fn with_last_failure<T>(
-        change: impl FnOnce(&mut Option<Instant>) -> T,
+        change: impl FnOnce(&mut Option<Duration>) -> T,
     ) -> Result<T, LockPoisoned> {
         LAST_FAILURE.with(|last| Ok(change(&mut *crate::util::lock(last, "grammar_fetch_gate")?)))
     }
@@ -78,7 +89,7 @@ mod state {
     }
 
     pub(super) fn advance(by: Duration) {
-        SKEW.with(|skew| skew.set(skew.get() + by));
+        SKEW.with(|skew| skew.set(skew.get().saturating_add(by)));
     }
 
     pub(super) fn set_cached(cached: bool) {
@@ -99,7 +110,7 @@ pub(crate) fn record_fetch_failure() -> Result<(), LockPoisoned> {
 fn cooling_down() -> Result<bool, LockPoisoned> {
     let now = state::now();
     state::with_last_failure(|last| {
-        last.is_some_and(|at| now.saturating_duration_since(at) < GRAMMAR_FETCH_COOLDOWN)
+        last.is_some_and(|at| now.saturating_sub(at) < GRAMMAR_FETCH_COOLDOWN)
     })
 }
 
@@ -131,9 +142,14 @@ pub(crate) fn blocks_fetch(language: &str) -> Result<bool, LockPoisoned> {
 pub(crate) mod test_controls {
     use super::{GRAMMAR_FETCH_COOLDOWN, state};
 
+    /// One second past the cool-down; a compile-time sum, so it cannot
+    /// overflow at run time.
+    const PAST_COOLDOWN: std::time::Duration =
+        std::time::Duration::from_secs(GRAMMAR_FETCH_COOLDOWN.as_secs() + 1);
+
     /// Moves this thread's gate clock past the cool-down.
     pub(crate) fn elapse_cooldown() {
-        state::advance(GRAMMAR_FETCH_COOLDOWN + std::time::Duration::from_secs(1));
+        state::advance(PAST_COOLDOWN);
     }
 
     /// Makes `blocks_fetch` treat every grammar as already cached (or not).

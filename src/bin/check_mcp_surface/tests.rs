@@ -1,6 +1,6 @@
 use super::diff::differences;
 use serde_json::json;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn identical_surfaces_have_no_differences() -> TestResult {
@@ -9,7 +9,10 @@ fn identical_surfaces_have_no_differences() -> TestResult {
         "resources": [{"name": "query-cookbook", "uri": "slugaudit://queries/README.md"}],
     });
 
-    assert!(differences(&surface, &surface).is_empty());
+    ensure(
+        differences(&surface, &surface).is_empty(),
+        "differences(&surface, &surface).is_empty()",
+    )?;
     Ok(())
 }
 
@@ -18,13 +21,14 @@ fn a_removed_and_an_added_surface_entry_are_both_reported_by_name() -> TestResul
     let committed = json!({"tools": [{"name": "report"}, {"name": "leads"}]});
     let live = json!({"tools": [{"name": "report"}, {"name": "health"}]});
 
-    assert_eq!(
-        differences(&committed, &live),
-        vec![
+    ensure_eq(
+        &differences(&committed, &live),
+        &vec![
             "tools[leads]: in the snapshot, absent now",
             "tools[health]: absent from the snapshot, present now",
-        ]
-    );
+        ],
+        "differences(&committed, &live) == vec![ \"tools[leads]: in the snapshot, absent now\", \"tools[health]: absent from the snapshot, present now\", ]",
+    )?;
     Ok(())
 }
 
@@ -37,10 +41,11 @@ fn a_changed_annotation_is_reported_with_its_path_and_both_values() -> TestResul
         "tools": [{"name": "project_control", "annotations": {"destructiveHint": true}}],
     });
 
-    assert_eq!(
-        differences(&committed, &live),
-        vec!["tools[project_control].annotations.destructiveHint: snapshot false, live true"]
-    );
+    ensure_eq(
+        &differences(&committed, &live),
+        &vec!["tools[project_control].annotations.destructiveHint: snapshot false, live true"],
+        "differences(&committed, &live) == vec![\"tools[project_control].annotations.destructiveHint: snapshot false, live true\"]",
+    )?;
     Ok(())
 }
 
@@ -49,7 +54,10 @@ fn reordering_named_surface_entries_is_not_drift() -> TestResult {
     let committed = json!({"tools": [{"name": "report"}, {"name": "leads"}]});
     let live = json!({"tools": [{"name": "leads"}, {"name": "report"}]});
 
-    assert!(differences(&committed, &live).is_empty());
+    ensure(
+        differences(&committed, &live).is_empty(),
+        "differences(&committed, &live).is_empty()",
+    )?;
     Ok(())
 }
 
@@ -58,10 +66,11 @@ fn schema_arrays_are_compared_by_position() -> TestResult {
     let committed = json!({"tools": [{"name": "x", "inputSchema": {"required": ["a", "b"]}}]});
     let live = json!({"tools": [{"name": "x", "inputSchema": {"required": ["a"]}}]});
 
-    assert_eq!(
-        differences(&committed, &live),
-        vec!["tools[x].inputSchema.required: snapshot has 2 entries, live has 1"]
-    );
+    ensure_eq(
+        &differences(&committed, &live),
+        &vec!["tools[x].inputSchema.required: snapshot has 2 entries, live has 1"],
+        "differences(&committed, &live) == vec![\"tools[x].inputSchema.required: snapshot has 2 entries, live has 1\"]",
+    )?;
     Ok(())
 }
 
@@ -69,26 +78,24 @@ fn schema_arrays_are_compared_by_position() -> TestResult {
 fn every_live_tool_carries_a_title_a_description_and_both_schemas() -> TestResult {
     let tools = slugaudit_mcp_rust::server::tool_surface();
 
-    assert_eq!(tools.len(), 10, "the surface is the ten advertised tools");
+    ensure_eq(&tools.len(), &10, "the surface is the ten advertised tools")?;
     for tool in &tools {
         tool.title.as_ref().check("`tool.title` is present")?;
         tool.description
             .as_ref()
             .check("`tool.description` is present")?;
-        assert!(
+        ensure(
             !tool.input_schema.is_empty(),
-            "{} has no input schema",
-            tool.name
-        );
+            format!("{} has no input schema", tool.name),
+        )?;
         let schema = tool
             .output_schema
             .as_ref()
             .check("every tool declares its output schema")?;
-        assert!(
+        ensure(
             schema.contains_key("properties"),
-            "{} output schema has no properties",
-            tool.name
-        );
+            format!("{} output schema has no properties", tool.name),
+        )?;
     }
     Ok(())
 }
@@ -118,16 +125,16 @@ fn every_live_tool_matches_the_documented_annotation_table() -> TestResult {
             .annotations
             .as_ref()
             .check(&format!("tool `{name}` has no annotations"))?;
-        assert_eq!(
-            annotations.read_only_hint,
-            Some(read_only),
-            "`{name}` readOnlyHint"
-        );
-        assert_eq!(
-            annotations.destructive_hint,
-            Some(destructive),
-            "`{name}` destructiveHint"
-        );
+        ensure_eq(
+            &annotations.read_only_hint,
+            &Some(read_only),
+            format!("`{name}` readOnlyHint"),
+        )?;
+        ensure_eq(
+            &annotations.destructive_hint,
+            &Some(destructive),
+            format!("`{name}` destructiveHint"),
+        )?;
     }
     Ok(())
 }
@@ -140,14 +147,15 @@ fn one_sided_lines_for_keys_and_named_entries_read_the_same_way() -> TestResult 
     let mut found = differences(&committed, &live);
     found.sort();
 
-    assert_eq!(
-        found,
-        vec![
+    ensure_eq(
+        &found,
+        &vec![
             "a: in the snapshot, absent now",
             "b: absent from the snapshot, present now",
             "tools[x]: in the snapshot, absent now",
             "tools[y]: absent from the snapshot, present now",
-        ]
-    );
+        ],
+        "found == vec![ \"a: in the snapshot, absent now\", \"b: absent from the snapshot, present now\", \"tools[x]: in the snapshot, absent now\", \"tools[y]: absent from the snapshot, present now\", ]",
+    )?;
     Ok(())
 }

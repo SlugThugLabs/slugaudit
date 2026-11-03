@@ -84,7 +84,7 @@ fn parse_from(
 #[cfg(test)]
 mod gate_args_tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
     fn parse_os(
         args: Vec<OsString>,
@@ -110,7 +110,11 @@ mod gate_args_tests {
             .map_err(|code| format!("{code:?}"))
             .check("no arguments is valid")?;
 
-        assert_eq!(root, PathBuf::from("/cwd"));
+        ensure_eq(
+            &root,
+            &PathBuf::from("/cwd"),
+            "root == PathBuf::from(\"/cwd\")",
+        )?;
         Ok(())
     }
 
@@ -125,8 +129,12 @@ mod gate_args_tests {
         .map_err(|code| format!("{code:?}"))
         .check("valid arguments")?;
 
-        assert_eq!(root, PathBuf::from("/elsewhere"));
-        assert!(record, "the declared switch is set");
+        ensure_eq(
+            &root,
+            &PathBuf::from("/elsewhere"),
+            "root == PathBuf::from(\"/elsewhere\")",
+        )?;
+        ensure(record, "the declared switch is set")?;
         Ok(())
     }
 
@@ -141,11 +149,11 @@ mod gate_args_tests {
         for (args, expected) in cases {
             let outcome = parse_list(args, &mut []);
 
-            assert_eq!(
-                outcome,
-                Err(*expected),
-                "{args:?} must stop with its own exit code"
-            );
+            ensure_eq(
+                &outcome,
+                &Err(*expected),
+                format!("{args:?} must stop with its own exit code"),
+            )?;
         }
         Ok(())
     }
@@ -166,9 +174,13 @@ mod gate_args_tests {
             .check("positional values are accepted")?;
         let refused = parse_os(args(), &mut [], None);
 
-        assert_eq!(root, PathBuf::from("/r"));
-        assert_eq!(values, ["35"]);
-        assert_eq!(refused, Err(ExitCode::from(USAGE_EXIT)));
+        ensure_eq(&root, &PathBuf::from("/r"), "root == PathBuf::from(\"/r\")")?;
+        ensure_eq(&values, &["35"], "values == [\"35\"]")?;
+        ensure_eq(
+            &refused,
+            &Err(ExitCode::from(USAGE_EXIT)),
+            "refused == Err(ExitCode::from(USAGE_EXIT))",
+        )?;
         Ok(())
     }
 
@@ -178,8 +190,12 @@ mod gate_args_tests {
 
         let outcome = parse_os(vec![OsString::from("--bogus")], &mut [], Some(&mut values));
 
-        assert_eq!(outcome, Err(ExitCode::from(USAGE_EXIT)));
-        assert!(values.is_empty());
+        ensure_eq(
+            &outcome,
+            &Err(ExitCode::from(USAGE_EXIT)),
+            "outcome == Err(ExitCode::from(USAGE_EXIT))",
+        )?;
+        ensure(values.is_empty(), "values.is_empty()")?;
         Ok(())
     }
 
@@ -193,7 +209,11 @@ mod gate_args_tests {
             .map_err(|code| format!("{code:?}"))
             .check("a non-UTF-8 root parses")?;
 
-        assert_eq!(root.as_os_str(), raw.as_os_str());
+        ensure_eq(
+            &root.as_os_str(),
+            &raw.as_os_str(),
+            "root.as_os_str() == raw.as_os_str()",
+        )?;
         Ok(())
     }
 }

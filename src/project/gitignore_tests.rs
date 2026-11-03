@@ -4,14 +4,14 @@
 //! writer's own error arms, which a fixture that fails at the read cannot.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::sync::mpsc;
 use std::time::Duration;
 
 /// Counts temp files the atomic writer may have left behind in `directory`.
 fn temp_leftovers(directory: &Path) -> TestResult<usize> {
-    let mut count = 0;
+    let mut count = 0usize;
     for entry in fs::read_dir(directory).check("read the directory")? {
         let entry = entry.check("read a directory entry")?;
         if entry
@@ -19,7 +19,7 @@ fn temp_leftovers(directory: &Path) -> TestResult<usize> {
             .to_string_lossy()
             .starts_with(".gitignore.slugaudit.")
         {
-            count += 1;
+            count = count.checked_add(1).check("entry count fits usize")?;
         }
     }
     Ok(count)
@@ -44,7 +44,10 @@ fn create_fifo(path: &Path) -> TestResult {
         .arg(path)
         .status()
         .check("run mkfifo")?;
-    assert!(status.success(), "mkfifo creates the fixture: {status}");
+    ensure(
+        status.success(),
+        format!("mkfifo creates the fixture: {status}"),
+    )?;
     Ok(())
 }
 
@@ -64,8 +67,8 @@ fn a_gitignore_that_cannot_be_written_is_reported_not_added() -> TestResult {
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the unwritable path is named");
-            assert!(!reason.is_empty(), "the write failure carries a reason");
+            ensure_eq(&reported, &path, "the unwritable path is named")?;
+            ensure(!reason.is_empty(), "the write failure carries a reason")?;
         }
         other => {
             return Err(format!(
@@ -74,10 +77,10 @@ fn a_gitignore_that_cannot_be_written_is_reported_not_added() -> TestResult {
             .check("unexpected outcome");
         }
     }
-    assert!(
+    ensure(
         !path.exists(),
-        "no file is created when the atomic write cannot start"
-    );
+        "no file is created when the atomic write cannot start",
+    )?;
     Ok(())
 }
 
@@ -93,17 +96,17 @@ fn a_writer_whose_rename_fails_removes_the_temp_file() -> TestResult {
     let result =
         write_gitignore_atomically(&destination, b"", b".planning/slugaudit/\n", sync_directory);
 
-    assert!(
+    ensure(
         result.is_err(),
-        "renaming a file over a directory fails: {result:?}"
-    );
-    assert_eq!(
-        fs::read(destination.join("keep")).check("the marker survives")?,
-        b"x",
-        "the destination directory is untouched"
-    );
+        format!("renaming a file over a directory fails: {result:?}"),
+    )?;
+    ensure_eq(
+        &fs::read(destination.join("keep")).check("the marker survives")?,
+        &b"x",
+        "the destination directory is untouched",
+    )?;
     let leftovers = temp_leftovers(outer.path())?;
-    assert_eq!(leftovers, 0, "a failed rename removes its temp file");
+    ensure_eq(&leftovers, &0, "a failed rename removes its temp file")?;
     Ok(())
 }
 
@@ -125,24 +128,24 @@ fn a_fifo_gitignore_is_refused_without_opening_it() -> TestResult {
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the refused path is named");
-            assert!(
+            ensure_eq(&reported, &path, "the refused path is named")?;
+            ensure(
                 reason.contains("not a regular file"),
-                "the reason names the refusal: {reason}"
-            );
+                format!("the reason names the refusal: {reason}"),
+            )?;
         }
         other => {
             return Err(format!("a FIFO .gitignore must be refused, got {other:?}"))
                 .check("unexpected outcome");
         }
     }
-    assert!(
+    ensure(
         path.symlink_metadata()
             .check("stat the FIFO")?
             .file_type()
             .is_fifo(),
-        "the FIFO is left untouched"
-    );
+        "the FIFO is left untouched",
+    )?;
     Ok(())
 }
 
@@ -165,11 +168,11 @@ fn a_symlink_to_a_fifo_gitignore_is_refused_without_opening_it() -> TestResult {
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the refused path is named");
-            assert!(
+            ensure_eq(&reported, &path, "the refused path is named")?;
+            ensure(
                 reason.contains("symbolic link"),
-                "the link is refused, not opened: {reason}"
-            );
+                format!("the link is refused, not opened: {reason}"),
+            )?;
         }
         other => {
             return Err(format!(
@@ -178,20 +181,20 @@ fn a_symlink_to_a_fifo_gitignore_is_refused_without_opening_it() -> TestResult {
             .check("unexpected outcome");
         }
     }
-    assert!(
+    ensure(
         fifo.symlink_metadata()
             .check("stat the FIFO")?
             .file_type()
             .is_fifo(),
-        "the FIFO target is left untouched"
-    );
-    assert!(
+        "the FIFO target is left untouched",
+    )?;
+    ensure(
         path.symlink_metadata()
             .check("stat the link")?
             .file_type()
             .is_symlink(),
-        "the user's link survives"
-    );
+        "the user's link survives",
+    )?;
     Ok(())
 }
 
@@ -211,7 +214,7 @@ fn a_symlink_to_an_in_project_gitignore_is_refused_and_target_untouched() -> Tes
 
     match outcome {
         GitignoreOutcome::NotWritten { path: reported, .. } => {
-            assert_eq!(reported, path, "the refused path is named");
+            ensure_eq(&reported, &path, "the refused path is named")?;
         }
         other => {
             return Err(format!(
@@ -220,11 +223,11 @@ fn a_symlink_to_an_in_project_gitignore_is_refused_and_target_untouched() -> Tes
             .check("unexpected outcome");
         }
     }
-    assert_eq!(
-        fs::read(&target).check("read the link target")?,
-        b"/target\n".to_vec(),
-        "the link target is unchanged"
-    );
+    ensure_eq(
+        &fs::read(&target).check("read the link target")?,
+        &b"/target\n".to_vec(),
+        "the link target is unchanged",
+    )?;
     Ok(())
 }
 
@@ -250,11 +253,11 @@ fn a_gitignore_symlinked_outside_the_project_leaves_the_victim_untouched() -> Te
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the .gitignore path is named");
-            assert!(
+            ensure_eq(&reported, &path, "the .gitignore path is named")?;
+            ensure(
                 reason.contains("symbolic link"),
-                "the reason names the link: {reason}"
-            );
+                format!("the reason names the link: {reason}"),
+            )?;
         }
         other => {
             return Err(format!(
@@ -263,17 +266,17 @@ fn a_gitignore_symlinked_outside_the_project_leaves_the_victim_untouched() -> Te
             .check("unexpected outcome");
         }
     }
-    assert_eq!(
-        fs::read(&victim).check("read victim")?,
-        b"export SECRET=1\n".to_vec(),
-        "victim content is unchanged"
-    );
-    assert_eq!(
-        fs::metadata(&victim).check("stat victim")?.ino(),
-        inode,
-        "victim inode is unchanged"
-    );
-    assert_eq!(temp_leftovers(project.path())?, 0, "no temp file is left");
+    ensure_eq(
+        &fs::read(&victim).check("read victim")?,
+        &b"export SECRET=1\n".to_vec(),
+        "victim content is unchanged",
+    )?;
+    ensure_eq(
+        &fs::metadata(&victim).check("stat victim")?.ino(),
+        &inode,
+        "victim inode is unchanged",
+    )?;
+    ensure_eq(&temp_leftovers(project.path())?, &0, "no temp file is left")?;
     Ok(())
 }
 
@@ -295,11 +298,11 @@ fn a_dangling_gitignore_symlink_is_reported_rather_than_replaced() -> TestResult
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the refused path is named");
-            assert!(
+            ensure_eq(&reported, &path, "the refused path is named")?;
+            ensure(
                 reason.contains("symbolic link"),
-                "the reason names the dangling link: {reason}"
-            );
+                format!("the reason names the dangling link: {reason}"),
+            )?;
         }
         other => {
             return Err(format!(
@@ -308,17 +311,17 @@ fn a_dangling_gitignore_symlink_is_reported_rather_than_replaced() -> TestResult
             .check("unexpected outcome");
         }
     }
-    assert!(
+    ensure(
         path.symlink_metadata()
             .check("stat the link")?
             .file_type()
             .is_symlink(),
-        "the user's link survives"
-    );
-    assert!(
+        "the user's link survives",
+    )?;
+    ensure(
         !absent.exists(),
-        "the write does not create the missing target"
-    );
+        "the write does not create the missing target",
+    )?;
     Ok(())
 }
 
@@ -335,11 +338,16 @@ fn gitignore_write_syncs_the_parent_and_lands_the_content() -> TestResult {
     )
     .check("write and sync the directory")?;
 
-    assert_eq!(
-        fs::read(&destination).check("read back")?,
-        b"a\n.planning/slugaudit/\n"
-    );
-    assert_eq!(temp_leftovers(dir.path())?, 0);
+    ensure_eq(
+        &fs::read(&destination).check("read back")?,
+        &b"a\n.planning/slugaudit/\n",
+        "fs::read(&destination).check(\"read back\")? == b\"a\\n.planning/slugaudit/\\n\"",
+    )?;
+    ensure_eq(
+        &temp_leftovers(dir.path())?,
+        &0,
+        "temp_leftovers(dir.path())? == 0",
+    )?;
     Ok(())
 }
 
@@ -355,41 +363,61 @@ fn a_failed_directory_sync_after_the_rename_still_reports_a_written_file() -> Te
     })?;
 
     result.check("the rename happened, so the write succeeded")?;
-    assert_eq!(
-        fs::read(&destination).check("read back")?,
-        b"a\n.planning/slugaudit/\n"
-    );
-    assert!(logs.contains("injected fsync failure"), "{logs}");
-    assert_eq!(temp_leftovers(dir.path())?, 0);
+    ensure_eq(
+        &fs::read(&destination).check("read back")?,
+        &b"a\n.planning/slugaudit/\n",
+        "fs::read(&destination).check(\"read back\")? == b\"a\\n.planning/slugaudit/\\n\"",
+    )?;
+    ensure(logs.contains("injected fsync failure"), &logs)?;
+    ensure_eq(
+        &temp_leftovers(dir.path())?,
+        &0,
+        "temp_leftovers(dir.path())? == 0",
+    )?;
     Ok(())
 }
 
 #[test]
 fn a_negation_after_the_ignore_leaves_the_directory_unignored() -> TestResult {
-    assert!(!ignores_activation_dir(
-        b".planning/slugaudit/\n!.planning/slugaudit/\n"
-    ));
-    assert!(!ignores_activation_dir(
-        b"/.planning/slugaudit\n!/.planning/slugaudit\n"
-    ));
+    ensure(
+        !ignores_activation_dir(b".planning/slugaudit/\n!.planning/slugaudit/\n"),
+        "!ignores_activation_dir( b\".planning/slugaudit/\\n!.planning/slugaudit/\\n\" )",
+    )?;
+    ensure(
+        !ignores_activation_dir(b"/.planning/slugaudit\n!/.planning/slugaudit\n"),
+        "!ignores_activation_dir( b\"/.planning/slugaudit\\n!/.planning/slugaudit\\n\" )",
+    )?;
     Ok(())
 }
 
 #[test]
 fn an_ignore_after_the_negation_wins_again() -> TestResult {
-    assert!(ignores_activation_dir(
-        b"!.planning/slugaudit/\n.planning/slugaudit/\n"
-    ));
-    assert!(ignores_activation_dir(
-        b".planning/slugaudit/\n!.planning/slugaudit/\n.planning/slugaudit\n"
-    ));
+    ensure(
+        ignores_activation_dir(b"!.planning/slugaudit/\n.planning/slugaudit/\n"),
+        "ignores_activation_dir( b\"!.planning/slugaudit/\\n.planning/slugaudit/\\n\" )",
+    )?;
+    ensure(
+        ignores_activation_dir(
+            b".planning/slugaudit/\n!.planning/slugaudit/\n.planning/slugaudit\n",
+        ),
+        "ignores_activation_dir( b\".planning/slugaudit/\\n!.planning/slugaudit/\\n.planning/slugaudit\\n\" )",
+    )?;
     Ok(())
 }
 
 #[test]
 fn a_negation_alone_or_a_comment_ignores_nothing() -> TestResult {
-    assert!(!ignores_activation_dir(b"!.planning/slugaudit/\n"));
-    assert!(!ignores_activation_dir(b"# .planning/slugaudit/\n"));
-    assert!(ignores_activation_dir(b".planning/slugaudit/\n# note\n"));
+    ensure(
+        !ignores_activation_dir(b"!.planning/slugaudit/\n"),
+        "!ignores_activation_dir(b\"!.planning/slugaudit/\\n\")",
+    )?;
+    ensure(
+        !ignores_activation_dir(b"# .planning/slugaudit/\n"),
+        "!ignores_activation_dir(b\"# .planning/slugaudit/\\n\")",
+    )?;
+    ensure(
+        ignores_activation_dir(b".planning/slugaudit/\n# note\n"),
+        "ignores_activation_dir(b\".planning/slugaudit/\\n# note\\n\")",
+    )?;
     Ok(())
 }

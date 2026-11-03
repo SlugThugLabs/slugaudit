@@ -1,6 +1,5 @@
 //! Duplicate commit subjects in the branch's own history.
 
-use std::collections::HashMap;
 use std::env::VarError;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -48,16 +47,21 @@ pub(super) fn duplicate_commit_subjects(
         return Vec::new();
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    for line in stdout.lines() {
-        let subject = line.trim();
-        if !subject.is_empty() {
-            *counts.entry(subject.to_owned()).or_insert(0) += 1;
-        }
-    }
-    let mut out: Vec<(String, usize)> = counts.into_iter().filter(|(_, c)| *c > 1).collect();
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+    let mut subjects: Vec<&str> = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|subject| !subject.is_empty())
+        .collect();
+    subjects.sort_unstable();
+    subjects
+        .chunk_by(|a, b| a == b)
+        .filter(|group| group.len() > 1)
+        .filter_map(|group| {
+            group
+                .first()
+                .map(|subject| ((*subject).to_owned(), group.len()))
+        })
+        .collect()
 }
 
 /// The commit range to check, or `None` (with a recorded failure) when it
@@ -109,7 +113,7 @@ fn commit_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
     use std::ffi::OsString;
 
     #[test]
@@ -122,11 +126,11 @@ mod tests {
             &mut failures,
         );
 
-        assert_eq!(range, None);
-        assert!(
+        ensure_eq(&range, &None, "range == None")?;
+        ensure(
             failures.iter().any(|f| f.contains("not valid UTF-8")),
-            "{failures:?}"
-        );
+            format!("{failures:?}"),
+        )?;
         Ok(())
     }
 
@@ -136,8 +140,12 @@ mod tests {
 
         let range = commit_range(Ok("abc".to_owned()), Path::new("."), &mut failures);
 
-        assert_eq!(range.as_deref(), Some("abc..HEAD"));
-        assert!(failures.is_empty());
+        ensure_eq(
+            &range.as_deref(),
+            &Some("abc..HEAD"),
+            "range.as_deref() == Some(\"abc..HEAD\")",
+        )?;
+        ensure(failures.is_empty(), "failures.is_empty()")?;
         Ok(())
     }
 
@@ -148,12 +156,12 @@ mod tests {
 
             let range = commit_range(Ok(base.to_owned()), Path::new("."), &mut failures);
 
-            assert_eq!(range, None, "base {base:?}");
-            assert_eq!(
-                failures,
-                ["SLUGAUDIT_CHECK_COMMITS_BASE is set but empty; cannot choose the commit range"],
-                "base {base:?}"
-            );
+            ensure_eq(&range, &None, format!("base {base:?}"))?;
+            ensure_eq(
+                &failures,
+                &["SLUGAUDIT_CHECK_COMMITS_BASE is set but empty; cannot choose the commit range"],
+                format!("base {base:?}"),
+            )?;
         }
         Ok(())
     }
@@ -165,13 +173,13 @@ mod tests {
 
         let subjects = duplicate_commit_subjects(dir.path(), &mut failures);
 
-        assert!(subjects.is_empty());
+        ensure(subjects.is_empty(), "subjects.is_empty()")?;
         let message = failures.first().check("git log outside a repo must fail")?;
-        assert!(message.contains("stderr: "), "{message}");
-        assert!(
+        ensure(message.contains("stderr: "), message)?;
+        ensure(
             !message.ends_with("stderr: )"),
-            "stderr was dropped: {message}"
-        );
+            format!("stderr was dropped: {message}"),
+        )?;
         Ok(())
     }
 }

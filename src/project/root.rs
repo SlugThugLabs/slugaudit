@@ -42,19 +42,20 @@ impl ProjectRoot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
     #[test]
     fn resolves_an_existing_directory() -> TestResult {
         let directory = tempfile::tempdir().check("temp dir")?;
         let root = ProjectRoot::resolve(directory.path()).check("valid root")?;
-        assert_eq!(
-            root.as_path(),
-            directory
+        ensure_eq(
+            &root.as_path(),
+            &directory
                 .path()
                 .canonicalize()
-                .check("tempdir canonicalizes")?
-        );
+                .check("tempdir canonicalizes")?,
+            "root.as_path() == directory .path() .canonicalize() .check(\"tempdir canonicalizes\")?",
+        )?;
         Ok(())
     }
 
@@ -63,10 +64,13 @@ mod tests {
         let directory = tempfile::tempdir().check("temp dir")?;
         let file_path = directory.path().join("not-a-directory");
         std::fs::write(&file_path, b"content").check("write fixture file")?;
-        assert!(matches!(
-            ProjectRoot::resolve(&file_path),
-            Err(RootError::NotADirectory)
-        ));
+        ensure(
+            matches!(
+                ProjectRoot::resolve(&file_path),
+                Err(RootError::NotADirectory)
+            ),
+            "matches!( ProjectRoot::resolve(&file_path), Err(RootError::NotADirectory) )",
+        )?;
         Ok(())
     }
 
@@ -80,7 +84,11 @@ mod tests {
                 .check("unexpected outcome");
         };
 
-        assert_eq!(source.kind(), std::io::ErrorKind::NotFound);
+        ensure_eq(
+            &source.kind(),
+            &std::io::ErrorKind::NotFound,
+            "source.kind() == std::io::ErrorKind::NotFound",
+        )?;
         Ok(())
     }
 }

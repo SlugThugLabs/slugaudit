@@ -5,7 +5,7 @@
 use super::*;
 use crate::project::GlobalConfig;
 use crate::store::test_capture::capture_warns;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn lines_containing(logs: &str, needle: &str) -> usize {
     logs.lines().filter(|line| line.contains(needle)).count()
@@ -20,7 +20,7 @@ fn apply_twice(config: &GlobalConfig) -> TestResult<(ResourceLimits, String)> {
         let second = config
             .apply_limit_keys(ResourceLimits::default())
             .check("second apply")?;
-        assert_eq!(first, second);
+        ensure_eq(&first, &second, "first == second")?;
         Ok(second)
     })?;
     Ok((applied?, logs))
@@ -36,12 +36,16 @@ fn a_zero_config_max_parse_bytes_is_refused_with_one_warning_and_keeps_the_defau
 
     let (limits, logs) = apply_twice(&config)?;
 
-    assert_eq!(limits.max_parse_bytes, 2 * 1024 * 1024);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_parse_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_parse_bytes,
+        &(2 * 1024 * 1024),
+        "limits.max_parse_bytes == 2 * 1024 * 1024",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_parse_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -56,12 +60,16 @@ fn a_zero_config_max_parse_wall_clock_ms_is_refused_with_one_warning_and_keeps_t
 
     let (limits, logs) = apply_twice(&config)?;
 
-    assert_eq!(limits.max_parse_wall_clock_ms, 5_000);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_parse_wall_clock_ms\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_parse_wall_clock_ms,
+        &5_000,
+        "limits.max_parse_wall_clock_ms == 5_000",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_parse_wall_clock_ms\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -76,12 +84,16 @@ fn a_zero_config_max_structure_query_bytes_is_refused_with_one_warning_and_keeps
 
     let (limits, logs) = apply_twice(&config)?;
 
-    assert_eq!(limits.max_structure_query_bytes, 16 * 1024);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_structure_query_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_structure_query_bytes,
+        &(16 * 1024),
+        "limits.max_structure_query_bytes == 16 * 1024",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_structure_query_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -101,7 +113,11 @@ fn a_zero_config_value_keeps_what_the_environment_already_set() -> TestResult {
         .apply_limit_keys(from_env)
         .check("apply the config")?;
 
-    assert_eq!(applied.max_parse_bytes, 123_456);
+    ensure_eq(
+        &applied.max_parse_bytes,
+        &123_456,
+        "applied.max_parse_bytes == 123_456",
+    )?;
     Ok(())
 }
 
@@ -117,13 +133,17 @@ fn the_same_clamp_is_reported_once_however_often_the_limits_are_built() -> TestR
     let (limits, logs) = apply_twice(&config)?;
     let (_, more_logs) = apply_twice(&config)?;
 
-    assert_eq!(limits.max_parse_bytes, 700_001);
-    assert_eq!(lines_containing(&logs, "requested=900009"), 1, "{logs}");
-    assert_eq!(
-        lines_containing(&more_logs, "requested=900009"),
-        0,
-        "{more_logs}"
-    );
+    ensure_eq(
+        &limits.max_parse_bytes,
+        &700_001,
+        "limits.max_parse_bytes == 700_001",
+    )?;
+    ensure_eq(&lines_containing(&logs, "requested=900009"), &1, &logs)?;
+    ensure_eq(
+        &lines_containing(&more_logs, "requested=900009"),
+        &0,
+        &more_logs,
+    )?;
     Ok(())
 }
 
@@ -139,12 +159,12 @@ fn a_clamp_with_a_changed_configured_value_is_reported_again() -> TestResult {
     let (_, first) = apply_twice(&configured(900_010))?;
     let (_, changed) = apply_twice(&configured(900_011))?;
 
-    assert_eq!(lines_containing(&first, "requested=900010"), 1, "{first}");
-    assert_eq!(
-        lines_containing(&changed, "requested=900011"),
-        1,
-        "{changed}"
-    );
+    ensure_eq(&lines_containing(&first, "requested=900010"), &1, &first)?;
+    ensure_eq(
+        &lines_containing(&changed, "requested=900011"),
+        &1,
+        &changed,
+    )?;
     Ok(())
 }
 
@@ -193,7 +213,7 @@ fn the_zero_refused_list_names_exactly_the_variables_env_overrides_rs_reads_with
     let mut listed = ZERO_REFUSED.to_vec();
     listed.sort_unstable();
 
-    assert_eq!(read, listed);
+    ensure_eq(&read, &listed, "read == listed")?;
     Ok(())
 }
 
@@ -207,16 +227,17 @@ fn fail_closed_a_zero_limit_env_var_is_an_error_naming_only_the_variable() -> Te
         )
         .check_err("a zero limit must fail startup")?;
 
-        assert_eq!(
-            error.to_string(),
-            format!(
+        ensure_eq(
+            &error.to_string(),
+            &format!(
                 "{variable} is set to 0, which is not a usable limit; set a positive value or unset it"
             ),
-        );
-        assert!(
+            "error.to_string() == format!( \"{variable} is set to 0, which is not a usable limit; set a positive value or unset it\" )",
+        )?;
+        ensure(
             matches!(&error, EnvConfigError::Zero { variable: named } if named == variable),
-            "{error:?}"
-        );
+            format!("{error:?}"),
+        )?;
     }
     Ok(())
 }
@@ -228,7 +249,7 @@ fn apply_twice_over_lean(config: &GlobalConfig) -> TestResult<(ResourceLimits, S
     let (applied, logs) = capture_warns(|| -> TestResult<ResourceLimits> {
         let first = config.apply_limit_keys(first_base).check("first apply")?;
         let second = config.apply_limit_keys(second_base).check("second apply")?;
-        assert_eq!(first, second);
+        ensure_eq(&first, &second, "first == second")?;
         Ok(second)
     })?;
     Ok((applied?, logs))
@@ -244,12 +265,16 @@ fn a_zero_config_max_file_bytes_is_refused_with_one_warning_and_keeps_the_defaul
 
     let (limits, logs) = apply_twice_over_lean(&config)?;
 
-    assert_eq!(limits.max_file_bytes, lean()?.max_file_bytes);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_file_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_file_bytes,
+        &lean()?.max_file_bytes,
+        "limits.max_file_bytes == lean()?.max_file_bytes",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_file_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -264,15 +289,16 @@ fn a_zero_config_max_total_import_bytes_is_refused_with_one_warning_and_keeps_th
 
     let (limits, logs) = apply_twice_over_lean(&config)?;
 
-    assert_eq!(
-        limits.max_total_import_bytes,
-        lean()?.max_total_import_bytes
-    );
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_total_import_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_total_import_bytes,
+        &lean()?.max_total_import_bytes,
+        "limits.max_total_import_bytes == lean()?.max_total_import_bytes",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_total_import_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -287,12 +313,16 @@ fn a_zero_config_default_page_bytes_is_refused_with_one_warning_and_keeps_the_de
 
     let (limits, logs) = apply_twice_over_lean(&config)?;
 
-    assert_eq!(limits.default_page_bytes, lean()?.default_page_bytes);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config default_page_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.default_page_bytes,
+        &lean()?.default_page_bytes,
+        "limits.default_page_bytes == lean()?.default_page_bytes",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config default_page_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -307,15 +337,16 @@ fn a_zero_config_max_result_store_bytes_is_refused_with_one_warning_and_keeps_th
 
     let (limits, logs) = apply_twice_over_lean(&config)?;
 
-    assert_eq!(
-        limits.max_result_store_bytes,
-        lean()?.max_result_store_bytes
-    );
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_result_store_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_result_store_bytes,
+        &lean()?.max_result_store_bytes,
+        "limits.max_result_store_bytes == lean()?.max_result_store_bytes",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_result_store_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -330,12 +361,16 @@ fn a_zero_config_result_active_grace_secs_is_refused_with_one_warning_and_keeps_
 
     let (limits, logs) = apply_twice_over_lean(&config)?;
 
-    assert_eq!(limits.result_active_grace_secs, 900);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config result_active_grace_secs\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.result_active_grace_secs,
+        &900,
+        "limits.result_active_grace_secs == 900",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config result_active_grace_secs\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -351,12 +386,16 @@ fn a_value_above_sqlite_max_is_clamped_with_one_warning_per_configured_value() -
         ])
     })?;
 
-    assert_eq!(clamped?, [SQLITE_MAX_VALUE_BYTES; 3]);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"clamp test setting\""),
-        2,
-        "{logs}"
-    );
+    ensure_eq(
+        &clamped?,
+        &[SQLITE_MAX_VALUE_BYTES; 3],
+        "clamped? == [SQLITE_MAX_VALUE_BYTES; 3]",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"clamp test setting\""),
+        &2,
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -370,15 +409,16 @@ fn a_poisoned_ledger_fails_the_clamp_naming_the_ledger() -> TestResult {
             std::panic::resume_unwind(Box::new("simulated panic inside the critical section"))
         })
     }));
-    assert!(unwound.is_err(), "the holder must have unwound");
+    ensure(unwound.is_err(), "the holder must have unwound")?;
 
     let error = clamp_sqlite_value("poison test setting", 2_000_000_000)
         .check_err("a poisoned ledger is an error")?;
 
-    assert_eq!(
-        error.to_string(),
-        "mutex limit_override_warnings was poisoned by a panic in an earlier holder"
-    );
+    ensure_eq(
+        &error.to_string(),
+        &"mutex limit_override_warnings was poisoned by a panic in an earlier holder",
+        "error.to_string() == \"mutex limit_override_warnings was poisoned by a panic in an earlier holder\"",
+    )?;
     Ok(())
 }
 
@@ -388,8 +428,12 @@ fn a_value_within_sqlite_max_passes_through_without_a_warning() -> TestResult {
 
     let (value, logs) = capture_warns(|| clamp_sqlite_value("within test setting", 1_000_000_000))?;
 
-    assert_eq!(value.check("clamp")?, 1_000_000_000);
-    assert_eq!(lines_containing(&logs, "within test setting"), 0, "{logs}");
+    ensure_eq(
+        &value.check("clamp")?,
+        &1_000_000_000,
+        "value.check(\"clamp\")? == 1_000_000_000",
+    )?;
+    ensure_eq(&lines_containing(&logs, "within test setting"), &0, &logs)?;
     Ok(())
 }
 
@@ -403,11 +447,15 @@ fn a_config_max_file_bytes_above_sqlite_max_warns_once_across_calls() -> TestRes
 
     let (limits, logs) = apply_twice(&config)?;
 
-    assert_eq!(limits.max_file_bytes, SQLITE_MAX_VALUE_BYTES);
-    assert_eq!(
-        lines_containing(&logs, "setting=\"config max_file_bytes\""),
-        1,
-        "{logs}"
-    );
+    ensure_eq(
+        &limits.max_file_bytes,
+        &SQLITE_MAX_VALUE_BYTES,
+        "limits.max_file_bytes == SQLITE_MAX_VALUE_BYTES",
+    )?;
+    ensure_eq(
+        &lines_containing(&logs, "setting=\"config max_file_bytes\""),
+        &1,
+        &logs,
+    )?;
     Ok(())
 }

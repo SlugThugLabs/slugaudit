@@ -1,21 +1,22 @@
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn accepts_empty_eof_span() -> TestResult {
     let position = Position { line: 2, column: 4 };
     let span = Span::new(8, 8, position, position).check("valid span")?;
-    assert_eq!(span.byte_len(), Some(0));
+    ensure_eq(&span.byte_len(), &Some(0), "span.byte_len() == Some(0)")?;
     Ok(())
 }
 
 #[test]
 fn rejects_reversed_ranges() -> TestResult {
     let position = Position { line: 0, column: 0 };
-    assert_eq!(
-        Span::new(2, 1, position, position),
-        Err(SpanError::ReversedBytes)
-    );
+    ensure_eq(
+        &Span::new(2, 1, position, position),
+        &Err(SpanError::ReversedBytes),
+        "Span::new(2, 1, position, position) == Err(SpanError::ReversedBytes)",
+    )?;
     Ok(())
 }
 
@@ -26,7 +27,11 @@ fn a_span_whose_end_position_precedes_its_start_is_rejected() -> TestResult {
 
     let result = Span::new(10, 12, start, end);
 
-    assert_eq!(result, Err(SpanError::ReversedPosition));
+    ensure_eq(
+        &result,
+        &Err(SpanError::ReversedPosition),
+        "result == Err(SpanError::ReversedPosition)",
+    )?;
     Ok(())
 }
 
@@ -35,25 +40,42 @@ fn a_mid_codepoint_offset_floors_to_the_character_boundary() -> TestResult {
     // `é` occupies bytes 0..2, so byte 1 is inside it: the column must be
     // measured from the boundary before it rather than panicking.
     let source = "é=1";
-    assert_eq!(char_column(source, 1).check("column inside é")?, 0);
-    assert_eq!(char_column(source, 2).check("column after é")?, 1);
+    ensure_eq(
+        &char_column(source, 1).check("column inside é")?,
+        &0,
+        "char_column(source, 1).check(\"column inside é\")? == 0",
+    )?;
+    ensure_eq(
+        &char_column(source, 2).check("column after é")?,
+        &1,
+        "char_column(source, 2).check(\"column after é\")? == 1",
+    )?;
     Ok(())
 }
 
 #[test]
 fn an_offset_past_the_end_measures_the_whole_line() -> TestResult {
     let source = "a\nbc";
-    assert_eq!(char_column(source, 99).check("column past the end")?, 2);
+    ensure_eq(
+        &char_column(source, 99).check("column past the end")?,
+        &2,
+        "char_column(source, 99).check(\"column past the end\")? == 2",
+    )?;
     Ok(())
 }
 
 #[test]
 fn a_position_that_fits_u32_converts_exactly() -> TestResult {
-    assert_eq!(position_u32(0).check("zero")?, 0);
-    assert_eq!(
-        position_u32(u32::MAX as usize).check("the largest position")?,
-        u32::MAX
-    );
+    ensure_eq(
+        &position_u32(0).check("zero")?,
+        &0,
+        "position_u32(0).check(\"zero\")? == 0",
+    )?;
+    ensure_eq(
+        &position_u32(u32::MAX as usize).check("the largest position")?,
+        &u32::MAX,
+        "position_u32(u32::MAX as usize).check(\"the largest position\")? == u32::MAX",
+    )?;
     Ok(())
 }
 
@@ -63,20 +85,21 @@ fn a_position_past_u32_max_is_an_error_naming_the_value() -> TestResult {
 
     let error = position_u32(too_far).check_err("a position past u32::MAX")?;
 
-    assert_eq!(
-        error.to_string(),
-        format!("source position {too_far} exceeds u32::MAX")
-    );
+    ensure_eq(
+        &error.to_string(),
+        &format!("source position {too_far} exceeds u32::MAX"),
+        "error.to_string() == format!(\"source position {too_far} exceeds u32::MAX\")",
+    )?;
     Ok(())
 }
 
 /// The per-call implementations (no index), kept verbatim as the oracle.
 fn legacy_position(source: &str, byte: usize) -> TestResult<Position> {
     let clamped = byte.min(source.len());
-    let mut floor = clamped;
-    while !source.is_char_boundary(floor) {
-        floor -= 1;
-    }
+    let floor = (0..=clamped)
+        .rev()
+        .find(|candidate| source.is_char_boundary(*candidate))
+        .check("a char boundary at or below the offset")?;
     Ok(Position {
         line: position_u32(source[..floor].bytes().filter(|b| *b == b'\n').count())
             .check("legacy line")?,
@@ -86,23 +109,27 @@ fn legacy_position(source: &str, byte: usize) -> TestResult<Position> {
 
 fn assert_index_matches_legacy(source: &str) -> TestResult {
     let index = LineIndex::new(source);
-    for offset in 0..=source.len() + 2 {
+    let end = source
+        .len()
+        .checked_add(2)
+        .check("the source length plus two fits usize")?;
+    for offset in 0..=end {
         let expected = legacy_position(source, offset)?;
-        assert_eq!(
-            index.position(offset).check("indexed position")?,
-            expected,
-            "position at {offset}"
-        );
-        assert_eq!(
-            index.column(offset).check("indexed column")?,
-            expected.column,
-            "column at {offset}"
-        );
-        assert_eq!(
-            index.line(offset).check("indexed line")?,
-            expected.line,
-            "line at {offset}"
-        );
+        ensure_eq(
+            &index.position(offset).check("indexed position")?,
+            &expected,
+            format!("position at {offset}"),
+        )?;
+        ensure_eq(
+            &index.column(offset).check("indexed column")?,
+            &expected.column,
+            format!("column at {offset}"),
+        )?;
+        ensure_eq(
+            &index.line(offset).check("indexed line")?,
+            &expected.line,
+            format!("line at {offset}"),
+        )?;
     }
     Ok(())
 }
@@ -144,7 +171,11 @@ fn the_line_index_matches_the_legacy_computation_on_generated_text() -> TestResu
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1);
         let pick = usize::try_from(state >> 33).check("fits")? % alphabet.len();
-        text.push(alphabet[pick]);
+        text.push(
+            *alphabet
+                .get(pick)
+                .check("pick is below the alphabet length")?,
+        );
     }
 
     assert_index_matches_legacy(&text)?;
@@ -164,12 +195,11 @@ fn a_multi_megabyte_single_line_answers_every_column_query_quickly() -> TestResu
         last = index.column(offset).check("column query")?;
     }
 
-    assert!(last > 0);
-    assert!(
+    ensure(last > 0, "last > 0")?;
+    ensure(
         started.elapsed() < std::time::Duration::from_secs(5),
-        "200k column queries took {:?}",
-        started.elapsed()
-    );
+        format!("200k column queries took {:?}", started.elapsed()),
+    )?;
     Ok(())
 }
 
@@ -179,6 +209,6 @@ fn a_reversed_deserialized_span_has_no_byte_length() -> TestResult {
 
     let span: Span = serde_json::from_str(json).check("deserialize bypasses Span::new")?;
 
-    assert_eq!(span.byte_len(), None);
+    ensure_eq(&span.byte_len(), &None, "span.byte_len() == None")?;
     Ok(())
 }

@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
 /// Makes `root` an active project: the activation directory is the switch.
@@ -14,14 +14,15 @@ fn resolve_project_returns_root_and_database_path_together() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     create_activation(directory.path())?;
     let (root, db) = resolve_project(directory.path()).check("active project")?;
-    assert_eq!(
-        root.as_path(),
-        directory
+    ensure_eq(
+        &root.as_path(),
+        &directory
             .path()
             .canonicalize()
-            .check("tempdir canonicalizes")?
-    );
-    assert_eq!(db, database_path(&root));
+            .check("tempdir canonicalizes")?,
+        "root.as_path() == directory .path() .canonicalize() .check(\"tempdir canonicalizes\")?",
+    )?;
+    ensure_eq(&db, &database_path(&root), "db == database_path(&root)")?;
     Ok(())
 }
 
@@ -29,7 +30,10 @@ fn resolve_project_returns_root_and_database_path_together() -> TestResult {
 fn resolve_project_fails_when_no_project_is_active() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let error = resolve_project(directory.path()).check_err("no activation directory")?;
-    assert!(matches!(error, ActivationError::NotActive));
+    ensure(
+        matches!(error, ActivationError::NotActive),
+        "matches!(error, ActivationError::NotActive)",
+    )?;
     Ok(())
 }
 
@@ -38,13 +42,14 @@ fn finds_an_active_project_at_its_own_root() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     create_activation(directory.path())?;
     let root = find_project_root(directory.path()).check("active project")?;
-    assert_eq!(
-        root.as_path(),
-        directory
+    ensure_eq(
+        &root.as_path(),
+        &directory
             .path()
             .canonicalize()
-            .check("tempdir canonicalizes")?
-    );
+            .check("tempdir canonicalizes")?,
+        "root.as_path() == directory .path() .canonicalize() .check(\"tempdir canonicalizes\")?",
+    )?;
     Ok(())
 }
 
@@ -58,23 +63,27 @@ fn finds_an_active_project_from_a_nested_file() -> TestResult {
     fs::write(&file, b"fn main() {}").check("write fixture file")?;
 
     let root = find_project_root(&file).check("active project")?;
-    assert_eq!(
-        root.as_path(),
-        directory
+    ensure_eq(
+        &root.as_path(),
+        &directory
             .path()
             .canonicalize()
-            .check("tempdir canonicalizes")?
-    );
+            .check("tempdir canonicalizes")?,
+        "root.as_path() == directory .path() .canonicalize() .check(\"tempdir canonicalizes\")?",
+    )?;
     Ok(())
 }
 
 #[test]
 fn rejects_a_project_with_no_activation_directory() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::NotActive)
+        ),
+        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
+    )?;
     Ok(())
 }
 
@@ -86,13 +95,13 @@ fn a_start_path_that_does_not_exist_is_an_unresolvable_root_not_an_inactive_proj
 
     let result = find_project_root(&missing);
 
-    assert!(
+    ensure(
         matches!(
             result,
             Err(ActivationError::Root(RootError::Unresolvable(_)))
         ),
-        "a missing path must say it cannot be resolved, got {result:?}"
-    );
+        format!("a missing path must say it cannot be resolved, got {result:?}"),
+    )?;
     Ok(())
 }
 
@@ -109,10 +118,13 @@ fn a_symlinked_activation_directory_does_not_count_as_on() -> TestResult {
     )
     .check("create symlink")?;
 
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::NotActive)
+        ),
+        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
+    )?;
     Ok(())
 }
 
@@ -125,10 +137,13 @@ fn a_symlinked_planning_directory_is_refused_when_looking_for_a_project() -> Tes
     std::os::unix::fs::symlink(&real_target, directory.path().join(PLANNING_DIR))
         .check("create symlink")?;
 
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::SymlinkedActivationPath)
-    ));
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::SymlinkedActivationPath)
+        ),
+        "matches!( find_project_root(directory.path()), Err(ActivationError::SymlinkedActivationPath) )",
+    )?;
     Ok(())
 }
 
@@ -146,10 +161,10 @@ fn enable_refuses_a_symlinked_activation_directory() -> TestResult {
     .check("create symlink")?;
     let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
 
-    assert!(matches!(
-        enable(&root),
-        Err(ActivationError::SymlinkedActivationPath)
-    ));
+    ensure(
+        matches!(enable(&root), Err(ActivationError::SymlinkedActivationPath)),
+        "matches!( enable(&root), Err(ActivationError::SymlinkedActivationPath) )",
+    )?;
     Ok(())
 }
 
@@ -157,24 +172,28 @@ fn enable_refuses_a_symlinked_activation_directory() -> TestResult {
 fn enable_creates_the_directory_and_that_alone_makes_the_project_active() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::NotActive)
+        ),
+        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
+    )?;
 
     let created = enable(&root).check("enable succeeds")?;
 
-    assert!(created.is_dir());
-    assert_eq!(
-        find_project_root(directory.path())
+    ensure(created.is_dir(), "created.is_dir()")?;
+    ensure_eq(
+        &find_project_root(directory.path())
             .check("now active")?
             .as_path(),
-        root.as_path()
-    );
-    assert!(
+        &root.as_path(),
+        "find_project_root(directory.path()) .check(\"now active\")? .as_path() == root.as_path()",
+    )?;
+    ensure(
         !created.join("project.db").exists(),
-        "enable builds no database"
-    );
+        "enable builds no database",
+    )?;
     Ok(())
 }
 
@@ -197,10 +216,10 @@ fn enable_refuses_to_create_through_a_symlinked_planning_dir() -> TestResult {
         .check("create symlink")?;
     let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
 
-    assert!(matches!(
-        enable(&root),
-        Err(ActivationError::SymlinkedActivationPath)
-    ));
+    ensure(
+        matches!(enable(&root), Err(ActivationError::SymlinkedActivationPath)),
+        "matches!( enable(&root), Err(ActivationError::SymlinkedActivationPath) )",
+    )?;
     Ok(())
 }
 
@@ -241,7 +260,11 @@ fn an_activation_directory_toggled_concurrently_never_panics_or_returns_a_partia
 
     for _ in 0..2_000 {
         match find_project_root(&nested) {
-            Ok(found) => assert_eq!(found.as_path(), canonical_root),
+            Ok(found) => ensure_eq(
+                &found.as_path(),
+                &canonical_root,
+                "found.as_path() == canonical_root",
+            )?,
             Err(ActivationError::NotActive) => {}
             Err(other) => {
                 return Err(format!(
@@ -265,7 +288,10 @@ fn overlong_path() -> PathBuf {
 fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() -> TestResult {
     let result = planning_checked_activation_dir(&overlong_path());
 
-    assert!(matches!(result, Err(ActivationError::Io(_))), "{result:?}");
+    ensure(
+        matches!(result, Err(ActivationError::Io(_))),
+        format!("{result:?}"),
+    )?;
     Ok(())
 }
 
@@ -273,8 +299,14 @@ fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() -> Te
 fn an_unstattable_activation_path_is_an_error_not_absent() -> TestResult {
     let missing = tempfile::tempdir().check("temp dir")?.path().join("gone");
 
-    assert!(!is_active_at(&missing).check("a missing path is absent")?);
-    assert!(is_active_at(&overlong_path()).is_err());
+    ensure(
+        !is_active_at(&missing).check("a missing path is absent")?,
+        "!is_active_at(&missing).check(\"a missing path is absent\")?",
+    )?;
+    ensure(
+        is_active_at(&overlong_path()).is_err(),
+        "is_active_at(&overlong_path()).is_err()",
+    )?;
     Ok(())
 }
 
@@ -297,10 +329,13 @@ fn an_activation_path_that_is_a_regular_file_is_not_active() -> TestResult {
     fs::create_dir_all(&planning).check("create planning dir")?;
     fs::write(planning.join(ACTIVATION_DIR), b"x").check("write file")?;
 
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::NotActive)
+        ),
+        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
+    )?;
     Ok(())
 }
 

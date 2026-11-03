@@ -25,12 +25,16 @@ fn a_project_without_a_gitignore_gains_the_rule_in_a_new_file() -> TestResult {
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        b".planning/slugaudit/\n".to_vec(),
-        "the created file holds exactly the one rule"
-    );
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &b".planning/slugaudit/\n".to_vec(),
+        "the created file holds exactly the one rule",
+    )?;
     Ok(())
 }
 
@@ -42,13 +46,23 @@ fn appending_keeps_every_existing_byte_of_the_gitignore() -> TestResult {
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
     let written = fs::read(&path).check("read .gitignore")?;
-    assert!(
+    ensure(
         written.starts_with(original),
-        "the user's bytes must come through unchanged: {written:?}"
-    );
-    assert_eq!(&written[original.len()..], b".planning/slugaudit/\n");
+        format!("the user's bytes must come through unchanged: {written:?}"),
+    )?;
+    ensure_eq(
+        &written
+            .get(original.len()..)
+            .check("the bytes after the user's bytes")?,
+        &b".planning/slugaudit/\n",
+        "&written[original.len()..] == b\".planning/slugaudit/\\n\"",
+    )?;
     Ok(())
 }
 
@@ -66,16 +80,16 @@ fn an_equivalent_rule_is_recognised_and_not_duplicated() -> TestResult {
 
         let outcome = ensure_gitignore(&root);
 
-        assert_eq!(
-            outcome,
-            GitignoreOutcome::AlreadyIgnored(path.clone()),
-            "rule {rule:?} already ignores the directory"
-        );
-        assert_eq!(
-            fs::read(&path).check("read .gitignore")?,
-            contents.as_bytes(),
-            "an already-ignored project's file stays byte-identical"
-        );
+        ensure_eq(
+            &outcome,
+            &GitignoreOutcome::AlreadyIgnored(path.clone()),
+            format!("rule {rule:?} already ignores the directory"),
+        )?;
+        ensure_eq(
+            &fs::read(&path).check("read .gitignore")?,
+            &contents.as_bytes(),
+            "an already-ignored project's file stays byte-identical",
+        )?;
     }
     Ok(())
 }
@@ -88,13 +102,17 @@ fn a_commented_or_negated_line_does_not_make_the_directory_ignored() -> TestResu
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
-    assert!(
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
+    ensure(
         fs::read(&path)
             .check("read .gitignore")?
             .ends_with(b"\n.planning/slugaudit/\n"),
-        "the real rule is appended after the decoys"
-    );
+        "the real rule is appended after the decoys",
+    )?;
     Ok(())
 }
 
@@ -105,12 +123,16 @@ fn a_last_line_without_a_newline_is_not_merged_with_the_rule() -> TestResult {
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        b"/target\n.planning/slugaudit/\n".to_vec(),
-        "the user's last line keeps its own line"
-    );
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &b"/target\n.planning/slugaudit/\n".to_vec(),
+        "the user's last line keeps its own line",
+    )?;
     Ok(())
 }
 
@@ -121,12 +143,16 @@ fn an_empty_gitignore_file_gains_only_the_rule() -> TestResult {
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        b".planning/slugaudit/\n".to_vec(),
-        "no blank line is introduced ahead of the rule"
-    );
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &b".planning/slugaudit/\n".to_vec(),
+        "no blank line is introduced ahead of the rule",
+    )?;
     Ok(())
 }
 
@@ -137,12 +163,16 @@ fn a_crlf_gitignore_keeps_its_line_ending_convention() -> TestResult {
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        b"/target\r\n.planning/slugaudit/\r\n".to_vec(),
-        "the appended rule uses CRLF, not a mixed ending"
-    );
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &b"/target\r\n.planning/slugaudit/\r\n".to_vec(),
+        "the appended rule uses CRLF, not a mixed ending",
+    )?;
     Ok(())
 }
 
@@ -153,12 +183,16 @@ fn a_crlf_gitignore_without_a_final_newline_gets_a_crlf_separator() -> TestResul
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(outcome, GitignoreOutcome::Added(path.clone()));
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        b"/a\r\n/b\r\n.planning/slugaudit/\r\n".to_vec(),
-        "the separator matches the file's convention too"
-    );
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::Added(path.clone()),
+        "outcome == GitignoreOutcome::Added(path.clone())",
+    )?;
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &b"/a\r\n/b\r\n.planning/slugaudit/\r\n".to_vec(),
+        "the separator matches the file's convention too",
+    )?;
     Ok(())
 }
 
@@ -176,8 +210,8 @@ fn an_unreadable_gitignore_is_reported_rather_than_fatal() -> TestResult {
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the unwritable path is named");
-            assert!(!reason.is_empty(), "the reason is reported");
+            ensure_eq(&reported, &path, "the unwritable path is named")?;
+            ensure(!reason.is_empty(), "the reason is reported")?;
         }
         other => {
             return Err(format!(
@@ -204,16 +238,19 @@ fn a_failed_gitignore_write_leaves_the_original_untouched() -> TestResult {
 
     let outcome = ensure_gitignore(&root);
 
-    assert!(matches!(outcome, GitignoreOutcome::NotWritten { .. }));
-    assert!(
+    ensure(
+        matches!(outcome, GitignoreOutcome::NotWritten { .. }),
+        "matches!(outcome, GitignoreOutcome::NotWritten { .. })",
+    )?;
+    ensure(
         path.is_dir(),
-        "the original path is still the same directory"
-    );
-    assert_eq!(
-        fs::read(&marker).check("read the marker")?,
-        b"x",
-        "nothing inside the original path was touched"
-    );
+        "the original path is still the same directory",
+    )?;
+    ensure_eq(
+        &fs::read(&marker).check("read the marker")?,
+        &b"x",
+        "nothing inside the original path was touched",
+    )?;
     let mut leftovers = 0;
     for entry in fs::read_dir(root.as_path()).check("read the project root")? {
         let entry = entry.check("read a project root entry")?;
@@ -225,7 +262,7 @@ fn a_failed_gitignore_write_leaves_the_original_untouched() -> TestResult {
             leftovers += 1;
         }
     }
-    assert_eq!(leftovers, 0, "no temp file survives a failed write");
+    ensure_eq(&leftovers, &0, "no temp file survives a failed write")?;
     Ok(())
 }
 
@@ -243,11 +280,11 @@ fn an_oversized_gitignore_is_reported_and_left_byte_identical() -> TestResult {
             path: reported,
             reason,
         } => {
-            assert_eq!(reported, path, "the over-cap path is named");
-            assert!(
+            ensure_eq(&reported, &path, "the over-cap path is named")?;
+            ensure(
                 reason.contains(&format!("{MAX_FOREIGN_TEXT_BYTES}-byte cap")),
-                "the reason names the cap rather than merely failing: {reason}"
-            );
+                format!("the reason names the cap rather than merely failing: {reason}"),
+            )?;
         }
         other => {
             return Err(format!(
@@ -256,11 +293,11 @@ fn an_oversized_gitignore_is_reported_and_left_byte_identical() -> TestResult {
             .check("unexpected outcome");
         }
     }
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        contents,
-        "an over-cap file is never truncated or appended to"
-    );
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &contents,
+        "an over-cap file is never truncated or appended to",
+    )?;
     Ok(())
 }
 
@@ -271,20 +308,20 @@ fn a_gitignore_exactly_at_the_cap_is_still_inspected() -> TestResult {
     let rule = b".planning/slugaudit/\n";
     let mut contents = vec![b'\n'; cap - rule.len()];
     contents.extend_from_slice(rule);
-    assert_eq!(contents.len(), cap, "the fixture sits exactly on the cap");
+    ensure_eq(&contents.len(), &cap, "the fixture sits exactly on the cap")?;
     let (root, path) = gitignore_fixture(&directory, &contents)?;
 
     let outcome = ensure_gitignore(&root);
 
-    assert_eq!(
-        outcome,
-        GitignoreOutcome::AlreadyIgnored(path.clone()),
-        "a file exactly at the cap is inspected, not rejected"
-    );
-    assert_eq!(
-        fs::read(&path).check("read .gitignore")?,
-        contents,
-        "inspecting the file leaves it byte-identical"
-    );
+    ensure_eq(
+        &outcome,
+        &GitignoreOutcome::AlreadyIgnored(path.clone()),
+        "a file exactly at the cap is inspected, not rejected",
+    )?;
+    ensure_eq(
+        &fs::read(&path).check("read .gitignore")?,
+        &contents,
+        "inspecting the file leaves it byte-identical",
+    )?;
     Ok(())
 }

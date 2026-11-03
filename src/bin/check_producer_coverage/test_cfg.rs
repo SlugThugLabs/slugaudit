@@ -47,7 +47,7 @@ pub(super) fn is_test_cfg(line: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::is_test_cfg;
-    use slugaudit_test_check::TestResult;
+    use slugaudit_test_check::{TestResult, ensure};
 
     #[test]
     fn test_alone_and_test_inside_all_gate_to_test_builds() -> TestResult {
@@ -58,7 +58,7 @@ mod tests {
             "#[cfg(all(unix, test))]",
             "#[cfg(all(unix, all(test)))]",
         ] {
-            assert!(is_test_cfg(line), "{line}");
+            ensure(is_test_cfg(line), line)?;
         }
         Ok(())
     }
@@ -75,7 +75,7 @@ mod tests {
             "#[test]",
             "fn test() {}",
         ] {
-            assert!(!is_test_cfg(line), "{line}");
+            ensure(!is_test_cfg(line), line)?;
         }
         Ok(())
     }

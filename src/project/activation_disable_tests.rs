@@ -2,7 +2,7 @@
 //! leaves alone, and that the project is inactive afterwards.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 /// An enabled project whose activation directory holds `names`.
@@ -26,18 +26,25 @@ fn project_off_deletes_the_directory_with_everything_in_it_and_then_an_empty_pla
 
     let report = disable(&root).check("disable succeeds")?;
 
-    assert_eq!(
-        report.removed,
-        vec![
+    ensure_eq(
+        &report.removed,
+        &vec![
             activation.clone(),
-            activation.parent().check("planning")?.to_path_buf()
-        ]
-    );
-    assert!(!directory.path().join(PLANNING_DIR).exists());
-    assert!(matches!(
-        find_project_root(directory.path()),
-        Err(ActivationError::NotActive)
-    ));
+            activation.parent().check("planning")?.to_path_buf(),
+        ],
+        "report.removed == vec![ activation.clone(), activation.parent().check(\"planning\")?.to_path_buf() ]",
+    )?;
+    ensure(
+        !directory.path().join(PLANNING_DIR).exists(),
+        "!directory.path().join(PLANNING_DIR).exists()",
+    )?;
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::NotActive)
+        ),
+        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
+    )?;
     Ok(())
 }
 
@@ -49,9 +56,17 @@ fn project_off_keeps_a_planning_dir_that_holds_other_files() -> TestResult {
 
     let report = disable(&root).check("disable succeeds")?;
 
-    assert_eq!(report.removed, vec![activation.clone()]);
-    assert!(!activation.exists());
-    assert_eq!(fs::read(planning.join("PLAN.md")).check("kept")?, b"mine");
+    ensure_eq(
+        &report.removed,
+        &vec![activation.clone()],
+        "report.removed == vec![activation.clone()]",
+    )?;
+    ensure(!activation.exists(), "!activation.exists()")?;
+    ensure_eq(
+        &fs::read(planning.join("PLAN.md")).check("kept")?,
+        &b"mine",
+        "fs::read(planning.join(\"PLAN.md\")).check(\"kept\")? == b\"mine\"",
+    )?;
     Ok(())
 }
 
@@ -62,7 +77,11 @@ fn project_off_on_a_never_enabled_project_removes_nothing() -> TestResult {
 
     let report = disable(&root).check("disable succeeds even when never enabled")?;
 
-    assert_eq!(report, DisableReport::default());
+    ensure_eq(
+        &report,
+        &DisableReport::default(),
+        "report == DisableReport::default()",
+    )?;
     Ok(())
 }
 
@@ -73,7 +92,7 @@ fn project_off_twice_removes_nothing_the_second_time() -> TestResult {
 
     let report = disable(&root).check("second disable")?;
 
-    assert!(report.removed.is_empty(), "{report:?}");
+    ensure(report.removed.is_empty(), format!("{report:?}"))?;
     Ok(())
 }
 
@@ -88,11 +107,12 @@ fn project_off_does_not_follow_a_symlink_inside_the_directory() -> TestResult {
 
     disable(&root).check("disable succeeds")?;
 
-    assert!(!activation.exists());
-    assert_eq!(
-        fs::read(outside.join("victim.txt")).check("target untouched")?,
-        b"keep"
-    );
+    ensure(!activation.exists(), "!activation.exists()")?;
+    ensure_eq(
+        &fs::read(outside.join("victim.txt")).check("target untouched")?,
+        &b"keep",
+        "fs::read(outside.join(\"victim.txt\")).check(\"target untouched\")? == b\"keep\"",
+    )?;
     Ok(())
 }
 
@@ -111,11 +131,19 @@ fn project_off_on_a_symlinked_activation_directory_removes_only_the_link() -> Te
 
     let report = disable(&root).check("disable succeeds")?;
 
-    assert_eq!(report.removed, vec![link.clone(), planning.clone()]);
-    assert!(!link.exists() && link.symlink_metadata().is_err());
-    assert_eq!(
-        fs::read(target.join("keep.txt")).check("target untouched")?,
-        b"keep"
-    );
+    ensure_eq(
+        &report.removed,
+        &vec![link.clone(), planning.clone()],
+        "report.removed == vec![link.clone(), planning.clone()]",
+    )?;
+    ensure(
+        !link.exists() && link.symlink_metadata().is_err(),
+        "!link.exists() && link.symlink_metadata().is_err()",
+    )?;
+    ensure_eq(
+        &fs::read(target.join("keep.txt")).check("target untouched")?,
+        &b"keep",
+        "fs::read(target.join(\"keep.txt\")).check(\"target untouched\")? == b\"keep\"",
+    )?;
     Ok(())
 }

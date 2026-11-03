@@ -41,22 +41,31 @@ pub fn session_profile(root: &Path) -> Result<Option<AuditProfile>, LockPoisoned
 mod tests {
     use super::*;
 
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
     #[test]
     fn a_session_profile_is_per_project_and_the_last_choice_wins() -> TestResult {
         let first = Path::new("/session-profile-test/first");
         let second = Path::new("/session-profile-test/second");
-        assert_eq!(session_profile(first).check("read first")?, None);
+        ensure_eq(
+            &session_profile(first).check("read first")?,
+            &None,
+            "session_profile(first).check(\"read first\")? == None",
+        )?;
 
         set_session_profile(first, AuditProfile::Lean).check("choose lean")?;
         set_session_profile(first, AuditProfile::Audit).check("choose audit")?;
 
-        assert_eq!(
-            session_profile(first).check("read first")?,
-            Some(AuditProfile::Audit)
-        );
-        assert_eq!(session_profile(second).check("read second")?, None);
+        ensure_eq(
+            &session_profile(first).check("read first")?,
+            &Some(AuditProfile::Audit),
+            "session_profile(first).check(\"read first\")? == Some(AuditProfile::Audit)",
+        )?;
+        ensure_eq(
+            &session_profile(second).check("read second")?,
+            &None,
+            "session_profile(second).check(\"read second\")? == None",
+        )?;
         Ok(())
     }
 }

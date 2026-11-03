@@ -17,15 +17,28 @@ pub struct Position {
     pub column: u32,
 }
 
-/// A line or column that does not fit `u32`: no real source position, since
-/// the profiles cap a file at 1 GiB. Reaching it means a caller computed a
-/// position wrong, so the file's extraction fails with this error.
-#[derive(Debug, Error, PartialEq, Eq)]
-#[error("source position {value} exceeds u32::MAX")]
-pub struct PositionOverflow {
-    value: usize,
-    #[source]
-    source: std::num::TryFromIntError,
+/// A line or column that cannot be computed: either it does not fit `u32`
+/// (no real source position, since the profiles cap a file at 1 GiB), or the
+/// character-count arithmetic behind it overflowed `usize`. Reaching either
+/// means a caller computed a position wrong, so the file's extraction fails
+/// with this error.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum PositionOverflow {
+    /// The line or column exceeds `u32::MAX`.
+    #[error("source position {value} exceeds u32::MAX")]
+    TooLarge {
+        /// The `usize` that did not fit.
+        value: usize,
+        /// The failed conversion.
+        #[source]
+        source: std::num::TryFromIntError,
+    },
+    /// A character count overflowed `usize` while indexing the source.
+    #[error("character count overflowed while computing {operation}")]
+    Arithmetic {
+        /// The computation that overflowed.
+        operation: &'static str,
+    },
 }
 
 /// Converts a parser's `usize` line or column into ours. Shared by every
@@ -35,7 +48,7 @@ pub struct PositionOverflow {
 ///
 /// Returns [`PositionOverflow`] when `value` exceeds `u32::MAX`.
 pub fn position_u32(value: usize) -> Result<u32, PositionOverflow> {
-    u32::try_from(value).map_err(|source| PositionOverflow { value, source })
+    u32::try_from(value).map_err(|source| PositionOverflow::TooLarge { value, source })
 }
 
 /// Converts a Tree-sitter byte offset into the character offset from the
@@ -56,17 +69,17 @@ pub fn position_u32(value: usize) -> Result<u32, PositionOverflow> {
 /// instead of walking back to the line start on every call.
 #[cfg(test)]
 pub(crate) fn char_column(source: &str, byte_offset: usize) -> Result<u32, PositionOverflow> {
-    let mut offset = byte_offset.min(source.len());
-    // Offset 0 is always a char boundary, so this terminates.
-    while !source.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    let line_start = match source[..offset].rfind('\n') {
-        Some(idx) => idx + 1,
-        // No newline before the offset: the line starts at the text start.
-        None => 0,
-    };
-    position_u32(source[line_start..offset].chars().count())
+    let offset = source.floor_char_boundary(byte_offset);
+    // The characters between the last newline before `offset` (or the text
+    // start, when there is none) and `offset`.
+    position_u32(
+        source
+            .char_indices()
+            .rev()
+            .skip_while(|(index, _)| *index >= offset)
+            .take_while(|(_, character)| *character != '\n')
+            .count(),
+    )
 }
 
 /// Bytes per block of the character-count table in [`LineIndex`]. A column
@@ -93,8 +106,10 @@ pub struct LineIndex<'a> {
     later_line_starts: Vec<usize>,
     /// `block_chars[i]` is the number of characters before byte
     /// `i * BLOCK_BYTES`. Empty when the source is pure ASCII, where a
-    /// character count equals a byte count.
-    block_chars: Vec<usize>,
+    /// character count equals a byte count. An error when the count
+    /// overflowed `usize` while building (not reachable for a real file);
+    /// every position query then returns that error.
+    block_chars: Result<Vec<usize>, PositionOverflow>,
 }
 
 impl<'a> LineIndex<'a> {
@@ -102,21 +117,26 @@ impl<'a> LineIndex<'a> {
     #[must_use]
     pub fn new(source: &'a str) -> Self {
         let bytes = source.as_bytes();
+        // Pairing each byte with the position of the byte after it gives the
+        // start of the next line (`len` for a trailing newline) without
+        // adding one to an index.
         let later_line_starts = bytes
             .iter()
-            .enumerate()
-            .filter(|(_, byte)| **byte == b'\n')
-            .map(|(index, _)| index + 1)
+            .zip(
+                bytes
+                    .iter()
+                    .chain(std::iter::once(&0u8))
+                    .enumerate()
+                    .skip(1),
+            )
+            .filter(|(byte, _)| **byte == b'\n')
+            .map(|(_, (next_position, _))| next_position)
             .collect();
-        let mut block_chars = Vec::new();
-        if !source.is_ascii() {
-            let mut total = 0usize;
-            block_chars.push(0);
-            for chunk in bytes.chunks(BLOCK_BYTES) {
-                total += count_chars(chunk.iter());
-                block_chars.push(total);
-            }
-        }
+        let block_chars = if source.is_ascii() {
+            Ok(Vec::new())
+        } else {
+            block_char_table(bytes)
+        };
         Self {
             source,
             later_line_starts,
@@ -148,22 +168,19 @@ impl<'a> LineIndex<'a> {
     /// Returns [`PositionOverflow`] when the line or column exceeds
     /// `u32::MAX`.
     pub fn position(&self, byte_offset: usize) -> Result<Position, PositionOverflow> {
-        let offset = self.floor_to_boundary(byte_offset);
+        let offset = self.source.floor_char_boundary(byte_offset);
         let line = self.line_index(offset);
         let line_start = self.line_start(line);
+        let column = self
+            .chars_before(offset)?
+            .checked_sub(self.chars_before(line_start)?)
+            .ok_or(PositionOverflow::Arithmetic {
+                operation: "the characters between the line start and the offset",
+            })?;
         Ok(Position {
             line: position_u32(line)?,
-            column: position_u32(self.chars_before(offset) - self.chars_before(line_start))?,
+            column: position_u32(column)?,
         })
-    }
-
-    fn floor_to_boundary(&self, byte_offset: usize) -> usize {
-        let mut offset = byte_offset.min(self.source.len());
-        // Offset 0 is always a char boundary, so this terminates.
-        while !self.source.is_char_boundary(offset) {
-            offset -= 1;
-        }
-        offset
     }
 
     /// Index of the line containing `offset`: the number of `\n` bytes
@@ -183,26 +200,56 @@ impl<'a> LineIndex<'a> {
     }
 
     /// Characters in `source[..offset]`; `offset` must be a char boundary.
-    fn chars_before(&self, offset: usize) -> usize {
-        if self.block_chars.is_empty() {
-            return offset;
+    fn chars_before(&self, offset: usize) -> Result<usize, PositionOverflow> {
+        let block_chars = match &self.block_chars {
+            Ok(table) => table,
+            Err(error) => return Err(error.clone()),
+        };
+        if block_chars.is_empty() {
+            return Ok(offset);
         }
         let bytes = self.source.as_bytes();
         let block = offset / BLOCK_BYTES;
-        let tail_start = block * BLOCK_BYTES;
-        match self.block_chars.get(block) {
+        match block_chars.get(block) {
             Some(before) => {
+                // The block's own bytes, cut at `offset`; an offset at the
+                // very end of a source that fills its last block exactly has
+                // no block of its own and an empty tail.
                 let tail = bytes
-                    .iter()
-                    .skip(tail_start)
-                    .take(offset.saturating_sub(tail_start));
-                before + count_chars(tail)
+                    .chunks(BLOCK_BYTES)
+                    .nth(block)
+                    .into_iter()
+                    .flatten()
+                    .take(offset % BLOCK_BYTES);
+                before
+                    .checked_add(count_chars(tail))
+                    .ok_or(PositionOverflow::Arithmetic {
+                        operation: "the characters before the offset",
+                    })
             }
             // The table covers every block of the source, so this arm is not
             // reached; counting from the start gives the same answer.
-            None => count_chars(bytes.iter().take(offset)),
+            None => Ok(count_chars(bytes.iter().take(offset))),
         }
     }
+}
+
+/// The character-count table of [`LineIndex`]: entry `i` is the number of
+/// characters before byte `i * BLOCK_BYTES`, with a last entry for the end of
+/// the source.
+fn block_char_table(bytes: &[u8]) -> Result<Vec<usize>, PositionOverflow> {
+    let mut total = 0usize;
+    let mut table = vec![0];
+    for chunk in bytes.chunks(BLOCK_BYTES) {
+        total =
+            total
+                .checked_add(count_chars(chunk.iter()))
+                .ok_or(PositionOverflow::Arithmetic {
+                    operation: "the character-count table",
+                })?;
+        table.push(total);
+    }
+    Ok(table)
 }
 
 /// Characters starting in `bytes`: every byte that is not a UTF-8

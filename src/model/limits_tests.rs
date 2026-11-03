@@ -1,20 +1,50 @@
 use super::*;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn defaults_are_strictly_positive() -> TestResult {
     let limits = ResourceLimits::default();
-    assert!(limits.max_file_bytes > 0);
-    assert!(limits.max_total_import_bytes >= limits.max_file_bytes);
-    assert!(limits.max_query_response_bytes > 0);
-    assert!(limits.max_query_vm_steps > 0);
-    assert!(limits.max_query_wall_clock.as_millis() > 0);
-    assert!(limits.max_query_value_bytes > 0);
-    assert!(limits.max_query_value_bytes <= limits.max_query_response_bytes);
-    assert!(limits.max_structure_query_bytes > 0);
-    assert!(limits.max_structure_matches > 0);
-    assert!(limits.max_structure_execution_time.as_millis() > 0);
-    assert!(limits.max_sync_wall_clock.as_millis() > 0);
+    ensure(limits.max_file_bytes > 0, "limits.max_file_bytes > 0")?;
+    ensure(
+        limits.max_total_import_bytes >= limits.max_file_bytes,
+        "limits.max_total_import_bytes >= limits.max_file_bytes",
+    )?;
+    ensure(
+        limits.max_query_response_bytes > 0,
+        "limits.max_query_response_bytes > 0",
+    )?;
+    ensure(
+        limits.max_query_vm_steps > 0,
+        "limits.max_query_vm_steps > 0",
+    )?;
+    ensure(
+        limits.max_query_wall_clock.as_millis() > 0,
+        "limits.max_query_wall_clock.as_millis() > 0",
+    )?;
+    ensure(
+        limits.max_query_value_bytes > 0,
+        "limits.max_query_value_bytes > 0",
+    )?;
+    ensure(
+        limits.max_query_value_bytes <= limits.max_query_response_bytes,
+        "limits.max_query_value_bytes <= limits.max_query_response_bytes",
+    )?;
+    ensure(
+        limits.max_structure_query_bytes > 0,
+        "limits.max_structure_query_bytes > 0",
+    )?;
+    ensure(
+        limits.max_structure_matches > 0,
+        "limits.max_structure_matches > 0",
+    )?;
+    ensure(
+        limits.max_structure_execution_time.as_millis() > 0,
+        "limits.max_structure_execution_time.as_millis() > 0",
+    )?;
+    ensure(
+        limits.max_sync_wall_clock.as_millis() > 0,
+        "limits.max_sync_wall_clock.as_millis() > 0",
+    )?;
     Ok(())
 }
 
@@ -26,10 +56,11 @@ fn from_env_uses_defaults_when_no_vars_are_set() -> TestResult {
         // Unset variables leave the Adaptive profile for this host, which is
         // the fixed 16 GiB `Default` only on a host of that size.
         let host = crate::model::detect_system_memory().check("this host reports its memory")?;
-        assert_eq!(
-            limits.max_file_bytes,
-            crate::model::profile::adaptive_limits(host).max_file_bytes
-        );
+        ensure_eq(
+            &limits.max_file_bytes,
+            &crate::model::profile::adaptive_limits(host).max_file_bytes,
+            "limits.max_file_bytes == crate::model::profile::adaptive_limits(host).max_file_bytes",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -45,9 +76,17 @@ fn from_env_overrides_u64_fields() -> TestResult {
         ],
         || {
             let limits = ResourceLimits::from_env().check("valid env")?;
-            assert_eq!(limits.max_file_bytes, 16_777_216);
+            ensure_eq(
+                &limits.max_file_bytes,
+                &16_777_216,
+                "limits.max_file_bytes == 16_777_216",
+            )?;
             // Other fields remain at the selected profile's defaults.
-            assert_eq!(limits.max_total_import_bytes, 2 * 1024 * 1024 * 1024);
+            ensure_eq(
+                &limits.max_total_import_bytes,
+                &(2 * 1024 * 1024 * 1024),
+                "limits.max_total_import_bytes == 2 * 1024 * 1024 * 1024",
+            )?;
             Ok(())
         },
     )?;
@@ -59,7 +98,11 @@ fn from_env_overrides_duration_fields() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     temp_env::with_var("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS", Some("120"), || {
         let limits = ResourceLimits::from_env().check("valid env")?;
-        assert_eq!(limits.max_sync_wall_clock, Duration::from_mins(2));
+        ensure_eq(
+            &limits.max_sync_wall_clock,
+            &Duration::from_mins(2),
+            "limits.max_sync_wall_clock == Duration::from_mins(2)",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -76,10 +119,10 @@ fn fail_closed_an_unparseable_override_error_carries_the_parse_cause() -> TestRe
         || {
             let error = ResourceLimits::from_env().check_err("must fail startup")?;
 
-            assert!(
+            ensure(
                 error.to_string().contains("invalid digit found in string"),
-                "{error}"
-            );
+                format!("{error}"),
+            )?;
             Ok(())
         },
     )?;
@@ -97,16 +140,29 @@ fn multiple_overrides_compose() -> TestResult {
         ],
         || {
             let limits = ResourceLimits::from_env().check("valid env")?;
-            assert_eq!(limits.max_file_bytes, 1_048_576);
-            assert_eq!(limits.max_query_vm_steps, 5_000_000);
-            assert_eq!(limits.max_sync_wall_clock, Duration::from_secs(30));
+            ensure_eq(
+                &limits.max_file_bytes,
+                &1_048_576,
+                "limits.max_file_bytes == 1_048_576",
+            )?;
+            ensure_eq(
+                &limits.max_query_vm_steps,
+                &5_000_000,
+                "limits.max_query_vm_steps == 5_000_000",
+            )?;
+            ensure_eq(
+                &limits.max_sync_wall_clock,
+                &Duration::from_secs(30),
+                "limits.max_sync_wall_clock == Duration::from_secs(30)",
+            )?;
             // Unset fields stay at the host-resolved baseline `from_env` uses.
             let baseline = base_limits(crate::model::AuditProfile::default(), detect_system_memory)
                 .check("host memory")?;
-            assert_eq!(
-                limits.max_query_response_bytes,
-                baseline.max_query_response_bytes
-            );
+            ensure_eq(
+                &limits.max_query_response_bytes,
+                &baseline.max_query_response_bytes,
+                "limits.max_query_response_bytes == baseline.max_query_response_bytes",
+            )?;
             Ok(())
         },
     )?;
@@ -123,11 +179,16 @@ fn an_override_above_sqlite_max_is_clamped() -> TestResult {
         ],
         || {
             let limits = ResourceLimits::from_env().check("valid env")?;
-            assert_eq!(limits.max_file_bytes, SQLITE_MAX_VALUE_BYTES);
-            assert_eq!(
-                limits.max_query_value_bytes,
-                usize::try_from(SQLITE_MAX_VALUE_BYTES).check("the cap fits usize")?
-            );
+            ensure_eq(
+                &limits.max_file_bytes,
+                &SQLITE_MAX_VALUE_BYTES,
+                "limits.max_file_bytes == SQLITE_MAX_VALUE_BYTES",
+            )?;
+            ensure_eq(
+                &limits.max_query_value_bytes,
+                &usize::try_from(SQLITE_MAX_VALUE_BYTES).check("the cap fits usize")?,
+                "limits.max_query_value_bytes == usize::try_from(SQLITE_MAX_VALUE_BYTES).check(\"the cap fits usize\")?",
+            )?;
             Ok(())
         },
     )?;
@@ -138,22 +199,24 @@ fn an_override_above_sqlite_max_is_clamped() -> TestResult {
 fn the_default_page_size_is_64_kib_and_the_env_var_overrides_it() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     temp_env::with_var_unset("SLUGAUDIT_DEFAULT_PAGE_BYTES", || {
-        assert_eq!(
-            ResourceLimits::from_env()
+        ensure_eq(
+            &ResourceLimits::from_env()
                 .check("valid env")?
                 .default_page_bytes,
-            65_536
-        );
+            &65_536,
+            "ResourceLimits::from_env() .check(\"valid env\")? .default_page_bytes == 65_536",
+        )?;
         Ok(())
     })?;
 
     temp_env::with_var("SLUGAUDIT_DEFAULT_PAGE_BYTES", Some("1234"), || {
-        assert_eq!(
-            ResourceLimits::from_env()
+        ensure_eq(
+            &ResourceLimits::from_env()
                 .check("valid env")?
                 .default_page_bytes,
-            1_234
-        );
+            &1_234,
+            "ResourceLimits::from_env() .check(\"valid env\")? .default_page_bytes == 1_234",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -165,7 +228,11 @@ fn the_max_parse_bytes_env_var_overrides_the_profile_default() -> TestResult {
     temp_env::with_var("SLUGAUDIT_MAX_PARSE_BYTES", Some("65536"), || {
         let limits = ResourceLimits::from_env().check("valid env")?;
 
-        assert_eq!(limits.max_parse_bytes, 65_536);
+        ensure_eq(
+            &limits.max_parse_bytes,
+            &65_536,
+            "limits.max_parse_bytes == 65_536",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -182,12 +249,12 @@ fn fail_closed_an_unparseable_max_parse_bytes_is_an_error_naming_it() -> TestRes
         || {
             let error = ResourceLimits::from_env().check_err("must fail startup")?;
 
-            assert!(
+            ensure(
                 error
                     .to_string()
                     .starts_with("SLUGAUDIT_MAX_PARSE_BYTES is set but is not valid"),
-                "{error}"
-            );
+                format!("{error}"),
+            )?;
             Ok(())
         },
     )?;
@@ -207,11 +274,15 @@ fn a_max_parse_bytes_env_var_above_max_file_bytes_is_clamped_and_reported() -> T
                 crate::store::test_capture::capture_warns(ResourceLimits::from_env)?;
             let limits = result.check("valid env")?;
 
-            assert_eq!(limits.max_parse_bytes, 1_048_576);
-            assert!(
+            ensure_eq(
+                &limits.max_parse_bytes,
+                &1_048_576,
+                "limits.max_parse_bytes == 1_048_576",
+            )?;
+            ensure(
                 logs.contains("max_parse_bytes exceeds max_file_bytes; clamping"),
-                "{logs}"
-            );
+                &logs,
+            )?;
             Ok(())
         },
     )?;
@@ -224,7 +295,11 @@ fn the_max_parse_wall_clock_ms_env_var_overrides_the_profile_default() -> TestRe
     temp_env::with_var("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS", Some("750"), || {
         let limits = ResourceLimits::from_env().check("valid env")?;
 
-        assert_eq!(limits.max_parse_wall_clock_ms, 750);
+        ensure_eq(
+            &limits.max_parse_wall_clock_ms,
+            &750,
+            "limits.max_parse_wall_clock_ms == 750",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -241,12 +316,12 @@ fn fail_closed_an_unparseable_max_parse_wall_clock_ms_is_an_error_naming_it() ->
         || {
             let error = ResourceLimits::from_env().check_err("must fail startup")?;
 
-            assert!(
+            ensure(
                 error
                     .to_string()
                     .starts_with("SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS is set but is not valid"),
-                "{error}"
-            );
+                format!("{error}"),
+            )?;
             Ok(())
         },
     )?;
@@ -256,14 +331,19 @@ fn fail_closed_an_unparseable_max_parse_wall_clock_ms_is_an_error_naming_it() ->
 #[test]
 fn the_max_structure_query_bytes_env_var_overrides_the_16_kib_default() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    assert_eq!(ResourceLimits::default().max_structure_query_bytes, 16_384);
+    ensure_eq(
+        &ResourceLimits::default().max_structure_query_bytes,
+        &16_384,
+        "ResourceLimits::default().max_structure_query_bytes == 16_384",
+    )?;
     temp_env::with_var("SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES", Some("300"), || {
-        assert_eq!(
-            ResourceLimits::from_env()
+        ensure_eq(
+            &ResourceLimits::from_env()
                 .check("valid env")?
                 .max_structure_query_bytes,
-            300
-        );
+            &300,
+            "ResourceLimits::from_env() .check(\"valid env\")? .max_structure_query_bytes == 300",
+        )?;
         Ok(())
     })?;
     Ok(())
@@ -280,8 +360,16 @@ fn the_result_store_env_vars_override_the_profile_defaults() -> TestResult {
         || {
             let limits = ResourceLimits::from_env().check("valid env")?;
 
-            assert_eq!(limits.max_result_store_bytes, 123_456);
-            assert_eq!(limits.result_active_grace_secs, 42);
+            ensure_eq(
+                &limits.max_result_store_bytes,
+                &123_456,
+                "limits.max_result_store_bytes == 123_456",
+            )?;
+            ensure_eq(
+                &limits.result_active_grace_secs,
+                &42,
+                "limits.result_active_grace_secs == 42",
+            )?;
             Ok(())
         },
     )?;
@@ -299,8 +387,16 @@ fn result_store_surface_budget_follows_the_overridden_response_ceiling() -> Test
         || {
             let limits = ResourceLimits::from_env().check("valid env")?;
 
-            assert_eq!(limits.max_query_response_bytes, 1000);
-            assert_eq!(limits.max_result_store_bytes, 4000);
+            ensure_eq(
+                &limits.max_query_response_bytes,
+                &1000,
+                "limits.max_query_response_bytes == 1000",
+            )?;
+            ensure_eq(
+                &limits.max_result_store_bytes,
+                &4000,
+                "limits.max_result_store_bytes == 4000",
+            )?;
             Ok(())
         },
     )?;
@@ -316,168 +412,18 @@ fn result_store_surface_own_budget_variable_beats_the_response_ceiling() -> Test
             ("SLUGAUDIT_MAX_RESULT_STORE_BYTES", Some("777")),
         ],
         || {
-            assert_eq!(
-                ResourceLimits::from_env()
+            ensure_eq(
+                &ResourceLimits::from_env()
                     .check("valid env")?
                     .max_result_store_bytes,
-                777
-            );
+                &777,
+                "ResourceLimits::from_env() .check(\"valid env\")? .max_result_store_bytes == 777",
+            )?;
             Ok(())
         },
     )?;
     Ok(())
 }
 
-#[test]
-fn fail_closed_an_invalid_limit_variable_is_an_error_naming_it_not_its_value() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some("lean")),
-            ("SLUGAUDIT_MAX_FILE_BYTES", Some("12MBsecret")),
-        ],
-        || {
-            let error = ResourceLimits::from_env().check_err("a typo'd limit must fail startup")?;
-
-            let message = error.to_string();
-            assert!(
-                message.starts_with(
-                    "SLUGAUDIT_MAX_FILE_BYTES is set but is not valid; expected a value of type u64"
-                ),
-                "{message}"
-            );
-            assert!(!message.contains("secret"), "{message}");
-            Ok(())
-        },
-    )?;
-    Ok(())
-}
-
-#[test]
-fn fail_closed_a_non_unicode_limit_variable_is_an_error_without_its_value() -> TestResult {
-    use std::os::unix::ffi::OsStringExt;
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    let value = std::ffi::OsString::from_vec(b"secret-\xff".to_vec());
-    temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some(std::ffi::OsString::from("lean"))),
-            ("SLUGAUDIT_MAX_FILE_BYTES", Some(value)),
-        ],
-        || {
-            let error = ResourceLimits::from_env().check_err("non-unicode must fail startup")?;
-
-            let message = error.to_string();
-            assert!(
-                message.starts_with("SLUGAUDIT_MAX_FILE_BYTES is set but is not valid Unicode"),
-                "{message}"
-            );
-            assert!(!message.contains("secret"), "{message}");
-            Ok(())
-        },
-    )?;
-    Ok(())
-}
-
-#[test]
-fn fail_closed_undetectable_memory_without_an_explicit_profile_names_the_variable_to_set()
--> TestResult {
-    let error = base_limits(
-        crate::model::AuditProfile::default(),
-        crate::model::system_ram::detect_from_for_test,
-    )
-    .check_err("adaptive default needs memory")?;
-
-    assert!(
-        matches!(error, EnvConfigError::MemoryUndetectable { .. }),
-        "{error}"
-    );
-    assert!(
-        error
-            .to_string()
-            .contains("set SLUGAUDIT_PROFILE to `lean` or `audit`"),
-        "{error}"
-    );
-    Ok(())
-}
-
-#[test]
-fn fail_closed_an_explicit_profile_runs_without_detectable_memory() -> TestResult {
-    let limits = base_limits(
-        crate::model::AuditProfile::Lean,
-        crate::model::system_ram::detect_from_for_test,
-    )
-    .check("lean needs no detection")?;
-
-    assert_eq!(limits.max_file_bytes, 32 * 1024 * 1024);
-    Ok(())
-}
-
-#[test]
-fn fail_closed_an_uninstalled_limits_cell_with_an_invalid_env_returns_the_error_and_installs_nothing()
--> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK
-        .lock()
-        .check("take the env lock")?;
-    let cell = OnceLock::new();
-    temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some("lean")),
-            ("SLUGAUDIT_MAX_PARSE_BYTES", Some("0")),
-        ],
-        || {
-            let error = install_limits(&cell).check_err("a zero limit must not install")?;
-
-            assert!(
-                matches!(&error, EnvConfigError::Zero { variable } if variable == "SLUGAUDIT_MAX_PARSE_BYTES"),
-                "{error:?}"
-            );
-            assert!(cell.get().is_none(), "an invalid env must install nothing");
-            Ok(())
-        },
-    )
-}
-
-#[test]
-fn an_uninstalled_limits_cell_with_a_valid_env_installs_once_and_keeps_the_first_value()
--> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    let cell = OnceLock::new();
-    let first = temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some("lean")),
-            ("SLUGAUDIT_MAX_PARSE_BYTES", Some("4096")),
-        ],
-        || install_limits(&cell).map(|limits| limits.max_parse_bytes),
-    )
-    .check("valid env installs")?;
-    assert_eq!(first, 4096);
-
-    // The environment is not read again once the limits are installed.
-    let second = temp_env::with_var("SLUGAUDIT_MAX_PARSE_BYTES", Some("0"), || {
-        install_limits(&cell).map(|limits| limits.max_parse_bytes)
-    })
-    .check("installed limits are returned without re-reading the env")?;
-    assert_eq!(second, 4096);
-    Ok(())
-}
-
-#[test]
-fn the_default_limits_ignore_the_environment_and_the_host_memory() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    let baseline = ResourceLimits::default();
-
-    let under_env = temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some("lean")),
-            ("SLUGAUDIT_MAX_FILE_BYTES", Some("1")),
-        ],
-        ResourceLimits::default,
-    );
-
-    assert_eq!(under_env, baseline);
-    assert_eq!(
-        baseline,
-        crate::model::profile::adaptive_limits(DEFAULT_BASELINE_MEMORY),
-    );
-    Ok(())
-}
+#[path = "limits_fail_closed_tests.rs"]
+mod fail_closed_tests;

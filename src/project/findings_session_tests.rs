@@ -1,6 +1,6 @@
 use super::*;
 use crate::project::enable;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure};
 use std::fs::OpenOptions;
 
 fn project() -> TestResult<(tempfile::TempDir, ProjectRoot)> {
@@ -25,7 +25,12 @@ fn a_sweep_deleting_the_lock_file_before_it_is_locked_does_not_hide_the_session(
             });
         };
         sweep_dead_sessions(dir, "other")?;
-        assert!(!lock_path.exists(), "the sweep deleted the unlocked file");
+        if lock_path.exists() {
+            return Err(ActivationError::FindingsSession {
+                path: lock_path.to_path_buf(),
+                source: std::io::Error::other("the sweep did not delete the unlocked file"),
+            });
+        }
         Ok(())
     });
 
@@ -35,15 +40,15 @@ fn a_sweep_deleting_the_lock_file_before_it_is_locked_does_not_hide_the_session(
         .check("the session table")?
         .check("session started")?;
     let lock_path = findings.with_extension("lock");
-    assert!(lock_path.exists(), "the lock file was recreated");
+    ensure(lock_path.exists(), "the lock file was recreated")?;
     let probe = OpenOptions::new()
         .write(true)
         .open(&lock_path)
         .check("open the lock file")?;
-    assert!(
+    ensure(
         matches!(probe.try_lock(), Err(TryLockError::WouldBlock)),
-        "the recreated file is locked by this process"
-    );
+        "the recreated file is locked by this process",
+    )?;
     Ok(())
 }
 
