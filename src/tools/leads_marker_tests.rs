@@ -1,7 +1,7 @@
 //! `leads` over the `comment_markers` mechanic: detail clipping and the
 //! whole-word, upper-case match rule.
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn comment_marker_detail_is_clipped_at_the_char_limit() -> TestResult {
@@ -18,11 +18,24 @@ fn comment_marker_detail_is_clipped_at_the_char_limit() -> TestResult {
     let response = run(request(project.path(), Some("comment_markers")))?;
     let rows = full_rows(&response)?;
 
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].detail.chars().count(), MAX_DETAIL_CHARS);
-    assert!(rows[0].detail_clipped, "clipped on a char boundary");
-    assert!(!rows[1].detail_clipped);
-    assert!(rows[1].detail.ends_with(&short), "{}", rows[1].detail);
+    ensure_eq(&rows.len(), &2, "rows.len() == 2")?;
+    ensure_eq(
+        &rows.first().check("rows[0]")?.detail.chars().count(),
+        &MAX_DETAIL_CHARS,
+        "rows[0].detail.chars().count() == MAX_DETAIL_CHARS",
+    )?;
+    ensure(
+        rows.first().check("rows[0]")?.detail_clipped,
+        "rows[0].detail_clipped",
+    )?;
+    ensure(
+        !rows.get(1).check("rows[1]")?.detail_clipped,
+        "!rows[1].detail_clipped",
+    )?;
+    ensure(
+        rows.get(1).check("rows[1]")?.detail.ends_with(&short),
+        &rows.get(1).check("rows[1]")?.detail,
+    )?;
     Ok(())
 }
 
@@ -46,7 +59,10 @@ fn comment_markers_match_whole_upper_case_words_only() -> TestResult {
     let response = run(request(project.path(), Some("comment_markers")))?;
     let rows = full_rows(&response)?;
 
-    assert_eq!(rows.len(), 4, "{rows:?}");
-    assert!(rows.iter().all(|row| row.file == "hit.rs"), "{rows:?}");
+    ensure_eq(&rows.len(), &4, "rows.len() == 4")?;
+    ensure(
+        rows.iter().all(|row| row.file == "hit.rs"),
+        "rows.iter().all(|row| row.file == \"hit.rs\")",
+    )?;
     Ok(())
 }

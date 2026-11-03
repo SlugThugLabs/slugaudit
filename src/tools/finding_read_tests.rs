@@ -4,7 +4,7 @@ use crate::sync;
 use crate::tools::context::ensure_synced_no_progress;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 pub(super) fn request(path: &str, file: Option<&str>) -> FindingReadRequest {
     FindingReadRequest {
@@ -93,7 +93,10 @@ fn an_empty_session_returns_no_findings() -> TestResult {
         &manager,
     )
     .check("finding_read")?;
-    assert!(response.0.findings.is_empty());
+    ensure(
+        response.0.findings.is_empty(),
+        "response.0.findings.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -103,13 +106,13 @@ fn finding_persists_and_is_readable() -> TestResult {
     let manager = sync::SourceSyncManager::default();
 
     let finding = write_finding(&project, "lib.rs", "test finding", &manager)?;
-    assert!(finding.id > 0);
+    ensure(finding.id > 0, "finding.id > 0")?;
 
-    assert_eq!(
-        stored_finding_count(&project)?,
-        1,
-        "finding must be in the findings file"
-    );
+    ensure_eq(
+        &stored_finding_count(&project)?,
+        &1,
+        "stored_finding_count(&project)? == 1",
+    )?;
 
     let response = finding_read(
         &Parameters(request(&project.path().to_string_lossy(), None)),
@@ -117,8 +120,21 @@ fn finding_persists_and_is_readable() -> TestResult {
         &manager,
     )
     .check("finding_read")?;
-    assert_eq!(response.0.findings.len(), 1);
-    assert_eq!(response.0.findings[0].title, "test finding");
+    ensure_eq(
+        &response.0.findings.len(),
+        &1,
+        "response.0.findings.len() == 1",
+    )?;
+    ensure_eq(
+        &response
+            .0
+            .findings
+            .first()
+            .check("response.0.findings[0]")?
+            .title,
+        &"test finding",
+        "response.0.findings[0].title == \"test finding\"",
+    )?;
     Ok(())
 }
 
@@ -134,7 +150,11 @@ fn file_filter_returns_only_that_file() -> TestResult {
     write_finding(&project, "a.rs", "a finding", &manager)?;
     write_finding(&project, "b.rs", "b finding", &manager)?;
 
-    assert_eq!(stored_finding_count(&project)?, 2, "both findings present");
+    ensure_eq(
+        &stored_finding_count(&project)?,
+        &2,
+        "stored_finding_count(&project)? == 2",
+    )?;
 
     let filtered = finding_read(
         &Parameters(request(&project.path().to_string_lossy(), Some("a.rs"))),
@@ -142,8 +162,21 @@ fn file_filter_returns_only_that_file() -> TestResult {
         &manager,
     )
     .check("filtered")?;
-    assert_eq!(filtered.0.findings.len(), 1);
-    assert_eq!(filtered.0.findings[0].path, "a.rs");
+    ensure_eq(
+        &filtered.0.findings.len(),
+        &1,
+        "filtered.0.findings.len() == 1",
+    )?;
+    ensure_eq(
+        &filtered
+            .0
+            .findings
+            .first()
+            .check("filtered.0.findings[0]")?
+            .path,
+        &"a.rs",
+        "filtered.0.findings[0].path == \"a.rs\"",
+    )?;
     Ok(())
 }
 
@@ -160,7 +193,16 @@ fn stale_findings_are_returned_with_stale_status() -> TestResult {
         &manager,
     )
     .check("before")?;
-    assert_eq!(before.0.findings[0].status, "current");
+    ensure_eq(
+        &before
+            .0
+            .findings
+            .first()
+            .check("before.0.findings[0]")?
+            .status,
+        &"current",
+        "before.0.findings[0].status == \"current\"",
+    )?;
 
     std::fs::write(project.path().join("lib.rs"), b"fn main() { changed(); }\n").check("modify")?;
     ensure_synced_no_progress(&project.path().to_string_lossy(), &manager).check("re-sync")?;
@@ -171,7 +213,16 @@ fn stale_findings_are_returned_with_stale_status() -> TestResult {
         &manager,
     )
     .check("after")?;
-    assert_eq!(after.0.findings[0].status, "stale");
+    ensure_eq(
+        &after
+            .0
+            .findings
+            .first()
+            .check("after.0.findings[0]")?
+            .status,
+        &"stale",
+        "after.0.findings[0].status == \"stale\"",
+    )?;
     Ok(())
 }
 
@@ -192,11 +243,16 @@ fn an_oversized_read_path_or_file_is_a_typed_error() -> TestResult {
         return Err("an oversized path must be refused before resolution".to_owned())
             .check("unexpected outcome");
     };
-    assert_eq!(
-        path_error.message,
-        "path or file exceeds its input size limit"
-    );
-    assert_eq!(path_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    ensure_eq(
+        &path_error.message,
+        &"path or file exceeds its input size limit",
+        "path_error.message == \"path or file exceeds its input size limit\"",
+    )?;
+    ensure_eq(
+        &path_error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "path_error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
 
     let oversized_file = FindingReadRequest {
         file: Some("x".repeat(MAX_FILE_BYTES + 1)),
@@ -210,11 +266,16 @@ fn an_oversized_read_path_or_file_is_a_typed_error() -> TestResult {
         return Err("an oversized file filter must be refused".to_owned())
             .check("unexpected outcome");
     };
-    assert_eq!(
-        file_error.message,
-        "path or file exceeds its input size limit"
-    );
-    assert_eq!(file_error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    ensure_eq(
+        &file_error.message,
+        &"path or file exceeds its input size limit",
+        "file_error.message == \"path or file exceeds its input size limit\"",
+    )?;
+    ensure_eq(
+        &file_error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "file_error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
     Ok(())
 }
 
@@ -240,12 +301,15 @@ fn an_unreadable_findings_database_is_an_internal_error() -> TestResult {
             .check("unexpected outcome");
     };
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.contains("the session findings read"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -269,13 +333,16 @@ fn an_undecodable_finding_row_is_an_internal_error() -> TestResult {
         return Err("an undecodable row must fail the read".to_owned()).check("unexpected outcome");
     };
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.contains("reading a session finding")
             && error.message.contains("Invalid column type"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -299,23 +366,24 @@ fn an_oversized_description_is_clipped_on_a_char_boundary_and_flagged() -> TestR
     .check("read")?
     .0;
 
-    assert_eq!(response.findings.len(), 1);
-    let entry = &response.findings[0];
-    assert!(entry.detail_clipped, "the clip must be reported");
-    assert!(
+    ensure_eq(&response.findings.len(), &1, "response.findings.len() == 1")?;
+    let entry = response.findings.first().check("response.findings[0]")?;
+    ensure(entry.detail_clipped, "entry.detail_clipped")?;
+    ensure(
         entry.description.chars().count() < description.chars().count(),
-        "the stored description must actually have been shortened"
-    );
-    assert!(
+        "entry.description.chars().count() < description.chars().count()",
+    )?;
+    ensure(
         description.starts_with(&entry.description),
-        "the returned text must be a character-boundary prefix"
-    );
-    assert!(
+        "description.starts_with(&entry.description)",
+    )?;
+    ensure(
         response.page.bytes_used <= response.page.page_bytes,
-        "a clipped page must fit its budget: {} of {}",
-        response.page.bytes_used,
-        response.page.page_bytes
-    );
-    assert!(response.page.complete, "the scope was exhausted");
+        format!(
+            "a clipped page must fit its budget: {} of {}",
+            response.page.bytes_used, response.page.page_bytes
+        ),
+    )?;
+    ensure(response.page.complete, "response.page.complete")?;
     Ok(())
 }

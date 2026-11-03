@@ -6,7 +6,7 @@
 
 use crate::tools::context::{SyncedProject, ensure_synced_no_progress, with_verified_read};
 use crate::tools::test_support::activated_project;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::PathBuf;
 
 fn missing_handle() -> SyncedProject {
@@ -31,17 +31,25 @@ fn synced_project() -> TestResult<(tempfile::TempDir, SyncedProject)> {
 fn verified_read_fails_cleanly_when_the_database_is_missing() -> TestResult {
     let result = with_verified_read(&missing_handle(), |_tx| Ok(()));
     let error = result.check_err("opening a missing database must fail")?;
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.starts_with("opening the project database:"),
-        "the error must name the failed open, got: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the error must name the failed open, got: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         error.message.contains("retry the call"),
-        "the error must carry the retry hint, got: {}",
-        error.message
-    );
+        format!(
+            "the error must carry the retry hint, got: {}",
+            error.message
+        ),
+    )?;
     Ok(())
 }
 
@@ -57,10 +65,7 @@ fn verified_read_fails_cleanly_on_a_corrupt_database() -> TestResult {
     };
 
     let result = with_verified_read(&handle, |_tx| Ok(()));
-    assert!(
-        result.is_err(),
-        "a corrupt database must surface an error rather than serve stale data"
-    );
+    ensure(result.is_err(), "result.is_err()")?;
     Ok(())
 }
 
@@ -81,17 +86,22 @@ fn verified_read_reports_a_failure_reading_the_current_revision() -> TestResult 
     let error = with_verified_read(&handle, |_tx| Ok(()))
         .check_err("a database without a revisions table must fail the read")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.starts_with("reading the current revision:"),
-        "the error must name the failed read, got: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the error must name the failed read, got: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         error.message.contains("no such table: revisions"),
-        "the SQLite cause must be kept, got: {}",
-        error.message
-    );
+        format!("the SQLite cause must be kept, got: {}", error.message),
+    )?;
     Ok(())
 }
 
@@ -113,19 +123,24 @@ fn verified_read_reports_a_failed_commit() -> TestResult {
     })
     .check_err("committing an already-ended transaction must fail")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error
             .message
             .starts_with("committing the read transaction:"),
-        "the error must name the failed commit, got: {}",
-        error.message
-    );
-    assert!(
+        format!(
+            "the error must name the failed commit, got: {}",
+            error.message
+        ),
+    )?;
+    ensure(
         error.message.contains("no transaction is active"),
-        "the SQLite cause must be kept, got: {}",
-        error.message
-    );
+        format!("the SQLite cause must be kept, got: {}", error.message),
+    )?;
     Ok(())
 }
 
@@ -145,11 +160,16 @@ fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction()
     let error = super::start_read_transaction(&mut connection)
         .check_err("starting a nested read transaction must fail")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert_eq!(
-        error.message,
-        format!("starting a read transaction: {cause}")
-    );
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure_eq(
+        &error.message,
+        &format!("starting a read transaction: {cause}"),
+        "error.message == format!(\"starting a read transaction: {cause}\")",
+    )?;
     connection
         .execute_batch("ROLLBACK")
         .check("close the outer transaction")?;

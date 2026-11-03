@@ -95,7 +95,9 @@ pub(super) fn count_current(
         let (path, source_hash) =
             row.map_err(|error| internal_error("reading a finding for the count", error))?;
         if lookup.is_current(&path, &source_hash)? {
-            current += 1;
+            current = current.checked_add(1).ok_or_else(|| {
+                ErrorData::internal_error("the count of current findings overflowed", None)
+            })?;
         }
     }
     Ok(current)

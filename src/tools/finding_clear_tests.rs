@@ -4,7 +4,7 @@ use crate::sync::SourceSyncManager;
 use crate::tools::test_support::activated_project;
 use crate::tools::{FindingReadRequest, FindingRequest, LegacyPaging, finding, finding_read};
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn write(
     project: &tempfile::TempDir,
@@ -74,13 +74,24 @@ fn clear_deletes_every_finding_and_reports_how_many() -> TestResult {
     for (line, title) in [(1, "first"), (2, "second"), (3, "third")] {
         write(&project, &manager, line, title)?;
     }
-    assert_eq!(read_titles(&project, &manager)?.len(), 3);
+    ensure_eq(
+        &read_titles(&project, &manager)?.len(),
+        &3,
+        "read_titles(&project, &manager)?.len() == 3",
+    )?;
 
     let response = clear(&project, &manager).check("clear succeeds")?;
 
-    assert_eq!(response.removed, 3);
-    assert!(read_titles(&project, &manager)?.is_empty());
-    assert_eq!(clear(&project, &manager).check("second clear")?.removed, 0);
+    ensure_eq(&response.removed, &3, "response.removed == 3")?;
+    ensure(
+        read_titles(&project, &manager)?.is_empty(),
+        "read_titles(&project, &manager)?.is_empty()",
+    )?;
+    ensure_eq(
+        &clear(&project, &manager).check("second clear")?.removed,
+        &0,
+        "clear(&project, &manager).check(\"second clear\")?.removed == 0",
+    )?;
     Ok(())
 }
 
@@ -91,8 +102,11 @@ fn clear_without_any_finding_reports_zero_and_creates_no_database() -> TestResul
 
     let response = clear(&project, &manager).check("clear succeeds")?;
 
-    assert_eq!(response.removed, 0);
-    assert!(!crate::tools::test_support::own_findings_path(&project)?.exists());
+    ensure_eq(&response.removed, &0, "response.removed == 0")?;
+    ensure(
+        !crate::tools::test_support::own_findings_path(&project)?.exists(),
+        "!crate::tools::test_support::own_findings_path(&project)?.exists()",
+    )?;
     Ok(())
 }
 
@@ -105,7 +119,11 @@ fn findings_written_after_a_clear_start_fresh() -> TestResult {
 
     write(&project, &manager, 2, "after")?;
 
-    assert_eq!(read_titles(&project, &manager)?, ["after"]);
+    ensure_eq(
+        &read_titles(&project, &manager)?,
+        &["after"],
+        "read_titles(&project, &manager)? == [\"after\"]",
+    )?;
     Ok(())
 }
 
@@ -119,8 +137,15 @@ fn clear_only_touches_the_named_project() -> TestResult {
 
     clear(&first, &manager).check("clear succeeds")?;
 
-    assert!(read_titles(&first, &manager)?.is_empty());
-    assert_eq!(read_titles(&second, &manager)?, ["second project"]);
+    ensure(
+        read_titles(&first, &manager)?.is_empty(),
+        "read_titles(&first, &manager)?.is_empty()",
+    )?;
+    ensure_eq(
+        &read_titles(&second, &manager)?,
+        &["second project"],
+        "read_titles(&second, &manager)? == [\"second project\"]",
+    )?;
     Ok(())
 }
 
@@ -136,16 +161,28 @@ fn clear_refuses_an_oversized_path_and_a_project_that_is_not_enabled() -> TestRe
     ) else {
         return Err("an oversized path is refused".to_owned()).check("unexpected outcome");
     };
-    assert_eq!(oversized.message, "path exceeds its input size limit");
-    assert_eq!(oversized.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    ensure_eq(
+        &oversized.message,
+        &"path exceeds its input size limit",
+        "oversized.message == \"path exceeds its input size limit\"",
+    )?;
+    ensure_eq(
+        &oversized.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "oversized.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
 
     let bare = tempfile::tempdir().check("bare dir")?;
     let error = clear(&bare, &manager).check_err("no project here")?;
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(
-        error.data.as_ref().and_then(|data| data.get("code")),
-        Some(&serde_json::json!("project_not_enabled")),
-        "{error:?}"
-    );
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.data.as_ref().and_then(|data| data.get("code")),
+        &Some(&serde_json::json!("project_not_enabled")),
+        "error.data.as_ref().and_then(|data| data.get(\"code\")) == Some(&serde_json::json!(\"project_not_enabled\"))",
+    )?;
     Ok(())
 }

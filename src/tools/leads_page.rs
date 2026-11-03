@@ -158,7 +158,7 @@ fn respond(served: Served<Extras>, cutting: &Cutting) -> Result<LeadsResponse, E
         }
     };
     let files = rows.iter().map(|row| row.file.as_str());
-    let page_file_counts: Vec<FileCount> = page_file_counts(files);
+    let page_file_counts: Vec<FileCount> = page_file_counts(files)?;
     let rows = if extras.compact {
         LeadRows::Compact(rows.into_iter().map(StoredLead::into_compact).collect())
     } else {
@@ -206,7 +206,14 @@ fn accept(cutting: &mut Cutting, limit: Option<usize>, budget: usize, row: &Stor
             return Take::No;
         }
     }
-    cutting.taken += 1;
+    let Some(taken) = cutting.taken.checked_add(1) else {
+        cutting.failure = Some(ErrorData::internal_error(
+            "the count of rows taken for a leads page overflowed",
+            None,
+        ));
+        return Take::No;
+    };
+    cutting.taken = taken;
     cutting.bytes_used = cutting.bytes_used.saturating_add(size);
     Take::Yes
 }

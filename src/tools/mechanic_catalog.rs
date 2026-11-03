@@ -221,26 +221,26 @@ fn collision(catalog: &Catalog, id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::is_lower_snake;
-    use slugaudit_test_check::TestResult;
+    use slugaudit_test_check::{TestResult, ensure};
 
     #[test]
     fn lowercase_digits_and_underscore_are_allowed() -> TestResult {
-        assert!(is_lower_snake("abc_123"));
-        assert!(is_lower_snake("_"));
+        ensure(is_lower_snake("abc_123"), "is_lower_snake(\"abc_123\")")?;
+        ensure(is_lower_snake("_"), "is_lower_snake(\"_\")")?;
         Ok(())
     }
 
     #[test]
     fn uppercase_punctuation_space_and_non_ascii_are_refused() -> TestResult {
         for text in ["Abc", "a-b", "a b", "a.b", "caf\u{e9}"] {
-            assert!(!is_lower_snake(text), "{text:?} must be refused");
+            ensure(!is_lower_snake(text), format!("{text:?} must be refused"))?;
         }
         Ok(())
     }
 
     #[test]
     fn the_empty_string_has_no_offending_byte() -> TestResult {
-        assert!(is_lower_snake(""));
+        ensure(is_lower_snake(""), "is_lower_snake(\"\")")?;
         Ok(())
     }
 }

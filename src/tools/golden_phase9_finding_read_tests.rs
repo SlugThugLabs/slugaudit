@@ -5,7 +5,7 @@ use crate::sync::SourceSyncManager;
 use crate::tools::{FindingReadRequest, FindingRequest, LegacyPaging, finding, finding_read};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
 #[test]
 fn paged_finding_read_matches_the_golden_apart_from_paging_fields() -> TestResult {
@@ -85,9 +85,13 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() -> TestResul
     let text = std::fs::read_to_string(fixture_dir().join("finding_read_offset1.json"))
         .check("read fixture")?;
     let fixture: Value = serde_json::from_str(&text).check("fixture is JSON")?;
-    let expected = fixture["response"]["findings"]
+    let expected = fixture
+        .get("response")
+        .check("fixture[\"response\"][\"findings\"]")?
+        .get("findings")
+        .check("fixture[\"response\"][\"findings\"]")?
         .as_array()
         .check("fixture findings is an array")?;
-    assert_eq!(&findings, expected, "finding_read_offset1 findings drifted");
+    ensure_eq(&(&findings), &expected, "&findings == expected")?;
     Ok(())
 }

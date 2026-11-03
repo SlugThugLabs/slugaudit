@@ -4,7 +4,7 @@
 
 use super::*;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -15,8 +15,14 @@ fn oversize_fixture() -> TestResult<tempfile::TempDir> {
     fs::create_dir_all(project.path().join(".planning").join("slugaudit")).check("activate")?;
     crate::project::write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
-    let big = line.repeat(3 * 1024 * 1024 / line.len() + 1);
-    assert!(big.len() > 3 * 1024 * 1024, "the fixture is over 3 MiB");
+    let big = line.repeat(
+        (3 * 1024 * 1024usize)
+            .checked_div(line.len())
+            .check("line is not empty")?
+            .checked_add(1)
+            .check("repeat count does not overflow")?,
+    );
+    ensure(big.len() > 3 * 1024 * 1024, "big.len() > 3 * 1024 * 1024")?;
     fs::write(project.path().join("big.rs"), big).check("write oversize file")?;
     fs::write(project.path().join("small.rs"), line).check("write small file")?;
     Ok(project)
@@ -65,18 +71,26 @@ fn an_oversize_file_indexes_fast_and_every_leads_response_counts_it_not_parsed()
         &manager,
     )?;
 
-    assert!(
+    ensure(
         elapsed < Duration::from_secs(2),
-        "indexing took {elapsed:?}"
-    );
-    assert_eq!(counts.files_not_parsed, 1, "counts mode");
-    assert_eq!(rows.files_not_parsed, 1, "rows mode");
-    assert_eq!(compact.files_not_parsed, 1, "compact mode");
-    assert_eq!(rows.page.total, Some(1), "only small.rs was parsed");
+        "elapsed < Duration::from_secs(2)",
+    )?;
+    ensure_eq(&counts.files_not_parsed, &1, "counts.files_not_parsed == 1")?;
+    ensure_eq(&rows.files_not_parsed, &1, "rows.files_not_parsed == 1")?;
+    ensure_eq(
+        &compact.files_not_parsed,
+        &1,
+        "compact.files_not_parsed == 1",
+    )?;
+    ensure_eq(&rows.page.total, &Some(1), "rows.page.total == Some(1)")?;
     let LeadRows::Full(rows) = &rows.rows else {
         return Err("full mode returns full rows".to_owned()).check("unexpected outcome");
     };
-    assert_eq!(rows[0].file, "small.rs");
+    ensure_eq(
+        &rows.first().check("rows[0]")?.file,
+        &"small.rs",
+        "rows[0].file == \"small.rs\"",
+    )?;
     Ok(())
 }
 
@@ -93,7 +107,11 @@ fn files_not_parsed_follows_the_request_pattern() -> TestResult {
         &manager,
     )?;
 
-    assert_eq!(narrowed.files_not_parsed, 0);
+    ensure_eq(
+        &narrowed.files_not_parsed,
+        &0,
+        "narrowed.files_not_parsed == 0",
+    )?;
     Ok(())
 }
 
@@ -111,14 +129,26 @@ fn report_completeness_counts_an_oversize_for_parse_file_and_lists_its_reason() 
     .check("report succeeds")?
     .0;
 
-    assert_eq!(response.completeness.oversize_for_parse_file_count, 1);
-    assert_eq!(response.completeness.parse_timeout_file_count, 0);
+    ensure_eq(
+        &response.completeness.oversize_for_parse_file_count,
+        &1,
+        "response.completeness.oversize_for_parse_file_count == 1",
+    )?;
+    ensure_eq(
+        &response.completeness.parse_timeout_file_count,
+        &0,
+        "response.completeness.parse_timeout_file_count == 0",
+    )?;
     let listed: Vec<(&str, Option<&str>)> = response
         .parser_failure_files
         .iter()
         .map(|file| (file.path.as_str(), file.parse_error_reason.as_deref()))
         .collect();
-    assert_eq!(listed, [("big.rs", Some("oversize_for_parse"))]);
+    ensure_eq(
+        &listed,
+        &[("big.rs", Some("oversize_for_parse"))],
+        "listed == [(\"big.rs\", Some(\"oversize_for_parse\"))]",
+    )?;
     Ok(())
 }
 
@@ -133,7 +163,11 @@ fn a_file_with_no_detected_language_is_not_counted_as_not_parsed() -> TestResult
 
     let response = run_leads(leads_request(&project, None), &manager)?;
 
-    assert_eq!(response.files_not_parsed, 0);
+    ensure_eq(
+        &response.files_not_parsed,
+        &0,
+        "response.files_not_parsed == 0",
+    )?;
     Ok(())
 }
 
@@ -150,8 +184,12 @@ fn slow_parse_fixture() -> TestResult<(
     let config =
         crate::tools::test_support::use_global_config(r#"{"max_parse_wall_clock_ms": 200}"#)?;
     let line = "pub fn f(x: Option<u8>) -> u8 { x.expect() }\n";
-    let big = line.repeat(1_900_000 / line.len());
-    assert!(big.len() < 2 * 1024 * 1024, "under max_parse_bytes");
+    let big = line.repeat(
+        1_900_000usize
+            .checked_div(line.len())
+            .check("line is not empty")?,
+    );
+    ensure(big.len() < 2 * 1024 * 1024, "big.len() < 2 * 1024 * 1024")?;
     fs::write(project.path().join("slow.rs"), big).check("write slow file")?;
     fs::write(project.path().join("one.rs"), line).check("write small file")?;
     fs::write(project.path().join("two.rs"), line).check("write small file")?;
@@ -183,22 +221,35 @@ fn a_file_that_outlives_its_parse_allowance_is_counted_and_the_sync_goes_on() ->
     let first_report = run_report(&project, &manager)?;
     let second_report = run_report(&project, &manager)?;
 
-    assert_eq!(counts.files_not_parsed, 1, "counts mode");
-    assert_eq!(rows.files_not_parsed, 1, "rows mode");
-    assert_eq!(
-        second_report.revision_id, counts.page.revision_id,
-        "the unchanged timed-out file is not re-parsed into a new revision"
-    );
-    assert_eq!(rows.page.total, Some(2), "the two small files were parsed");
+    ensure_eq(&counts.files_not_parsed, &1, "counts.files_not_parsed == 1")?;
+    ensure_eq(&rows.files_not_parsed, &1, "rows.files_not_parsed == 1")?;
+    ensure_eq(
+        &second_report.revision_id,
+        &counts.page.revision_id,
+        "second_report.revision_id == counts.page.revision_id",
+    )?;
+    ensure_eq(&rows.page.total, &Some(2), "rows.page.total == Some(2)")?;
     for report in [&first_report, &second_report] {
-        assert_eq!(report.completeness.parse_timeout_file_count, 1);
-        assert_eq!(report.completeness.oversize_for_parse_file_count, 0);
+        ensure_eq(
+            &report.completeness.parse_timeout_file_count,
+            &1,
+            "report.completeness.parse_timeout_file_count == 1",
+        )?;
+        ensure_eq(
+            &report.completeness.oversize_for_parse_file_count,
+            &0,
+            "report.completeness.oversize_for_parse_file_count == 0",
+        )?;
         let listed: Vec<(&str, Option<&str>)> = report
             .parser_failure_files
             .iter()
             .map(|file| (file.path.as_str(), file.parse_error_reason.as_deref()))
             .collect();
-        assert_eq!(listed, [("slow.rs", Some("parse_timeout"))]);
+        ensure_eq(
+            &listed,
+            &[("slow.rs", Some("parse_timeout"))],
+            "listed == [(\"slow.rs\", Some(\"parse_timeout\"))]",
+        )?;
     }
     Ok(())
 }
@@ -246,14 +297,18 @@ fn the_parsed_and_parser_failure_predicates_never_overlap_and_cover_every_parse(
     let parsed = super::super::leads_covers::PARSED_FILES;
     let failed = crate::tools::PARSER_FAILURE_PREDICATE;
 
-    assert_eq!(count(&format!("({parsed}) AND ({failed})"))?, 0);
-    assert_eq!(
-        count(&format!(
+    ensure_eq(
+        &count(&format!("({parsed}) AND ({failed})"))?,
+        &0,
+        "count(&format!(\"({parsed}) AND ({failed})\"))? == 0",
+    )?;
+    ensure_eq(
+        &count(&format!(
             "file_kind = 'indexed' AND language IS NOT 'prose' AND language IS NOT NULL \
              AND parse_outcome != 'NotAttempted' AND NOT ({parsed}) AND NOT ({failed})"
         ))?,
-        0,
-        "an attempted parse is either read by mechanics or counted as not parsed"
-    );
+        &0,
+        "count(&format!( \"file_kind = 'indexed' AND language IS NOT 'prose' AND language IS NOT NULL \\ AND parse_outcome != 'NotAttempted' AND NOT ({parsed}) AND NOT ({failed})\" ))? == 0",
+    )?;
     Ok(())
 }

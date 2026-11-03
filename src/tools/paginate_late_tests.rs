@@ -2,7 +2,7 @@
 //! first row of `paginate`.
 
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// A spec with no columns of its own, for producers that declare them.
 fn late_spec(tool: &'static str) -> PageSpec {
@@ -64,9 +64,21 @@ fn paginate_columns_set_by_the_producer_are_stored_and_returned_on_every_page() 
     )
     .check("page two")?;
 
-    assert_eq!(first.columns, cols(&["a", "b"]));
-    assert_eq!(second.columns, cols(&["a", "b"]));
-    assert_eq!(second.rows[0].cells, vec![Cell::Int(2), Cell::Null]);
+    ensure_eq(
+        &first.columns,
+        &cols(&["a", "b"]),
+        "first.columns == cols(&[\"a\", \"b\"])",
+    )?;
+    ensure_eq(
+        &second.columns,
+        &cols(&["a", "b"]),
+        "second.columns == cols(&[\"a\", \"b\"])",
+    )?;
+    ensure_eq(
+        &second.rows.first().check("second.rows[0]")?.cells,
+        &vec![Cell::Int(2), Cell::Null],
+        "second.rows[0].cells == vec![Cell::Int(2), Cell::Null]",
+    )?;
     Ok(())
 }
 
@@ -77,7 +89,11 @@ fn paginate_typed_spec_columns_are_returned_without_a_set_columns_call() -> Test
 
     let served = fresh(&manager, &path, 3, 10).check("page")?;
 
-    assert_eq!(served.columns, cols(&["n"]));
+    ensure_eq(
+        &served.columns,
+        &cols(&["n"]),
+        "served.columns == cols(&[\"n\"])",
+    )?;
     Ok(())
 }
 
@@ -114,16 +130,19 @@ fn paginate_set_columns_twice_is_an_internal_error_and_leaves_nothing_stored() -
         sink.set_columns(cols(&["b"]))
     })?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error
             .message
             .starts_with("declaring the result columns: the result columns were already declared."),
-        "{}",
-        error.message
-    );
-    assert_eq!(
-        manager
+        format!("{}", error.message),
+    )?;
+    ensure_eq(
+        &manager
             .result_stores()
             .current()
             .check("the store slot")?
@@ -131,8 +150,9 @@ fn paginate_set_columns_twice_is_an_internal_error_and_leaves_nothing_stored() -
             .stats()
             .check("the store counters")?
             .admitted_bytes,
-        0
-    );
+        &0,
+        "manager .result_stores() .current() .check(\"the store slot\")? .check(\"a store\")? .stats() .check(\"the store counters\")? .admitted_bytes == 0",
+    )?;
     Ok(())
 }
 
@@ -146,12 +166,15 @@ fn paginate_set_columns_after_a_push_is_an_internal_error() -> TestResult {
         sink.set_columns(cols(&["b"]))
     })?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.starts_with("declaring the result columns: "),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -176,7 +199,11 @@ fn paginate_set_columns_when_the_spec_has_columns_is_an_internal_error() -> Test
     .err()
     .check("columns are already known")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
     Ok(())
 }
 
@@ -201,13 +228,12 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() -> Tes
     .err()
     .check("no columns yet")?;
 
-    assert!(
+    ensure(
         error.message.starts_with(
-            "storing a result row: a row was pushed before the result columns were declared."
+            "storing a result row: a row was pushed before the result columns were declared.",
         ),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -266,11 +292,7 @@ fn budgeted_page_one_under(
         },
     )
     .check("page one")?;
-    assert_eq!(
-        seen.get(),
-        budget,
-        "page one is cut by the configured budget"
-    );
+    ensure_eq(&seen.get(), &budget, "seen.get() == budget")?;
     Ok(served)
 }
 
@@ -279,7 +301,11 @@ fn paginate_continuation_without_page_bytes_uses_the_budget_stored_with_the_resu
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
     let first = budgeted_page_one(&manager, &path, 2048)?;
-    assert_eq!(first.page.page_bytes, 2048);
+    ensure_eq(
+        &first.page.page_bytes,
+        &2048,
+        "first.page.page_bytes == 2048",
+    )?;
     let seen = std::cell::Cell::new(0);
 
     let second: Served<Totals> = paginate(
@@ -296,8 +322,12 @@ fn paginate_continuation_without_page_bytes_uses_the_budget_stored_with_the_resu
     )
     .check("page two")?;
 
-    assert_eq!(seen.get(), 2048);
-    assert_eq!(second.page.page_bytes, 2048);
+    ensure_eq(&seen.get(), &2048, "seen.get() == 2048")?;
+    ensure_eq(
+        &second.page.page_bytes,
+        &2048,
+        "second.page.page_bytes == 2048",
+    )?;
     Ok(())
 }
 
@@ -322,8 +352,12 @@ fn paginate_continuation_with_an_explicit_page_bytes_uses_and_echoes_it() -> Tes
     )
     .check("page two")?;
 
-    assert_eq!(seen.get(), 512);
-    assert_eq!(second.page.page_bytes, 512);
+    ensure_eq(&seen.get(), &512, "seen.get() == 512")?;
+    ensure_eq(
+        &second.page.page_bytes,
+        &512,
+        "second.page.page_bytes == 512",
+    )?;
     Ok(())
 }
 
@@ -335,7 +369,7 @@ fn paginate_continuation_page_bytes_above_the_stored_ceiling_is_clamped_to_it() 
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
     let first = budgeted_page_one_under(&manager, &path, 2048, 4096)?;
-    assert!(!first.at_ceiling, "2048 is below the ceiling 4096");
+    ensure(!first.at_ceiling, "!first.at_ceiling")?;
     let seen = std::cell::Cell::new(0);
 
     let second: Served<Totals> = paginate(
@@ -352,8 +386,12 @@ fn paginate_continuation_page_bytes_above_the_stored_ceiling_is_clamped_to_it() 
     )
     .check("page two")?;
 
-    assert_eq!((seen.get(), second.page.page_bytes), (4096, 4096));
-    assert!(second.at_ceiling, "the clamped budget is the ceiling");
+    ensure_eq(
+        &(seen.get(), second.page.page_bytes),
+        &(4096, 4096),
+        "(seen.get(), second.page.page_bytes) == (4096, 4096)",
+    )?;
+    ensure(second.at_ceiling, "second.at_ceiling")?;
     Ok(())
 }
 
@@ -383,8 +421,12 @@ fn paginate_offers_the_first_row_to_accept_and_still_takes_it() -> TestResult {
     )
     .check("page two")?;
 
-    assert_eq!(*asked.borrow(), vec![2, 3]);
-    assert_eq!(numbers(&second)?, vec![2]);
+    ensure_eq(
+        &(*asked.borrow()),
+        &vec![2, 3],
+        "*asked.borrow() == vec![2, 3]",
+    )?;
+    ensure_eq(&numbers(&second)?, &vec![2], "numbers(&second)? == vec![2]")?;
     Ok(())
 }
 
@@ -398,173 +440,5 @@ fn context_probe(seen: &Seen) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&St
     }
 }
 
-#[test]
-fn paginate_context_on_a_new_request_carries_the_produced_extras_and_columns() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    let seen: Seen = Seen::default();
-
-    paginate(
-        &manager,
-        &budget_spec(2048, None),
-        PageRequest::Fresh {
-            path: &path,
-            sink: &NoopProgressSink,
-        },
-        |_, sink| {
-            sink.push(&Demo(1))?;
-            Ok(produced_totals())
-        },
-        context_probe(&seen),
-    )
-    .check("page one")?;
-
-    assert_eq!(*seen.borrow(), Some((2048, cols(&["n"]), 2)));
-    Ok(())
-}
-
-#[test]
-fn paginate_context_on_a_continuation_carries_the_extras_and_columns_of_page_one() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    let first = budgeted_page_one(&manager, &path, 2048)?;
-    let seen: Seen = Seen::default();
-
-    paginate(
-        &manager,
-        &budget_spec(77, None),
-        PageRequest::Cursor(&cursor_of(&first)?),
-        |_, _| {
-            Err(ErrorData::internal_error(
-                "a continuation never produces",
-                None,
-            ))
-        },
-        context_probe(&seen),
-    )
-    .check("page two")?;
-
-    assert_eq!(*seen.borrow(), Some((2048, cols(&["n"]), 2)));
-    Ok(())
-}
-
-#[test]
-fn paginate_context_columns_declared_by_the_producer_reach_the_continuation() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    let first = late_fresh(&manager, &path).check("page one")?;
-    let seen: Seen = Seen::default();
-
-    paginate(
-        &manager,
-        &late_spec("late"),
-        PageRequest::Cursor(&cursor_of(&first)?),
-        |_, _| {
-            Err(ErrorData::internal_error(
-                "a continuation never produces",
-                None,
-            ))
-        },
-        context_probe(&seen),
-    )
-    .check("page two")?;
-
-    assert_eq!(*seen.borrow(), Some((1000, cols(&["a", "b"]), 2)));
-    Ok(())
-}
-
-#[test]
-fn result_store_surface_wrong_tool_cursor_counts_as_an_unknown_cursor() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    let first = fresh(&manager, &path, 25, 10).check("page one")?;
-    let store = manager
-        .result_stores()
-        .current()
-        .check("the store slot")?
-        .check("a store")?;
-    assert_eq!(
-        store
-            .stats()
-            .check("read the store counters")?
-            .unknown_cursors,
-        0
-    );
-
-    let error = next(&manager, "other", &cursor_of(&first)?, 10)
-        .err()
-        .check("refused")?;
-
-    assert_eq!(code_of(&error)?, "unknown_cursor");
-    assert_eq!(
-        store
-            .stats()
-            .check("read the store counters")?
-            .unknown_cursors,
-        1
-    );
-    Ok(())
-}
-
-#[test]
-fn result_store_surface_stored_project_label_is_the_root_path_id_of_the_logs() -> TestResult {
-    let (project, path) = project()?;
-    let manager = manager(ROOMY);
-    let first = fresh(&manager, &path, 25, 10).check("page one")?;
-    let store = manager
-        .result_stores()
-        .current()
-        .check("the store slot")?
-        .check("a store")?;
-    let cursor = store
-        .decode_cursor(&cursor_of(&first)?)
-        .check("the cursor decodes")?;
-
-    let label = store.meta_of(cursor.result).check("meta")?.project.clone();
-
-    let root = std::fs::canonicalize(project.path()).check("canonical root")?;
-    assert_eq!(label, crate::util::redacted_path(&root));
-    Ok(())
-}
-
-#[test]
-fn result_store_surface_verbose_health_reports_the_store_stats() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    let first = fresh(&manager, &path, 25, 10).check("page one")?;
-    assert!(next(&manager, "other", &cursor_of(&first)?, 10).is_err());
-    let request = rmcp::handler::server::wrapper::Parameters(crate::tools::HealthRequest {
-        path: Some(path.clone()),
-        verbose: true,
-    });
-
-    let answer = crate::tools::health(&request, &NoopProgressSink, &manager).check("health")?;
-
-    let value = serde_json::to_value(answer.0).check("health serializes")?;
-    let store = &value["detail"]["result_store"];
-    assert_eq!(store["active"]["results"], 1);
-    assert!(store["active"]["bytes"].as_u64().check("bytes")? > 0);
-    assert_eq!(store["delivered"]["results"], 0);
-    assert_eq!(store["budget_bytes"], ROOMY);
-    assert_eq!(store["unknown_cursors"], 1);
-    assert_eq!(store["sweep"]["errors"], 0);
-    assert!(store["sweep"]["first_error"].is_null());
-    Ok(())
-}
-
-#[test]
-fn result_store_surface_default_health_omits_the_store_detail() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    fresh(&manager, &path, 25, 10).check("page one")?;
-    let request = rmcp::handler::server::wrapper::Parameters(crate::tools::HealthRequest {
-        path: Some(path.clone()),
-        verbose: false,
-    });
-
-    let answer = crate::tools::health(&request, &NoopProgressSink, &manager).check("health")?;
-
-    let value = serde_json::to_value(answer.0).check("health serializes")?;
-    assert!(value.get("detail").is_none());
-    Ok(())
-}
+#[path = "paginate_context_store_tests.rs"]
+mod context_store_tests;

@@ -166,7 +166,7 @@ pub struct Page {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
     #[test]
     fn legacy_paging_refuses_an_offset_with_the_cursor_remedy() -> TestResult {
@@ -175,10 +175,25 @@ mod tests {
 
         let error = legacy.refuse().check_err("offset is removed")?;
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INVALID_PARAMS,
+            "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+        )?;
         let data = error.data.check("a payload")?;
-        assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        ensure_eq(
+            data.get("code").check("data[\"code\"]")?,
+            &"paging_parameter_removed",
+            "data[\"code\"] == \"paging_parameter_removed\"",
+        )?;
+        ensure(
+            data.get("remedy")
+                .check("data[\"remedy\"]")?
+                .as_str()
+                .check("remedy")?
+                .contains("cursor"),
+            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
+        )?;
         Ok(())
     }
 
@@ -191,8 +206,19 @@ mod tests {
         let error = legacy.refuse().check_err("expected_revision is removed")?;
 
         let data = error.data.check("a payload")?;
-        assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        ensure_eq(
+            data.get("code").check("data[\"code\"]")?,
+            &"paging_parameter_removed",
+            "data[\"code\"] == \"paging_parameter_removed\"",
+        )?;
+        ensure(
+            data.get("remedy")
+                .check("data[\"remedy\"]")?
+                .as_str()
+                .check("remedy")?
+                .contains("cursor"),
+            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
+        )?;
         Ok(())
     }
 
@@ -219,11 +245,15 @@ mod tests {
             .check("parses")?;
         let schema = serde_json::to_string(&schemars::schema_for!(Probe)).check("schema")?;
 
-        assert_eq!(probe.path.as_deref(), Some("p"));
+        ensure_eq(
+            &probe.path.as_deref(),
+            &Some("p"),
+            "probe.path.as_deref() == Some(\"p\")",
+        )?;
         probe.legacy_paging.refuse().check_err("offset was sent")?;
-        assert!(!schema.contains("offset"), "{schema}");
-        assert!(!schema.contains("expected_revision"), "{schema}");
-        assert!(!schema.contains("legacy_paging"), "{schema}");
+        ensure(!schema.contains("offset"), &schema)?;
+        ensure(!schema.contains("expected_revision"), &schema)?;
+        ensure(!schema.contains("legacy_paging"), &schema)?;
         Ok(())
     }
 
@@ -244,9 +274,9 @@ mod tests {
 
         let value = serde_json::to_value(&page).check("a page serializes")?;
 
-        assert_eq!(
-            value,
-            serde_json::json!({
+        ensure_eq(
+            &value,
+            &serde_json::json!({
                 "returned": 2,
                 "total": 5,
                 "complete": false,
@@ -254,8 +284,9 @@ mod tests {
                 "bytes_used": 90,
                 "limited_by": "ceiling",
                 "revision_id": "rev-1",
-            })
-        );
+            }),
+            "value == serde_json::json!({ \"returned\": 2, \"total\": 5, \"complete\": false, \"page_bytes\": 100, \"bytes_used\": 90, \"limited_by\": \"ceiling\", \"revision_id\": \"rev-1\", })",
+        )?;
         Ok(())
     }
 
@@ -276,14 +307,18 @@ mod tests {
 
         let value = serde_json::to_value(&page).check("a page serializes")?;
 
-        assert_eq!(value["total"], serde_json::Value::Null);
-        assert!(
+        ensure_eq(
+            value.get("total").check("value[\"total\"]")?,
+            &serde_json::Value::Null,
+            "value[\"total\"] == serde_json::Value::Null",
+        )?;
+        ensure(
             !value
                 .as_object()
                 .check("an object")?
                 .contains_key("next_offset"),
-            "the pre-cursor field is gone from the wire"
-        );
+            "the pre-cursor field is gone from the wire",
+        )?;
         Ok(())
     }
 
@@ -302,19 +337,20 @@ mod tests {
         .map(|limit| serde_json::to_value(limit).check("a limit serializes"))
         .collect::<TestResult<Vec<_>>>()?;
 
-        assert_eq!(
-            names,
-            [
+        ensure_eq(
+            &names,
+            &[
                 "none",
                 "limit",
                 "page_bytes",
                 "ceiling",
                 "match_cap",
                 "scan_window",
-                "time_budget"
+                "time_budget",
             ]
-            .map(serde_json::Value::from)
-        );
+            .map(serde_json::Value::from),
+            "names == [ \"none\", \"limit\", \"page_bytes\", \"ceiling\", \"match_cap\", \"scan_window\", \"time_budget\" ] .map(serde_json::Value::from)",
+        )?;
         Ok(())
     }
 }

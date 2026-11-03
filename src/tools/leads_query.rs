@@ -162,16 +162,26 @@ pub(super) fn stream_rows(
 
 /// The per-file histogram of one page's files, in first-appearance order.
 /// Pages come back ordered by path, so equal paths are adjacent.
-pub(super) fn page_file_counts<'a>(files: impl Iterator<Item = &'a str>) -> Vec<FileCount> {
+///
+/// # Errors
+///
+/// Returns an internal error if a per-file row count overflows.
+pub(super) fn page_file_counts<'a>(
+    files: impl Iterator<Item = &'a str>,
+) -> Result<Vec<FileCount>, ErrorData> {
     let mut counts: Vec<FileCount> = Vec::new();
     for file in files {
         match counts.last_mut() {
-            Some(last) if last.file == file => last.count += 1,
+            Some(last) if last.file == file => {
+                last.count = last.count.checked_add(1).ok_or_else(|| {
+                    ErrorData::internal_error("a page's per-file row count overflowed", None)
+                })?;
+            }
             _ => counts.push(FileCount {
                 file: file.to_owned(),
                 count: 1,
             }),
         }
     }
-    counts
+    Ok(counts)
 }

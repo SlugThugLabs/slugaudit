@@ -6,7 +6,7 @@
 //! the same tests write the fixtures instead; see `tests/golden/phase9/README.md`.
 use serde::Serialize;
 use serde_json::{Value, json};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure_eq};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -116,7 +116,7 @@ pub(super) fn check_case<R: Serialize, S: Serialize>(
         .take();
     mask_paging(&mut expected);
     mask_paging(&mut response);
-    assert_eq!(response, expected, "golden case {name} drifted");
+    ensure_eq(&response, &expected, format!("golden case {name} drifted"))?;
     Ok(())
 }
 

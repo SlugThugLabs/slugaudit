@@ -3,7 +3,7 @@
 //! the languages each count read.
 use super::*;
 use crate::tools::query::{QueryRequest, query};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// A Python file with one `expect` call (pexpect's idiom) on line 5, next
 /// to decoys in a comment and a string that must not count, and three other
@@ -30,18 +30,35 @@ fn leads_counts_python_calls_and_covers_lists_python() -> TestResult {
     let response = run(request(project.path(), Some("expect_calls")))?;
 
     let expect = entry(&response, "expect_calls")?;
-    assert_eq!(
-        expect.count, 1,
-        "the comment and string decoys do not count"
-    );
-    assert_eq!(expect.covers, ["python"]);
-    assert_eq!(entry(&response, "panic_calls")?.covers, ["python"]);
-    assert_eq!(count_of(&response, "panic_calls")?, 0);
+    ensure_eq(&expect.count, &1, "expect.count == 1")?;
+    ensure_eq(&expect.covers, &["python"], "expect.covers == [\"python\"]")?;
+    ensure_eq(
+        &entry(&response, "panic_calls")?.covers,
+        &["python"],
+        "entry(&response, \"panic_calls\")?.covers == [\"python\"]",
+    )?;
+    ensure_eq(
+        &count_of(&response, "panic_calls")?,
+        &0,
+        "count_of(&response, \"panic_calls\")? == 0",
+    )?;
     let rows = full_rows(&response)?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].file, "app.py");
-    assert_eq!(rows[0].line, 5);
-    assert_eq!(rows[0].detail, "child.expect");
+    ensure_eq(&rows.len(), &1, "rows.len() == 1")?;
+    ensure_eq(
+        &rows.first().check("rows[0]")?.file,
+        &"app.py",
+        "rows[0].file == \"app.py\"",
+    )?;
+    ensure_eq(
+        &rows.first().check("rows[0]")?.line,
+        &5,
+        "rows[0].line == 5",
+    )?;
+    ensure_eq(
+        &rows.first().check("rows[0]")?.detail,
+        &"child.expect",
+        "rows[0].detail == \"child.expect\"",
+    )?;
     Ok(())
 }
 
@@ -78,15 +95,16 @@ fn query_reads_every_python_call_as_call_evidence() -> TestResult {
         })
         .collect::<TestResult<_>>()?;
     let python = |name: &str, line| (name.to_owned(), line, "python".to_owned());
-    assert_eq!(
-        calls,
-        [
+    ensure_eq(
+        &calls,
+        &[
             python("print", 4),
             python("expect", 5),
             python("outer", 6),
-            python("inner", 6)
-        ]
-    );
+            python("inner", 6),
+        ],
+        "calls == [ python(\"print\", 4), python(\"expect\", 5), python(\"outer\", 6), python(\"inner\", 6) ]",
+    )?;
     Ok(())
 }
 
@@ -105,9 +123,20 @@ fn call_mechanics_cover_no_language_for_a_project_without_call_extraction() -> T
     // Ruby has no call query: the mechanic exists but measured nothing here,
     // so it reports zero rather than disappearing — and an empty `covers`
     // says the zero is unchecked, while comment markers did read Ruby.
-    assert_eq!(count_of(&response, "expect_calls")?, 0);
-    assert!(entry(&response, "expect_calls")?.covers.is_empty());
-    assert_eq!(entry(&response, "comment_markers")?.covers, ["ruby"]);
+    ensure_eq(
+        &count_of(&response, "expect_calls")?,
+        &0,
+        "count_of(&response, \"expect_calls\")? == 0",
+    )?;
+    ensure(
+        entry(&response, "expect_calls")?.covers.is_empty(),
+        "entry(&response, \"expect_calls\")?.covers.is_empty()",
+    )?;
+    ensure_eq(
+        &entry(&response, "comment_markers")?.covers,
+        &["ruby"],
+        "entry(&response, \"comment_markers\")?.covers == [\"ruby\"]",
+    )?;
     Ok(())
 }
 
@@ -125,11 +154,16 @@ fn covers_follows_the_pattern_and_keeps_both_call_languages_sorted() -> TestResu
     rust_only.pattern = Some("*.rs".to_owned());
     let rust_only = run(rust_only)?;
 
-    assert_eq!(
-        entry(&everything, "expect_calls")?.covers,
-        ["python", "rust"]
-    );
-    assert_eq!(entry(&rust_only, "expect_calls")?.covers, ["rust"]);
+    ensure_eq(
+        &entry(&everything, "expect_calls")?.covers,
+        &["python", "rust"],
+        "entry(&everything, \"expect_calls\")?.covers == [\"python\", \"rust\"]",
+    )?;
+    ensure_eq(
+        &entry(&rust_only, "expect_calls")?.covers,
+        &["rust"],
+        "entry(&rust_only, \"expect_calls\")?.covers == [\"rust\"]",
+    )?;
     Ok(())
 }
 
@@ -140,13 +174,14 @@ fn leads_notices_the_untested_languages_the_counts_cover() -> TestResult {
 
     let response = run(request(project.path(), None))?;
 
-    assert_eq!(
-        response.notices,
-        [
+    ensure_eq(
+        &response.notices,
+        &[
             "python: uses an untested grammar (downloaded on first use). \
-             Only Rust is tested; treat python results as best-effort."
-        ]
-    );
+             Only Rust is tested; treat python results as best-effort.",
+        ],
+        "response.notices == [ \"python: uses an untested grammar (downloaded on first use). \\ Only Rust is tested; treat python results as best-effort.\" ]",
+    )?;
     Ok(())
 }
 
@@ -158,6 +193,9 @@ fn leads_for_a_rust_only_project_has_no_notices() -> TestResult {
 
     let response = run(request(project.path(), None))?;
 
-    assert!(response.notices.is_empty(), "{:?}", response.notices);
+    ensure(
+        response.notices.is_empty(),
+        format!("{:?}", response.notices),
+    )?;
     Ok(())
 }

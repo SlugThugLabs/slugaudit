@@ -5,7 +5,7 @@ use crate::sync::SourceSyncManager;
 use crate::tools::{LegacyPaging, MechanicAction, MechanicRequest, mechanic};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
 fn mechanic_request(
     project: &tempfile::TempDir,
@@ -79,11 +79,11 @@ fn golden_phase9_mechanic_add_and_list() -> TestResult {
     .check("mechanic list succeeds")?
     .0;
     let page = listed.page.clone().check("list carries a page block")?;
-    assert_eq!(
-        (page.returned, page.complete, page.cursor),
-        (listed.mechanics.len(), true, None),
-        "the small catalogue fits one page"
-    );
+    ensure_eq(
+        &(page.returned, page.complete, page.cursor),
+        &(listed.mechanics.len(), true, None),
+        "(page.returned, page.complete, page.cursor) == (listed.mechanics.len(), true, None)",
+    )?;
     // The fixture holds no `page` block, which `list` carries with the cursor; the
     // block is asserted above, everything else is compared unchanged.
     let mut listed = serde_json::to_value(listed).check("response serializes")?;

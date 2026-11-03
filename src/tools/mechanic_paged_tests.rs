@@ -5,7 +5,7 @@
 use super::tests::{EVAL_QUERY, action, add, call, path_of, python_project};
 use super::*;
 use crate::tools::PageLimit;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::collections::BTreeSet;
 
 /// Small enough that the built-ins plus two registered entries need at least
@@ -84,24 +84,33 @@ fn paged_mechanic_list_cursor_survives_a_mechanic_added_between_pages() -> TestR
     call(&manager, add(&path, "gamma", "python", EVAL_QUERY)).check("add gamma")?;
     let later = rest(&manager, &first, SMALL_PAGE)?;
 
-    assert!(later.len() >= 2, "the fixture needs at least three pages");
+    ensure(later.len() >= 2, "later.len() >= 2")?;
     let mut seen = ids(&first);
     for page in &later {
         seen.extend(ids(page));
-        assert_eq!(page.page.as_ref().check("page")?.revision_id, revision);
-        assert_eq!(
-            page.page.as_ref().check("page")?.total,
-            Some(seen_total(&full)?)
-        );
+        ensure_eq(
+            &page.page.as_ref().check("page")?.revision_id,
+            &revision,
+            "page.page.as_ref().check(\"page\")?.revision_id == revision",
+        )?;
+        ensure_eq(
+            &page.page.as_ref().check("page")?.total,
+            &Some(seen_total(&full)?),
+            "page.page.as_ref().check(\"page\")?.total == Some(seen_total(&full)?)",
+        )?;
     }
-    assert_eq!(seen, ids(&full), "pages equal the catalogue at page one");
-    assert_eq!(
-        first.page.as_ref().check("page")?.total,
-        Some(seen_total(&full)?)
-    );
+    ensure_eq(&seen, &ids(&full), "seen == ids(&full)")?;
+    ensure_eq(
+        &first.page.as_ref().check("page")?.total,
+        &Some(seen_total(&full)?),
+        "first.page.as_ref().check(\"page\")?.total == Some(seen_total(&full)?)",
+    )?;
     let fresh = call(&manager, list_page(&path, 1 << 20)).check("fresh list")?;
     let fresh_ids: BTreeSet<String> = ids(&fresh).into_iter().collect();
-    assert!(fresh_ids.contains("gamma") && !fresh_ids.contains("alpha"));
+    ensure(
+        fresh_ids.contains("gamma") && !fresh_ids.contains("alpha"),
+        "fresh_ids.contains(\"gamma\") && !fresh_ids.contains(\"alpha\")",
+    )?;
     Ok(())
 }
 
@@ -121,10 +130,11 @@ fn paged_mechanic_same_cursor_twice_returns_identical_pages() -> TestResult {
     let a = call(&manager, continuation(&cursor, SMALL_PAGE)).check("first read")?;
     let b = call(&manager, continuation(&cursor, SMALL_PAGE)).check("second read")?;
 
-    assert_eq!(
-        serde_json::to_value(&a).check("serializes")?,
-        serde_json::to_value(&b).check("serializes")?
-    );
+    ensure_eq(
+        &serde_json::to_value(&a).check("serializes")?,
+        &serde_json::to_value(&b).check("serializes")?,
+        "serde_json::to_value(&a).check(\"serializes\")? == serde_json::to_value(&b).check(\"serializes\")?",
+    )?;
     Ok(())
 }
 
@@ -147,11 +157,15 @@ fn paged_mechanic_final_page_can_be_retried() -> TestResult {
     let again = call(&manager, continuation(&final_cursor, SMALL_PAGE)).check("retry")?;
 
     let page = again.page.as_ref().check("page")?;
-    assert!(page.complete && page.cursor.is_none());
-    assert_eq!(
-        serde_json::to_value(&again).check("serializes")?,
-        serde_json::to_value(&final_page).check("serializes")?
-    );
+    ensure(
+        page.complete && page.cursor.is_none(),
+        "page.complete && page.cursor.is_none()",
+    )?;
+    ensure_eq(
+        &serde_json::to_value(&again).check("serializes")?,
+        &serde_json::to_value(&final_page).check("serializes")?,
+        "serde_json::to_value(&again).check(\"serializes\")? == serde_json::to_value(&final_page).check(\"serializes\")?",
+    )?;
     Ok(())
 }
 
@@ -168,10 +182,25 @@ fn paged_mechanic_refuses_offset_and_expected_revision_naming_cursor() -> TestRe
 
         let error = call(&manager, request).check_err("removed parameter is refused")?;
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INVALID_PARAMS,
+            "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+        )?;
         let data = error.data.check("payload")?;
-        assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        ensure_eq(
+            data.get("code").check("data[\"code\"]")?,
+            &"paging_parameter_removed",
+            "data[\"code\"] == \"paging_parameter_removed\"",
+        )?;
+        ensure(
+            data.get("remedy")
+                .check("data[\"remedy\"]")?
+                .as_str()
+                .check("remedy")?
+                .contains("cursor"),
+            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
+        )?;
     }
     Ok(())
 }
@@ -190,13 +219,20 @@ fn paged_mechanic_continuing_add_does_not_register_again() -> TestResult {
 
     let served = call(&manager, replay).check("a cursor continues the stored list")?;
 
-    assert_eq!(served.action, MechanicAction::List);
-    assert!(served.id.is_none() && served.first_count.is_none());
+    ensure_eq(
+        &served.action,
+        &MechanicAction::List,
+        "served.action == MechanicAction::List",
+    )?;
+    ensure(
+        served.id.is_none() && served.first_count.is_none(),
+        "served.id.is_none() && served.first_count.is_none()",
+    )?;
     let registered = manager
         .session_mechanics()
         .with_entries(|entries| entries.len())
         .check("read the session list")?;
-    assert_eq!(registered, 2, "the continuation registered nothing");
+    ensure_eq(&registered, &2, "registered == 2")?;
     Ok(())
 }
 
@@ -208,8 +244,16 @@ fn paged_mechanic_list_without_path_or_cursor_is_refused() -> TestResult {
 
     let error = call(&manager, request).check_err("a list needs a path or a cursor")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message, "path is required when no cursor is given");
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message,
+        &"path is required when no cursor is given",
+        "error.message == \"path is required when no cursor is given\"",
+    )?;
     Ok(())
 }
 
@@ -232,10 +276,25 @@ fn paged_mechanic_continuation_keeps_the_page_budget_of_page_one() -> TestResult
     let second = call(&manager, next).check("page two")?;
 
     let page = second.page.as_ref().check("list carries a page")?;
-    assert_eq!(first.page.as_ref().check("page")?.page_bytes, SMALL_PAGE);
-    assert_eq!(page.page_bytes, SMALL_PAGE);
-    assert!(page.bytes_used <= SMALL_PAGE);
-    assert_eq!(page.limited_by, PageLimit::PageBytes);
+    ensure_eq(
+        &first.page.as_ref().check("page")?.page_bytes,
+        &SMALL_PAGE,
+        "first.page.as_ref().check(\"page\")?.page_bytes == SMALL_PAGE",
+    )?;
+    ensure_eq(
+        &page.page_bytes,
+        &SMALL_PAGE,
+        "page.page_bytes == SMALL_PAGE",
+    )?;
+    ensure(
+        page.bytes_used <= SMALL_PAGE,
+        "page.bytes_used <= SMALL_PAGE",
+    )?;
+    ensure_eq(
+        &page.limited_by,
+        &PageLimit::PageBytes,
+        "page.limited_by == PageLimit::PageBytes",
+    )?;
     cursor_of(&second)?.check("still several pages")?;
     Ok(())
 }

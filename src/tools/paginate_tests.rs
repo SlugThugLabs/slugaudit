@@ -4,7 +4,7 @@ use crate::store::{ResultStoreLimits, StoredRow};
 use crate::sync::SourceSyncManager;
 use crate::tools::test_support::activated_project;
 use serde::{Deserialize, Serialize};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 
 const TOOL: &str = "demo";
 const ROOMY: u64 = 64 * 1024 * 1024;
@@ -53,10 +53,13 @@ fn project() -> TestResult<(tempfile::TempDir, String)> {
 
 /// Accepts `rows` rows per page (the first is offered and always taken).
 fn per_page(rows: usize) -> impl FnMut(&StoredRow) -> Take {
-    let mut seen = 0;
-    move |_| {
-        seen += 1;
-        if seen <= rows { Take::Yes } else { Take::No }
+    let mut remaining = rows;
+    move |_| match remaining.checked_sub(1) {
+        Some(left) => {
+            remaining = left;
+            Take::Yes
+        }
+        None => Take::No,
     }
 }
 
@@ -81,7 +84,12 @@ fn fresh(
             let one: i64 = tx
                 .query_row("SELECT 1", [], |row| row.get(0))
                 .map_err(|error| internal_error("test producer", error))?;
-            assert_eq!(one, 1, "the producer runs inside the read transaction");
+            if one != 1 {
+                return Err(ErrorData::internal_error(
+                    format!("SELECT 1 returned {one}, expected 1"),
+                    None,
+                ));
+            }
             for n in 0..rows {
                 sink.push(&Demo(n))?;
             }
@@ -149,22 +157,42 @@ fn paginate_without_a_cursor_syncs_once_and_serves_page_one() -> TestResult {
 
     let served = fresh(&manager, &path, 25, 10).check("page one")?;
 
-    assert!(
+    ensure(
         manager.last_sync_unix_seconds() > 0,
-        "the fresh request synced the project"
-    );
-    assert_eq!(numbers(&served)?, (0..10).collect::<Vec<_>>());
-    assert_eq!(served.page.returned, 10);
-    assert_eq!(served.page.total, Some(25));
-    assert!(!served.page.complete);
-    assert_eq!(served.page.limited_by, PageLimit::PageBytes);
-    assert_eq!(served.page.completeness, Some(Completeness::Complete));
+        "manager.last_sync_unix_seconds() > 0",
+    )?;
+    ensure_eq(
+        &numbers(&served)?,
+        &((0..10).collect::<Vec<_>>()),
+        "numbers(&served)? == (0..10).collect::<Vec<_>>()",
+    )?;
+    ensure_eq(&served.page.returned, &10, "served.page.returned == 10")?;
+    ensure_eq(
+        &served.page.total,
+        &Some(25),
+        "served.page.total == Some(25)",
+    )?;
+    ensure(!served.page.complete, "!served.page.complete")?;
+    ensure_eq(
+        &served.page.limited_by,
+        &PageLimit::PageBytes,
+        "served.page.limited_by == PageLimit::PageBytes",
+    )?;
+    ensure_eq(
+        &served.page.completeness,
+        &Some(Completeness::Complete),
+        "served.page.completeness == Some(Completeness::Complete)",
+    )?;
     served
         .page
         .cursor
         .as_ref()
         .check("`served.page.cursor` is present")?;
-    assert_eq!(served.meta, Totals { produced: 25 });
+    ensure_eq(
+        &served.meta,
+        &Totals { produced: 25 },
+        "served.meta == Totals { produced: 25 }",
+    )?;
     Ok(())
 }
 
@@ -178,21 +206,41 @@ fn paginate_continuations_cover_the_tail_without_syncing() -> TestResult {
     let second = next(&manager, TOOL, &cursor_of(&first)?, 10).check("page two")?;
     let third = next(&manager, TOOL, &cursor_of(&second)?, 10).check("page three")?;
 
-    assert_eq!(
-        second.page.revision_id, first.page.revision_id,
-        "a continuation serves the stored answer, not a new sync"
-    );
-    assert_eq!(third.page.revision_id, first.page.revision_id);
+    ensure_eq(
+        &second.page.revision_id,
+        &first.page.revision_id,
+        "second.page.revision_id == first.page.revision_id",
+    )?;
+    ensure_eq(
+        &third.page.revision_id,
+        &first.page.revision_id,
+        "third.page.revision_id == first.page.revision_id",
+    )?;
     let tail: Vec<i64> = numbers(&second)?
         .into_iter()
         .chain(numbers(&third)?)
         .collect();
-    assert_eq!(tail, numbers(&full)?[10..].to_vec());
-    assert_eq!(third.page.cursor, None);
-    assert!(third.page.complete);
-    assert_eq!(third.page.limited_by, PageLimit::None);
-    assert_eq!(third.page.total, Some(25));
-    assert_eq!(third.meta, Totals { produced: 25 });
+    ensure_eq(
+        &tail,
+        &numbers(&full)?
+            .get(10..)
+            .check("numbers(&full)?[10..]")?
+            .to_vec(),
+        "tail == numbers(&full)?[10..].to_vec()",
+    )?;
+    ensure_eq(&third.page.cursor, &None, "third.page.cursor == None")?;
+    ensure(third.page.complete, "third.page.complete")?;
+    ensure_eq(
+        &third.page.limited_by,
+        &PageLimit::None,
+        "third.page.limited_by == PageLimit::None",
+    )?;
+    ensure_eq(&third.page.total, &Some(25), "third.page.total == Some(25)")?;
+    ensure_eq(
+        &third.meta,
+        &Totals { produced: 25 },
+        "third.meta == Totals { produced: 25 }",
+    )?;
     Ok(())
 }
 
@@ -203,12 +251,24 @@ fn paginate_continuation_ignores_a_revision_published_since_page_one() -> TestRe
     let first = fresh(&manager, &path, 25, 10).check("page one")?;
     std::fs::write(project.path().join("added.rs"), b"pub fn added() {}\n").check("edit tree")?;
     let moved = crate::sync::test_support::sync_project(&manager, &project)?;
-    assert_ne!(moved.revision_id, first.page.revision_id, "a new revision");
+    ensure_ne(
+        &moved.revision_id,
+        &first.page.revision_id,
+        "moved.revision_id != first.page.revision_id",
+    )?;
 
     let second = next(&manager, TOOL, &cursor_of(&first)?, 10).check("page two")?;
 
-    assert_eq!(numbers(&second)?, (10..20).collect::<Vec<_>>());
-    assert_eq!(second.page.revision_id, first.page.revision_id);
+    ensure_eq(
+        &numbers(&second)?,
+        &((10..20).collect::<Vec<_>>()),
+        "numbers(&second)? == (10..20).collect::<Vec<_>>()",
+    )?;
+    ensure_eq(
+        &second.page.revision_id,
+        &first.page.revision_id,
+        "second.page.revision_id == first.page.revision_id",
+    )?;
     Ok(())
 }
 
@@ -222,8 +282,8 @@ fn paginate_same_cursor_twice_returns_the_identical_page() -> TestResult {
     let once = next(&manager, TOOL, &token, 10).check("first read")?;
     let again = next(&manager, TOOL, &token, 10).check("repeat read")?;
 
-    assert_eq!(once.rows, again.rows);
-    assert_eq!(once.page, again.page);
+    ensure_eq(&once.rows, &again.rows, "once.rows == again.rows")?;
+    ensure_eq(&once.page, &again.page, "once.page == again.page")?;
     Ok(())
 }
 
@@ -237,9 +297,13 @@ fn paginate_final_page_retry_still_works_after_delivery() -> TestResult {
     let last = next(&manager, TOOL, &token, 10).check("final page")?;
     let retry = next(&manager, TOOL, &token, 10).check("final page retried")?;
 
-    assert!(last.page.complete);
-    assert_eq!(numbers(&retry)?, (10..15).collect::<Vec<_>>());
-    assert_eq!(last.rows, retry.rows);
+    ensure(last.page.complete, "last.page.complete")?;
+    ensure_eq(
+        &numbers(&retry)?,
+        &((10..15).collect::<Vec<_>>()),
+        "numbers(&retry)? == (10..15).collect::<Vec<_>>()",
+    )?;
+    ensure_eq(&last.rows, &retry.rows, "last.rows == retry.rows")?;
     Ok(())
 }
 
@@ -253,7 +317,11 @@ fn paginate_cursor_of_another_tool_is_unknown_cursor() -> TestResult {
         .err()
         .check("refused")?;
 
-    assert_eq!(code_of(&error)?, "unknown_cursor");
+    ensure_eq(
+        &code_of(&error)?,
+        &"unknown_cursor",
+        "code_of(&error)? == \"unknown_cursor\"",
+    )?;
     Ok(())
 }
 
@@ -282,11 +350,15 @@ fn paginate_wrong_tool_cursor_on_the_last_page_does_not_mark_delivered() -> Test
         .err()
         .check("refused")?;
 
-    assert_eq!(code_of(&error)?, "unknown_cursor");
-    assert_eq!(before, (1, 0, 0));
-    assert_eq!(stats()?, before, "class is untouched");
+    ensure_eq(
+        &code_of(&error)?,
+        &"unknown_cursor",
+        "code_of(&error)? == \"unknown_cursor\"",
+    )?;
+    ensure_eq(&before, &(1, 0, 0), "before == (1, 0, 0)")?;
+    ensure_eq(&stats()?, &before, "stats()? == before")?;
     next(&manager, TOOL, &cursor_of(&first)?, 10).check("the right tool finishes it")?;
-    assert_eq!(stats()?, (0, 0, 1), "the right tool still delivers it");
+    ensure_eq(&stats()?, &(0, 0, 1), "stats()? == (0, 0, 1)")?;
     Ok(())
 }
 
@@ -300,7 +372,11 @@ fn paginate_garbage_cursor_is_unknown_cursor() -> TestResult {
         .err()
         .check("refused")?;
 
-    assert_eq!(code_of(&error)?, "unknown_cursor");
+    ensure_eq(
+        &code_of(&error)?,
+        &"unknown_cursor",
+        "code_of(&error)? == \"unknown_cursor\"",
+    )?;
     Ok(())
 }
 
@@ -312,13 +388,17 @@ fn paginate_cursor_from_another_process_nonce_is_unknown_cursor() -> TestResult 
     let token = cursor_of(&first)?;
     let mut parts: Vec<&str> = token.split('.').collect();
     let foreign = uuid::Uuid::new_v4().hyphenated().to_string();
-    parts[1] = &foreign;
+    *parts.get_mut(1).check("parts[1]")? = &foreign;
 
     let error = next(&manager, TOOL, &parts.join("."), 10)
         .err()
         .check("refused")?;
 
-    assert_eq!(code_of(&error)?, "unknown_cursor");
+    ensure_eq(
+        &code_of(&error)?,
+        &"unknown_cursor",
+        "code_of(&error)? == \"unknown_cursor\"",
+    )?;
     Ok(())
 }
 
@@ -329,101 +409,11 @@ fn paginate_cursor_before_any_result_exists_is_unknown_cursor() -> TestResult {
 
     let error = next(&manager, TOOL, &token, 10).err().check("refused")?;
 
-    assert_eq!(code_of(&error)?, "unknown_cursor");
-    Ok(())
-}
-
-/// Bytes one 20-row demo result takes in the store.
-fn one_result_bytes() -> TestResult<u64> {
-    let (_project, path) = project()?;
-    let manager = manager(ROOMY);
-    fresh(&manager, &path, 20, 10).check("probe result")?;
-    Ok(manager
-        .result_stores()
-        .current()
-        .check("the store slot")?
-        .check("store")?
-        .stats()
-        .check("read the store counters")?
-        .admitted_bytes)
-}
-
-#[test]
-fn paginate_reclaimed_result_continues_as_result_expired() -> TestResult {
-    let one = one_result_bytes()?;
-    let (_project, path) = project()?;
-    let manager = manager(one + one / 2);
-    let first = fresh(&manager, &path, 20, 10).check("page one")?;
-    let stale = cursor_of(&first)?;
-    next(&manager, TOOL, &stale, 10).check("delivers the result")?;
-
-    fresh(&manager, &path, 20, 10).check("a new result reclaims the delivered one")?;
-    let error = next(&manager, TOOL, &stale, 10).err().check("reclaimed")?;
-
-    assert_eq!(code_of(&error)?, "result_expired");
-    assert_eq!(
-        error.data.as_ref().check("payload")?["remedy"],
-        crate::error_codes::ErrorCode::ResultExpired.remedy()
-    );
-    Ok(())
-}
-
-#[test]
-fn paginate_full_store_refuses_a_new_result_and_keeps_active_ones_readable() -> TestResult {
-    let one = one_result_bytes()?;
-    let (_project, path) = project()?;
-    let manager = manager(one + one / 2);
-    let first = fresh(&manager, &path, 20, 10).check("page one")?;
-
-    let error = fresh(&manager, &path, 20, 10)
-        .err()
-        .check("store is full")?;
-
-    assert_eq!(code_of(&error)?, "result_store_full");
-    assert!(error.message.contains("1 active"), "{}", error.message);
-    let second = next(&manager, TOOL, &cursor_of(&first)?, 10).check("still readable")?;
-    assert_eq!(numbers(&second)?, (10..20).collect::<Vec<_>>());
-    Ok(())
-}
-
-#[test]
-fn paginate_result_over_the_whole_budget_is_result_too_large_with_no_entry() -> TestResult {
-    let (_project, path) = project()?;
-    let manager = manager(4096);
-
-    let error = fresh(&manager, &path, 50, 10).err().check("too large")?;
-
-    assert_eq!(code_of(&error)?, "result_too_large");
-    let stats = manager
-        .result_stores()
-        .current()
-        .check("the store slot")?
-        .check("store")?
-        .stats()
-        .check("read the store counters")?;
-    assert_eq!(stats.admitted_bytes, 0);
-    assert_eq!(stats.active.results, 0);
-    Ok(())
-}
-
-#[test]
-fn paginate_unusable_store_is_result_store_unavailable() -> TestResult {
-    let (project, path) = project()?;
-    std::fs::write(
-        project.path().join(".planning/slugaudit/results"),
-        b"not a dir",
-    )
-    .check("block the results directory")?;
-    let manager = manager(ROOMY);
-
-    let error = fresh(&manager, &path, 5, 10).err().check("unavailable")?;
-
-    assert_eq!(code_of(&error)?, "result_store_unavailable");
-    assert_eq!(error.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
-    assert_eq!(
-        error.data.as_ref().check("payload")?["remedy"],
-        crate::error_codes::ErrorCode::ResultStoreUnavailable.remedy()
-    );
+    ensure_eq(
+        &code_of(&error)?,
+        &"unknown_cursor",
+        "code_of(&error)? == \"unknown_cursor\"",
+    )?;
     Ok(())
 }
 
@@ -449,7 +439,11 @@ fn paginate_producer_failure_mid_stream_leaves_no_cursor_and_no_entry() -> TestR
     );
 
     let error = outcome.err().check("the producer error propagates")?;
-    assert_eq!(error.message, "producer gave up");
+    ensure_eq(
+        &error.message,
+        &"producer gave up",
+        "error.message == \"producer gave up\"",
+    )?;
     let stats = manager
         .result_stores()
         .current()
@@ -457,11 +451,12 @@ fn paginate_producer_failure_mid_stream_leaves_no_cursor_and_no_entry() -> TestR
         .check("store")?
         .stats()
         .check("read the store counters")?;
-    assert_eq!(stats.admitted_bytes, 0);
-    assert_eq!(
-        stats.active.results + stats.idle.results + stats.delivered.results,
-        0
-    );
+    ensure_eq(&stats.admitted_bytes, &0, "stats.admitted_bytes == 0")?;
+    ensure_eq(
+        &(stats.active.results + stats.idle.results + stats.delivered.results),
+        &0,
+        "stats.active.results + stats.idle.results + stats.delivered.results == 0",
+    )?;
     Ok(())
 }
 
@@ -495,11 +490,12 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() -> TestResult {
     )
     .check("raw page")?;
 
-    assert_eq!(
-        served.rows[0].cells,
-        vec![Cell::Text("x".to_owned()), Cell::Null]
-    );
-    assert_eq!(served.page.total, Some(1));
+    ensure_eq(
+        &served.rows.first().check("served.rows[0]")?.cells,
+        &vec![Cell::Text("x".to_owned()), Cell::Null],
+        "served.rows[0].cells == vec![Cell::Text(\"x\".to_owned()), Cell::Null]",
+    )?;
+    ensure_eq(&served.page.total, &Some(1), "served.page.total == Some(1)")?;
     Ok(())
 }
 
@@ -508,7 +504,10 @@ fn page_request_with_a_cursor_continues_and_ignores_the_path() -> TestResult {
     let request = page_request(Some("tok"), Some("/ignored"), &NoopProgressSink)
         .check("a cursor resolves")?;
 
-    assert!(matches!(request, PageRequest::Cursor("tok")));
+    ensure(
+        matches!(request, PageRequest::Cursor("tok")),
+        "matches!(request, PageRequest::Cursor(\"tok\"))",
+    )?;
     Ok(())
 }
 
@@ -517,13 +516,16 @@ fn page_request_without_a_cursor_is_fresh_on_the_path() -> TestResult {
     let request =
         page_request(None, Some("/project"), &NoopProgressSink).check("a path resolves")?;
 
-    assert!(matches!(
-        request,
-        PageRequest::Fresh {
-            path: "/project",
-            ..
-        }
-    ));
+    ensure(
+        matches!(
+            request,
+            PageRequest::Fresh {
+                path: "/project",
+                ..
+            }
+        ),
+        "matches!( request, PageRequest::Fresh { path: \"/project\", .. } )",
+    )?;
     Ok(())
 }
 
@@ -533,10 +535,21 @@ fn page_request_with_neither_cursor_nor_path_is_invalid_params() -> TestResult {
         .err()
         .check("nothing to resolve")?;
 
-    assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
-    assert_eq!(error.message, "path is required when no cursor is given");
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message,
+        &"path is required when no cursor is given",
+        "error.message == \"path is required when no cursor is given\"",
+    )?;
     Ok(())
 }
 
 #[path = "paginate_late_tests.rs"]
 mod late;
+
+#[path = "paginate_store_limit_tests.rs"]
+mod store_limit_tests;

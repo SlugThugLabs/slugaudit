@@ -74,7 +74,13 @@ fn golden_phase9_leads_counts_rows_pages_and_compact() -> TestResult {
     let mut second = leads_request(&project, Some("comment_markers"))?;
     second.limit = Some(5);
     second.path = None;
-    second.cursor = page_one["page"]["cursor"].as_str().map(str::to_owned);
+    second.cursor = page_one
+        .get("page")
+        .check("page_one[\"page\"][\"cursor\"]")?
+        .get("cursor")
+        .check("page_one[\"page\"][\"cursor\"]")?
+        .as_str()
+        .map(str::to_owned);
     leads_case("leads_rows_page2", &project, &second, &manager)?;
     let mut compact = leads_request(&project, None)?;
     compact.mode = LeadMode::Compact;

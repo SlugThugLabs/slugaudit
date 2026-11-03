@@ -9,7 +9,7 @@ use crate::sync::SourceSyncManager;
 use crate::tools::test_support::activated_project;
 use rmcp::handler::server::wrapper::Parameters;
 use rusqlite::Connection;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 
 fn on_request(path: &str) -> Parameters<ProjectControlRequest> {
@@ -54,19 +54,25 @@ fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() -> TestR
         project_control(&on_request(&path), &NoopProgressSink, None).check("enable recovers")?;
 
     let value = serde_json::to_value(&response.0).check("serialize response")?;
-    assert!(
-        value["database_discard"]
+    ensure(
+        value
+            .get("database_discard")
+            .check("value[\"database_discard\"]")?
             .get("findings_discarded")
             .is_none(),
-        "no findings are lost with the project database: {value}"
-    );
-    assert!(
-        value["database_discard"]["cause"]
+        "value[\"database_discard\"] .get(\"findings_discarded\") .is_none()",
+    )?;
+    ensure(
+        value
+            .get("database_discard")
+            .check("value[\"database_discard\"][\"cause\"]")?
+            .get("cause")
+            .check("value[\"database_discard\"][\"cause\"]")?
             .as_str()
             .check("cause is text")?
             .contains("corrupt or outdated"),
-        "{value}"
-    );
+        "value[\"database_discard\"][\"cause\"] .as_str() .check(\"cause is text\")? .contains(\"corrupt or outdated\")",
+    )?;
     Ok(())
 }
 
@@ -79,7 +85,10 @@ fn discard_surface_on_action_reports_nothing_for_a_healthy_database() -> TestRes
         .check("second enable succeeds")?;
 
     let value = serde_json::to_value(&response.0).check("serialize response")?;
-    assert!(value.get("database_discard").is_none(), "{value}");
+    ensure(
+        value.get("database_discard").is_none(),
+        "value.get(\"database_discard\").is_none()",
+    )?;
     Ok(())
 }
 
@@ -90,13 +99,13 @@ fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_find
     let manager = SourceSyncManager::default();
     let first = finding(&finding_request(&project), &NoopProgressSink, &manager)
         .check("first finding succeeds")?;
-    assert!(
+    ensure(
         serde_json::to_value(&first.0)
             .check("serialize")?
             .get("database_discard")
             .is_none(),
-        "a normal call reports no discard"
-    );
+        "serde_json::to_value(&first.0) .check(\"serialize\")? .get(\"database_discard\") .is_none()",
+    )?;
     let database = project.path().join(".planning/slugaudit/project.db");
     Connection::open(&database)
         .check("raw open")?
@@ -107,16 +116,17 @@ fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_find
         .check("finding recovers")?;
 
     let value = serde_json::to_value(&second.0).check("serialize")?;
-    assert!(
-        value["database_discard"]["cause"]
+    ensure(
+        value
+            .get("database_discard")
+            .check("value[\"database_discard\"][\"cause\"]")?
+            .get("cause")
+            .check("value[\"database_discard\"][\"cause\"]")?
             .as_str()
             .check("cause is text")?
             .contains("corrupt or outdated"),
-        "{value}"
-    );
-    assert_eq!(
-        second.0.id, first.0.id,
-        "the restated finding refreshes the one the rebuild left in the findings file"
-    );
+        "value[\"database_discard\"][\"cause\"] .as_str() .check(\"cause is text\")? .contains(\"corrupt or outdated\")",
+    )?;
+    ensure_eq(&second.0.id, &first.0.id, "second.0.id == first.0.id")?;
     Ok(())
 }

@@ -5,7 +5,7 @@ use crate::sync::SourceSyncManager;
 use crate::tools::{LegacyPaging, QueryRequest, query};
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::{Value, json};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn run_query(
     project: &tempfile::TempDir,
@@ -153,7 +153,11 @@ fn golden_phase9_query_multi_page() -> TestResult {
         &json!({ "sql": sql, "page_bytes": 1000 }),
         &one,
     )?;
-    let cursor = one["page"]["cursor"]
+    let cursor = one
+        .get("page")
+        .check("one[\"page\"][\"cursor\"]")?
+        .get("cursor")
+        .check("one[\"page\"][\"cursor\"]")?
         .as_str()
         .check("a second page exists")?
         .to_owned();
@@ -180,11 +184,26 @@ fn golden_phase9_mask_paging_keeps_result_columns_aliased_like_paging_keys() -> 
 
     mask_paging(&mut response);
 
-    assert_eq!(
-        response["rows"],
-        json!([{ "cursor": "c", "offset": 7, "next_offset": 8 }])
-    );
-    assert!(response["page"].get("cursor").is_none(), "{response}");
-    assert!(response["page"].get("next_offset").is_none(), "{response}");
+    ensure_eq(
+        response.get("rows").check("response[\"rows\"]")?,
+        &json!([{ "cursor": "c", "offset": 7, "next_offset": 8 }]),
+        "response[\"rows\"] == json!([{ \"cursor\": \"c\", \"offset\": 7, \"next_offset\": 8 }])",
+    )?;
+    ensure(
+        response
+            .get("page")
+            .check("response[\"page\"]")?
+            .get("cursor")
+            .is_none(),
+        "response[\"page\"].get(\"cursor\").is_none()",
+    )?;
+    ensure(
+        response
+            .get("page")
+            .check("response[\"page\"]")?
+            .get("next_offset")
+            .is_none(),
+        "response[\"page\"].get(\"next_offset\").is_none()",
+    )?;
     Ok(())
 }

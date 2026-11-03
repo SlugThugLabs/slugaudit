@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{CheckErr, TestResult};
+use slugaudit_test_check::{CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() -> TestResult {
@@ -7,22 +7,32 @@ fn leads_page_bytes_sets_the_row_budget_and_pages_on_it() -> TestResult {
     let mut whole = request(project.path(), Some("comment_markers"));
     whole.page_bytes = Some(1_000_000);
     let whole = run(whole)?;
-    assert_eq!(whole.page.returned, 12);
+    ensure_eq(&whole.page.returned, &12, "whole.page.returned == 12")?;
     let half = whole.page.bytes_used / 2;
 
     let mut paged = request(project.path(), Some("comment_markers"));
     paged.page_bytes = Some(half);
     let paged = run(paged)?;
 
-    assert_eq!(paged.page.page_bytes, half);
-    assert!(
+    ensure_eq(
+        &paged.page.page_bytes,
+        &half,
+        "paged.page.page_bytes == half",
+    )?;
+    ensure(
         paged.page.returned > 0 && paged.page.returned < 12,
-        "{}",
-        paged.page.returned
-    );
-    assert!(paged.page.bytes_used <= half);
-    assert_eq!(paged.page.limited_by, PageLimit::PageBytes);
-    assert!(!paged.oversized_row);
+        format!("{}", paged.page.returned),
+    )?;
+    ensure(
+        paged.page.bytes_used <= half,
+        "paged.page.bytes_used <= half",
+    )?;
+    ensure_eq(
+        &paged.page.limited_by,
+        &PageLimit::PageBytes,
+        "paged.page.limited_by == PageLimit::PageBytes",
+    )?;
+    ensure(!paged.oversized_row, "!paged.oversized_row")?;
     paged
         .page
         .cursor
@@ -41,13 +51,21 @@ fn leads_default_page_is_the_configured_default_page_bytes() -> TestResult {
 
     let response = run_with_limits(request(project.path(), Some("comment_markers")), &limits)?;
 
-    assert_eq!(response.page.page_bytes, 120);
-    assert_eq!(response.page.limited_by, PageLimit::PageBytes);
-    assert_eq!(
-        response.page.total,
-        Some(12),
-        "counts stay complete under paging"
-    );
+    ensure_eq(
+        &response.page.page_bytes,
+        &120,
+        "response.page.page_bytes == 120",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::PageBytes,
+        "response.page.limited_by == PageLimit::PageBytes",
+    )?;
+    ensure_eq(
+        &response.page.total,
+        &Some(12),
+        "response.page.total == Some(12)",
+    )?;
     Ok(())
 }
 
@@ -63,9 +81,17 @@ fn leads_page_bytes_above_the_ceiling_is_clamped_and_a_cut_reports_the_ceiling()
 
     let response = run_with_limits(asked, &limits)?;
 
-    assert_eq!(response.page.page_bytes, 50);
-    assert_eq!(response.page.limited_by, PageLimit::Ceiling);
-    assert!(!response.page.complete);
+    ensure_eq(
+        &response.page.page_bytes,
+        &50,
+        "response.page.page_bytes == 50",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::Ceiling,
+        "response.page.limited_by == PageLimit::Ceiling",
+    )?;
+    ensure(!response.page.complete, "!response.page.complete")?;
     Ok(())
 }
 
@@ -77,8 +103,8 @@ fn leads_flags_a_first_row_larger_than_the_page() -> TestResult {
 
     let response = run(asked)?;
 
-    assert_eq!(response.page.returned, 1, "one row per page minimum");
-    assert!(response.oversized_row);
+    ensure_eq(&response.page.returned, &1, "response.page.returned == 1")?;
+    ensure(response.oversized_row, "response.oversized_row")?;
     response
         .page
         .cursor
@@ -95,7 +121,10 @@ fn leads_refuses_a_zero_page_bytes_instead_of_substituting() -> TestResult {
 
     let error = try_run(asked).check_err("zero is a contract error")?;
 
-    assert!(error.message.contains("page_bytes"), "{}", error.message);
+    ensure(
+        error.message.contains("page_bytes"),
+        format!("{}", error.message),
+    )?;
     Ok(())
 }
 
@@ -105,11 +134,12 @@ fn leads_counts_only_reply_carries_the_page_size_that_applied() -> TestResult {
 
     let response = run(request(project.path(), None))?;
 
-    assert_eq!(
-        response.page.page_bytes,
-        ResourceLimits::default().default_page_bytes
-    );
-    assert!(!response.oversized_row);
+    ensure_eq(
+        &response.page.page_bytes,
+        &ResourceLimits::default().default_page_bytes,
+        "response.page.page_bytes == ResourceLimits::default().default_page_bytes",
+    )?;
+    ensure(!response.oversized_row, "!response.oversized_row")?;
     Ok(())
 }
 
@@ -130,21 +160,29 @@ fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() -> TestResult {
 
         let response = run_with_limits(request, &limits)?;
 
-        assert_eq!(
-            response.page.returned, 1,
-            "the first row is always returned"
-        );
-        assert!(!response.page.complete);
+        ensure_eq(&response.page.returned, &1, "response.page.returned == 1")?;
+        ensure(!response.page.complete, "!response.page.complete")?;
         // The default page is above this tiny ceiling, so the budget that
         // cut the page is the ceiling itself.
-        assert_eq!(response.page.limited_by, PageLimit::Ceiling);
-        assert_eq!(response.page.page_bytes, budget);
-        assert!(
+        ensure_eq(
+            &response.page.limited_by,
+            &PageLimit::Ceiling,
+            "response.page.limited_by == PageLimit::Ceiling",
+        )?;
+        ensure_eq(
+            &response.page.page_bytes,
+            &budget,
+            "response.page.page_bytes == budget",
+        )?;
+        ensure(
             response.page.bytes_used > budget,
-            "{}",
-            response.page.bytes_used
-        );
-        assert_eq!(response.page.total, Some(12), "the total is still complete");
+            format!("{}", response.page.bytes_used),
+        )?;
+        ensure_eq(
+            &response.page.total,
+            &Some(12),
+            "response.page.total == Some(12)",
+        )?;
         response
             .page
             .cursor
@@ -154,9 +192,9 @@ fn the_byte_budget_stops_the_page_in_both_modes_and_reports_it() -> TestResult {
     // A byte-limited page cannot grow by raising `limit`; the schema's own
     // advice must name the knob that acted.
     let schema = schemars::schema_for!(PageLimit).to_value().to_string();
-    assert!(
+    ensure(
         schema.contains("page_bytes") && !schema.contains("Raise `limit`"),
-        "{schema}"
-    );
+        "schema.contains(\"page_bytes\") && !schema.contains(\"Raise `limit`\")",
+    )?;
     Ok(())
 }

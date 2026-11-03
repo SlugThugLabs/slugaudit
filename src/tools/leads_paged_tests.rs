@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::tools::context::{ensure_synced, with_verified_read};
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 
 /// A page size that forces several pages out of `marker_fixture(4, 6)`.
 const SMALL_PAGE: usize = 400;
@@ -55,7 +55,7 @@ fn paged_leads_pages_survive_an_edit_between_pages() -> TestResult {
     let mut whole = request(project.path(), Some("comment_markers"));
     whole.page_bytes = Some(1_000_000);
     let whole = run_on(&manager, whole)?;
-    assert_eq!(whole.page.total, Some(24));
+    ensure_eq(&whole.page.total, &Some(24), "whole.page.total == Some(24)")?;
     let first = run_on(&manager, small_pages(&project))?;
     first
         .page
@@ -76,31 +76,50 @@ fn paged_leads_pages_survive_an_edit_between_pages() -> TestResult {
     .check("add a file")?;
     let rest = rest_of(&manager, &first)?;
 
-    assert!(
+    ensure(
         rest.len() >= 2,
-        "at least three pages in all: {}",
-        rest.len()
-    );
+        format!("at least three pages in all: {}", rest.len()),
+    )?;
     let mut union = places(&first)?;
     for page in &rest {
-        assert_eq!(page.page.revision_id, first.page.revision_id);
-        assert_eq!(page.page.total, Some(24), "the total never drifts");
+        ensure_eq(
+            &page.page.revision_id,
+            &first.page.revision_id,
+            "page.page.revision_id == first.page.revision_id",
+        )?;
+        ensure_eq(&page.page.total, &Some(24), "page.page.total == Some(24)")?;
         union.extend(places(page)?);
     }
-    assert_eq!(union, places(&whole)?, "the union is the fetch at page one");
-    assert!(rest.last().check("a last page")?.page.complete);
+    ensure_eq(&union, &places(&whole)?, "union == places(&whole)?")?;
+    ensure(
+        rest.last().check("a last page")?.page.complete,
+        "rest.last().check(\"a last page\")?.page.complete",
+    )?;
 
     let fresh = run_on(&manager, small_pages(&project))?;
-    assert_ne!(fresh.page.revision_id, first.page.revision_id);
-    assert_eq!(fresh.page.total, Some(24), "one gone and one new");
+    ensure_ne(
+        &fresh.page.revision_id,
+        &first.page.revision_id,
+        "fresh.page.revision_id != first.page.revision_id",
+    )?;
+    ensure_eq(&fresh.page.total, &Some(24), "fresh.page.total == Some(24)")?;
     let mut fresh_places = places(&fresh)?;
     for page in rest_of(&manager, &fresh)? {
         fresh_places.extend(places(&page)?);
     }
-    assert!(fresh_places.iter().any(|(file, _)| file == "extra.rs"));
+    ensure(
+        fresh_places.iter().any(|(file, _)| file == "extra.rs"),
+        "fresh_places.iter().any(|(file, _)| file == \"extra.rs\")",
+    )?;
     // The sixth marker of mod0 sits on line 11; the shortened file has five.
-    assert!(!fresh_places.contains(&("mod0.rs".to_owned(), 11)));
-    assert!(union.contains(&("mod0.rs".to_owned(), 11)));
+    ensure(
+        !fresh_places.contains(&("mod0.rs".to_owned(), 11)),
+        "!fresh_places.contains(&(\"mod0.rs\".to_owned(), 11))",
+    )?;
+    ensure(
+        union.contains(&("mod0.rs".to_owned(), 11)),
+        "union.contains(&(\"mod0.rs\".to_owned(), 11))",
+    )?;
     Ok(())
 }
 
@@ -113,11 +132,12 @@ fn paged_leads_same_cursor_twice_returns_identical_pages() -> TestResult {
     let once = run_on(&manager, continuation(&first)?)?;
     let twice = run_on(&manager, continuation(&first)?)?;
 
-    assert_eq!(
-        serde_json::to_value(&once).check("serializes")?,
-        serde_json::to_value(&twice).check("serializes")?
-    );
-    assert!(once.page.returned > 0);
+    ensure_eq(
+        &serde_json::to_value(&once).check("serializes")?,
+        &serde_json::to_value(&twice).check("serializes")?,
+        "serde_json::to_value(&once).check(\"serializes\")? == serde_json::to_value(&twice).check(\"serializes\")?",
+    )?;
+    ensure(once.page.returned > 0, "once.page.returned > 0")?;
     Ok(())
 }
 
@@ -137,11 +157,15 @@ fn paged_leads_final_page_can_be_retried() -> TestResult {
 
     let retried = run_on(&manager, continuation(&penultimate)?)?;
 
-    assert!(last.page.complete && last.page.cursor.is_none());
-    assert_eq!(
-        serde_json::to_value(&retried).check("serializes")?,
-        serde_json::to_value(&last).check("serializes")?
-    );
+    ensure(
+        last.page.complete && last.page.cursor.is_none(),
+        "last.page.complete && last.page.cursor.is_none()",
+    )?;
+    ensure_eq(
+        &serde_json::to_value(&retried).check("serializes")?,
+        &serde_json::to_value(&last).check("serializes")?,
+        "serde_json::to_value(&retried).check(\"serializes\")? == serde_json::to_value(&last).check(\"serializes\")?",
+    )?;
     Ok(())
 }
 
@@ -157,10 +181,25 @@ fn paged_leads_refuses_offset_and_expected_revision_naming_cursor() -> TestResul
 
         let error = try_run(request).check_err("a removed parameter is refused")?;
 
-        assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        ensure_eq(
+            &error.code,
+            &rmcp::model::ErrorCode::INVALID_PARAMS,
+            "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+        )?;
         let data = error.data.check("a payload")?;
-        assert_eq!(data["code"], "paging_parameter_removed");
-        assert!(data["remedy"].as_str().check("remedy")?.contains("cursor"));
+        ensure_eq(
+            data.get("code").check("data[\"code\"]")?,
+            &"paging_parameter_removed",
+            "data[\"code\"] == \"paging_parameter_removed\"",
+        )?;
+        ensure(
+            data.get("remedy")
+                .check("data[\"remedy\"]")?
+                .as_str()
+                .check("remedy")?
+                .contains("cursor"),
+            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
+        )?;
     }
     Ok(())
 }
@@ -211,7 +250,7 @@ fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
         Ok((counted.count, rows))
     })
     .check("the transaction reads one snapshot")?;
-    assert_eq!(counted, read, "a mid-transaction publish is invisible");
+    ensure_eq(&counted, &read, "counted == read")?;
 
     let first = run_on(&manager, small_pages(&project))?;
     fs::write(
@@ -221,9 +260,13 @@ fn paged_leads_counts_and_rows_come_from_one_revision() -> TestResult {
     .check("edit after page one")?;
     let rest = rest_of(&manager, &first)?;
     for page in std::iter::once(&first).chain(&rest) {
-        assert_eq!(count_of(page, "comment_markers")?, 13);
-        assert_eq!(page.page.total, Some(13));
-        assert_eq!(page.files_total, 4);
+        ensure_eq(
+            &count_of(page, "comment_markers")?,
+            &13,
+            "count_of(page, \"comment_markers\")? == 13",
+        )?;
+        ensure_eq(&page.page.total, &Some(13), "page.page.total == Some(13)")?;
+        ensure_eq(&page.files_total, &4, "page.files_total == 4")?;
     }
     Ok(())
 }
@@ -259,18 +302,26 @@ fn paged_leads_orders_equal_lines_by_id() -> TestResult {
         .iter()
         .map(|row| row.detail.as_str())
         .collect();
-    assert_eq!(details.len(), 3);
-    assert!(full_rows(&response)?.iter().all(|row| row.line == 1));
-    assert_eq!(
-        details,
-        by_id.iter().map(String::as_str).collect::<Vec<_>>()
-    );
+    ensure_eq(&details.len(), &3, "details.len() == 3")?;
+    ensure(
+        full_rows(&response)?.iter().all(|row| row.line == 1),
+        "full_rows(&response)?.iter().all(|row| row.line == 1)",
+    )?;
+    ensure_eq(
+        &details,
+        &(by_id.iter().map(String::as_str).collect::<Vec<_>>()),
+        "details == by_id.iter().map(String::as_str).collect::<Vec<_>>()",
+    )?;
     let sql = crate::tools::leads_mechanics::MECHANICS
         .iter()
         .find(|mechanic| mechanic.id == "comment_markers")
         .check("comment_markers is built in")?
         .order_expr();
-    assert_eq!(sql, "f.path, e.start_line, e.id");
+    ensure_eq(
+        &sql,
+        &"f.path, e.start_line, e.id",
+        "sql == \"f.path, e.start_line, e.id\"",
+    )?;
     Ok(())
 }
 
@@ -316,11 +367,19 @@ fn paged_leads_custom_scan_stopped_by_deadline_is_partial_on_every_page() -> Tes
         files_scanned: 0,
         files_total: 1,
     });
-    assert_eq!(first.page.completeness, expected);
+    ensure_eq(
+        &first.page.completeness,
+        &expected,
+        "first.page.completeness == expected",
+    )?;
     let rest = rest_of_limited(&manager, &first, Some(5))?;
-    assert!(!rest.is_empty(), "the built-in rows still page");
+    ensure(!rest.is_empty(), "!rest.is_empty()")?;
     for page in &rest {
-        assert_eq!(page.page.completeness, expected, "every page says so");
+        ensure_eq(
+            &page.page.completeness,
+            &expected,
+            "page.page.completeness == expected",
+        )?;
     }
     Ok(())
 }
@@ -344,18 +403,27 @@ fn paged_leads_compact_pages_by_cursor() -> TestResult {
         union.extend(compact_rows(page)?.iter().map(key));
     }
     let expected: Vec<_> = compact_rows(&whole)?.iter().map(key).collect();
-    assert_eq!(union, expected);
-    assert_eq!(rest.len(), 2, "12 rows at 5 per page");
+    ensure_eq(&union, &expected, "union == expected")?;
+    ensure_eq(&rest.len(), &2, "rest.len() == 2")?;
     let covered: Vec<i64> = std::iter::once(&first)
         .chain(&rest)
         .map(|page| page.files_covered)
         .collect();
-    assert!(
-        covered.windows(2).all(|pair| pair[0] <= pair[1]),
-        "{covered:?}"
-    );
-    assert_eq!(covered.last().copied(), Some(first.files_total));
-    assert!(rest.last().check("a last page")?.page.complete);
+    ensure(
+        covered
+            .windows(2)
+            .all(|pair| matches!(pair, [earlier, later] if earlier <= later)),
+        "covered.windows(2).all(|pair| pair[0] <= pair[1])",
+    )?;
+    ensure_eq(
+        &covered.last().copied(),
+        &Some(first.files_total),
+        "covered.last().copied() == Some(first.files_total)",
+    )?;
+    ensure(
+        rest.last().check("a last page")?.page.complete,
+        "rest.last().check(\"a last page\")?.page.complete",
+    )?;
     Ok(())
 }
 
@@ -396,7 +464,11 @@ fn paged_leads_continuation_keeps_the_page_budget_of_page_one() -> TestResult {
         request(project.path(), Some("comment_markers")),
         SMALL_PAGE,
     )?;
-    assert_eq!(first.page.page_bytes, SMALL_PAGE);
+    ensure_eq(
+        &first.page.page_bytes,
+        &SMALL_PAGE,
+        "first.page.page_bytes == SMALL_PAGE",
+    )?;
     first
         .page
         .cursor
@@ -408,12 +480,19 @@ fn paged_leads_continuation_keeps_the_page_budget_of_page_one() -> TestResult {
     while last.page.cursor.is_some() {
         // The process default is 64 KiB: only the stored budget can cut here.
         last = run_with_defaults(&manager, bare_continuation(&last)?, 1_000_000)?;
-        assert_eq!(last.page.page_bytes, SMALL_PAGE);
-        assert!(last.page.bytes_used <= SMALL_PAGE || last.page.returned == 1);
+        ensure_eq(
+            &last.page.page_bytes,
+            &SMALL_PAGE,
+            "last.page.page_bytes == SMALL_PAGE",
+        )?;
+        ensure(
+            last.page.bytes_used <= SMALL_PAGE || last.page.returned == 1,
+            "last.page.bytes_used <= SMALL_PAGE || last.page.returned == 1",
+        )?;
         seen.extend(places(&last)?);
     }
 
-    assert_eq!(seen.len(), 24, "every row is served exactly once");
+    ensure_eq(&seen.len(), &24, "seen.len() == 24")?;
     Ok(())
 }
 
@@ -424,16 +503,20 @@ fn paged_leads_continuation_keeps_the_limit_of_page_one() -> TestResult {
     let mut asked = request(project.path(), Some("comment_markers"));
     asked.limit = Some(5);
     let first = run_on(&manager, asked)?;
-    assert_eq!(first.page.returned, 5);
+    ensure_eq(&first.page.returned, &5, "first.page.returned == 5")?;
 
     let second = run_on(&manager, bare_continuation(&first)?)?;
     let mut own = bare_continuation(&first)?;
     own.limit = Some(2);
     let smaller = run_on(&manager, own)?;
 
-    assert_eq!(second.page.returned, 5, "page one's limit still applies");
-    assert_eq!(second.page.limited_by, PageLimit::Limit);
-    assert_eq!(smaller.page.returned, 2, "the request's own limit wins");
+    ensure_eq(&second.page.returned, &5, "second.page.returned == 5")?;
+    ensure_eq(
+        &second.page.limited_by,
+        &PageLimit::Limit,
+        "second.page.limited_by == PageLimit::Limit",
+    )?;
+    ensure_eq(&smaller.page.returned, &2, "smaller.page.returned == 2")?;
     Ok(())
 }
 
@@ -455,14 +538,26 @@ fn paged_leads_continuation_clamps_page_bytes_to_the_ceiling_of_page_one() -> Te
         &manager,
     )
     .check("page one under a small ceiling")?;
-    assert_eq!(first.page.page_bytes, CEILING);
+    ensure_eq(
+        &first.page.page_bytes,
+        &CEILING,
+        "first.page.page_bytes == CEILING",
+    )?;
     let mut asked = continuation(&first)?;
     asked.page_bytes = Some(1_000_000);
 
     // The serving call's own ceiling is far above the 1 MB asked for.
     let second = run_on(&manager, asked)?;
 
-    assert_eq!(second.page.page_bytes, CEILING);
-    assert_eq!(second.page.limited_by, PageLimit::Ceiling);
+    ensure_eq(
+        &second.page.page_bytes,
+        &CEILING,
+        "second.page.page_bytes == CEILING",
+    )?;
+    ensure_eq(
+        &second.page.limited_by,
+        &PageLimit::Ceiling,
+        "second.page.limited_by == PageLimit::Ceiling",
+    )?;
     Ok(())
 }

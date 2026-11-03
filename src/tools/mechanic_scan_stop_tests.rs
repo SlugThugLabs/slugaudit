@@ -3,7 +3,7 @@
 use super::super::tests::{EVAL_QUERY, add, call, path_of, python_project};
 use super::*;
 use crate::progress::NoopProgressSink;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn a_registered_entrys_rescan_stopped_by_the_budget_fails_naming_the_entry() -> TestResult {
@@ -28,25 +28,29 @@ fn a_registered_entrys_rescan_stopped_by_the_budget_fails_naming_the_entry() -> 
     })
     .check_err("rows that cannot be reported must not read as an empty entry")?;
 
-    assert_eq!(
-        error.code,
-        rmcp::model::ErrorCode::INTERNAL_ERROR,
-        "a spent budget is operational, not a contract error: {error:?}"
-    );
-    assert!(
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+    )?;
+    ensure(
         error.message.contains("`py_eval`")
             && error.message.contains("max_structure_execution_time"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     let data = error.data.check("the budget carries a code")?;
-    assert_eq!(data["code"], "mechanic_budget_exhausted");
-    assert!(
-        data["remedy"]
+    ensure_eq(
+        data.get("code").check("data[\"code\"]")?,
+        &"mechanic_budget_exhausted",
+        "data[\"code\"] == \"mechanic_budget_exhausted\"",
+    )?;
+    ensure(
+        data.get("remedy")
+            .check("data[\"remedy\"]")?
             .as_str()
             .is_some_and(|remedy| remedy.contains("mechanic action remove")),
-        "{data}"
-    );
+        "data[\"remedy\"] .as_str() .is_some_and(|remedy| remedy.contains(\"mechanic action remove\"))",
+    )?;
     Ok(())
 }
 
@@ -84,22 +88,19 @@ fn a_scan_stopped_between_files_reports_the_last_file_it_finished() -> TestResul
     })
     .check("a stopped scan is not an error")?;
 
-    assert_eq!(
-        end,
-        crate::tools::mechanic_scan::ScanEnd::Stopped(crate::tools::mechanic_scan::Stop {
+    ensure_eq(
+        &end,
+        &crate::tools::mechanic_scan::ScanEnd::Stopped(crate::tools::mechanic_scan::Stop {
             resume_after_file: Some("app.py".to_owned()),
             files_scanned: 1,
             files_total: 2,
-        })
-    );
-    assert!(
+        }),
+        "end == crate::tools::mechanic_scan::ScanEnd::Stopped(crate::tools::mechanic_scan::Stop { resume_after_file: Some(\"app.py\".to_owned()), files_scanned: 1, files_total: 2, })",
+    )?;
+    ensure(
         delivered.iter().all(|(file, _)| file == "app.py"),
-        "no hit of the unstarted file: {delivered:?}"
-    );
-    assert_eq!(
-        delivered.len(),
-        3,
-        "app.py's three hits, whole: {delivered:?}"
-    );
+        "delivered.iter().all(|(file, _)| file == \"app.py\")",
+    )?;
+    ensure_eq(&delivered.len(), &3, "delivered.len() == 3")?;
     Ok(())
 }

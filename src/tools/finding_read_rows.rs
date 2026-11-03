@@ -241,15 +241,22 @@ pub(super) fn clip_description(
     // The flag is part of the serialized row, so the search must measure the
     // row as it will actually be returned (flag set), never one byte short.
     entry.detail_clipped = true;
+    // Largest prefix length that fits: `low` is the best length known to fit
+    // (0 until one is found), `over` a length known not to fit. The floor
+    // midpoint is strictly between them while they are two or more apart.
     let mut low = 0usize;
-    let mut high = chars.len();
-    while low < high {
-        let mid = low + (high - low).div_ceil(2);
+    let mut over = chars.len();
+    entry.description = chars.iter().collect();
+    if serialized_len(entry)? <= budget {
+        low = over;
+    }
+    while low.midpoint(over) > low {
+        let mid = low.midpoint(over);
         entry.description = chars.iter().take(mid).collect();
         if serialized_len(entry)? <= budget {
             low = mid;
         } else {
-            high = mid - 1;
+            over = mid;
         }
     }
     entry.description = chars.iter().take(low).collect();

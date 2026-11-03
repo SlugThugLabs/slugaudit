@@ -78,7 +78,7 @@ pub(super) fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
     #[test]
     fn an_omitted_page_size_resolves_to_the_default() -> TestResult {
@@ -86,9 +86,17 @@ mod tests {
 
         let size = resolve(None, &limits).check("default resolves")?;
 
-        assert_eq!(size.bytes, limits.default_page_bytes);
-        assert!(!size.at_ceiling);
-        assert_eq!(size.byte_cut(), PageLimit::PageBytes);
+        ensure_eq(
+            &size.bytes,
+            &limits.default_page_bytes,
+            "size.bytes == limits.default_page_bytes",
+        )?;
+        ensure(!size.at_ceiling, "!size.at_ceiling")?;
+        ensure_eq(
+            &size.byte_cut(),
+            &PageLimit::PageBytes,
+            "size.byte_cut() == PageLimit::PageBytes",
+        )?;
         Ok(())
     }
 
@@ -101,7 +109,11 @@ mod tests {
 
         let size = resolve(Some(5_000), &limits).check("clamps")?;
 
-        assert_eq!((size.bytes, size.byte_cut()), (1_000, PageLimit::Ceiling));
+        ensure_eq(
+            &(size.bytes, size.byte_cut()),
+            &(1_000, PageLimit::Ceiling),
+            "(size.bytes, size.byte_cut()) == (1_000, PageLimit::Ceiling)",
+        )?;
         Ok(())
     }
 
@@ -115,7 +127,11 @@ mod tests {
 
         let size = resolve(None, &limits).check("clamps")?;
 
-        assert_eq!((size.bytes, size.byte_cut()), (100, PageLimit::Ceiling));
+        ensure_eq(
+            &(size.bytes, size.byte_cut()),
+            &(100, PageLimit::Ceiling),
+            "(size.bytes, size.byte_cut()) == (100, PageLimit::Ceiling)",
+        )?;
         Ok(())
     }
 
@@ -128,7 +144,11 @@ mod tests {
 
         let size = resolve(Some(1_000), &limits).check("resolves")?;
 
-        assert_eq!((size.bytes, size.byte_cut()), (1_000, PageLimit::Ceiling));
+        ensure_eq(
+            &(size.bytes, size.byte_cut()),
+            &(1_000, PageLimit::Ceiling),
+            "(size.bytes, size.byte_cut()) == (1_000, PageLimit::Ceiling)",
+        )?;
         Ok(())
     }
 
@@ -141,7 +161,11 @@ mod tests {
 
         let size = resolve(Some(999), &limits).check("resolves")?;
 
-        assert_eq!((size.bytes, size.byte_cut()), (999, PageLimit::PageBytes));
+        ensure_eq(
+            &(size.bytes, size.byte_cut()),
+            &(999, PageLimit::PageBytes),
+            "(size.bytes, size.byte_cut()) == (999, PageLimit::PageBytes)",
+        )?;
         Ok(())
     }
 
@@ -149,7 +173,10 @@ mod tests {
     fn a_zero_page_size_is_refused_not_substituted() -> TestResult {
         let error = resolve(Some(0), &ResourceLimits::default()).check_err("zero is invalid")?;
 
-        assert!(error.message.contains("page_bytes"), "{}", error.message);
+        ensure(
+            error.message.contains("page_bytes"),
+            format!("{}", error.message),
+        )?;
         Ok(())
     }
 }

@@ -13,7 +13,7 @@ use crate::tools::{
     ProjectControlRequest, finding_clear, finding_read, project_control,
 };
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 
 fn activation(project: &tempfile::TempDir) -> std::path::PathBuf {
     project.path().join(".planning/slugaudit")
@@ -100,14 +100,22 @@ fn a_finding_survives_a_project_db_rebuild_in_the_same_process() -> TestResult {
 
     let after_delete = read(&project, &manager)?;
 
-    assert_eq!(
-        after_delete.len(),
-        1,
-        "project.db was rebuilt, the findings file kept"
-    );
-    assert_eq!(own_findings_path(&project)?, own_file, "same file");
-    assert_eq!(after_delete[0].id, id);
-    assert_eq!(after_delete[0].status, "current");
+    ensure_eq(&after_delete.len(), &1, "after_delete.len() == 1")?;
+    ensure_eq(
+        &own_findings_path(&project)?,
+        &own_file,
+        "own_findings_path(&project)? == own_file",
+    )?;
+    ensure_eq(
+        &after_delete.first().check("after_delete[0]")?.id,
+        &id,
+        "after_delete[0].id == id",
+    )?;
+    ensure_eq(
+        &after_delete.first().check("after_delete[0]")?.status,
+        &"current",
+        "after_delete[0].status == \"current\"",
+    )?;
 
     rusqlite::Connection::open(&database)
         .check("raw open")?
@@ -116,9 +124,27 @@ fn a_finding_survives_a_project_db_rebuild_in_the_same_process() -> TestResult {
 
     let after_version_bump = read(&project, &manager)?;
 
-    assert_eq!(after_version_bump.len(), 1);
-    assert_eq!(after_version_bump[0].id, id);
-    assert_eq!(after_version_bump[0].status, "current");
+    ensure_eq(
+        &after_version_bump.len(),
+        &1,
+        "after_version_bump.len() == 1",
+    )?;
+    ensure_eq(
+        &after_version_bump
+            .first()
+            .check("after_version_bump[0]")?
+            .id,
+        &id,
+        "after_version_bump[0].id == id",
+    )?;
+    ensure_eq(
+        &after_version_bump
+            .first()
+            .check("after_version_bump[0]")?
+            .status,
+        &"current",
+        "after_version_bump[0].status == \"current\"",
+    )?;
     Ok(())
 }
 
@@ -128,13 +154,16 @@ fn a_dead_sessions_file_is_deleted_by_the_next_sessions_first_call() -> TestResu
     let first_process = SourceSyncManager::default();
     write(&project, &first_process)?;
     let dead_file = own_findings_path(&project)?;
-    assert!(dead_file.exists());
+    ensure(dead_file.exists(), "dead_file.exists()")?;
 
     restart_process(&project)?;
     let second_process = SourceSyncManager::default();
 
-    assert!(read(&project, &second_process)?.is_empty());
-    assert!(!dead_file.exists(), "the previous process's file is gone");
+    ensure(
+        read(&project, &second_process)?.is_empty(),
+        "read(&project, &second_process)?.is_empty()",
+    )?;
+    ensure(!dead_file.exists(), "!dead_file.exists()")?;
     let entries: Vec<String> = std::fs::read_dir(activation(&project))
         .check("activation dir")?
         .map(|entry| {
@@ -151,15 +180,15 @@ fn a_dead_sessions_file_is_deleted_by_the_next_sessions_first_call() -> TestResu
         .file_stem()
         .and_then(|stem| stem.to_str())
         .check("file stem")?;
-    assert!(
+    ensure(
         leftovers.iter().all(|name| !name.contains(dead_stem)),
-        "no file of the dead session remains: {leftovers:?}"
-    );
-    assert_eq!(
-        write(&project, &second_process)?,
-        1,
-        "the new process numbers its findings from the start"
-    );
+        "leftovers.iter().all(|name| !name.contains(dead_stem))",
+    )?;
+    ensure_eq(
+        &write(&project, &second_process)?,
+        &1,
+        "write(&project, &second_process)? == 1",
+    )?;
     Ok(())
 }
 
@@ -182,17 +211,21 @@ fn the_legacy_findings_db_and_unlocked_leftovers_are_deleted_at_the_first_touch_
     }
     let manager = SourceSyncManager::default();
 
-    assert!(
+    ensure(
         read(&project, &manager)?.is_empty(),
-        "the first touch wipes"
-    );
-    assert!(!legacy.exists(), "the legacy file is deleted");
-    assert!(!orphan.exists(), "an unlocked session file is deleted");
+        "read(&project, &manager)?.is_empty()",
+    )?;
+    ensure(!legacy.exists(), "!legacy.exists()")?;
+    ensure(!orphan.exists(), "!orphan.exists()")?;
     write(&project, &manager)?;
     let again = read(&project, &manager)?;
 
-    assert_eq!(again.len(), 1, "a later call in the same process keeps it");
-    assert_eq!(again[0].title, "lifecycle");
+    ensure_eq(&again.len(), &1, "again.len() == 1")?;
+    ensure_eq(
+        &again.first().check("again[0]")?.title,
+        &"lifecycle",
+        "again[0].title == \"lifecycle\"",
+    )?;
     Ok(())
 }
 
@@ -210,18 +243,29 @@ fn two_live_sessions_keep_their_own_findings() -> TestResult {
         .check("the session table")?
         .check("session a")?;
 
-    assert!(titles(&project, &manager)?.is_empty(), "b starts empty");
-    assert!(file_a.exists(), "b's first call left a's file alone");
+    ensure(
+        titles(&project, &manager)?.is_empty(),
+        "titles(&project, &manager)?.is_empty()",
+    )?;
+    ensure(file_a.exists(), "file_a.exists()")?;
     write_titled(&project, &manager, "from b")?;
     let file_b = own_findings_path(&project)?;
-    assert_ne!(file_a, file_b);
-    assert_eq!(titles(&project, &manager)?, ["from b"]);
+    ensure_ne(&file_a, &file_b, "file_a != file_b")?;
+    ensure_eq(
+        &titles(&project, &manager)?,
+        &["from b"],
+        "titles(&project, &manager)? == [\"from b\"]",
+    )?;
 
     let held_b = project::put_session_for_test(&root, held_a)
         .check("the session table")?
         .check("session b")?;
-    assert_eq!(titles(&project, &manager)?, ["from a"]);
-    assert!(file_b.exists());
+    ensure_eq(
+        &titles(&project, &manager)?,
+        &["from a"],
+        "titles(&project, &manager)? == [\"from a\"]",
+    )?;
+    ensure(file_b.exists(), "file_b.exists()")?;
     drop(held_b);
     Ok(())
 }
@@ -248,12 +292,19 @@ fn finding_clear_empties_only_the_own_sessions_file() -> TestResult {
     )
     .check("finding_clear succeeds")?;
 
-    assert_eq!(cleared.0.removed, 1);
-    assert!(titles(&project, &manager)?.is_empty());
+    ensure_eq(&cleared.0.removed, &1, "cleared.0.removed == 1")?;
+    ensure(
+        titles(&project, &manager)?.is_empty(),
+        "titles(&project, &manager)?.is_empty()",
+    )?;
     let held_b = project::put_session_for_test(&root, held_a)
         .check("the session table")?
         .check("session b")?;
-    assert_eq!(titles(&project, &manager)?, ["from a"]);
+    ensure_eq(
+        &titles(&project, &manager)?,
+        &["from a"],
+        "titles(&project, &manager)? == [\"from a\"]",
+    )?;
     drop(held_b);
     Ok(())
 }
@@ -277,15 +328,17 @@ fn a_dead_file_that_cannot_be_deleted_fails_the_call_and_the_next_call_retries()
         return Err("the sweep must fail the call".to_owned()).check("unexpected outcome");
     };
 
-    assert!(
+    ensure(
         error
             .message
             .starts_with("failed to set up the session findings files at"),
-        "{}",
-        error.message
-    );
+        format!("{}", error.message),
+    )?;
     std::fs::remove_dir(&blocker).check("clear the blocker")?;
-    assert!(read(&project, &manager)?.is_empty(), "the retry succeeds");
+    ensure(
+        read(&project, &manager)?.is_empty(),
+        "read(&project, &manager)?.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -317,17 +370,17 @@ fn off_deletes_every_findings_file_and_the_next_on_starts_a_new_session() -> Tes
     )
     .check("off succeeds")?;
 
-    assert!(!file.exists());
-    assert!(
+    ensure(!file.exists(), "!file.exists()")?;
+    ensure(
         !activation(&project).exists(),
-        "the whole directory is gone"
-    );
-    assert!(
+        "!activation(&project).exists()",
+    )?;
+    ensure(
         project::session_findings_path(&activation_dir_of(&root))
             .check("the session table")?
             .is_none(),
-        "off ended this process's session"
-    );
+        "project::session_findings_path(&activation_dir_of(&root)) .check(\"the session table\")? .is_none()",
+    )?;
     Ok(())
 }
 
@@ -356,6 +409,9 @@ fn a_finding_written_before_project_off_does_not_return_after_on_in_a_new_proces
     }
     restart_process(&project)?;
 
-    assert!(read(&project, &SourceSyncManager::default())?.is_empty());
+    ensure(
+        read(&project, &SourceSyncManager::default())?.is_empty(),
+        "read(&project, &SourceSyncManager::default())?.is_empty()",
+    )?;
     Ok(())
 }

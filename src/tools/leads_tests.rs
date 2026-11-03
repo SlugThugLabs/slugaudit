@@ -1,7 +1,7 @@
 use super::*;
 use crate::tools::PageLimit;
 use rmcp::handler::server::wrapper::Parameters;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::path::Path;
 
@@ -185,29 +185,61 @@ fn counts_every_mechanic_without_returning_rows() -> TestResult {
         "comment_markers",
         "credential_files",
     ];
-    assert_eq!(ids, expected);
-    assert_eq!(count_of(&response, "unwrap_calls")?, 1);
-    assert_eq!(entry(&response, "unwrap_calls")?.files, 1);
-    assert_eq!(entry(&response, "unwrap_calls")?.covers, ["rust"]);
-    assert_eq!(count_of(&response, "expect_calls")?, 1);
-    assert!(count_of(&response, "comment_markers")? >= 1);
-    assert_eq!(count_of(&response, "credential_files")?, 1);
-    assert!(
+    ensure_eq(&ids, &expected, "ids == expected")?;
+    ensure_eq(
+        &count_of(&response, "unwrap_calls")?,
+        &1,
+        "count_of(&response, \"unwrap_calls\")? == 1",
+    )?;
+    ensure_eq(
+        &entry(&response, "unwrap_calls")?.files,
+        &1,
+        "entry(&response, \"unwrap_calls\")?.files == 1",
+    )?;
+    ensure_eq(
+        &entry(&response, "unwrap_calls")?.covers,
+        &["rust"],
+        "entry(&response, \"unwrap_calls\")?.covers == [\"rust\"]",
+    )?;
+    ensure_eq(
+        &count_of(&response, "expect_calls")?,
+        &1,
+        "count_of(&response, \"expect_calls\")? == 1",
+    )?;
+    ensure(
+        count_of(&response, "comment_markers")? >= 1,
+        "count_of(&response, \"comment_markers\")? >= 1",
+    )?;
+    ensure_eq(
+        &count_of(&response, "credential_files")?,
+        &1,
+        "count_of(&response, \"credential_files\")? == 1",
+    )?;
+    ensure(
         full_rows(&response)?.is_empty(),
-        "no rows without a mechanic"
-    );
-    assert!(response.page.complete);
-    assert_eq!(response.page.cursor, None);
-    assert_eq!((response.page.total, response.files_total), (Some(0), 0));
+        "full_rows(&response)?.is_empty()",
+    )?;
+    ensure(response.page.complete, "response.page.complete")?;
+    ensure_eq(&response.page.cursor, &None, "response.page.cursor == None")?;
+    ensure_eq(
+        &(response.page.total, response.files_total),
+        &(Some(0), 0),
+        "(response.page.total, response.files_total) == (Some(0), 0)",
+    )?;
 
     // The row the `unwrap_calls` count stands for: file, 1-based line, callee.
     let rows = run(request(project.path(), Some("unwrap_calls")))?;
     let rows = full_rows(&rows)?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        (rows[0].file.as_str(), rows[0].line, rows[0].detail.as_str()),
-        ("lib.rs", 3, "x.unwrap")
-    );
+    ensure_eq(&rows.len(), &1, "rows.len() == 1")?;
+    ensure_eq(
+        &(
+            rows.first().check("rows[0]")?.file.as_str(),
+            rows.first().check("rows[0]")?.line,
+            rows.first().check("rows[0]")?.detail.as_str(),
+        ),
+        &("lib.rs", 3, "x.unwrap"),
+        "(rows[0].file.as_str(), rows[0].line, rows[0].detail.as_str()) == (\"lib.rs\", 3, \"x.unwrap\")",
+    )?;
     Ok(())
 }
 
@@ -216,17 +248,62 @@ fn returns_rows_for_the_requested_mechanic_only() -> TestResult {
     let project = rust_fixture()?;
     let response = run(request(project.path(), Some("expect_calls")))?;
 
-    assert_eq!(full_rows(&response)?.len(), 1);
-    assert_eq!(full_rows(&response)?[0].file, "lib.rs");
-    assert_eq!(full_rows(&response)?[0].line, 4);
-    assert_eq!(full_rows(&response)?[0].detail, "x.expect");
-    assert_eq!(count_of(&response, "credential_files")?, 1);
-    assert!(response.page.complete);
-    assert_eq!((response.page.returned, response.page.total), (1, Some(1)));
-    assert_eq!((response.files_total, response.files_covered), (1, 1));
+    ensure_eq(
+        &full_rows(&response)?.len(),
+        &1,
+        "full_rows(&response)?.len() == 1",
+    )?;
+    ensure_eq(
+        &full_rows(&response)?
+            .first()
+            .check("full_rows(&response)?[0]")?
+            .file,
+        &"lib.rs",
+        "full_rows(&response)?[0].file == \"lib.rs\"",
+    )?;
+    ensure_eq(
+        &full_rows(&response)?
+            .first()
+            .check("full_rows(&response)?[0]")?
+            .line,
+        &4,
+        "full_rows(&response)?[0].line == 4",
+    )?;
+    ensure_eq(
+        &full_rows(&response)?
+            .first()
+            .check("full_rows(&response)?[0]")?
+            .detail,
+        &"x.expect",
+        "full_rows(&response)?[0].detail == \"x.expect\"",
+    )?;
+    ensure_eq(
+        &count_of(&response, "credential_files")?,
+        &1,
+        "count_of(&response, \"credential_files\")? == 1",
+    )?;
+    ensure(response.page.complete, "response.page.complete")?;
+    ensure_eq(
+        &(response.page.returned, response.page.total),
+        &(1, Some(1)),
+        "(response.page.returned, response.page.total) == (1, Some(1))",
+    )?;
+    ensure_eq(
+        &(response.files_total, response.files_covered),
+        &(1, 1),
+        "(response.files_total, response.files_covered) == (1, 1)",
+    )?;
     let pages = &response.page_file_counts;
-    assert_eq!((pages.len(), pages[0].file.as_str()), (1, "lib.rs"));
-    assert_eq!(response.page.limited_by, PageLimit::None);
+    ensure_eq(
+        &(pages.len(), pages.first().check("pages[0]")?.file.as_str()),
+        &(1, "lib.rs"),
+        "(pages.len(), pages[0].file.as_str()) == (1, \"lib.rs\")",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::None,
+        "response.page.limited_by == PageLimit::None",
+    )?;
     Ok(())
 }
 
@@ -237,12 +314,9 @@ fn a_zero_limit_is_clamped_to_one_row() -> TestResult {
     request.limit = Some(0);
     let response = run(request)?;
 
-    assert_eq!(
-        response.page.returned, 1,
-        "a zero-row page could not progress"
-    );
-    assert_eq!(response.page.cursor, None);
-    assert!(response.page.complete);
+    ensure_eq(&response.page.returned, &1, "response.page.returned == 1")?;
+    ensure_eq(&response.page.cursor, &None, "response.page.cursor == None")?;
+    ensure(response.page.complete, "response.page.complete")?;
     Ok(())
 }
 
@@ -253,8 +327,14 @@ fn rejects_an_unknown_mechanic_id() -> TestResult {
         .check_err("unknown mechanic is rejected")?;
 
     let message = error.message.to_string();
-    assert!(message.contains("unknown mechanic"), "{message}");
-    assert!(message.contains("expect_calls"), "{message}");
+    ensure(
+        message.contains("unknown mechanic"),
+        "message.contains(\"unknown mechanic\")",
+    )?;
+    ensure(
+        message.contains("expect_calls"),
+        "message.contains(\"expect_calls\")",
+    )?;
     Ok(())
 }
 
@@ -269,17 +349,24 @@ fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() ->
     first.limit = Some(5);
     let first = run_on(&manager, first)?;
 
-    assert_eq!((first.page.returned, first.page.total), (5, Some(12)));
-    assert_eq!(first.files_total, 3, "the denominator is files, not rows");
-    assert_eq!(first.files_covered, 2, "5 rows reach mod0 and mod1");
-    assert!(!first.page.complete && first.page.limited_by == PageLimit::Limit);
+    ensure_eq(
+        &(first.page.returned, first.page.total),
+        &(5, Some(12)),
+        "(first.page.returned, first.page.total) == (5, Some(12))",
+    )?;
+    ensure_eq(&first.files_total, &3, "first.files_total == 3")?;
+    ensure_eq(&first.files_covered, &2, "first.files_covered == 2")?;
+    ensure(
+        !first.page.complete && first.page.limited_by == PageLimit::Limit,
+        "!first.page.complete && first.page.limited_by == PageLimit::Limit",
+    )?;
     first
         .page
         .cursor
         .as_ref()
         .check("`first.page.cursor` is present")?;
     let (spent, budget) = (first.page.bytes_used, first.page.page_bytes);
-    assert!(spent > 0 && budget >= spent, "{spent} of {budget}");
+    ensure(spent > 0 && budget >= spent, "spent > 0 && budget >= spent")?;
 
     let mut second = continuation(&first)?;
     second.limit = Some(5);
@@ -287,11 +374,19 @@ fn a_page_reports_returned_total_complete_and_the_distinct_file_denominator() ->
     let mut third = continuation(&second)?;
     third.limit = Some(5);
     let last = run_on(&manager, third)?;
-    assert_eq!(last.page.returned, 2);
-    assert!(last.page.complete);
-    assert_eq!(last.page.cursor, None);
-    assert_eq!(last.files_covered, last.files_total);
-    assert_eq!(last.page.limited_by, PageLimit::None);
+    ensure_eq(&last.page.returned, &2, "last.page.returned == 2")?;
+    ensure(last.page.complete, "last.page.complete")?;
+    ensure_eq(&last.page.cursor, &None, "last.page.cursor == None")?;
+    ensure_eq(
+        &last.files_covered,
+        &last.files_total,
+        "last.files_covered == last.files_total",
+    )?;
+    ensure_eq(
+        &last.page.limited_by,
+        &PageLimit::None,
+        "last.page.limited_by == PageLimit::None",
+    )?;
     Ok(())
 }
 
@@ -306,14 +401,42 @@ fn files_covered_counts_a_file_split_across_pages_once() -> TestResult {
     first.limit = Some(4); // mod0's 3 rows, then mod1's first
     let first = run_on(&manager, first)?;
 
-    assert_eq!(first.page_file_counts.len(), 2);
-    assert_eq!(first.page_file_counts[0].count, 3);
-    assert_eq!(first.page_file_counts[1].count, 1, "mod1 split");
-    assert_eq!((first.files_covered, first.files_total), (2, 2));
+    ensure_eq(
+        &first.page_file_counts.len(),
+        &2,
+        "first.page_file_counts.len() == 2",
+    )?;
+    ensure_eq(
+        &first
+            .page_file_counts
+            .first()
+            .check("first.page_file_counts[0]")?
+            .count,
+        &3,
+        "first.page_file_counts[0].count == 3",
+    )?;
+    ensure_eq(
+        &first
+            .page_file_counts
+            .get(1)
+            .check("first.page_file_counts[1]")?
+            .count,
+        &1,
+        "first.page_file_counts[1].count == 1",
+    )?;
+    ensure_eq(
+        &(first.files_covered, first.files_total),
+        &(2, 2),
+        "(first.files_covered, first.files_total) == (2, 2)",
+    )?;
 
     let rest = run_on(&manager, continuation(&first)?)?;
-    assert_eq!((rest.page.returned, rest.files_covered), (2, 2));
-    assert!(rest.page.complete);
+    ensure_eq(
+        &(rest.page.returned, rest.files_covered),
+        &(2, 2),
+        "(rest.page.returned, rest.files_covered) == (2, 2)",
+    )?;
+    ensure(rest.page.complete, "rest.page.complete")?;
     Ok(())
 }
 
@@ -321,33 +444,55 @@ fn files_covered_counts_a_file_split_across_pages_once() -> TestResult {
 fn a_pattern_narrows_counts_and_rows_to_matching_paths() -> TestResult {
     let project = two_dir_fixture()?;
     let unfiltered = run(request(project.path(), Some("comment_markers")))?;
-    assert_eq!(unfiltered.page.total, Some(4));
-    assert_eq!(unfiltered.files_total, 3);
+    ensure_eq(
+        &unfiltered.page.total,
+        &Some(4),
+        "unfiltered.page.total == Some(4)",
+    )?;
+    ensure_eq(&unfiltered.files_total, &3, "unfiltered.files_total == 3")?;
 
     let mut scoped = request(project.path(), Some("comment_markers"));
     scoped.pattern = Some("src/auth/*".to_owned());
     let scoped = run(scoped)?;
-    assert_eq!(scoped.page.total, Some(2), "only src/auth rows");
-    assert_eq!(scoped.files_total, 2);
+    ensure_eq(&scoped.page.total, &Some(2), "scoped.page.total == Some(2)")?;
+    ensure_eq(&scoped.files_total, &2, "scoped.files_total == 2")?;
     let scoped_rows = full_rows(&scoped)?;
     let inside = scoped_rows.iter().all(|r| r.file.starts_with("src/auth/"));
-    assert!(inside, "{scoped_rows:?}");
+    ensure(inside, "inside")?;
 
     // No `*`/`?` means a substring match, exactly as `structure` treats it.
     let mut substring = request(project.path(), Some("comment_markers"));
     substring.pattern = Some("token".to_owned());
     let substring = run(substring)?;
-    assert_eq!(substring.page.total, Some(1));
-    assert_eq!(full_rows(&substring)?[0].file, "src/auth/token.rs");
+    ensure_eq(
+        &substring.page.total,
+        &Some(1),
+        "substring.page.total == Some(1)",
+    )?;
+    ensure_eq(
+        &full_rows(&substring)?
+            .first()
+            .check("full_rows(&substring)?[0]")?
+            .file,
+        &"src/auth/token.rs",
+        "full_rows(&substring)?[0].file == \"src/auth/token.rs\"",
+    )?;
 
     // A filter that matches nothing is a complete, empty enumeration — not
     // an error and not a silent fallback to the unfiltered set.
     let mut nothing = request(project.path(), None);
     nothing.pattern = Some("no/such/path".to_owned());
     let nothing = run(nothing)?;
-    assert_eq!(count_of(&nothing, "comment_markers")?, 0);
-    assert!(nothing.page.complete);
-    assert!(full_rows(&nothing)?.is_empty());
+    ensure_eq(
+        &count_of(&nothing, "comment_markers")?,
+        &0,
+        "count_of(&nothing, \"comment_markers\")? == 0",
+    )?;
+    ensure(nothing.page.complete, "nothing.page.complete")?;
+    ensure(
+        full_rows(&nothing)?.is_empty(),
+        "full_rows(&nothing)?.is_empty()",
+    )?;
     Ok(())
 }
 
@@ -363,209 +508,24 @@ fn a_pattern_filters_a_credential_predicate_that_is_an_or_chain() -> TestResult 
     fs::write(project.path().join("sub").join("client.pem"), b"key\n").check("write pem")?;
 
     let unfiltered = run(request(project.path(), Some("credential_files")))?;
-    assert_eq!(unfiltered.page.total, Some(2), "both absent a filter");
+    ensure_eq(
+        &unfiltered.page.total,
+        &Some(2),
+        "unfiltered.page.total == Some(2)",
+    )?;
 
     let mut scoped = request(project.path(), Some("credential_files"));
     scoped.pattern = Some("sub".to_owned());
     let scoped = run(scoped)?;
-    assert_eq!(scoped.page.total, Some(1), "only the pem is under sub/");
-    assert_eq!(full_rows(&scoped)?[0].file, "sub/client.pem");
-    Ok(())
-}
-
-#[test]
-fn mechanic_counts_carry_the_file_denominator_and_what_each_mechanic_covers() -> TestResult {
-    let project = marker_fixture(3, 2)?; // 6 markers across 3 files
-    let response = run(request(project.path(), None))?;
-
-    let markers = entry(&response, "comment_markers")?;
-    assert_eq!(markers.count, 6);
-    assert_eq!(markers.files, 3);
-    assert_eq!(markers.covers, ["rust"]);
-    assert_eq!(entry(&response, "expect_calls")?.covers, ["rust"]);
-    assert_eq!(entry(&response, "credential_files")?.covers, ["rust"]);
-    Ok(())
-}
-
-#[test]
-fn clip_detail_flags_only_past_the_char_limit() -> TestResult {
-    let row = |chars: usize| LeadRow {
-        file: "f.rs".to_owned(),
-        line: 1,
-        detail: "é".repeat(chars),
-        detail_clipped: false,
-    };
-    let mut at_limit = row(MAX_DETAIL_CHARS);
-    let mut over_limit = row(MAX_DETAIL_CHARS + 1);
-
-    clip_detail(&mut at_limit);
-    clip_detail(&mut over_limit);
-
-    assert_eq!(at_limit.detail.chars().count(), MAX_DETAIL_CHARS);
-    assert!(!at_limit.detail_clipped, "exactly the cap is not clipped");
-    assert_eq!(over_limit.detail.len(), MAX_DETAIL_CHARS * 2);
-    assert!(over_limit.detail_clipped, "one past the cap is clipped");
-    Ok(())
-}
-
-/// `credential_files` reads `files` directly, so a credential-shaped file the
-/// index deliberately skipped is still something the agent must be told
-/// about: no content was retained, but the path is exactly the signal this
-/// mechanic exists to surface.
-#[test]
-fn credential_files_reports_a_skipped_credential_shaped_file() -> TestResult {
-    let project = tempfile::tempdir().check("project dir")?;
-    activate(project.path())?;
-    let _config = crate::tools::test_support::use_global_config(r#"{"max_file_bytes": 500}"#)?;
-    fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n").check("write source")?;
-    fs::write(project.path().join("big.pem"), vec![b'k'; 5_000]).check("write big.pem")?;
-
-    let counts = run(request(project.path(), None))?;
-    let skipped = count_of(&counts, "credential_files")?;
-    assert_eq!(skipped, 1, "skipped credentials are still counted");
-
-    let rows = run(request(project.path(), Some("credential_files")))?;
-    assert_eq!(full_rows(&rows)?.len(), 1);
-    assert_eq!(full_rows(&rows)?[0].file, "big.pem");
-    assert_eq!(rows.files_total, 1);
-    Ok(())
-}
-
-/// The `mode` switch is optional: a request JSON carrying only `path` still
-/// deserializes, to `full`.
-#[test]
-fn a_request_without_mode_deserializes_to_full() -> TestResult {
-    let request: LeadsRequest = serde_json::from_str(r#"{"path":"/tmp/anywhere"}"#)
-        .check("path-only request deserializes")?;
-    assert_eq!(request.mode, LeadMode::Full);
-    assert!(request.mechanic.is_none() && request.pattern.is_none());
-    Ok(())
-}
-
-/// The compact mode's whole point: a `mechanic`/`file`/`line` triple with no
-/// per-row text — the serialized row carries exactly those three keys, no
-/// `detail` — and, with no `mechanic`, that is the whole surface in one
-/// response, every row tagged. The default mode keeps its text.
-#[test]
-fn compact_rows_are_mechanic_file_line_triples_without_detail() -> TestResult {
-    let project = rust_fixture()?;
-    let response = run(compact_request(project.path(), None))?;
-    let rows = compact_rows(&response)?;
-    assert!(rows.iter().any(|r| r.mechanic == "expect_calls"));
-    assert!(rows.iter().any(|r| r.mechanic == "comment_markers"));
-    let returned = u64::try_from(response.page.returned).check("fits")?;
-    assert_eq!(Some(returned), response.page.total);
-    let serialized = serde_json::to_value(rows).check("rows serialize")?;
-    let row = &serialized[0];
-    // Rows come in declaration order: the first mechanic with a row leads.
-    assert_eq!(
-        row["mechanic"],
-        crate::tools::leads_mechanics::MECHANICS[0].id
-    );
-    assert_eq!(row["file"], "lib.rs");
-    assert!(row["line"].as_i64().check("line")? > 0);
-    assert_eq!(row.as_object().check("object")?.len(), 3, "{row}");
-
-    let full = run(request(project.path(), Some("expect_calls")))?;
-    let text = serde_json::to_value(&full.rows).check("rows serialize")?;
-    assert_eq!(text[0]["detail"], "x.expect");
-    assert!(text[0].get("mechanic").is_none());
-
-    let mut paged = compact_request(project.path(), None);
-    paged.limit = Some(1);
-    let page = run(paged)?;
-    assert_eq!(compact_rows(&page)?[0].mechanic, rows[0].mechanic);
-    page.page
-        .cursor
-        .as_ref()
-        .check("`page.page.cursor` is present")?;
-
-    let mut scoped = compact_request(project.path(), None);
-    scoped.pattern = Some("lib.rs".to_owned());
-    let scoped = run(scoped)?;
-    let files: Vec<&str> = compact_rows(&scoped)?
-        .iter()
-        .map(|r| r.file.as_str())
-        .collect();
-    assert!(!files.is_empty() && files.iter().all(|f| *f == "lib.rs"));
-    Ok(())
-}
-
-/// Paging a compact sweep: the pages partition the rows and `files_covered`
-/// stays cumulative rather than per-page.
-#[test]
-fn compact_paging_reports_a_cumulative_file_denominator() -> TestResult {
-    let project = marker_fixture(2, 3)?; // 6 rows across 2 files
-    let manager = crate::sync::SourceSyncManager::default();
-    let mut first = compact_request(project.path(), None);
-    first.limit = Some(4);
-    let first = run_on(&manager, first)?;
-    assert_eq!((first.page.returned, first.page.total), (4, Some(6)));
-    assert_eq!((first.files_covered, first.files_total), (2, 2));
-    assert_eq!(
-        (first.page.complete, first.page.cursor.is_some()),
-        (false, true)
-    );
-
-    let rest = run_on(&manager, continuation(&first)?)?;
-    assert_eq!((rest.page.returned, rest.page.complete), (2, true));
-    assert_eq!((rest.files_covered, rest.files_total), (2, 2));
-    Ok(())
-}
-
-/// The completeness fields mean the same thing in both modes: for one
-/// mechanic they match field for field, the rows are the same places in the
-/// same order, and only the bytes differ.
-#[test]
-fn both_modes_report_the_same_completeness_for_one_mechanic() -> TestResult {
-    let project = marker_fixture(3, 4)?;
-    let mut full_req = request(project.path(), Some("comment_markers"));
-    full_req.limit = Some(5);
-    let full = run(full_req)?;
-    let mut compact_req = compact_request(project.path(), Some("comment_markers"));
-    compact_req.limit = Some(5);
-    let compact = run(compact_req)?;
-
-    assert_eq!(compact.page.returned, full.page.returned);
-    assert_eq!(compact.page.total, full.page.total);
-    assert_eq!(compact.page.complete, full.page.complete);
-    assert_eq!(compact.files_total, full.files_total);
-    assert_eq!(compact.files_covered, full.files_covered);
-    assert_eq!(compact.page.limited_by, full.page.limited_by);
-    assert_eq!(compact.page.cursor.is_some(), full.page.cursor.is_some());
-    let crows = compact_rows(&compact)?;
-    let cplaces: Vec<(&str, i64)> = crows.iter().map(|r| (r.file.as_str(), r.line)).collect();
-    let frows = full_rows(&full)?;
-    let fplaces: Vec<(&str, i64)> = frows.iter().map(|r| (r.file.as_str(), r.line)).collect();
-    assert_eq!(cplaces, fplaces, "same rows, same order");
-    let (cbytes, fbytes) = (compact.page.bytes_used, full.page.bytes_used);
-    assert!(cbytes < fbytes, "{cbytes} vs {fbytes}");
-    Ok(())
-}
-
-/// Every caller-supplied string field is bounded before it reaches the
-/// project: an over-cap value is refused with the message naming the field
-/// and its cap, never truncated or passed through.
-#[test]
-fn leads_refuses_inputs_over_their_byte_caps() -> TestResult {
-    let refused = |mutate: fn(&mut LeadsRequest)| -> TestResult<ErrorData> {
-        let mut request = request(Path::new("/tmp"), None);
-        mutate(&mut request);
-        try_run(request).check_err("an over-cap input is refused")
-    };
-    let mut path = refused(|r| r.path = Some("a".repeat(MAX_PATH_BYTES + 1)))?;
-    assert_eq!(path.message, "path exceeds 32768 bytes");
-    path = refused(|r| r.mechanic = Some("m".repeat(MAX_FILTER_BYTES + 1)))?;
-    assert_eq!(path.message, "mechanic exceeds 8192 bytes");
-    path = refused(|r| r.pattern = Some("p".repeat(MAX_FILTER_BYTES + 1)))?;
-    assert_eq!(path.message, "pattern exceeds 8192 bytes");
-    path = refused(|r| r.cursor = Some("c".repeat(MAX_CURSOR_BYTES + 1)))?;
-    assert_eq!(path.message, "cursor exceeds 1024 bytes");
-    assert_eq!(
-        path.code,
-        rmcp::model::ErrorCode::INVALID_PARAMS,
-        "{path:?}"
-    );
+    ensure_eq(&scoped.page.total, &Some(1), "scoped.page.total == Some(1)")?;
+    ensure_eq(
+        &full_rows(&scoped)?
+            .first()
+            .check("full_rows(&scoped)?[0]")?
+            .file,
+        &"sub/client.pem",
+        "full_rows(&scoped)?[0].file == \"sub/client.pem\"",
+    )?;
     Ok(())
 }
 
@@ -583,3 +543,6 @@ mod leads_language_tests;
 
 #[path = "leads_paged_tests.rs"]
 mod leads_paged_tests;
+
+#[path = "leads_detail_tests.rs"]
+mod leads_detail_tests;

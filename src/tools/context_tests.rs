@@ -1,6 +1,6 @@
 use super::*;
 use crate::tools::test_support::activated_project;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::fs;
 
 #[test]
@@ -20,13 +20,19 @@ fn a_corrupt_derived_database_is_discarded_and_rebuilt_from_project_files() -> T
 
     let rebuilt = ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default())
         .check("corrupt cache is rebuilt")?;
-    assert!(!rebuilt.revision_id.is_empty());
-    assert!(rebuilt.database_path.exists(), "rebuilt database exists");
+    ensure(
+        !rebuilt.revision_id.is_empty(),
+        "!rebuilt.revision_id.is_empty()",
+    )?;
+    ensure(
+        rebuilt.database_path.exists(),
+        "rebuilt.database_path.exists()",
+    )?;
     let connection = crate::store::open_existing(&rebuilt.database_path).check("rebuilt db")?;
     let count: i64 = connection
         .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
         .check("rebuilt file row")?;
-    assert_eq!(count, 1);
+    ensure_eq(&count, &1, "count == 1")?;
     Ok(())
 }
 
@@ -58,7 +64,7 @@ fn a_verified_connection_succeeds_when_nothing_changed_since_sync() -> TestResul
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     })
     .check("still-fresh revision opens fine and the closure's query runs")?;
-    assert_eq!(count, 1_i64);
+    ensure_eq(&count, &1_i64, "count == 1_i64")?;
     Ok(())
 }
 
@@ -76,10 +82,11 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() -> 
     )
     .check("modify file")?;
     let fresh = synced_locally(&path)?;
-    assert_ne!(
-        stale.revision_id, fresh.revision_id,
-        "the revision must actually have moved"
-    );
+    ensure_ne(
+        &stale.revision_id,
+        &fresh.revision_id,
+        "stale.revision_id != fresh.revision_id",
+    )?;
 
     let ran_closure = std::cell::Cell::new(false);
     let result = with_verified_read(&stale, |_tx| {
@@ -87,30 +94,35 @@ fn a_stale_synced_handle_fails_loudly_instead_of_returning_mismatched_data() -> 
         Ok(())
     });
     let error = result.check_err("a stale revision handle must never open against newer data")?;
-    assert!(
-        !ran_closure.get(),
-        "the closure must never run against a revision that failed verification"
-    );
+    ensure(!ran_closure.get(), "!ran_closure.get()")?;
     // The message must actually be actionable, not a bare rusqlite/io
     // Display string with no guidance — this is the specific caller-facing
     // gap `internal_error` exists to close.
     let message = error.message.to_string();
-    assert!(
+    ensure(
         message.contains("retry the call"),
-        "expected a retry hint in the error message, got: {message}"
-    );
+        "message.contains(\"retry the call\")",
+    )?;
     // And the machine-readable half: a stale revision keeps the retry
     // advice *as a code*, so a caller can branch on it without reading the
     // message. This is the one failure where "retry" is the right answer,
     // which is exactly why it must be distinguishable from the sync budget
     // (whose remedy says the opposite).
     let data = error.data.check("a stale revision carries a payload")?;
-    assert_eq!(data["code"], "stale_revision");
-    let remedy = data["remedy"].as_str().check("remedy is a string")?;
-    assert!(
+    ensure_eq(
+        data.get("code").check("data[\"code\"]")?,
+        &"stale_revision",
+        "data[\"code\"] == \"stale_revision\"",
+    )?;
+    let remedy = data
+        .get("remedy")
+        .check("data[\"remedy\"]")?
+        .as_str()
+        .check("remedy is a string")?;
+    ensure(
         remedy.contains("retry the call"),
-        "the stale-revision remedy must keep the retry advice: {remedy}"
-    );
+        "remedy.contains(\"retry the call\")",
+    )?;
     Ok(())
 }
 
@@ -143,21 +155,25 @@ fn a_database_copied_from_a_different_project_root_is_rebuilt_not_served() -> Te
     // database's evidence.
     let rebuilt = ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default())
         .check("a stale root must be rebuilt, not served or rejected")?;
-    assert!(!rebuilt.revision_id.is_empty());
+    ensure(
+        !rebuilt.revision_id.is_empty(),
+        "!rebuilt.revision_id.is_empty()",
+    )?;
     let connection = crate::store::open_existing(&rebuilt.database_path).check("rebuilt db")?;
     let stored_root: String = connection
         .query_row("SELECT root_path FROM project WHERE id = 1", [], |row| {
             row.get(0)
         })
         .check("read stored root")?;
-    assert_ne!(
-        stored_root, "/some/other/project/root",
-        "the rebuilt database must be bound to this project, not the foreign root"
-    );
+    ensure_ne(
+        &stored_root,
+        &"/some/other/project/root",
+        "stored_root != \"/some/other/project/root\"",
+    )?;
     let count: i64 = connection
         .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
         .check("rebuilt file row")?;
-    assert_eq!(count, 1, "rebuilt from this project's source");
+    ensure_eq(&count, &1, "count == 1")?;
     Ok(())
 }
 
@@ -173,9 +189,10 @@ fn two_syncs_against_unchanged_project_converge_on_same_revision() -> TestResult
     let second = ensure_synced_no_progress(&path, &crate::sync::SourceSyncManager::default())
         .check("second sync")?;
 
-    assert_eq!(
-        first.revision_id, second.revision_id,
-        "two full publishes against an unchanged project must converge on the same revision"
-    );
+    ensure_eq(
+        &first.revision_id,
+        &second.revision_id,
+        "first.revision_id == second.revision_id",
+    )?;
     Ok(())
 }

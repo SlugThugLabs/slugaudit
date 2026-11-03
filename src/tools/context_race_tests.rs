@@ -9,7 +9,7 @@
 //! new test-only hook.
 use super::*;
 use crate::{parse, store, sync};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure_eq, ensure_ne};
 use std::fs;
 use std::sync::mpsc;
 
@@ -106,10 +106,11 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() -> TestResul
         &crate::progress::NoopProgressSink,
     )
     .check("concurrent publish succeeds")?;
-    assert_ne!(
-        report.revision_id, synced.revision_id,
-        "the concurrent publish must actually have moved the revision"
-    );
+    ensure_ne(
+        &report.revision_id,
+        &synced.revision_id,
+        "report.revision_id != synced.revision_id",
+    )?;
     drop(connection);
 
     tx_resume.send(()).check("release the parked reader")?;
@@ -122,16 +123,14 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() -> TestResul
         .check("reader thread joins")?
         .check("the paused read still succeeds despite the concurrent publish")?;
 
-    assert_eq!(before, "pub fn a() {}\n");
-    assert_eq!(before_count, 1);
-    assert_eq!(
-        after, before,
-        "a read already in progress must keep seeing its original snapshot's content"
-    );
-    assert_eq!(
-        after_count, before_count,
-        "a read already in progress must not see the concurrently-published new file"
-    );
+    ensure_eq(
+        &before,
+        &"pub fn a() {}\n",
+        "before == \"pub fn a() {}\\n\"",
+    )?;
+    ensure_eq(&before_count, &1, "before_count == 1")?;
+    ensure_eq(&after, &before, "after == before")?;
+    ensure_eq(&after_count, &before_count, "after_count == before_count")?;
 
     // A brand new, independently-synced read does see the new state — this
     // is what confirms the publish really did land, not merely that nothing
@@ -146,6 +145,6 @@ fn a_read_in_progress_never_observes_a_concurrent_publishs_change() -> TestResul
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))
     })
     .check("fresh read succeeds")?;
-    assert_eq!(fresh_count, 2_i64);
+    ensure_eq(&fresh_count, &2_i64, "fresh_count == 2_i64")?;
     Ok(())
 }
