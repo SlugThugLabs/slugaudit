@@ -27,6 +27,12 @@ history conflicts with the owner, the owner wins.
   model-facing instructions don't mention them.
   <!-- Owner decision (2026-10-31): the human can set base defaults. The model sets its own session settings through the tools and does not need to know the global file exists. -->
 - Other languages' grammars are downloaded on first use.
+- How the MCP server itself works (starting, the stdio transport, the
+  session lifecycle, shutdown) is set by the MCP spec and handled by the
+  `rmcp` SDK. That is not SlugAudit. SlugAudit is what runs on it: the
+  index, the sync, and the tools.
+  <!-- Owner decision (2026-11-03): that is how MCP servers are designed to work, and it is not us. -->
+
 
 ## Product rules
 
