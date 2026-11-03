@@ -330,9 +330,13 @@ fn py_eval_pages(
         let page = run_leads(manager, request)?;
         cursor.clone_from(&page.page.cursor);
         let mut value = serde_json::to_value(&page).check("serialises")?;
-        *value
-            .pointer_mut("/page/cursor")
-            .check("value[\"page\"][\"cursor\"]")? = serde_json::Value::Null;
+        // The last page carries no cursor; set it on every page so pages
+        // compare without the manager-specific cursor text.
+        value
+            .get_mut("page")
+            .and_then(serde_json::Value::as_object_mut)
+            .check("the response has a page object")?
+            .insert("cursor".to_owned(), serde_json::Value::Null);
         pages.push(value);
         if cursor.is_none() {
             return Ok(pages);
