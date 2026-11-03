@@ -61,6 +61,10 @@ history conflicts with the owner, the owner wins.
 
 ## Working rules
 
+- Don't use SlugAudit's tools on this repo. Read and search the code
+  directly.
+  <!-- Owner decision (2026-11-03): you can't use a tool that isn't finished on itself while you build it, and doing so mixes up what SlugAudit does with the code that builds it. -->
+
 - A line marked `Owner decision` records why the owner chose a rule. Don't
   change the rule on your own. If you think it should change, quote the
   decision to the owner and ask.
