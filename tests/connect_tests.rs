@@ -332,54 +332,6 @@ fn disconnecting_a_config_without_an_entry_leaves_it_untouched() -> TestResult {
     Ok(())
 }
 
-/// The replacement temp is created owner-only before any bytes are written, so
-/// a permissive umask cannot expose another server's credentials in the same
-/// config file.
-#[cfg(unix)]
-#[test]
-fn connect_writes_a_client_config_owner_only_under_a_permissive_umask() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
-    let temp = tempfile::tempdir().check("temp dir")?;
-    let home = temp.path().join("home");
-    let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&home).check("mkdir home")?;
-    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
-    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
-    // `exec` keeps the command's own pid and exit status; `umask 000` would
-    // give a plain `fs::write` temp mode 0666.
-    let script = format!("umask 000; exec '{}' connect cursor", binary.display());
-
-    let output = Command::new("/bin/sh")
-        .args(["-c", &script])
-        .env("HOME", &home)
-        .env("SLUGTHUG_HOME", home.join(".slugthug"))
-        .env("SLUGTHUG_CONFIG_HOME", &home)
-        .env("PATH", &bin_dir)
-        .output()
-        .check("spawn slugaudit")?;
-
-    ensure(
-        output.status.success(),
-        format!(
-            "connect failed:\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
-    )?;
-    let config = home.join(".cursor/mcp.json");
-    let mode = fs::metadata(&config)
-        .check("stat the written config")?
-        .permissions()
-        .mode()
-        & 0o777;
-    ensure_eq(
-        &mode,
-        &0o600,
-        "another user's umask must not make a credential-bearing config readable",
-    )?;
-    Ok(())
-}
-
 /// A malformed client config fails the connect: the probe cannot tell
 /// whether the client is connected and names the JSON cause.
 #[test]

@@ -13,40 +13,14 @@ use crate::connect_guidance as guidance;
 use std::fs;
 use std::path::Path;
 
-/// Classifies `path` before anything opens it: `false` when there is no file,
-/// `true` only for a regular file (following a symlink), and an error for
-/// anything a read or write must not touch. `File::open` on a FIFO blocks
-/// until a writer appears, so the type is judged from metadata first.
-fn regular_config(path: &Path) -> std::io::Result<bool> {
-    let target = match fs::symlink_metadata(path) {
-        Ok(entry) if entry.file_type().is_symlink() => match fs::metadata(path) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            result => result?,
-        },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        result => result?,
-    };
-    if target.is_file() {
-        return Ok(true);
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        "the client config path is not a regular file",
-    ))
-}
-
 /// Reads a client config for detection: `Ok(None)` for an absent file, the
 /// text for a readable one.
 ///
 /// # Errors
 ///
-/// A path that is not a regular file (a FIFO must never be opened by a probe),
-/// or a file that cannot be read, is not UTF-8, or exceeds the size cap, is
+/// A file that cannot be read, is not UTF-8, or exceeds the size cap is
 /// returned with its cause, never read as "absent".
 pub(crate) fn readable_config(path: &Path) -> std::io::Result<Option<String>> {
-    if !regular_config(path)? {
-        return Ok(None);
-    }
     match crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
         Ok(contents) => Ok(Some(contents)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -59,7 +33,7 @@ pub(crate) fn readable_config(path: &Path) -> std::io::Result<Option<String>> {
 ///
 /// # Errors
 ///
-/// An unreadable, oversized, non-regular or malformed config is returned with
+/// An unreadable, oversized or malformed config is returned with
 /// its cause (a malformed one as `InvalidData` wrapping the JSON error). The
 /// write path bounds the same file again and fails explicitly.
 pub fn has_slugaudit(path: &Path, keys: &[&str]) -> std::io::Result<bool> {
@@ -102,11 +76,6 @@ pub(crate) fn write_agent_config(
 }
 
 fn load_json_or_empty(path: &Path) -> Result<serde_json::Value, ConnectError> {
-    // A path that exists but is not a regular file (a FIFO, directory, or
-    // device) is refused before the read, which could block or misread it.
-    if !regular_config(path)? {
-        return Ok(serde_json::json!({}));
-    }
     match crate::util::read_file_capped(path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
         Ok(c) if c.trim().is_empty() => Ok(serde_json::json!({})),
         Ok(c) => serde_json::from_str(&c).map_err(|source| ConnectError::InvalidConfig {

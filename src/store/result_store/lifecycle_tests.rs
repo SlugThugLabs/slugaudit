@@ -364,53 +364,6 @@ fn result_store_a_second_open_of_the_same_session_is_unavailable() -> TestResult
 }
 
 #[test]
-#[cfg(unix)]
-fn result_store_open_refuses_a_symlinked_results_directory() -> TestResult {
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let elsewhere = tempfile::tempdir().check("elsewhere")?;
-    std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("results")).check("symlink")?;
-
-    let outcome = ResultStore::open(dir.path(), Uuid::new_v4(), limits(1 << 30));
-
-    ensure(
-        matches!(outcome, Err(ResultStoreError::Unavailable { .. })),
-        format!("{:?}", outcome.err()),
-    )?;
-    ensure_eq(
-        &std::fs::read_dir(elsewhere.path()).check("list")?.count(),
-        &0,
-        "std::fs::read_dir(elsewhere.path()).check(\"list\")?.count() == 0",
-    )?;
-    Ok(())
-}
-
-#[test]
-#[cfg(unix)]
-fn result_store_the_directory_is_private_and_the_lock_file_is_0600() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let fx = fixture(1 << 30)?;
-
-    let dir_mode = std::fs::metadata(fx.results_dir())
-        .check("dir")?
-        .permissions()
-        .mode()
-        & 0o777;
-    let lock = std::fs::read_dir(fx.results_dir())
-        .check("list")?
-        .next()
-        .check("lock")?
-        .check("entry")?;
-    let lock_mode = lock.metadata().check("meta")?.permissions().mode() & 0o777;
-
-    ensure_eq(
-        &(dir_mode, lock_mode),
-        &(0o700, 0o600),
-        "(dir_mode, lock_mode) == (0o700, 0o600)",
-    )?;
-    Ok(())
-}
-
-#[test]
 fn result_store_dropping_the_store_removes_its_lock_file() -> TestResult {
     let dir = tempfile::tempdir().check("temp dir")?;
     let store = open_in(dir.path(), Uuid::new_v4())?;
@@ -516,35 +469,5 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
             "read_all(&fx.store, handle.id)?.len() == 1_200",
         )?;
     }
-    Ok(())
-}
-
-#[test]
-#[cfg(unix)]
-fn result_store_open_refuses_a_symlinked_lock_file() -> TestResult {
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let elsewhere = tempfile::tempdir().check("elsewhere")?;
-    let target = elsewhere.path().join("target");
-    std::fs::write(&target, b"keep").check("target")?;
-    let session = Uuid::new_v4();
-    let results = dir.path().join("results");
-    std::fs::create_dir(&results).check("results dir")?;
-    std::os::unix::fs::symlink(
-        &target,
-        results.join(format!("{}.lock", session.hyphenated())),
-    )
-    .check("symlink")?;
-
-    let outcome = ResultStore::open(dir.path(), session, limits(1 << 30));
-
-    ensure(
-        matches!(outcome, Err(ResultStoreError::Unavailable { .. })),
-        format!("{:?}", outcome.err()),
-    )?;
-    ensure_eq(
-        &std::fs::read(&target).check("target intact")?,
-        &b"keep",
-        "std::fs::read(&target).check(\"target intact\")? == b\"keep\"",
-    )?;
     Ok(())
 }

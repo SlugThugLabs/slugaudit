@@ -27,13 +27,11 @@ Files that are skipped (see below) are identified by size and modification time,
 - It is scratch. Anything derived from your source can be rebuilt from your source.
 - SlugAudit deletes and rebuilds it when it is corrupt, has an incompatible schema or contract version, or was built for a different project root (for example, the project folder was copied or unpacked elsewhere). The call that did this carries `database_discard` with a `cause`.
 - Nothing in `project.db` is lost by a rebuild: findings live in their own database (see below).
-- If `project.db` is a symlink, SlugAudit refuses to open it.
-- A new database file is created owner-only (mode 0600 on Unix).
 - If you delete `project.db` yourself, the next call rebuilds it. The project stays on, because the switch is the directory `.planning/slugaudit/`, not the database. Deleting the whole directory turns the project off.
 
 ## Findings and session state
 
-Findings are what the agent concluded in this session, so each SlugAudit server process keeps them in its own database, `<project>/.planning/slugaudit/findings-<id>.db` (`<id>` is random per process), opened the same way as `project.db` (WAL mode, created owner-only, a symlink is refused).
+Findings are what the agent concluded in this session, so each SlugAudit server process keeps them in its own database, `<project>/.planning/slugaudit/findings-<id>.db` (`<id>` is random per process), opened the same way as `project.db` (WAL mode).
 
 - A finding is stored with the content hash of its file. `finding_read` compares that hash with the file's hash in the freshly synced `project.db`: equal is `current`, anything else (edited, deleted) is `stale`.
 - A rebuild of `project.db` never touches the findings file. Findings survive it.

@@ -141,7 +141,7 @@ fn a_database_open_failure_warn_logs_real_path() -> TestResult {
 fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() -> TestResult {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
-    let error = crate::store::StoreError::Symlink;
+    let error = crate::store::StoreError::Missing;
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(database, &DatabaseRecovery::OpenCorrupt { error: &error });
     })?;
@@ -163,7 +163,7 @@ fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() -> TestResult
         records
             .first()
             .check("records[0] exists")?
-            .contains("error_kind=\"symlink\"")
+            .contains("error_kind=\"missing\"")
             && records
                 .first()
                 .check("records[0] exists")?
@@ -239,7 +239,7 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() -> TestRe
 fn an_open_failed_recovery_warn_logs_the_source_error() -> TestResult {
     use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
-    let error = crate::store::StoreError::Symlink;
+    let error = crate::store::StoreError::Missing;
 
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(database, &DatabaseRecovery::OpenFailed { error: &error });

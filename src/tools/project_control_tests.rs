@@ -280,29 +280,6 @@ fn project_control_rejects_a_profile_over_the_byte_cap() -> TestResult {
     Ok(())
 }
 
-/// `project::enable` refuses to create the activation directory through a
-/// symlinked `.planning`, and that refusal reaches the caller as itself.
-#[cfg(unix)]
-#[test]
-fn on_action_reports_a_symlinked_planning_directory() -> TestResult {
-    let (project, path) = temp_project_with_source()?;
-    let elsewhere = project.path().join("elsewhere");
-    fs::create_dir_all(&elsewhere).check("create link target")?;
-    std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning")).check("symlink")?;
-
-    let error = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .err()
-        .check("enable through a symlinked .planning is refused")?;
-
-    ensure(
-        error
-            .message
-            .contains("enable: refusing a symlinked SlugAudit activation path"),
-        format!("{}", error.message),
-    )?;
-    Ok(())
-}
-
 /// The recovery path discards the corrupt database before reopening it. A
 /// directory at the database path cannot be unlinked, so the discard failure
 /// must reach the caller with the underlying cause intact.
@@ -342,11 +319,6 @@ fn corrupt_database_recovery_reports_a_failed_reopen() -> TestResult {
     let error = recover_corrupt_database(&database)
         .check_err("a database under a missing parent cannot be recreated")?;
 
-    let open_error = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&database)
-        .check_err("the parent directory is missing")?;
     ensure_eq(
         &error.code,
         &rmcp::model::ErrorCode::INTERNAL_ERROR,
@@ -354,8 +326,11 @@ fn corrupt_database_recovery_reports_a_failed_reopen() -> TestResult {
     )?;
     ensure_eq(
         &error.message,
-        &format!("database: failed to create the database file: {open_error}"),
-        "error.message == format!(\"database: failed to create the database file: {open_error}\")",
+        &format!(
+            "database: failed to open database: unable to open database file: {}",
+            database.display()
+        ),
+        "the reopen failure names the database path",
     )?;
     Ok(())
 }
@@ -408,35 +383,6 @@ fn on_action_reports_an_import_failure() -> TestResult {
         error.message.contains("1-byte ceiling"),
         format!("the underlying import error survives: {}", error.message),
     )?;
-    Ok(())
-}
-
-/// `project::disable` refuses to remove through a symlinked `.planning`;
-/// that refusal reaches the caller instead of a reported success.
-#[cfg(unix)]
-#[test]
-fn off_action_reports_a_disable_failure() -> TestResult {
-    let (project, path) = temp_project_with_source()?;
-    let elsewhere = project.path().join("elsewhere");
-    fs::create_dir_all(elsewhere.join("slugaudit")).check("create link target")?;
-    std::os::unix::fs::symlink(&elsewhere, project.path().join(".planning"))
-        .check("symlink .planning")?;
-
-    let error = project_control(
-        &off_request(&path),
-        &crate::progress::NoopProgressSink,
-        None,
-    )
-    .err()
-    .check("disable through a symlinked .planning is refused")?;
-
-    ensure(
-        error
-            .message
-            .contains("disable: refusing a symlinked SlugAudit activation path"),
-        format!("{}", error.message),
-    )?;
-    ensure(elsewhere.join("slugaudit").is_dir(), "nothing was removed")?;
     Ok(())
 }
 

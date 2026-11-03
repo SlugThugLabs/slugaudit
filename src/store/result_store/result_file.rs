@@ -1,4 +1,4 @@
-//! One result file: created private, opened, unlinked at once (the open
+//! One result file: created, opened, unlinked at once (the open
 //! descriptor is the only reference), pragmas applied and read back, schema
 //! created.
 
@@ -33,7 +33,7 @@ pub(super) fn create(
         result.hyphenated()
     ));
     drop(
-        platform::create_private_file(&path)
+        platform::create_new_file(&path)
             .map_err(|error| ResultStoreError::unavailable("create a result file", error))?,
     );
     let opened = open_unlinked(&path);

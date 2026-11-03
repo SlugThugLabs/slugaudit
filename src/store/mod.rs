@@ -4,7 +4,7 @@
 //! The store never reads project files; sync/tools own that.
 
 mod connection;
-mod connection_guards;
+mod connection_config;
 mod findings_db;
 mod migrations;
 mod result_store;

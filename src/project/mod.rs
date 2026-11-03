@@ -41,21 +41,14 @@ pub use root::{ProjectRoot, RootError};
 pub use session_mechanics::{MAX_SESSION_MECHANICS, SessionMechanics};
 pub use session_profile::{session_profile, set_session_profile};
 
-/// Test fixture: an empty owner-only `project.db` in `activation` (a
+/// Test fixture: an empty `project.db` in `activation` (a
 /// `.planning/slugaudit` directory), which SQLite opens as a fresh database.
 #[cfg(test)]
 pub(crate) fn write_database_marker(
     activation: &std::path::Path,
 ) -> slugaudit_test_check::TestResult {
     use slugaudit_test_check::Check;
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(activation.join("project.db"))
-        .check("create database marker")?;
+    std::fs::File::create(activation.join("project.db")).check("create database marker")?;
     Ok(())
 }
 

@@ -24,10 +24,9 @@ fn write_destination(path: &Path) -> Result<PathBuf, ConnectError> {
 
 /// Replaces `path` with `content` through a temp file in the same directory.
 ///
-/// The temp is created owner-only (0600 on Unix) before any bytes are written,
-/// so a client config holding other servers' credentials never becomes
-/// group/world-readable. The destination inode is replaced atomically; a
-/// failed write or rename removes the temp, and a cleanup failure is logged.
+/// An existing config keeps its mode, so rewriting it never loosens or
+/// tightens what the user set. The destination inode is replaced atomically;
+/// a failed write or rename removes the temp, and a cleanup failure is logged.
 pub(crate) fn write_atomic(path: &Path, content: &[u8]) -> Result<(), ConnectError> {
     let sync_file = |file: &fs::File| file.sync_all();
     let sync_directory = |parent: &Path| fs::File::open(parent)?.sync_all();
@@ -52,16 +51,11 @@ pub(crate) fn write_atomic_with(
     let parent = destination.parent().ok_or(ConnectError::HomeUnavailable)?;
     let count = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp = parent.join(format!(".slugaudit-tmp-{}-{}", std::process::id(), count));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temp)?;
-    // A replaced config keeps the mode the user gave it; only a newly created
-    // file stays at the owner-only 0600 the temp was opened with.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    // A replaced config keeps the mode the user gave it.
     if let Err(error) = preserve_mode(&file, &destination) {
         drop(file);
         remove_abandoned_temp(&temp);

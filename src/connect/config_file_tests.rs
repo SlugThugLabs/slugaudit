@@ -1,5 +1,5 @@
 //! Behaviour tests for the client-config access layer: removal truthfulness,
-//! owner-only atomic replacement, symlink preservation, and the typed I/O
+//! mode-preserving atomic replacement, symlink preservation, and the typed I/O
 //! failures `connect_agent` surfaces.
 
 use super::*;
@@ -198,7 +198,7 @@ fn a_non_utf8_binary_path_is_refused_before_the_config_is_written() -> TestResul
 }
 
 #[test]
-fn a_config_path_that_is_a_directory_is_refused_before_reading() -> TestResult {
+fn a_config_path_that_is_a_directory_is_an_io_error() -> TestResult {
     let home = tempfile::tempdir().check("temp dir")?;
     let config = home.path().join(".cursor/mcp.json");
     std::fs::create_dir_all(&config).check("plant a directory at the config path")?;
@@ -210,12 +210,8 @@ fn a_config_path_that_is_a_directory_is_refused_before_reading() -> TestResult {
     };
     ensure_eq(
         &error.kind(),
-        &std::io::ErrorKind::InvalidInput,
-        format!("a non-regular config must be refused before the read: {error}"),
-    )?;
-    ensure(
-        error.to_string().contains("not a regular file"),
-        format!("the refusal must name the file type: {error}"),
+        &std::io::ErrorKind::IsADirectory,
+        format!("a directory at the config path fails the read: {error}"),
     )?;
     Ok(())
 }
@@ -525,6 +521,3 @@ fn a_config_write_whose_temp_path_exceeds_the_limit_fails_without_a_stray_temp()
     )?;
     Ok(())
 }
-
-#[path = "config_file_fifo_tests.rs"]
-mod fifo_tests;

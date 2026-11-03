@@ -34,7 +34,7 @@ Files that look like credentials (`.env`, `*.pem`, `*.key`, `id_rsa`, ...) are i
 | A PATH line | Your shell config, only if you say yes |
 | Downloaded grammars | The grammar library's cache directory (see [languages](languages.md)) |
 
-The runtime directory is created with your default permissions, and new database files are created owner-only (mode 0600 on Unix), because they contain a copy of your source text. Existing files are used as they are.
+The runtime directory and the database files are created with your default permissions. SlugAudit does not set or check file modes.
 
 SlugAudit does not modify your source files. The one edit to a file of yours is the `.gitignore` line above.
 
@@ -63,5 +63,4 @@ SlugAudit answers your agent with your code: file text, symbols, comments and fi
 - The index is a local file in your project. Add `.planning/slugaudit/` to `.gitignore` (SlugAudit does this for you) so it is not committed.
 - Anyone who can read `.planning/slugaudit/project.db` can read the text of every indexed file. Do not share or upload that folder.
 - `project_control` with `off` deletes the whole `.planning/slugaudit/` directory.
-- SlugAudit refuses to open a `project.db` that is a symlink, so it never writes through a link to another file.
 - The SQL tool is read-only by construction: it accepts only `SELECT` or `WITH`. There is no SQL permission layer beyond that, because the database is your own scratch file.

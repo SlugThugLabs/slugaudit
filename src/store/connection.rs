@@ -2,21 +2,16 @@
 //!
 //! The database is runtime scratch: callers delete and rebuild it on any
 //! doubt, so there is no trust boundary around the file, no authored SQL
-//! authorizer, and no permission policing. Safety stays: a symlink at the
-//! database path is refused (opening through it would write to some other
-//! file), a new file is created owner-only, and the writer requires WAL.
+//! authorizer, and no permission or symlink policing. The writer requires WAL.
 
-use super::connection_guards::{
-    BUSY_TIMEOUT, configure, create_with_private_permissions_if_missing, open_flags,
-    reject_symlink, resolve_parent_dir,
-};
+use super::connection_config::{BUSY_TIMEOUT, configure, open_flags};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 /// Database-boundary failures. Corruption is recoverable (callers discard and
-/// rebuild); a symlink at the database path is a deliberate refusal.
+/// rebuild).
 pub enum StoreError {
     /// Opening or creating the database file failed.
     #[error("failed to open database: {0}")]
@@ -34,19 +29,13 @@ pub enum StoreError {
     /// [`MigrationError`](super::migrations::MigrationError).
     #[error(transparent)]
     Migration(#[from] super::migrations::MigrationError),
-    /// The database path is a symlink; SlugAudit refuses to follow it.
-    #[error("refusing to open a database path that is a symlink")]
-    Symlink,
     /// The database file does not exist and the caller asked only to open an
     /// existing one (see [`open_existing_read_write`]).
     #[error("the project database does not exist")]
     Missing,
-    /// The database path could not be inspected with `lstat`.
-    #[error("failed to inspect the database path (lstat): {0}")]
+    /// The database path could not be inspected.
+    #[error("failed to inspect the database path: {0}")]
     Inspect(#[source] std::io::Error),
-    /// Creating the database file failed.
-    #[error("failed to create the database file: {0}")]
-    Create(#[source] std::io::Error),
     /// SQLite did not enable WAL journal mode, which every read-write
     /// connection requires.
     #[error(
@@ -67,12 +56,7 @@ impl StoreError {
         match self {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
             Self::Migration(error) => error.is_corruption(),
-            Self::Symlink
-            | Self::Missing
-            | Self::Busy(_)
-            | Self::Inspect(_)
-            | Self::Create(_)
-            | Self::WalUnavailable { .. } => false,
+            Self::Missing | Self::Busy(_) | Self::Inspect(_) | Self::WalUnavailable { .. } => false,
         }
     }
 }
@@ -150,16 +134,12 @@ pub fn open_existing_read_write(path: &Path) -> Result<Connection, StoreError> {
 }
 
 fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, StoreError> {
-    let resolved = resolve_parent_dir(path);
-    let path = resolved.as_path();
     if mode == CreateMode::MustExist {
         ensure_present(path)?;
     }
-    reject_symlink(path)?;
     let mut flags = open_flags(true);
-    match mode {
-        CreateMode::MayCreate => create_with_private_permissions_if_missing(path)?,
-        CreateMode::MustExist => flags.remove(OpenFlags::SQLITE_OPEN_CREATE),
+    if mode == CreateMode::MustExist {
+        flags.remove(OpenFlags::SQLITE_OPEN_CREATE);
     }
     let mut connection = match Connection::open_with_flags(path, flags) {
         Ok(connection) => connection,
@@ -176,11 +156,10 @@ fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, Sto
     Ok(connection)
 }
 
-/// `Missing` when nothing exists at `path` (a dangling symlink counts as
-/// present so the symlink refusal still applies); other `lstat` failures are
+/// `Missing` when nothing exists at `path`; other `stat` failures are
 /// reported as themselves.
 pub(super) fn ensure_present(path: &Path) -> Result<(), StoreError> {
-    match path.symlink_metadata() {
+    match path.metadata() {
         Ok(_) => Ok(()),
         Err(error)
             if matches!(
@@ -204,9 +183,6 @@ pub(super) fn ensure_present(path: &Path) -> Result<(), StoreError> {
 /// Returns an error if the file doesn't exist or can't be opened read-only,
 /// or if the busy timeout can't be configured.
 pub fn open_existing(path: &Path) -> Result<Connection, StoreError> {
-    let resolved = resolve_parent_dir(path);
-    let path = resolved.as_path();
-    reject_symlink(path)?;
     let connection =
         Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
     // `sqlite3_busy_timeout` and `sqlite3_create_function_v2` fail only on

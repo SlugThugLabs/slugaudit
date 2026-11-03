@@ -104,7 +104,7 @@ What `on` does:
 - Adds `.planning/slugaudit/` to the project's `.gitignore` (see below).
 - Returns an `import` summary: `added`, `modified`, `deleted`, `unchanged`, `skipped`, `revision_id`.
 
-A project counts as enabled while the directory `.planning/slugaudit/` exists. A symlink at that path does not count. Every other tool finds the project by looking for that directory in the given path and its parent directories. So you can pass any file or folder inside the project.
+A project counts as enabled while the directory `.planning/slugaudit/` exists. Every other tool finds the project by looking for that directory in the given path and its parent directories. So you can pass any file or folder inside the project.
 
 An optional `profile` (`adaptive`, `audit`, `lean`) applies to this session only. It is held in memory until the server exits and is not saved. See [configuration](configuration.md).
 
@@ -120,7 +120,7 @@ On `on`, SlugAudit appends `.planning/slugaudit/` to the `.gitignore` in the pro
 | `already_ignored` | An equivalent rule was there. The file is untouched. |
 | `not_written` | The file was left alone and `error` says why. The project is still enabled. |
 
-Existing content is kept byte for byte. The line ending style of the file is respected. `.gitignore` is not written if it is a symlink, is not a regular file, or is larger than 1 MiB. `off` never edits `.gitignore`.
+Existing content is kept byte for byte. The line ending style of the file is respected. `.gitignore` is not written if it is larger than 1 MiB. `off` never edits `.gitignore`.
 
 ## First call
 
