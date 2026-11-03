@@ -139,14 +139,22 @@ fn parse_kb(line: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult};
+    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
     #[test]
     fn parse_proc_meminfo_reads_valid_data() -> TestResult {
         let sample = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\nMemAvailable:   12288000 kB\n";
         let info = parse_proc_meminfo(sample).check("parse succeeds")?;
-        assert_eq!(info.total_bytes, 16_384_000 * 1024);
-        assert_eq!(info.available_bytes, 12_288_000 * 1024);
+        ensure_eq(
+            &info.total_bytes,
+            &(16_384_000 * 1024),
+            "info.total_bytes == 16_384_000 * 1024",
+        )?;
+        ensure_eq(
+            &info.available_bytes,
+            &(12_288_000 * 1024),
+            "info.available_bytes == 12_288_000 * 1024",
+        )?;
         Ok(())
     }
 
@@ -154,15 +162,25 @@ mod tests {
     fn parse_proc_meminfo_refuses_a_missing_memavailable() -> TestResult {
         let sample = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\n";
         let error = parse_proc_meminfo(sample).check_err("no MemAvailable line")?;
-        assert_eq!(error, "no MemAvailable line");
+        ensure_eq(
+            &error,
+            &"no MemAvailable line",
+            "error == \"no MemAvailable line\"",
+        )?;
         Ok(())
     }
 
     #[test]
     fn parse_proc_meminfo_handles_missing_memtotal() -> TestResult {
         let sample = "MemFree:         8192000 kB\nMemAvailable:   12288000 kB\n";
-        assert!(parse_proc_meminfo(sample).is_err());
-        assert!(parse_proc_meminfo("invalid content").is_err());
+        ensure(
+            parse_proc_meminfo(sample).is_err(),
+            "parse_proc_meminfo(sample).is_err()",
+        )?;
+        ensure(
+            parse_proc_meminfo("invalid content").is_err(),
+            "parse_proc_meminfo(\"invalid content\").is_err()",
+        )?;
         Ok(())
     }
 
@@ -170,7 +188,7 @@ mod tests {
     fn a_malformed_memtotal_line_names_the_line_in_its_error() -> TestResult {
         let error = parse_proc_meminfo("MemTotal:  lots kB\n").check_err("malformed value")?;
 
-        assert!(error.contains("malformed value 'lots'"), "{error}");
+        ensure(error.contains("malformed value 'lots'"), &error)?;
         Ok(())
     }
 
@@ -180,24 +198,37 @@ mod tests {
 
         let error = parse_proc_meminfo(&sample).check_err("overflow")?;
 
-        assert!(error.contains("overflows"), "{error}");
+        ensure(error.contains("overflows"), &error)?;
         Ok(())
     }
 
     #[test]
     fn a_sysctl_output_that_is_not_a_number_is_an_error_with_a_cause() -> TestResult {
-        assert_eq!(parse_sysctl_memsize(b"17179869184\n"), Ok(17_179_869_184));
-        assert!(parse_sysctl_memsize(b"n/a").is_err());
-        assert!(parse_sysctl_memsize(&[0xff]).is_err());
+        ensure_eq(
+            &parse_sysctl_memsize(b"17179869184\n"),
+            &Ok(17_179_869_184),
+            "parse_sysctl_memsize(b\"17179869184\\n\") == Ok(17_179_869_184)",
+        )?;
+        ensure(
+            parse_sysctl_memsize(b"n/a").is_err(),
+            "parse_sysctl_memsize(b\"n/a\").is_err()",
+        )?;
+        ensure(
+            parse_sysctl_memsize(&[0xff]).is_err(),
+            "parse_sysctl_memsize(&[0xff]).is_err()",
+        )?;
         Ok(())
     }
 
     #[test]
     fn detect_returns_positive_memory() -> TestResult {
         let info = detect_system_memory().check("this host reports its memory")?;
-        assert!(info.total_bytes > 0);
-        assert!(info.available_bytes > 0);
-        assert!(info.available_bytes <= info.total_bytes);
+        ensure(info.total_bytes > 0, "info.total_bytes > 0")?;
+        ensure(info.available_bytes > 0, "info.available_bytes > 0")?;
+        ensure(
+            info.available_bytes <= info.total_bytes,
+            "info.available_bytes <= info.total_bytes",
+        )?;
         Ok(())
     }
 
@@ -208,10 +239,11 @@ mod tests {
 
         let error = detect_from(Err(unreadable)).check_err("no source yields a value")?;
 
-        assert_eq!(
-            error.to_string(),
-            "system memory could not be detected: /proc/meminfo: no meminfo here"
-        );
+        ensure_eq(
+            &error.to_string(),
+            &"system memory could not be detected: /proc/meminfo: no meminfo here",
+            "error.to_string() == \"system memory could not be detected: /proc/meminfo: no meminfo here\"",
+        )?;
         Ok(())
     }
 }

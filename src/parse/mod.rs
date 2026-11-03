@@ -23,7 +23,7 @@ pub const PACK_VERSION: &str = "1.18.0";
 #[cfg(test)]
 mod tests {
     use super::PACK_VERSION;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
     const PIN_PREFIX: &str = "tree-sitter-language-pack = \"=";
 
@@ -40,10 +40,11 @@ mod tests {
             .map(|(version, _after)| version)
             .check("the tree-sitter-language-pack pin must close its quoted version")?;
 
-        assert_eq!(
-            PACK_VERSION, version,
-            "PACK_VERSION and the tree-sitter-language-pack pin in Cargo.toml must move together"
-        );
+        ensure_eq(
+            &PACK_VERSION,
+            &version,
+            "PACK_VERSION and the tree-sitter-language-pack pin in Cargo.toml must move together",
+        )?;
         Ok(())
     }
 }

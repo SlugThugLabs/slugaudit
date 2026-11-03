@@ -1,44 +1,84 @@
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn strip_test_attr_accepts_bare_test() -> TestResult {
-    assert_eq!(strip_test_attr("#[test]"), Some(""));
-    assert_eq!(strip_test_attr("  #[test]"), Some(""));
-    assert_eq!(strip_test_attr("#[test] rest"), Some(" rest"));
+    ensure_eq(
+        &strip_test_attr("#[test]"),
+        &Some(""),
+        "strip_test_attr(\"#[test]\") == Some(\"\")",
+    )?;
+    ensure_eq(
+        &strip_test_attr("  #[test]"),
+        &Some(""),
+        "strip_test_attr(\" #[test]\") == Some(\"\")",
+    )?;
+    ensure_eq(
+        &strip_test_attr("#[test] rest"),
+        &Some(" rest"),
+        "strip_test_attr(\"#[test] rest\") == Some(\" rest\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn strip_test_attr_accepts_qualified() -> TestResult {
-    assert_eq!(strip_test_attr("#[tokio::test]"), Some(""));
-    assert_eq!(strip_test_attr("#[some::path::test]"), Some(""));
+    ensure_eq(
+        &strip_test_attr("#[tokio::test]"),
+        &Some(""),
+        "strip_test_attr(\"#[tokio::test]\") == Some(\"\")",
+    )?;
+    ensure_eq(
+        &strip_test_attr("#[some::path::test]"),
+        &Some(""),
+        "strip_test_attr(\"#[some::path::test]\") == Some(\"\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn strip_test_attr_rejects_cfg_test() -> TestResult {
-    assert_eq!(strip_test_attr("#[cfg(test)]"), None);
+    ensure_eq(
+        &strip_test_attr("#[cfg(test)]"),
+        &None,
+        "strip_test_attr(\"#[cfg(test)]\") == None",
+    )?;
     Ok(())
 }
 
 #[test]
 fn strip_test_attr_rejects_test_case() -> TestResult {
     // `test_case` ends with `case`, not `test`.
-    assert_eq!(strip_test_attr("#[test_case]"), None);
+    ensure_eq(
+        &strip_test_attr("#[test_case]"),
+        &None,
+        "strip_test_attr(\"#[test_case]\") == None",
+    )?;
     Ok(())
 }
 
 #[test]
 fn same_line_fn_name_basic() -> TestResult {
-    assert_eq!(same_line_fn_name(" fn foo() {"), Some("foo"));
+    ensure_eq(
+        &same_line_fn_name(" fn foo() {"),
+        &Some("foo"),
+        "same_line_fn_name(\" fn foo() {\") == Some(\"foo\")",
+    )?;
     Ok(())
 }
 
 #[test]
 fn same_line_fn_name_with_pub() -> TestResult {
-    assert_eq!(same_line_fn_name(" pub fn bar() {"), Some("bar"));
-    assert_eq!(same_line_fn_name("async fn baz()"), Some("baz"));
+    ensure_eq(
+        &same_line_fn_name(" pub fn bar() {"),
+        &Some("bar"),
+        "same_line_fn_name(\" pub fn bar() {\") == Some(\"bar\")",
+    )?;
+    ensure_eq(
+        &same_line_fn_name("async fn baz()"),
+        &Some("baz"),
+        "same_line_fn_name(\"async fn baz()\") == Some(\"baz\")",
+    )?;
     Ok(())
 }
 
@@ -53,11 +93,7 @@ fn same_line_fn_name_skips_visibility_and_qualifiers() -> TestResult {
         (" pub const unsafe fn f()", "f"),
         (" async unsafe fn g()", "g"),
     ] {
-        assert_eq!(
-            same_line_fn_name(after_attr),
-            Some(expected),
-            "{after_attr}"
-        );
+        ensure_eq(&same_line_fn_name(after_attr), &Some(expected), after_attr)?;
     }
     Ok(())
 }
@@ -72,7 +108,11 @@ fn same_line_fn_name_rejects_what_is_not_a_fn_item() -> TestResult {
         " pub(crate",
         "",
     ] {
-        assert_eq!(same_line_fn_name(after_attr), None, "{after_attr:?}");
+        ensure_eq(
+            &same_line_fn_name(after_attr),
+            &None,
+            format!("{after_attr:?}"),
+        )?;
     }
     Ok(())
 }
@@ -90,8 +130,12 @@ fn a_name_defined_twice_in_one_file_is_one_file() -> TestResult {
 
     let map = test_names_by_file(&[p], &mut failures);
 
-    assert!(failures.is_empty(), "{failures:?}");
-    assert_eq!(map.get("dup").map(BTreeSet::len), Some(1), "{map:?}");
+    ensure(failures.is_empty(), format!("{failures:?}"))?;
+    ensure_eq(
+        &map.get("dup").map(BTreeSet::len),
+        &Some(1),
+        format!("{map:?}"),
+    )?;
     Ok(())
 }
 
@@ -106,7 +150,11 @@ fn a_qualified_test_fn_defined_in_two_files_is_found_in_both() -> TestResult {
 
     let map = test_names_by_file(&[a, b], &mut failures);
 
-    assert_eq!(map.get("shared").map(BTreeSet::len), Some(2), "{map:?}");
+    ensure_eq(
+        &map.get("shared").map(BTreeSet::len),
+        &Some(2),
+        format!("{map:?}"),
+    )?;
     Ok(())
 }
 
@@ -128,8 +176,11 @@ fn block_line_skips_comments_and_attrs() -> TestResult {
     .check("fixture file writes")?;
     let mut failures = Vec::new();
     let map = test_names_by_file(&[p], &mut failures);
-    assert!(map.contains_key("my_test"), "missing key in {map:?}");
-    assert!(failures.is_empty(), "unexpected: {failures:?}");
+    ensure(
+        map.contains_key("my_test"),
+        format!("missing key in {map:?}"),
+    )?;
+    ensure(failures.is_empty(), format!("unexpected: {failures:?}"))?;
     Ok(())
 }
 
@@ -142,11 +193,11 @@ fn an_unreadable_test_file_is_a_failure_not_a_skip() -> TestResult {
 
     let map = test_names_by_file(&[p], &mut failures);
 
-    assert!(map.is_empty());
-    assert!(
+    ensure(map.is_empty(), "map.is_empty()")?;
+    ensure(
         failures.iter().any(|f| f.contains("cannot read")),
-        "{failures:?}"
-    );
+        format!("{failures:?}"),
+    )?;
     Ok(())
 }
 
@@ -160,10 +211,10 @@ fn an_unreadable_directory_is_a_failure_not_a_skip() -> TestResult {
 
     walk_rs(&not_a_dir, &mut out, &mut failures);
 
-    assert!(out.is_empty());
-    assert!(
+    ensure(out.is_empty(), "out.is_empty()")?;
+    ensure(
         failures.iter().any(|f| f.contains("cannot read directory")),
-        "{failures:?}"
-    );
+        format!("{failures:?}"),
+    )?;
     Ok(())
 }

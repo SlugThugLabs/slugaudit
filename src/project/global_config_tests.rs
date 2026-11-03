@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::store::test_capture::capture_warns;
-use slugaudit_test_check::{Check, CheckErr, TestResult};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 /// A temp dir holding `config.json` with `contents`, and the file's path.
 fn config_file(contents: &str) -> TestResult<(tempfile::TempDir, PathBuf)> {
@@ -25,22 +25,27 @@ fn an_absent_global_config_is_the_default() -> TestResult {
     let dir = tempfile::tempdir().check("tempdir")?;
     let missing = dir.path().join("config.json");
 
-    assert!(
+    ensure(
         GlobalConfig::load_from(&missing)
             .check("absent is fine")?
-            .is_none()
-    );
+            .is_none(),
+        "GlobalConfig::load_from(&missing) .check(\"absent is fine\")? .is_none()",
+    )?;
     set_global_config_path_for_test(Some(missing));
     let config = GlobalConfig::load().check("absent is the default")?;
-    assert!(config.profile.is_none());
-    assert!(config.max_file_bytes.is_none());
+    ensure(config.profile.is_none(), "config.profile.is_none()")?;
+    ensure(
+        config.max_file_bytes.is_none(),
+        "config.max_file_bytes.is_none()",
+    )?;
     set_global_config_path_for_test(None);
-    assert!(
+    ensure(
         GlobalConfig::load()
             .check("no home is the default")?
             .profile
-            .is_none()
-    );
+            .is_none(),
+        "GlobalConfig::load() .check(\"no home is the default\")? .profile .is_none()",
+    )?;
     Ok(())
 }
 
@@ -55,8 +60,16 @@ fn a_valid_global_config_is_applied() -> TestResult {
     )
     .check("limits resolve")?;
 
-    assert_eq!(limits.max_file_bytes, 536_870_912);
-    assert_eq!(limits.max_total_import_bytes, 32 * 1024 * 1024 * 1024);
+    ensure_eq(
+        &limits.max_file_bytes,
+        &536_870_912,
+        "limits.max_file_bytes == 536_870_912",
+    )?;
+    ensure_eq(
+        &limits.max_total_import_bytes,
+        &(32 * 1024 * 1024 * 1024),
+        "limits.max_total_import_bytes == 32 * 1024 * 1024 * 1024",
+    )?;
     Ok(())
 }
 
@@ -66,11 +79,14 @@ fn invalid_json_fails_the_load_naming_the_file() -> TestResult {
 
     let error = GlobalConfig::load_from(&path).check_err("malformed must fail")?;
 
-    assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
-    assert!(
+    ensure(
+        matches!(error, ConfigError::Parse { .. }),
+        format!("{error}"),
+    )?;
+    ensure(
         error.to_string().contains(path.to_str().check("utf-8")?),
-        "{error}"
-    );
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
@@ -80,12 +96,18 @@ fn an_unknown_key_fails_the_load_naming_the_key() -> TestResult {
 
     let error = GlobalConfig::load_from(&path).check_err("unknown key must fail")?;
 
-    assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
-    assert!(error.to_string().contains("max_file_byte"), "{error}");
-    assert!(
+    ensure(
+        matches!(error, ConfigError::Parse { .. }),
+        format!("{error}"),
+    )?;
+    ensure(
+        error.to_string().contains("max_file_byte"),
+        format!("{error}"),
+    )?;
+    ensure(
         error.to_string().contains(path.to_str().check("utf-8")?),
-        "{error}"
-    );
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
@@ -95,10 +117,10 @@ fn a_mechanics_key_is_an_unknown_key() -> TestResult {
 
     let error = GlobalConfig::load_from(&path).check_err("mechanics are session-only")?;
 
-    assert!(
+    ensure(
         error.to_string().contains("unknown field `mechanics`"),
-        "{error}"
-    );
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
@@ -110,11 +132,11 @@ fn an_unreadable_config_is_an_io_error_naming_the_file() -> TestResult {
 
     let error = GlobalConfig::load_from(&path).check_err("unreadable must fail")?;
 
-    assert!(matches!(error, ConfigError::Io { .. }), "{error}");
-    assert!(
+    ensure(matches!(error, ConfigError::Io { .. }), format!("{error}"))?;
+    ensure(
         error.to_string().contains(path.to_str().check("utf-8")?),
-        "{error}"
-    );
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
@@ -124,10 +146,10 @@ fn effective_limits_fails_for_an_invalid_global_config_instead_of_using_defaults
 
     let error = effective_limits(Path::new("/precedence-test/invalid")).check_err("must fail")?;
 
-    assert!(
+    ensure(
         matches!(error, ProjectLimitsError::Config(ConfigError::Parse { .. })),
-        "{error}"
-    );
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
@@ -141,16 +163,17 @@ fn a_per_repo_config_file_is_ignored() -> TestResult {
 
     let limits = effective_limits(project.path()).check("the per-repo file is never read")?;
 
-    assert_eq!(
-        limits.default_page_bytes,
-        resolve_limits(
+    ensure_eq(
+        &limits.default_page_bytes,
+        &resolve_limits(
             &GlobalConfig::default(),
             env_overrides().check("env")?,
-            None
+            None,
         )
         .check("limits")?
-        .default_page_bytes
-    );
+        .default_page_bytes,
+        "limits.default_page_bytes == resolve_limits( &GlobalConfig::default(), env_overrides().check(\"env\")?, None ) .check(\"limits\")? .default_page_bytes",
+    )?;
     Ok(())
 }
 
@@ -168,11 +191,12 @@ fn the_environment_beats_the_global_file() -> TestResult {
 
     let limits = resolve_limits(&global, &env, None).check("limits resolve")?;
 
-    assert_eq!(limits.max_file_bytes, 2_000_000, "env beats the file");
-    assert_eq!(
-        limits.default_page_bytes, 4_096,
-        "the file beats the default"
-    );
+    ensure_eq(&limits.max_file_bytes, &2_000_000, "env beats the file")?;
+    ensure_eq(
+        &limits.default_page_bytes,
+        &4_096,
+        "the file beats the default",
+    )?;
     Ok(())
 }
 
@@ -192,18 +216,21 @@ fn the_session_profile_picks_the_base_and_keeps_file_and_env_limits() -> TestRes
     let limits = resolve_limits(&global, &env, Some(AuditProfile::Lean)).check("limits resolve")?;
 
     let lean = limits_for_profile(AuditProfile::Lean).check("lean")?;
-    assert_eq!(
-        limits.max_total_import_bytes, lean.max_total_import_bytes,
-        "the session profile beats the env and file profiles for the base"
-    );
-    assert_eq!(
-        limits.max_file_bytes, 2_000_000,
-        "choosing a profile keeps the env limit"
-    );
-    assert_eq!(
-        limits.default_page_bytes, 4_096,
-        "choosing a profile keeps the file limit"
-    );
+    ensure_eq(
+        &limits.max_total_import_bytes,
+        &lean.max_total_import_bytes,
+        "the session profile beats the env and file profiles for the base",
+    )?;
+    ensure_eq(
+        &limits.max_file_bytes,
+        &2_000_000,
+        "choosing a profile keeps the env limit",
+    )?;
+    ensure_eq(
+        &limits.default_page_bytes,
+        &4_096,
+        "choosing a profile keeps the file limit",
+    )?;
     Ok(())
 }
 
@@ -220,12 +247,13 @@ fn the_env_profile_beats_the_file_profile_and_the_default() -> TestResult {
 
     let limits = resolve_limits(&global, &env, None).check("limits resolve")?;
 
-    assert_eq!(
-        limits.max_total_import_bytes,
-        limits_for_profile(AuditProfile::Lean)
+    ensure_eq(
+        &limits.max_total_import_bytes,
+        &limits_for_profile(AuditProfile::Lean)
             .check("lean")?
-            .max_total_import_bytes
-    );
+            .max_total_import_bytes,
+        "limits.max_total_import_bytes == limits_for_profile(AuditProfile::Lean) .check(\"lean\")? .max_total_import_bytes",
+    )?;
     Ok(())
 }
 
@@ -249,8 +277,16 @@ fn an_environment_response_ceiling_moves_the_result_store_budget_unless_the_file
     )
     .check("limits resolve")?;
 
-    assert_eq!(derived.max_result_store_bytes, 4_000_000);
-    assert_eq!(pinned.max_result_store_bytes, 777);
+    ensure_eq(
+        &derived.max_result_store_bytes,
+        &4_000_000,
+        "derived.max_result_store_bytes == 4_000_000",
+    )?;
+    ensure_eq(
+        &pinned.max_result_store_bytes,
+        &777,
+        "pinned.max_result_store_bytes == 777",
+    )?;
     Ok(())
 }
 
@@ -271,7 +307,11 @@ fn the_real_environment_overrides_the_global_file_end_to_end() -> TestResult {
 
             let limits = resolve_limits(&global, &env, None).check("limits resolve")?;
 
-            assert_eq!(limits.max_file_bytes, 3_000_000);
+            ensure_eq(
+                &limits.max_file_bytes,
+                &3_000_000,
+                "limits.max_file_bytes == 3_000_000",
+            )?;
             Ok(())
         },
     )?;
@@ -289,8 +329,16 @@ fn a_configured_default_page_size_overrides_the_profile_default() -> TestResult 
         .apply_limit_keys(limits_for_profile(AuditProfile::Lean).check("lean")?)
         .check("apply the config")?;
 
-    assert_eq!(applied.default_page_bytes, 4_096);
-    assert_eq!(applied.max_query_response_bytes, 32 * 1024 * 1024);
+    ensure_eq(
+        &applied.default_page_bytes,
+        &4_096,
+        "applied.default_page_bytes == 4_096",
+    )?;
+    ensure_eq(
+        &applied.max_query_response_bytes,
+        &(32 * 1024 * 1024),
+        "applied.max_query_response_bytes == 32 * 1024 * 1024",
+    )?;
     Ok(())
 }
 
@@ -305,11 +353,11 @@ fn a_config_file_above_sqlite_max_is_clamped() -> TestResult {
         .apply_limit_keys(ResourceLimits::default())
         .check("apply the config")?;
 
-    assert_eq!(
-        applied.max_file_bytes,
-        crate::model::SQLITE_MAX_VALUE_BYTES,
-        "SQLite cannot store a larger content value; the project limit is clamped"
-    );
+    ensure_eq(
+        &applied.max_file_bytes,
+        &crate::model::SQLITE_MAX_VALUE_BYTES,
+        "SQLite cannot store a larger content value; the project limit is clamped",
+    )?;
     Ok(())
 }
 
@@ -324,7 +372,11 @@ fn a_configured_max_parse_bytes_overrides_the_profile_default() -> TestResult {
         .apply_limit_keys(ResourceLimits::default())
         .check("apply the config")?;
 
-    assert_eq!(applied.max_parse_bytes, 4_096);
+    ensure_eq(
+        &applied.max_parse_bytes,
+        &4_096,
+        "applied.max_parse_bytes == 4_096",
+    )?;
     Ok(())
 }
 
@@ -339,11 +391,15 @@ fn a_configured_max_parse_bytes_above_max_file_bytes_is_clamped_and_reported() -
     let (applied, logs) = capture_warns(|| config.apply_limit_keys(ResourceLimits::default()))?;
     let applied = applied.check("apply the config")?;
 
-    assert_eq!(applied.max_parse_bytes, 10_000);
-    assert!(
+    ensure_eq(
+        &applied.max_parse_bytes,
+        &10_000,
+        "applied.max_parse_bytes == 10_000",
+    )?;
+    ensure(
         logs.contains("max_parse_bytes exceeds max_file_bytes; clamping"),
-        "{logs}"
-    );
+        &logs,
+    )?;
     Ok(())
 }
 
@@ -358,7 +414,11 @@ fn a_configured_max_parse_wall_clock_ms_overrides_the_profile_default() -> TestR
         .apply_limit_keys(ResourceLimits::default())
         .check("apply the config")?;
 
-    assert_eq!(applied.max_parse_wall_clock_ms, 250);
+    ensure_eq(
+        &applied.max_parse_wall_clock_ms,
+        &250,
+        "applied.max_parse_wall_clock_ms == 250",
+    )?;
     Ok(())
 }
 
@@ -373,7 +433,11 @@ fn a_configured_max_structure_query_bytes_overrides_the_profile_default() -> Tes
         .apply_limit_keys(ResourceLimits::default())
         .check("apply the config")?;
 
-    assert_eq!(applied.max_structure_query_bytes, 512);
+    ensure_eq(
+        &applied.max_structure_query_bytes,
+        &512,
+        "applied.max_structure_query_bytes == 512",
+    )?;
     Ok(())
 }
 
@@ -383,7 +447,10 @@ fn a_non_numeric_max_parse_bytes_is_a_parse_error() -> TestResult {
 
     let error = GlobalConfig::load_from(&path).check_err("a string is not a byte count")?;
 
-    assert!(matches!(error, ConfigError::Parse { .. }), "{error}");
+    ensure(
+        matches!(error, ConfigError::Parse { .. }),
+        format!("{error}"),
+    )?;
     Ok(())
 }
 
@@ -399,7 +466,15 @@ fn a_configured_result_store_budget_and_grace_override_the_profile_defaults() ->
         .apply_limit_keys(ResourceLimits::default())
         .check("apply the config")?;
 
-    assert_eq!(applied.max_result_store_bytes, 777);
-    assert_eq!(applied.result_active_grace_secs, 33);
+    ensure_eq(
+        &applied.max_result_store_bytes,
+        &777,
+        "applied.max_result_store_bytes == 777",
+    )?;
+    ensure_eq(
+        &applied.result_active_grace_secs,
+        &33,
+        "applied.result_active_grace_secs == 33",
+    )?;
     Ok(())
 }

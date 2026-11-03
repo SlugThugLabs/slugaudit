@@ -73,7 +73,9 @@ fn collect(
             })?
             .display()
             .to_string();
-        sources.push((relative, production_code(&text)));
+        let code = production_code(&text)
+            .map_err(|error| format!("cannot strip test code from {}: {error}", path.display()))?;
+        sources.push((relative, code));
     }
     Ok(())
 }
@@ -91,7 +93,11 @@ fn collect(
 /// could confuse the depth, which at worst over-strips — the gate then
 /// reports a variant as uncovered rather than silently accepting a test
 /// fixture as a producer.
-pub(super) fn production_code(source: &str) -> String {
+///
+/// # Errors
+///
+/// Returns a message when the brace depth of a test item overflows.
+pub(super) fn production_code(source: &str) -> Result<String, String> {
     let mut kept = String::with_capacity(source.len());
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
@@ -108,10 +114,16 @@ pub(super) fn production_code(source: &str) -> String {
             for character in code.chars() {
                 match character {
                     '{' => {
-                        depth += 1;
+                        depth = depth
+                            .checked_add(1)
+                            .ok_or_else(|| "brace depth overflowed".to_owned())?;
                         saw_brace = true;
                     }
-                    '}' => depth -= 1,
+                    '}' => {
+                        depth = depth
+                            .checked_sub(1)
+                            .ok_or_else(|| "brace depth underflowed".to_owned())?;
+                    }
                     _ => {}
                 }
             }
@@ -128,141 +140,12 @@ pub(super) fn production_code(source: &str) -> String {
         }
         kept.push('\n');
     }
-    kept
+    Ok(kept)
 }
 
-fn code_before_line_comment(line: &str) -> &str {
+pub(super) fn code_before_line_comment(line: &str) -> &str {
     match line.split_once("//") {
         Some((code, _)) => code,
         None => line,
     }
-}
-
-/// The variant identifiers declared by `pub enum <name>` — parsed from the
-/// declaration itself, never a hand-kept copy. `None` when the declaration is
-/// absent, which the gate treats as "cannot compute a verdict" rather than as
-/// "no variants".
-pub(super) fn enum_variants(source: &str, name: &str) -> Option<Vec<String>> {
-    let header = format!("pub enum {name}");
-    let header_start = source.find(&header)?;
-    let open = source[header_start..].find('{')? + header_start;
-    let mut variants = Vec::new();
-    // Bracket nesting inside a variant payload: only a line that begins at
-    // depth 0 declares a variant, and only a `}` at depth 0 ends the enum.
-    let mut depth: usize = 0;
-    for line in source[open + 1..].lines() {
-        let trimmed = line.trim();
-        let code = code_before_line_comment(trimmed);
-        let starts_at_depth = depth;
-        for character in code.chars() {
-            match character {
-                '{' | '(' | '[' => depth += 1,
-                '}' | ')' | ']' => match depth.checked_sub(1) {
-                    Some(next) => depth = next,
-                    // A closer at depth 0 is the enum's own closing brace.
-                    None => return Some(variants),
-                },
-                _ => {}
-            }
-        }
-        if starts_at_depth > 0 {
-            continue;
-        }
-        if trimmed.is_empty()
-            || trimmed.starts_with("//")
-            || trimmed.starts_with("#[")
-            || trimmed.starts_with("#!")
-        {
-            continue;
-        }
-        // A variant is the leading identifier of its line; a payload
-        // (`LoadFailed { … }`) or discriminant never changes which variant
-        // the line declares.
-        let head = match trimmed.split_once(['{', '(', '=', ',']) {
-            Some((head, _)) => head,
-            None => trimmed,
-        }
-        .trim();
-        if is_identifier(head) {
-            variants.push(head.to_owned());
-        }
-    }
-    Some(variants)
-}
-
-/// The variants of `name` constructed in `source` at a *value position* — a
-/// struct-literal field (`kind: EvidenceKind::X`), a `let`/assignment right
-/// hand side, or a block tail — and never a match arm, a pattern, or a
-/// comparison.
-///
-/// The distinction is load-bearing: the SQL mirror (`kind_text`,
-/// `as_sql_text`) enumerates every variant as a match arm, so counting any
-/// occurrence would make this gate pass for a variant with no producer.
-pub(super) fn producer_variants(source: &str, name: &str) -> Vec<String> {
-    let needle = format!("{name}::");
-    let mut produced = Vec::new();
-    let mut from = 0;
-    while let Some(offset) = source[from..].find(&needle) {
-        let start = from + offset;
-        let after_qualifier = start + needle.len();
-        let variant: String = source[after_qualifier..]
-            .chars()
-            .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
-            .collect();
-        from = after_qualifier;
-        if variant.is_empty() {
-            continue;
-        }
-        let end = after_qualifier + variant.len();
-        if is_value_position(source, start, end) {
-            produced.push(variant);
-        }
-    }
-    produced
-}
-
-fn is_value_position(source: &str, start: usize, end: usize) -> bool {
-    if source[end..].trim_start().starts_with("=>") {
-        return false;
-    }
-    let before = without_path_prefix(source[..start].trim_end());
-    let Some(last) = before.chars().next_back() else {
-        return false;
-    };
-    match last {
-        ':' | '{' => true,
-        // A lone `=` is an assignment or a struct field's `= value`; `==`,
-        // `!=`, `<=`, `>=` are comparisons, not constructions.
-        '=' => {
-            let preceding = &before[..before.len() - last.len_utf8()];
-            !matches!(preceding.chars().next_back(), Some('=' | '!' | '<' | '>'))
-        }
-        _ => false,
-    }
-}
-
-/// `before` without the module path that qualifies the variant:
-/// `x == model::EvidenceKind::Call` is a comparison, so the `==` before the
-/// path decides, not the `::` that ends it. A lone `:` (a struct field) is
-/// left alone.
-fn without_path_prefix(mut before: &str) -> &str {
-    while let Some(path) = before.strip_suffix("::") {
-        before = path
-            .trim_end_matches(|character: char| {
-                character.is_ascii_alphanumeric() || character == '_'
-            })
-            .trim_end();
-    }
-    before
-}
-
-fn is_identifier(token: &str) -> bool {
-    !token.is_empty()
-        && token
-            .chars()
-            .next()
-            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
-        && token
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '_')
 }

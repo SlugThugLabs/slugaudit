@@ -73,8 +73,9 @@ pub(super) fn test_names_by_file(
                 continue;
             }
         };
-        let lines: Vec<&str> = source.lines().collect();
-        for (idx, line) in lines.iter().enumerate() {
+        let mut lines = source.lines();
+        // After `next()`, `lines` holds exactly the lines following `line`.
+        while let Some(line) = lines.next() {
             let line = line.trim_start();
             let Some(after_attr) = strip_test_attr(line) else {
                 continue;
@@ -95,7 +96,7 @@ pub(super) fn test_names_by_file(
             // comments, and further attributes before the fn item. Skip
             // those, but stop at the first line that resembles a fn
             // declaration.
-            for following in lines.iter().skip(idx + 1) {
+            for following in lines.clone() {
                 let trimmed = following.trim();
                 if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
                     continue;
@@ -121,9 +122,7 @@ pub(super) fn test_names_by_file(
 fn strip_test_attr(line: &str) -> Option<&str> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("#[")?;
-    let close_idx = rest.find(']')?;
-    let attr = &rest[..close_idx];
-    let after = &rest[close_idx + 1..];
+    let (attr, after) = rest.split_once(']')?;
     if attr == "test" {
         return Some(after);
     }

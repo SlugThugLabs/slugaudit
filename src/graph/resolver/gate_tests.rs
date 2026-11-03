@@ -14,7 +14,7 @@
 //! These tests pin both halves: lines with `from` inside a module name
 //! extract, and real JS-shaped lines still do.
 use super::generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::collections::HashSet;
 
 fn paths<'a>(set: &'a [&'a str]) -> HashSet<&'a str> {
@@ -31,7 +31,11 @@ fn python_bare_module_named_from_util_is_not_dropped() -> TestResult {
     let reference = resolver
         .extract_reference("import from_util")
         .check("import from_util must not be dropped")?;
-    assert_eq!(reference.text, "from_util");
+    ensure_eq(
+        &reference.text,
+        &"from_util",
+        "reference.text == \"from_util\"",
+    )?;
     Ok(())
 }
 
@@ -44,7 +48,11 @@ fn python_dotted_module_with_from_substring_is_not_dropped() -> TestResult {
     let reference = resolver
         .extract_reference("import foo_bar.from_baz")
         .check("import foo_bar.from_baz must not be dropped")?;
-    assert_eq!(reference.text, "foo_bar.from_baz");
+    ensure_eq(
+        &reference.text,
+        &"foo_bar.from_baz",
+        "reference.text == \"foo_bar.from_baz\"",
+    )?;
     Ok(())
 }
 
@@ -64,11 +72,16 @@ fn dotted_module_with_from_substring_resolves_to_real_file() -> TestResult {
         .extract_reference("import foo_bar.from_baz")
         .check("extract succeeds")?;
     let resolution = resolver.resolve(&reference, "main.py", &known);
-    assert_eq!(resolution.kind.as_sql_text(), "Resolved");
-    assert_eq!(
-        resolution.to_relative_path.as_deref(),
-        Some("foo_bar/from_baz.py"),
-    );
+    ensure_eq(
+        &resolution.kind.as_sql_text(),
+        &"Resolved",
+        "resolution.kind.as_sql_text() == \"Resolved\"",
+    )?;
+    ensure_eq(
+        &resolution.to_relative_path.as_deref(),
+        &Some("foo_bar/from_baz.py"),
+        "resolution.to_relative_path.as_deref() == Some(\"foo_bar/from_baz.py\")",
+    )?;
     Ok(())
 }
 
@@ -81,10 +94,10 @@ fn malformed_js_import_with_unquoted_from_still_drops() -> TestResult {
     // bare module name and call it External, silently mislabeling
     // unresolved syntax as a third-party import.
     let resolver = GenericResolver::js();
-    assert!(
+    ensure(
         resolver.extract_reference("import x from broken").is_none(),
         "malformed JS `from` without a quote must still drop under JS",
-    );
+    )?;
     Ok(())
 }
 
@@ -96,7 +109,7 @@ fn valid_js_import_still_extracts_the_quoted_path() -> TestResult {
     let reference = resolver
         .extract_reference("import x from 'foo.js'")
         .check("valid JS import extracts cleanly")?;
-    assert_eq!(reference.text, "foo.js");
+    ensure_eq(&reference.text, &"foo.js", "reference.text == \"foo.js\"")?;
     Ok(())
 }
 
@@ -111,6 +124,10 @@ fn from_substring_inside_quoted_path_is_not_a_keyword() -> TestResult {
     let reference = resolver
         .extract_reference("import x from 'meta/from-handler'")
         .check("valid path with the word 'from' inside it")?;
-    assert_eq!(reference.text, "meta/from-handler");
+    ensure_eq(
+        &reference.text,
+        &"meta/from-handler",
+        "reference.text == \"meta/from-handler\"",
+    )?;
     Ok(())
 }

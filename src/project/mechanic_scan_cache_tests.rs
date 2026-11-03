@@ -1,5 +1,5 @@
 use super::*;
-use slugaudit_test_check::{Check, TestResult};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 fn key(revision: &str, id: &str) -> ScanKey {
     ScanKey {
@@ -33,9 +33,9 @@ fn a_lookup_at_a_new_revision_misses_and_drops_the_old_revision() -> TestResult 
     let miss = cache.get(&key("r2", "a")).check("look up")?;
     let stats = cache.stats().check("read the counters")?;
 
-    assert!(miss.is_none(), "another revision is a miss");
-    assert_eq!(stats.entries, 0, "the stale revision's entry was dropped");
-    assert_eq!(stats.bytes, 0);
+    ensure(miss.is_none(), "another revision is a miss")?;
+    ensure_eq(&stats.entries, &0, "the stale revision's entry was dropped")?;
+    ensure_eq(&stats.bytes, &0, "stats.bytes == 0")?;
     Ok(())
 }
 
@@ -46,10 +46,10 @@ fn a_changed_identity_under_the_same_id_misses() -> TestResult {
     let mut other = key("r1", "a");
     other.query = "(call function: (identifier) @c)".to_owned();
 
-    assert!(
+    ensure(
         cache.get(&other).check("look up")?.is_none(),
-        "a different query misses"
-    );
+        "a different query misses",
+    )?;
     cache
         .get(&key("r1", "a"))
         .check("look up")?
@@ -59,20 +59,24 @@ fn a_changed_identity_under_the_same_id_misses() -> TestResult {
 
 #[test]
 fn insert_evicts_oldest_first_and_counts_each_eviction() -> TestResult {
-    let entry_bytes = key("r1", "a").estimated_bytes() + rows(1)?[0].estimated_bytes();
-    let cache = MechanicScanCache::with_budget(entry_bytes * 2);
+    let entry_bytes = key("r1", "a")
+        .estimated_bytes()
+        .checked_add(rows(1)?.first().check("one row")?.estimated_bytes())
+        .check("entry bytes fit usize")?;
+    let cache =
+        MechanicScanCache::with_budget(entry_bytes.checked_mul(2).check("budget fits usize")?);
     cache.insert(key("r1", "a"), rows(1)?).check("insert")?;
     cache.insert(key("r1", "b"), rows(1)?).check("insert")?;
 
     cache.insert(key("r1", "c"), rows(1)?).check("insert")?;
 
     let stats = cache.stats().check("read the counters")?;
-    assert_eq!(stats.evictions, 1);
-    assert_eq!(stats.entries, 2);
-    assert!(
+    ensure_eq(&stats.evictions, &1, "stats.evictions == 1")?;
+    ensure_eq(&stats.entries, &2, "stats.entries == 2")?;
+    ensure(
         cache.get(&key("r1", "a")).check("look up")?.is_none(),
-        "the oldest went"
-    );
+        "the oldest went",
+    )?;
     cache
         .get(&key("r1", "b"))
         .check("look up")?
@@ -91,9 +95,9 @@ fn an_entry_larger_than_the_budget_is_skipped_and_counted() -> TestResult {
     cache.insert(key("r1", "a"), rows(1)?).check("insert")?;
 
     let stats = cache.stats().check("read the counters")?;
-    assert_eq!(stats.skipped_too_large, 1);
-    assert_eq!(stats.entries, 0);
-    assert_eq!(stats.evictions, 0, "nothing was evicted for it");
+    ensure_eq(&stats.skipped_too_large, &1, "stats.skipped_too_large == 1")?;
+    ensure_eq(&stats.entries, &0, "stats.entries == 0")?;
+    ensure_eq(&stats.evictions, &0, "nothing was evicted for it")?;
     Ok(())
 }
 
@@ -105,7 +109,10 @@ fn remove_id_drops_every_entry_of_that_id_only() -> TestResult {
 
     cache.remove_id("a").check("remove a")?;
 
-    assert!(cache.get(&key("r1", "a")).check("look up")?.is_none());
+    ensure(
+        cache.get(&key("r1", "a")).check("look up")?.is_none(),
+        "cache.get(&key(\"r1\", \"a\")).check(\"look up\")?.is_none()",
+    )?;
     cache
         .get(&key("r1", "b"))
         .check("look up")?

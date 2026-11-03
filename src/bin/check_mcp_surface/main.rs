@@ -141,10 +141,13 @@ fn compare_snapshot(
     for difference in differences.iter().take(MAX_REPORTED_DIFFERENCES) {
         gate_out::line(format_args!("mcp-surface: {difference}"))?;
     }
-    if differences.len() > MAX_REPORTED_DIFFERENCES {
+    if let Some(more) = differences
+        .len()
+        .checked_sub(MAX_REPORTED_DIFFERENCES)
+        .filter(|more| *more > 0)
+    {
         gate_out::line(format_args!(
-            "mcp-surface: … and {} more differing paths",
-            differences.len() - MAX_REPORTED_DIFFERENCES
+            "mcp-surface: … and {more} more differing paths"
         ))?;
     }
     if differences.is_empty() {

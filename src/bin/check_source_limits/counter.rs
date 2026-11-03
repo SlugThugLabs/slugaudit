@@ -16,20 +16,13 @@
 use std::path::{Path, PathBuf};
 
 use crate::approval::Exception;
-use crate::scanner::{self, ScanCursor};
+use crate::scanner::ScanCursor;
 
 pub(crate) fn code_lines(source: &str) -> usize {
-    let bytes = source.as_bytes();
-    let len = bytes.len();
-    let mut cursor = ScanCursor::default();
-
-    while cursor.index < len {
-        scanner::scan_step(bytes, source, &mut cursor);
-    }
-    if cursor.has_code {
-        cursor.count += 1;
-    }
-    cursor.count
+    let mut cursor = ScanCursor::new(source.as_bytes());
+    std::iter::from_fn(|| cursor.next_event())
+        .filter(|counted| *counted)
+        .count()
 }
 
 /// The gate's line ceilings. Test files get a higher ceiling because each

@@ -93,14 +93,24 @@ pub fn language_available(language: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::TestResult;
+    use slugaudit_test_check::{TestResult, ensure, ensure_eq};
 
     #[test]
     fn only_rust_is_a_tested_language() -> TestResult {
-        assert_eq!(TESTED_LANGUAGES, ["rust"]);
-        assert!(is_tested_language("rust"));
-        assert!(!is_tested_language("python"));
-        assert!(!is_tested_language(PROSE_LANGUAGE));
+        ensure_eq(
+            &TESTED_LANGUAGES,
+            &["rust"],
+            "TESTED_LANGUAGES == [\"rust\"]",
+        )?;
+        ensure(is_tested_language("rust"), "is_tested_language(\"rust\")")?;
+        ensure(
+            !is_tested_language("python"),
+            "!is_tested_language(\"python\")",
+        )?;
+        ensure(
+            !is_tested_language(PROSE_LANGUAGE),
+            "!is_tested_language(PROSE_LANGUAGE)",
+        )?;
         Ok(())
     }
 
@@ -122,7 +132,7 @@ mod tests {
             ("main.rs", "rust"),
         ];
         for (path, expected) in table {
-            assert_eq!(detect_language(path).as_deref(), Some(expected), "{path}");
+            ensure_eq(&detect_language(path).as_deref(), &Some(expected), path)?;
         }
         Ok(())
     }
@@ -139,10 +149,10 @@ mod tests {
             ".eslintignore",
             ".gitattributes",
         ] {
-            assert_eq!(detect_language(path).as_deref(), Some("prose"), "{path}");
+            ensure_eq(&detect_language(path).as_deref(), &Some("prose"), path)?;
         }
         for path in ["gitignore", ".gitignore.bak", "npmignore"] {
-            assert_eq!(detect_language(path), None, "{path}");
+            ensure_eq(&detect_language(path), &None, path)?;
         }
         Ok(())
     }
@@ -150,17 +160,21 @@ mod tests {
     #[test]
     fn prose_language_names_include_the_shadowed_pack_grammars() -> TestResult {
         for name in ["prose", "markdown", "rst", "org", "vimdoc"] {
-            assert!(is_prose_language_name(name), "{name}");
+            ensure(is_prose_language_name(name), name)?;
         }
         for name in ["rust", "json", "yaml", "toml", "python"] {
-            assert!(!is_prose_language_name(name), "{name}");
+            ensure(!is_prose_language_name(name), name)?;
         }
         Ok(())
     }
 
     #[test]
     fn detects_a_pack_language_by_path() -> TestResult {
-        assert_eq!(detect_language("src/main.rs").as_deref(), Some("rust"));
+        ensure_eq(
+            &detect_language("src/main.rs").as_deref(),
+            &Some("rust"),
+            "detect_language(\"src/main.rs\").as_deref() == Some(\"rust\")",
+        )?;
         Ok(())
     }
 }

@@ -41,6 +41,7 @@ mod gate_out;
 mod gate_test_file;
 mod scan;
 mod test_cfg;
+mod variants;
 
 #[cfg(test)]
 #[path = "tests.rs"]
@@ -150,7 +151,7 @@ pub(crate) fn check(root: &Path) -> Result<Vec<EnumReport>, String> {
         let path = root.join(gated.declaration);
         let source = std::fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let variants = scan::enum_variants(&source, gated.name).ok_or_else(|| {
+        let variants = variants::enum_variants(&source, gated.name).ok_or_else(|| {
             format!(
                 "{} declares no `pub enum {}`",
                 gated.declaration, gated.name
@@ -164,17 +165,16 @@ pub(crate) fn check(root: &Path) -> Result<Vec<EnumReport>, String> {
         }
         let produced: BTreeSet<String> = sources
             .iter()
-            .flat_map(|(_, text)| scan::producer_variants(text, gated.name))
+            .flat_map(|(_, text)| variants::producer_variants(text, gated.name))
             .collect();
-        let uncovered = variants
+        let (covered, uncovered): (Vec<String>, Vec<String>) = variants
             .iter()
-            .filter(|variant| !produced.contains(*variant))
             .cloned()
-            .collect::<Vec<_>>();
+            .partition(|variant| produced.contains(variant));
         reports.push(EnumReport {
             name: gated.name,
             declared: variants.len(),
-            covered: variants.len() - uncovered.len(),
+            covered: covered.len(),
             uncovered,
         });
     }

@@ -54,10 +54,10 @@ impl Exception {
 /// the narrowly bounded 301–350 range.
 pub(super) fn reason(source: &str) -> Option<Exception> {
     for line in source.lines() {
-        let Some(start) = line.find(NEEDLE) else {
+        let Some((_, after_needle)) = line.split_once(NEEDLE) else {
             continue;
         };
-        let text = line[start + NEEDLE.len()..].trim_start();
+        let text = after_needle.trim_start();
         // A malformed annotation grants nothing; the scan goes on to the next
         // annotation.
         if let Some(rest) = text.strip_prefix(AGENT) {

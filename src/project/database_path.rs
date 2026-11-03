@@ -18,7 +18,7 @@ pub fn database_path(root: &ProjectRoot) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slugaudit_test_check::{Check, TestResult};
+    use slugaudit_test_check::{Check, TestResult, ensure_eq};
 
     #[test]
     fn database_path_stays_inside_the_activation_directory() -> TestResult {
@@ -28,16 +28,17 @@ mod tests {
         let root = ProjectRoot::resolve(directory.path()).check("valid root")?;
 
         let path = database_path(&root);
-        assert_eq!(
-            path,
-            directory
+        ensure_eq(
+            &path,
+            &directory
                 .path()
                 .canonicalize()
                 .check("tempdir canonicalizes")?
                 .join(".planning")
                 .join("slugaudit")
-                .join("project.db")
-        );
+                .join("project.db"),
+            "path == directory .path() .canonicalize() .check(\"tempdir canonicalizes\")? .join(\".planning\") .join(\"slugaudit\") .join(\"project.db\")",
+        )?;
         Ok(())
     }
 }
