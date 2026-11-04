@@ -118,10 +118,6 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
         "off.status == ProjectControlStatus::Disabled",
     )?;
     ensure(!activation.exists(), "off deletes the whole directory")?;
-    ensure(
-        !project.path().join(".planning").exists(),
-        "!project.path().join(\".planning\").exists()",
-    )?;
     let error = crate::tools::report(
         &Parameters(crate::tools::ReportRequest { path: path.clone() }),
         &crate::progress::NoopProgressSink,

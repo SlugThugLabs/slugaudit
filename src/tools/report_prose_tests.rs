@@ -85,8 +85,8 @@ fn a_freshly_enabled_project_reports_no_parser_failure_for_its_generated_gitigno
     )?;
     ensure_eq(
         &response.completeness.prose_files_not_parsed,
-        &1,
-        "response.completeness.prose_files_not_parsed == 1",
+        &2,
+        "the generated .gitignore and .planning/README.md are the only prose files not parsed",
     )?;
     Ok(())
 }

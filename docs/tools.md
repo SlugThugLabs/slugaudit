@@ -390,7 +390,7 @@ Response:
 | `removed` | On `off`: the paths removed (the `.planning/slugaudit` directory, then `.planning` if it was left empty). |
 | `database_discard` | Present when `on` found a damaged database and rebuilt it. |
 
-The project is on while the directory `.planning/slugaudit/` exists. `on` creates it. `off` deletes the whole directory, including the session's `findings-<id>.db`, and then `.planning` if that leaves it empty. If `.planning/slugaudit` is a symlink, `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
+The project is on while the directory `.planning/slugaudit/` exists. `on` creates it, first creating `.planning/` and a `.planning/README.md` that says what the folder is for when they are missing (an existing README is never changed). `off` deletes the whole directory, including the session's `findings-<id>.db`, and then `.planning` if that leaves it empty. If `.planning/slugaudit` is a symlink, `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
 
 Example: `{ "action": "on", "path": "/home/you/code/myproject" }`
 
