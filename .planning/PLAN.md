@@ -9,6 +9,23 @@ Make the tool accurate and fast for Rust: every answer matches the code on
 disk at the moment of the call, safely, on repos up to Photoshop size (~40k
 files) on a normal laptop. Nothing else gets built until that is true.
 
+## Committed on main (2026-11-03, later)
+
+- `4f3d77f` — `project_control on` calls `slugplan::ensure` (public crate
+  github.com/SlugThugLabs/slugplan, tag v0.1.1) to create `.planning/` and
+  its shared README before `.planning/slugaudit/`. The README is indexed
+  like any file; `off` leaves it.
+- `94781c7` — guards against unreported threats removed (0600/0700 modes,
+  symlink refusals, NOFOLLOW); dev gates moved from `src/bin/` to
+  `crates/gates` (`cargo run -q -p slugaudit-gates --bin <name>`); the
+  product builds one binary. Fixed on the way: the result store no longer
+  recreates `.planning/slugaudit/` after `off`; capped reads open only
+  regular files (a FIFO no longer hangs a read). Gate: 1609 passed, four
+  gates pass.
+- Owner decision: a user who replaces what SlugAudit creates (e.g. a
+  symlinked `.planning`) makes it work themselves; no support code, no
+  refusals.
+
 ## Committed on main (2026-11-03)
 
 - `ec7e2cf` — AGENTS.md: the MCP server process (start, stdio, lifecycle,
@@ -91,6 +108,14 @@ or broken DB rebuilds) and session-only findings/mechanics/profile.
   the expression text as the description (e.g. `"c"`); rewrite as prose.
 - **Lenient JSON checks:** a few tests treat a missing key as passing
   (`is_none_or`, the `field()` helper in `src/evidence/mod_tests.rs`).
+- **From the 2026-11-03 production review:**
+  - Import resolver: a grouped `use crate::{a, b}` gives one edge to `src/lib.rs`; `use super::*` in a `#[path]` test file resolves to the wrong file.
+  - Unbounded memory on first import; open result files are capped only by bytes.
+  - Every call takes the write lock (`manager_meta.rs:131`), so parallel calls fail with "database is locked" after 5 s.
+  - `check_source_limits` still enforces the overruled 200/300/350 caps.
+  - `update` ignores extra arguments; releases are not gated on the tag matching the version.
+  - Many errors lack a code and a remedy; `structure` on timeout returns partial or nothing, inconsistently.
+  - Config: a zero in `config.json` is ignored, but the same zero in an env var is an error.
 - **`LineIndex::new`:** stores an overflow error and returns it on every
   query; make the constructor fallible (callers
   `evidence/normalize.rs`, `tools/structure_exec.rs`).
