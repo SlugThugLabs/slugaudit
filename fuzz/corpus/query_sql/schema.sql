@@ -106,7 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_files_hash ON files (content_hash);
 -- One generic evidence table backs structures, imports, exports, comments,
 -- docstrings, symbols, diagnostics, and call sites — the kinds in
 -- src/model/evidence.rs::EvidenceKind. Every variant here has a producer in
--- `src/evidence/` or `src/sync/`: `src/bin/check_producer_coverage` fails
+-- `src/evidence/` or `src/sync/`: the `check_producer_coverage` gate fails
 -- the gate when one does not. Fields common to every
 -- kind (span, origin, provenance) are real columns so `query` can filter
 -- and index on them; kind-specific fields live in `payload` as JSON.
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     -- exact in both directions: `store::connection::tests::
     -- every_evidence_kind_text_passes_the_kind_check` derives every variant
     -- from the enum itself and fails until this list carries its text, and
-    -- `src/bin/check_producer_coverage` fails until something under `src/`
+    -- the `check_producer_coverage` gate fails until something under `src/`
     -- actually constructs it — no kind may be advertised that cannot occur.
     kind TEXT NOT NULL
         CHECK (kind IN ('Structure', 'Import', 'Export', 'Comment', 'Docstring',

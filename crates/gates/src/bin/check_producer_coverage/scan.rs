@@ -18,7 +18,6 @@ pub(super) type Source = (String, String);
 /// Reads every production Rust source under `<root>/src`, sorted by path.
 ///
 /// Excluded, because a producer must be production code:
-/// - `src/bin/**` — the gates themselves. A gate does not produce evidence.
 /// - test files by the repo's naming conventions (`*_tests.rs`, `tests.rs`,
 ///   `test_support.rs`, `proptest.rs`).
 /// - `#[cfg(test)]`-attributed items inside the remaining files.
@@ -32,17 +31,12 @@ pub(super) fn production_sources(root: &Path) -> Result<Vec<Source>, String> {
         return Err(format!("{} is not a directory", src.display()));
     }
     let mut sources = Vec::new();
-    collect(&src, root, true, &mut sources)?;
+    collect(&src, root, &mut sources)?;
     sources.sort();
     Ok(sources)
 }
 
-fn collect(
-    directory: &Path,
-    root: &Path,
-    is_src_root: bool,
-    sources: &mut Vec<Source>,
-) -> Result<(), String> {
+fn collect(directory: &Path, root: &Path, sources: &mut Vec<Source>) -> Result<(), String> {
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("cannot read {}: {error}", directory.display()))?;
     for entry in entries {
@@ -50,11 +44,7 @@ fn collect(
             entry.map_err(|error| format!("cannot read {}: {error}", directory.display()))?;
         let path = entry.path();
         if path.is_dir() {
-            // The gates under `src/bin/` are not production code.
-            if is_src_root && path.file_name().is_some_and(|name| name == "bin") {
-                continue;
-            }
-            collect(&path, root, false, sources)?;
+            collect(&path, root, sources)?;
             continue;
         }
         if path.extension().is_none_or(|extension| extension != "rs") || is_test_file(&path) {

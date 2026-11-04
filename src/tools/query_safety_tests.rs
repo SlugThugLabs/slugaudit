@@ -461,3 +461,22 @@ fn pragma_table_valued_functions_are_ordinary_selects() -> TestResult {
 
 #[path = "query_safety_limits_tests.rs"]
 mod limits_tests;
+
+/// Queries are read-only, so a refused statement must leave nothing on disk.
+#[test]
+fn a_refused_vacuum_into_leaves_no_file() -> TestResult {
+    let project = project()?;
+    let target = project.path().join("vacuum-into.db");
+
+    refused(
+        &project,
+        &format!("VACUUM INTO '{}'", target.display()),
+        "a VACUUM INTO that writes a database file",
+    )?;
+
+    ensure(
+        !target.exists(),
+        "a refused VACUUM INTO must not create its target file",
+    )?;
+    Ok(())
+}

@@ -1,7 +1,7 @@
 use super::harness_tests::*;
 use super::*;
 use crate::store::test_join::join_scoped_checked;
-use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::Path;
 use uuid::Uuid;
 
@@ -469,5 +469,21 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
             "read_all(&fx.store, handle.id)?.len() == 1_200",
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn result_store_open_does_not_recreate_a_removed_runtime_dir() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
+    let runtime = dir.path().join(".planning").join("slugaudit");
+
+    ResultStore::open(&runtime, Uuid::new_v4(), limits(1 << 30))
+        .map(|_| ())
+        .check_err("opening under a removed runtime dir must fail")?;
+
+    ensure(
+        !dir.path().join(".planning").exists(),
+        "open must not recreate the parents of a removed runtime dir",
+    )?;
     Ok(())
 }

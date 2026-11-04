@@ -12,9 +12,14 @@ mod imp {
     use std::fs::OpenOptions;
     use std::os::unix::fs::MetadataExt;
 
-    /// Creates `dir` if it does not exist yet.
+    /// Creates `dir` if it does not exist yet, or accepts an existing
+    /// directory. Only `dir` itself: a missing parent means the project was
+    /// turned off, and creating it would turn the project back on.
     pub(in super::super) fn ensure_dir(dir: &Path) -> io::Result<()> {
-        std::fs::create_dir_all(dir)
+        match std::fs::create_dir(dir) {
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+            other => other,
+        }
     }
 
     /// A new file; an existing one is an error.

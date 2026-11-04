@@ -210,8 +210,8 @@ fn a_client_config_path_that_is_a_directory_is_an_io_error() -> TestResult {
     };
     ensure_eq(
         &error.kind(),
-        &std::io::ErrorKind::IsADirectory,
-        format!("a directory at the config path fails the read: {error}"),
+        &std::io::ErrorKind::InvalidInput,
+        format!("a directory at the config path is refused as not a regular file: {error}"),
     )?;
     Ok(())
 }

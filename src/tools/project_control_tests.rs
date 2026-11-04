@@ -388,3 +388,28 @@ fn on_action_reports_an_import_failure() -> TestResult {
 
 #[path = "project_control_gitignore_tests.rs"]
 mod gitignore_tests;
+
+#[test]
+fn off_action_reports_a_disable_failure() -> TestResult {
+    let (project, path) = temp_project_with_source()?;
+    let planning = project.path().join(".planning");
+    fs::write(&planning, b"not a directory").check("plant a file as .planning")?;
+
+    let error = project_control(
+        &off_request(&path),
+        &crate::progress::NoopProgressSink,
+        None,
+    )
+    .map(|_| ())
+    .check_err("disable must fail when .planning is not a directory")?;
+
+    ensure(
+        error.message.contains("disable"),
+        format!("the error must name the disable failure: {}", error.message),
+    )?;
+    ensure(
+        planning.is_file(),
+        "a failed disable must leave .planning untouched",
+    )?;
+    Ok(())
+}
