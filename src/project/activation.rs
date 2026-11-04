@@ -42,6 +42,9 @@ pub enum ActivationError {
     /// This process's table of findings sessions was poisoned by a panic.
     #[error(transparent)]
     Lock(#[from] crate::util::LockPoisoned),
+    /// Setting up `.planning/` and its README failed.
+    #[error("failed to set up .planning: {0}")]
+    Planning(#[from] slugplan::Error),
 }
 
 /// The SlugAudit-owned runtime directory under a resolved user project:
@@ -129,15 +132,19 @@ pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), Activatio
 
 // Owner decision (2026-10-31): the directory is the on/off switch, created only by `on`, so a global install does not index every repo; a repo opts in.
 /// Creates the `.planning/slugaudit` directory under `root`: turning
-/// SlugAudit "on". The directory is the whole switch, and this is the only
-/// code that creates it; the database inside is built by the caller
+/// SlugAudit "on". `.planning/` itself and its README come from
+/// `slugplan::ensure`, the same in every slug tool; SlugAudit creates only
+/// its own folder in it. The directory is the whole switch, and this is the
+/// only code that creates it; the database inside is built by the caller
 /// (`project_control on`) or, if missing, by the next tool call. Idempotent:
-/// succeeds silently if the directory exists.
+/// succeeds silently if the directories exist.
 ///
 /// # Errors
 ///
-/// Returns an error if the directory can't be created.
+/// Returns an error if `.planning/`, its README or the directory can't be
+/// created.
 pub fn enable(root: &ProjectRoot) -> Result<PathBuf, ActivationError> {
+    slugplan::ensure(root.as_path())?;
     let activation = activation_dir(root);
     std::fs::create_dir_all(&activation)?;
     Ok(activation)

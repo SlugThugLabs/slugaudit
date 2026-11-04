@@ -143,6 +143,61 @@ fn enable_is_idempotent() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn enable_sets_up_planning_with_the_shared_readme() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
+
+    enable(&root).check("enable succeeds")?;
+
+    let readme = fs::read_to_string(
+        directory
+            .path()
+            .join(PLANNING_DIR)
+            .join(slugplan::README_NAME),
+    )
+    .check("read the .planning README")?;
+    ensure_eq(
+        &readme.as_str(),
+        &slugplan::README,
+        "enable writes slugplan's README into a new .planning",
+    )
+}
+
+#[test]
+fn enable_leaves_an_existing_planning_readme_alone() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let planning = directory.path().join(PLANNING_DIR);
+    fs::create_dir(&planning).check("create .planning")?;
+    let readme = planning.join(slugplan::README_NAME);
+    fs::write(&readme, "the user's own notes\n").check("write the user's README")?;
+    let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
+
+    enable(&root).check("enable succeeds")?;
+
+    ensure_eq(
+        &fs::read_to_string(&readme)
+            .check("read the README back")?
+            .as_str(),
+        &"the user's own notes\n",
+        "enable never changes an existing .planning README",
+    )
+}
+
+#[test]
+fn enable_reports_a_planning_setup_failure() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    fs::write(directory.path().join(PLANNING_DIR), b"not a folder").check("plant a file")?;
+    let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
+
+    let error = enable(&root).check_err("enable fails when .planning is a file")?;
+
+    ensure(
+        matches!(error, ActivationError::Planning(_)),
+        format!("the failure comes from setting up .planning: {error:?}"),
+    )
+}
+
 /// `find_project_root` is a read-only lookup that can race a concurrent
 /// toggle of `.planning/slugaudit` — whether that's the `project_control`
 /// MCP tool's `enable`/`disable` or a host application doing the same

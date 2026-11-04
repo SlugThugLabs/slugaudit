@@ -1706,6 +1706,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slugaudit-test-check",
+ "slugplan",
  "temp-env",
  "tempfile",
  "thiserror",
@@ -1721,6 +1722,11 @@ dependencies = [
 [[package]]
 name = "slugaudit-test-check"
 version = "0.0.0"
+
+[[package]]
+name = "slugplan"
+version = "0.1.1"
+source = "git+https://github.com/SlugThugLabs/slugplan?tag=v0.1.1#dc434866c5c03ae63096c63685467c509194ad8b"
 
 [[package]]
 name = "smallvec"

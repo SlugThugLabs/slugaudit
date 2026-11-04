@@ -21,6 +21,14 @@ fn project_off_deletes_the_directory_with_everything_in_it_and_then_an_empty_pla
 -> TestResult {
     let (directory, root, activation) =
         enabled_with_files(&["project.db", "config.json", "notes.txt"])?;
+    // With slugplan's README gone, nothing else is left in `.planning`.
+    fs::remove_file(
+        directory
+            .path()
+            .join(PLANNING_DIR)
+            .join(slugplan::README_NAME),
+    )
+    .check("remove the .planning README")?;
     fs::create_dir_all(activation.join("results")).check("create results dir")?;
     fs::write(activation.join("results").join("a.lock"), b"x").check("write result lock")?;
 

@@ -75,13 +75,17 @@ fn on_creates_the_directory_the_database_and_the_gitignore_entry_and_a_call_work
     let gitignore = fs::read_to_string(project.path().join(".gitignore")).check("gitignore")?;
     ensure(gitignore.contains(".planning/slugaudit"), &gitignore)?;
     let answer = report(&path, &sync::SourceSyncManager::new()).check("a call after on works")?;
-    ensure_eq(&answer.file_count, &2, "lib.rs and .gitignore are indexed")?;
+    ensure_eq(
+        &answer.file_count,
+        &3,
+        "lib.rs, .gitignore and .planning/README.md are indexed",
+    )?;
     Ok(())
 }
 
 #[test]
-fn off_deletes_the_directory_with_config_and_extra_files_then_an_empty_planning_dir() -> TestResult
-{
+fn off_deletes_the_directory_with_config_and_extra_files_and_keeps_the_planning_readme()
+-> TestResult {
     let (project, path) = project_with_source()?;
     control(&path, ProjectControlAction::On)?;
     let activation = project.path().join(".planning/slugaudit");
@@ -95,10 +99,14 @@ fn off_deletes_the_directory_with_config_and_extra_files_then_an_empty_planning_
         &ProjectControlStatus::Disabled,
         "off.status == ProjectControlStatus::Disabled",
     )?;
-    ensure_eq(&off.removed.len(), &2, format!("{:?}", off.removed))?;
+    ensure_eq(
+        &off.removed.len(),
+        &1,
+        format!("off removes only SlugAudit's own folder: {:?}", off.removed),
+    )?;
     ensure(
-        !project.path().join(".planning").exists(),
-        "!project.path().join(\".planning\").exists()",
+        project.path().join(".planning/README.md").is_file(),
+        "the shared .planning README belongs to every slug tool and stays",
     )?;
     Ok(())
 }
@@ -135,7 +143,11 @@ fn a_deleted_project_db_is_rebuilt_by_the_next_call() -> TestResult {
     let answer = report(&path, &sync::SourceSyncManager::new()).check("the call rebuilds")?;
 
     ensure(database.is_file(), "project.db is back")?;
-    ensure_eq(&answer.file_count, &2, "answer.file_count == 2")?;
+    ensure_eq(
+        &answer.file_count,
+        &3,
+        "lib.rs, .gitignore and .planning/README.md are indexed again",
+    )?;
     ensure(answer.database_discard.is_none(), format!("{answer:?}"))?;
     Ok(())
 }
@@ -149,7 +161,11 @@ fn a_garbage_project_db_is_rebuilt_by_the_next_call() -> TestResult {
 
     let answer = report(&path, &sync::SourceSyncManager::new()).check("the call rebuilds")?;
 
-    ensure_eq(&answer.file_count, &2, "answer.file_count == 2")?;
+    ensure_eq(
+        &answer.file_count,
+        &3,
+        "lib.rs, .gitignore and .planning/README.md are indexed again",
+    )?;
     answer
         .database_discard
         .as_ref()
