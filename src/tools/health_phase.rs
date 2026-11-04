@@ -51,7 +51,7 @@ pub(super) fn compute_project_state(path: &str) -> Result<ProjectHealthFields, E
 /// path has no activation directory: `health` reports that state instead of
 /// failing on it, because "this path is not an enabled project, here is the
 /// call that enables it" must be an answer. Any *other* resolution failure
-/// (an unreadable parent, a symlinked activation component) stays an error:
+/// (an unreadable parent) stays an error:
 /// enabling the project would not fix it.
 fn resolve_active_project(path: &str) -> Result<Option<std::path::PathBuf>, ErrorData> {
     match crate::project::resolve_project(std::path::Path::new(path)) {

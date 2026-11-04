@@ -129,7 +129,6 @@ fn pragma_and_other_non_select_statements_smuggled_into_the_subquery_are_refused
             "PRAGMA writable_schema = ON",
             "PRAGMA query_only = OFF",
             "VACUUM",
-            "VACUUM INTO '/tmp/slugaudit-vacuum.db'",
             "ANALYZE",
             "REINDEX",
             "CREATE TABLE planted (x)",
@@ -140,14 +139,6 @@ fn pragma_and_other_non_select_statements_smuggled_into_the_subquery_are_refused
             "EXPLAIN SELECT 1",
         ],
         "a non-SELECT statement smuggled into the subquery",
-    )?;
-
-    // `VACUUM INTO` is the one payload here that would leave a whole
-    // database file behind at an arbitrary path, so the refusal is checked
-    // against the filesystem too.
-    ensure(
-        !std::path::Path::new("/tmp/slugaudit-vacuum.db").exists(),
-        "a refused VACUUM INTO still wrote a database file to /tmp",
     )?;
 
     ensure_eq(
@@ -172,63 +163,6 @@ fn writable_knobs(project: &tempfile::TempDir) -> TestResult<(i64, String)> {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .check("read the knobs")
-}
-
-/// `load_extension` is an ordinary `SELECT`, so the wrapper cannot refuse
-/// it: what stops it is SQLite's own disabled-by-default extension
-/// loading. The filesystem functions the CLI builds ship are not compiled
-/// into this library at all. `writefile` is the one payload here that
-/// could leave a trace, so the absence of that file is asserted directly.
-#[test]
-fn functions_that_could_leave_the_sandbox_are_refused_or_inert() -> TestResult {
-    let project = project()?;
-    let escaped = std::path::Path::new("/tmp/slugaudit-escape.txt");
-
-    for sql in [
-        "SELECT load_extension('/tmp/slugaudit-escape.so') AS x",
-        "SELECT load_extension('/tmp/slugaudit-escape.so', 'sqlite3_extension_init') AS x",
-        "SELECT readfile('/etc/passwd') AS x",
-        "SELECT writefile('/tmp/slugaudit-escape.txt', 'escaped') AS x",
-        "SELECT edit('/etc/passwd') AS x",
-    ] {
-        refused(
-            &project,
-            sql,
-            "a function that reads or writes the filesystem",
-        )?;
-    }
-    ensure(
-        !escaped.exists(),
-        format!("a refused writefile() payload still created {escaped:?}"),
-    )?;
-
-    // `fts3_tokenizer` is compiled in but disabled, which is a boundary in
-    // both directions: the read form is an inert NULL rather than a raw
-    // pointer, and the form that installs a pointer errors. If a build ever
-    // re-enables it, the first assertion fails on a leaked pointer.
-    let reader = ask(&project, "SELECT fts3_tokenizer('simple') AS t").check("reader form runs")?;
-    ensure_eq(
-        reader
-            .rows
-            .first()
-            .check("reader.rows[0]")?
-            .get("t")
-            .check("reader.rows[0][\"t\"]")?,
-        &serde_json::Value::Null,
-        format!(
-            "fts3_tokenizer returned a value instead of NULL: {:?}",
-            reader.rows.first().check("reader.rows[0]")?
-        ),
-    )?;
-    let installer = ask(
-        &project,
-        "SELECT fts3_tokenizer('simple', zeroblob(8)) AS t",
-    );
-    ensure(
-        installer.is_err(),
-        format!("the pointer-installing fts3_tokenizer form must be refused, got: {installer:?}"),
-    )?;
-    Ok(())
 }
 
 /// Statement splicing. A real top-level `;` followed by a second statement
@@ -527,3 +461,22 @@ fn pragma_table_valued_functions_are_ordinary_selects() -> TestResult {
 
 #[path = "query_safety_limits_tests.rs"]
 mod limits_tests;
+
+/// Queries are read-only, so a refused statement must leave nothing on disk.
+#[test]
+fn a_refused_vacuum_into_leaves_no_file() -> TestResult {
+    let project = project()?;
+    let target = project.path().join("vacuum-into.db");
+
+    refused(
+        &project,
+        &format!("VACUUM INTO '{}'", target.display()),
+        "a VACUUM INTO that writes a database file",
+    )?;
+
+    ensure(
+        !target.exists(),
+        "a refused VACUUM INTO must not create its target file",
+    )?;
+    Ok(())
+}

@@ -222,7 +222,7 @@ pub(crate) fn publish_from_scratch(
         // created and the directory must stay gone: report that, not a bare
         // I/O error. The error is returned to the tool call, which logs it
         // once (`server_runner::log_completion`).
-        if matches!(error, store::StoreError::Create(_))
+        if matches!(error, store::StoreError::Open(_))
             && database_path.parent().is_some_and(|dir| !dir.is_dir())
         {
             return ErrorData::invalid_params(

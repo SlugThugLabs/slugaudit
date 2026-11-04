@@ -8,7 +8,7 @@ First check: call `health` with the project `path`. It never fails on a project 
 
 | Code | Meaning | What to do |
 |---|---|---|
-| `project_not_enabled` | No folder above the path has a `.planning/slugaudit/` directory (a symlink there does not count). | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
+| `project_not_enabled` | No folder above the path has a `.planning/slugaudit/` directory. | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
 | `sync_budget_exhausted` | The freshness check ran past `max_sync_wall_clock`. On a project too big for the budget this is permanent. | Set `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, or use the `audit` profile (1200 s) instead of `lean` (120 s). |
 | `stale_revision` | The index changed under this call (another writer, or a file changed while it was being read). | Retry the call. It re-syncs. |
 | `unknown_mechanic` | `leads` got a mechanic id that does not exist. | Call `leads` with only `path` to list the ids, then retry with one. |
@@ -39,7 +39,6 @@ These come as plain messages.
 | `offset and expected_revision were removed` | Old paging parameters. | Use `cursor`. |
 | `path exceeds 32768 bytes` and similar | Input over its size limit. | Shorten the value. |
 | `SQLite did not enable WAL journal mode` | The project's filesystem does not support SQLite WAL. | Use a project location on a local filesystem. |
-| A refusal about a symlink at the database path | `.planning/slugaudit/project.db` is a symlink. SlugAudit will not write through it. | Replace it with a regular file or remove it. |
 
 ## "Project not enabled"
 

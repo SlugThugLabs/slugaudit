@@ -79,10 +79,8 @@ fn store_error_kind(error: &StoreError) -> &'static str {
         StoreError::Configure(_) => "configure",
         StoreError::Busy(_) => "busy",
         StoreError::Migration(_) => "migration",
-        StoreError::Symlink => "symlink",
         StoreError::Missing => "missing",
         StoreError::Inspect(_) => "inspect",
-        StoreError::Create(_) => "create",
         StoreError::WalUnavailable { .. } => "wal_unavailable",
     }
 }

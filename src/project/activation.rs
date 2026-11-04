@@ -26,10 +26,6 @@ pub enum ActivationError {
     /// No ancestor of the requested path has a `.planning/slugaudit` directory.
     #[error("SlugAudit is not enabled for this project or any parent directory")]
     NotActive,
-    /// `.planning` is a symlink, or `enable` met a symlinked
-    /// `.planning/slugaudit`, so the activation path is refused.
-    #[error("refusing a symlinked SlugAudit activation path")]
-    SymlinkedActivationPath,
     /// Filesystem work on the activation directory failed.
     #[error("failed to update the activation directory: {0}")]
     Io(#[from] std::io::Error),
@@ -53,51 +49,31 @@ pub enum ActivationError {
 /// directory remains user project data.
 #[must_use]
 pub fn activation_dir(root: &ProjectRoot) -> PathBuf {
-    root.as_path().join(PLANNING_DIR).join(ACTIVATION_DIR)
+    activation_path(root.as_path())
 }
 
-/// `lstat` of `path`, with "absent" (it does not exist, or sits under a
-/// non-directory) as `None`. Any other failure is returned, so a guard built
-/// on it fails closed instead of reading the failure as "absent".
-fn lstat_or_absent(path: &Path) -> std::io::Result<Option<std::fs::Metadata>> {
-    match path.symlink_metadata() {
-        Ok(metadata) => Ok(Some(metadata)),
+fn activation_path(project_root: &Path) -> PathBuf {
+    project_root.join(PLANNING_DIR).join(ACTIVATION_DIR)
+}
+
+/// The one "is this project on?" predicate: the project is on iff
+/// `<activation>` is a directory. Nothing inside the directory counts:
+/// `project.db` is disposable scratch that the next tool call rebuilds. A
+/// path that does not exist, or sits under a non-directory, is "off"; any
+/// other `stat` failure is returned rather than read as "off".
+fn is_active_at(activation: &Path) -> std::io::Result<bool> {
+    match activation.metadata() {
+        Ok(metadata) => Ok(metadata.is_dir()),
         Err(error)
             if matches!(
                 error.kind(),
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             ) =>
         {
-            Ok(None)
+            Ok(false)
         }
         Err(error) => Err(error),
     }
-}
-
-/// True when `path` is a symlink; a path that does not exist is not one.
-fn is_symlink(path: &Path) -> std::io::Result<bool> {
-    Ok(lstat_or_absent(path)?.is_some_and(|metadata| metadata.file_type().is_symlink()))
-}
-
-/// The one "is this project on?" predicate: the project is on iff
-/// `<activation>` is a real directory. A symlink there does not count, and
-/// neither does anything inside the directory: `project.db` is disposable
-/// scratch that the next tool call rebuilds. Any `lstat` failure other than
-/// "absent" is returned rather than read as "off".
-fn is_active_at(activation: &Path) -> std::io::Result<bool> {
-    Ok(lstat_or_absent(activation)?.is_some_and(|metadata| metadata.file_type().is_dir()))
-}
-
-/// Returns the activation directory under `canonical_root`, refusing a
-/// symlinked `.planning` component. A symlinked `.planning/slugaudit` is
-/// returned as is: callers decide, because it reads as "off" and `off`
-/// removes only the link.
-fn planning_checked_activation_dir(canonical_root: &Path) -> Result<PathBuf, ActivationError> {
-    let planning = canonical_root.join(PLANNING_DIR);
-    if is_symlink(&planning)? {
-        return Err(ActivationError::SymlinkedActivationPath);
-    }
-    Ok(planning.join(ACTIVATION_DIR))
 }
 
 /// Finds the nearest ancestor of `start` (inclusive) that has a
@@ -106,9 +82,9 @@ fn planning_checked_activation_dir(canonical_root: &Path) -> Result<PathBuf, Act
 ///
 /// # Errors
 ///
-/// Returns an error if `start` cannot be resolved, if a `.planning`
-/// component along the way is a symlink or cannot be inspected, or if no
-/// ancestor has an activation directory.
+/// Returns an error if `start` cannot be resolved, if an activation path
+/// along the way cannot be inspected, or if no ancestor has an activation
+/// directory.
 pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     let canonical = start
         .canonicalize()
@@ -123,8 +99,7 @@ pub fn find_project_root(start: &Path) -> Result<ProjectRoot, ActivationError> {
     };
 
     for ancestor in search_origin.ancestors() {
-        let activation = planning_checked_activation_dir(ancestor)?;
-        if is_active_at(&activation)? {
+        if is_active_at(&activation_path(ancestor))? {
             return Ok(ProjectRoot::resolve(ancestor)?);
         }
     }
@@ -157,19 +132,13 @@ pub fn resolve_project(start: &Path) -> Result<(ProjectRoot, PathBuf), Activatio
 /// SlugAudit "on". The directory is the whole switch, and this is the only
 /// code that creates it; the database inside is built by the caller
 /// (`project_control on`) or, if missing, by the next tool call. Idempotent:
-/// succeeds silently if the directory exists. Refuses to create through a
-/// symlinked `.planning` or `.planning/slugaudit` component, for the same
-/// reason `find_project_root` will not read through one.
+/// succeeds silently if the directory exists.
 ///
 /// # Errors
 ///
-/// Returns an error if a `.planning`/`.planning/slugaudit` component is a
-/// symlink, or if the directory can't be created.
+/// Returns an error if the directory can't be created.
 pub fn enable(root: &ProjectRoot) -> Result<PathBuf, ActivationError> {
-    let activation = planning_checked_activation_dir(root.as_path())?;
-    if is_symlink(&activation)? {
-        return Err(ActivationError::SymlinkedActivationPath);
-    }
+    let activation = activation_dir(root);
     std::fs::create_dir_all(&activation)?;
     Ok(activation)
 }
@@ -188,17 +157,16 @@ pub struct DisableReport {
 /// empty, because the rest of it is the user's.
 ///
 /// `remove_dir_all` never follows a symlink inside the directory. If
-/// `.planning/slugaudit` is itself a symlink it is not "on" and not ours to
-/// empty, so only the link is removed and its target is left alone.
+/// `.planning/slugaudit` is itself a symlink, only the link is removed and its
+/// target is left alone.
 ///
 /// An absent directory is not an error and reports nothing removed.
 ///
 /// # Errors
 ///
-/// Returns an error if `.planning` is a symlink (refuses to remove through
-/// it), or if any removal fails.
+/// Returns an error if any removal fails.
 pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
-    let activation = planning_checked_activation_dir(root.as_path())?;
+    let activation = activation_dir(root);
     // Close this process's lock handle first: on Windows a locked file can't
     // be deleted. Another process's live session on Windows makes the removal
     // below fail, and that error is returned, not skipped.
@@ -221,7 +189,9 @@ pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
         Err(error)
             if matches!(
                 error.kind(),
-                std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
+                std::io::ErrorKind::DirectoryNotEmpty
+                    | std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::NotADirectory
             ) => {}
         Err(error) => return Err(ActivationError::Io(error)),
     }

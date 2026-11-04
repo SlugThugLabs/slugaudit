@@ -25,7 +25,7 @@
 //! (read criterion output and the baseline), `compare` (pure verdicts),
 //! `record` (rewrite the baseline), `format` (print).
 //!
-//! Usage: `cargo run --bin check_performance --locked [--root <dir>] [--record] [threshold-percent]`
+//! Usage: `cargo run -p slugaudit-gates --bin check_performance --locked [--root <dir>] [--record] [threshold-percent]`
 //!   --root: the project to gate (default: the working directory); the
 //!     baseline is read from it and `cargo bench` runs in it.
 //!   --record: regenerate `.planning/archive/perf_baseline.json` from this run.
@@ -107,7 +107,7 @@ fn run(options: &Options, root: &Path) -> Result<Outcome, String> {
     let baseline_path = root.join(BASELINE_PATH);
     if !options.record && !baseline_path.exists() {
         return Err(format!(
-            "no baseline at {BASELINE_PATH}; run 'cargo run --bin check_performance -- --record' first"
+            "no baseline at {BASELINE_PATH}; run 'cargo run -p slugaudit-gates --bin check_performance -- --record' first"
         ));
     }
     let target_dir = std::env::var_os("CARGO_TARGET_DIR");

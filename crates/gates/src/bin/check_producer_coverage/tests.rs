@@ -197,8 +197,10 @@ fn production_code_drops_a_line_comment_that_names_a_variant() -> TestResult {
 
 #[test]
 fn the_gate_finds_every_variant_of_this_projects_enums_produced() -> TestResult {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let reports = check(root).check("the project's own evidence enums parse")?;
+    // The gate checks the product at the repository root, two levels above
+    // this crate.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let reports = check(&root).check("the project's own evidence enums parse")?;
     ensure_eq(&reports.len(), &2, "one report per gated enum")?;
     for report in &reports {
         ensure(report.declared > 0, format!("{} has variants", report.name))?;

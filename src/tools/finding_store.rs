@@ -22,7 +22,7 @@ pub(super) fn with_findings_write<T>(
     let mut connection = store::open_findings(&path).map_err(|error| match error {
         // The directory is gone: `off` ran after the sync, so the project
         // is off.
-        store::StoreError::Create(_) if path.parent().is_some_and(|dir| !dir.is_dir()) => {
+        store::StoreError::Open(_) if path.parent().is_some_and(|dir| !dir.is_dir()) => {
             crate::sync::map_activation_error(&crate::project::ActivationError::NotActive)
         }
         error => internal_error("opening the findings database for write", error),

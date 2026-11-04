@@ -1,0 +1,24 @@
+[package]
+name = "slugaudit-gates"
+version = "0.0.0"
+edition = "2024"
+description = "Dev-only quality gates for SlugAudit: the check_* binaries and the policy tests that keep AI-written code correct. Not part of the product."
+# Never published; same license approach as the root crate.
+publish = false
+license-file = "../../LICENSE"
+
+# Run from the repository root: `cargo run -q -p slugaudit-gates --bin <name>`.
+# Each gate scans the product at the current directory (or `--root <dir>`).
+# Directory-laid-out bins share `src/bin/gate_common/` through `#[path]`.
+
+# Lint table lives in the root manifest's `[workspace.lints]`.
+[lints]
+workspace = true
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+slugaudit-mcp-rust = { version = "1.1.0", path = "../.." }
+
+[dev-dependencies]
+slugaudit-test-check = { version = "0.0.0", path = "../test_check" }
+tempfile = "3"

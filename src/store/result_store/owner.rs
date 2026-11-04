@@ -68,7 +68,7 @@ pub(super) struct Owner {
 /// Creates the directory, takes the owner lock, then sweeps.
 pub(super) fn open_owner(runtime_dir: &Path, session: Uuid) -> Result<Owner, ResultStoreError> {
     let dir = runtime_dir.join("results");
-    platform::ensure_private_dir(&dir)
+    platform::ensure_dir(&dir)
         .map_err(|error| ResultStoreError::unavailable("prepare the results directory", error))?;
     let lock_path = dir.join(format!("{}.lock", session.hyphenated()));
     let lock = take_lock(&lock_path)?;

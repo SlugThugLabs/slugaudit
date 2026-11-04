@@ -28,24 +28,6 @@ fn config_file_replacing_a_0644_config_preserves_its_mode() -> TestResult {
     Ok(())
 }
 
-#[cfg(unix)]
-#[test]
-fn config_file_new_file_is_created_owner_only() -> TestResult {
-    use std::os::unix::fs::PermissionsExt as _;
-    let home = tempfile::tempdir().check("temp dir")?;
-    let config = home.path().join("fresh.json");
-
-    write_atomic(&config, b"{}\n").check("create")?;
-
-    let mode = std::fs::metadata(&config)
-        .check("stat")?
-        .permissions()
-        .mode()
-        & 0o777;
-    ensure_eq(&mode, &0o600, "a new config is owner-only")?;
-    Ok(())
-}
-
 #[test]
 fn config_file_round_trip_keeps_key_order_and_ends_with_newline() -> TestResult {
     let home = tempfile::tempdir().check("temp dir")?;

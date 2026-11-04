@@ -366,8 +366,8 @@ mod session_tests;
 mod tests;
 
 #[cfg(test)]
-#[path = "project_control_symlink_tests.rs"]
-mod symlink_tests;
+#[path = "project_control_snapshot_tests.rs"]
+mod snapshot_tests;
 
 #[cfg(test)]
 #[path = "project_control_activation_tests.rs"]

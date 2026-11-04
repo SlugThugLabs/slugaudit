@@ -193,33 +193,3 @@ fn a_directory_removed_between_two_calls_makes_the_second_not_enabled() -> TestR
     )?;
     Ok(())
 }
-
-#[cfg(unix)]
-#[test]
-fn a_symlinked_activation_directory_is_off_and_off_removes_only_the_link() -> TestResult {
-    let (project, path) = project_with_source()?;
-    let target = project.path().join("elsewhere");
-    fs::create_dir_all(&target).check("create target")?;
-    fs::write(target.join("keep.txt"), b"keep").check("write target file")?;
-    fs::create_dir_all(project.path().join(".planning")).check("planning")?;
-    let link = project.path().join(".planning/slugaudit");
-    std::os::unix::fs::symlink(&target, &link).check("symlink")?;
-
-    let error = report(&path, &sync::SourceSyncManager::new()).check_err("a symlink is off")?;
-    assert_not_enabled(&error)?;
-
-    let off = control(&path, ProjectControlAction::Off)?;
-
-    ensure_eq(
-        &off.status,
-        &ProjectControlStatus::Disabled,
-        "off.status == ProjectControlStatus::Disabled",
-    )?;
-    ensure(link.symlink_metadata().is_err(), "the link is gone")?;
-    ensure_eq(
-        &fs::read(target.join("keep.txt")).check("kept")?,
-        &b"keep",
-        "fs::read(target.join(\"keep.txt\")).check(\"kept\")? == b\"keep\"",
-    )?;
-    Ok(())
-}

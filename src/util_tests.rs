@@ -64,6 +64,64 @@ fn capped_byte_read_keeps_not_found() -> TestResult {
     Ok(())
 }
 
+/// Opening a FIFO blocks until a writer appears, so a capped read refuses
+/// one from metadata. The read runs on a thread so a regression fails the
+/// test instead of hanging the suite. `mkfifo(1)` makes the fixture because
+/// std has no safe FIFO constructor and `unsafe` is forbidden; it is run by
+/// absolute path under the env lock because other tests rewrite `PATH`.
+#[cfg(unix)]
+#[test]
+fn capped_byte_read_refuses_a_fifo_without_blocking() -> TestResult {
+    let _env = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let mkfifo = ["/usr/bin/mkfifo", "/bin/mkfifo"]
+        .into_iter()
+        .find(|candidate| std::path::Path::new(candidate).exists())
+        .check("mkfifo is installed at /usr/bin or /bin")?;
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let path = directory.path().join("pipe");
+    let status = std::process::Command::new(mkfifo)
+        .arg(&path)
+        .status()
+        .check("run mkfifo")?;
+    ensure(
+        status.success(),
+        format!("mkfifo makes the fixture: {status}"),
+    )?;
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || sender.send(read_file_capped_bytes(&path, 1024).map(|_| ())));
+    let outcome = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .check("a capped read of a FIFO returns instead of blocking")?;
+
+    match outcome.check_err("a FIFO is not read")? {
+        CappedReadError::Io(error) => ensure_eq(
+            &error.kind(),
+            &std::io::ErrorKind::InvalidInput,
+            "a FIFO is refused as not a regular file",
+        ),
+        other @ CappedReadError::TooLarge { .. } => {
+            Err(format!("expected Io, got {other:?}")).check("unexpected outcome")
+        }
+    }
+}
+
+#[test]
+fn capped_byte_read_refuses_a_directory() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+
+    match read_file_capped_bytes(directory.path(), 1024).check_err("a directory is not read")? {
+        CappedReadError::Io(error) => ensure_eq(
+            &error.kind(),
+            &std::io::ErrorKind::InvalidInput,
+            "a directory is refused as not a regular file",
+        ),
+        other @ CappedReadError::TooLarge { .. } => {
+            Err(format!("expected Io, got {other:?}")).check("unexpected outcome")
+        }
+    }
+}
+
 /// Poisons `mutex` the way a bug would: a holder unwinds inside its critical
 /// section. `resume_unwind` starts the unwind without the `panic!` macro.
 fn poison<T>(mutex: &Mutex<T>) -> TestResult {

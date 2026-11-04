@@ -66,11 +66,8 @@ pub enum GitignoreOutcome {
 /// (`MAX_FOREIGN_TEXT_BYTES`), the same cap used for other foreign text
 /// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
 /// rather than read, and any other read failure is reported the same way:
-/// this guard is non-fatal by design and never undoes the enable. A path
-/// that is a symlink (to anywhere, so a write can never leave the project)
-/// or not a regular file is refused before the read, because opening a FIFO
-/// would block forever. Only a path with no
-/// directory entry counts as missing; the atomic write creates it.
+/// this guard is non-fatal by design and never undoes the enable. Only a path
+/// with no directory entry counts as missing; the atomic write creates it.
 ///
 /// Failure is reported through [`GitignoreOutcome::NotWritten`], never
 /// propagated — see [`GitignoreOutcome`].
@@ -112,33 +109,15 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     }
 }
 
-/// Reads the existing `.gitignore`, refusing anything that is not a regular
-/// file before it can be opened.
-///
-/// `read_file_capped_bytes` bounds the read, not the open: `File::open` on a
-/// FIFO blocks until a writer appears, so the path is classified first with
-/// `symlink_metadata`. Any symlink (even to a regular file, even inside the
-/// project) and any FIFO, directory, or device is refused. A path with no directory entry is not a
-/// failure: the atomic write creates it.
+/// Reads the existing `.gitignore` within the size cap. A path with no
+/// directory entry is not a failure: the atomic write creates it.
 fn read_existing_gitignore(path: &Path) -> Result<Vec<u8>, CappedReadError> {
-    let entry = match std::fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(CappedReadError::Io(error)),
-    };
-    if entry.file_type().is_symlink() {
-        return Err(CappedReadError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the .gitignore path is a symbolic link; replace it with a regular file or remove it",
-        )));
+    match read_file_capped_bytes(path, MAX_FOREIGN_TEXT_BYTES) {
+        Err(CappedReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(Vec::new())
+        }
+        result => result,
     }
-    if !entry.is_file() {
-        return Err(CappedReadError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the .gitignore path is not a regular file",
-        )));
-    }
-    read_file_capped_bytes(path, MAX_FOREIGN_TEXT_BYTES)
 }
 
 /// Sequence making temp-file names unique within one process.
@@ -147,9 +126,8 @@ static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic
 /// Writes the existing bytes plus `addition` to a temp file beside the real
 /// `.gitignore` and renames it into place.
 ///
-/// The destination is `path` itself, never a resolved link target: callers
-/// refuse symlinks first, and the rename replaces the directory entry. A
-/// missing file is created at `path`.
+/// The destination is `path` itself, never a resolved link target: the
+/// rename replaces the directory entry. A missing file is created at `path`.
 /// Nothing is renamed until the whole file has been written and synced, so a
 /// failure before the rename — including a deferred write or commit error
 /// surfaced by `sync_all` — leaves the original untouched. The temp file is
@@ -167,7 +145,7 @@ fn write_gitignore_atomically(
     sync_dir: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
     // No canonicalisation: the rename replaces the path itself, never a
-    // link target (symlinks were refused before the read).
+    // link target.
     let destination = path;
     let directory = destination.parent().ok_or_else(|| {
         std::io::Error::new(

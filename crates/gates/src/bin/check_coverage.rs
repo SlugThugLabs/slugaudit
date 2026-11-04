@@ -15,14 +15,11 @@
 //! and that printed table is not what the exit check compares
 //! against.
 //!
-//! Scope: the gate measures the shipped product runtime. The dev-only
-//! `src/bin/check_*` gate binaries are excluded via
-//! `--ignore-filename-regex`: a coverage audit must not count
-//! development-only check binaries as end-user runtime code, and
-//! measuring them here while their own test files are excluded from the
-//! report would leave six gate mains permanently at 0% inside the
-//! denominator (~8 points of measured coverage). The floor is measured
-//! product coverage minus a margin.
+//! Scope: the gate measures the shipped product runtime. The dev-only gate
+//! binaries live in the separate `crates/gates` workspace crate, and
+//! `cargo llvm-cov` is run for the product package only, so they are never
+//! in the denominator. The floor is measured product coverage minus a
+//! margin.
 //!
 //! Pure Rust: no Python interpreter, no shell. `cargo
 //! llvm-cov` is invoked through `std::process::Command`; the JSON
@@ -41,8 +38,8 @@ const PREFIX: &str = "coverage";
 /// The line-coverage floor, in percent, when no threshold argument is given.
 /// It tracks the measured line coverage. The gate's intent is "catch coverage
 /// regressions, not block on them", so it tracks measurement rather than an
-/// aspirational number. Use `cargo run --quiet --bin check_coverage --
-/// <threshold>` to override for a single run (e.g. CI flavor that wants a
+/// aspirational number. Use `cargo run --quiet -p slugaudit-gates --bin
+/// check_coverage -- <threshold>` to override for a single run (e.g. CI flavor that wants a
 /// harder floor); record any raise with the change that makes it so the gate
 /// stays honest.
 const DEFAULT_THRESHOLD_PCT: f64 = 83.0;
@@ -144,7 +141,6 @@ fn measure(root: &Path, report_path: &Path) -> Result<(u64, u64), String> {
             "--locked",
             "--json",
         ])
-        .arg("--ignore-filename-regex=.*src/bin/.*")
         .arg(format!("--output-path={}", report_path.display()))
         .status()
         .map_err(|err| format!("FAIL: failed to invoke cargo llvm-cov: {err}"))?;

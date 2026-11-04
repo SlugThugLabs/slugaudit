@@ -48,15 +48,24 @@ impl std::error::Error for CappedReadError {
 
 /// Reads a file's bytes, refusing to load more than `max_bytes`.
 ///
-/// The metadata check rejects the common case without opening the file; the
-/// read itself is bounded by `take(max_bytes + 1)`, so a file that grows past
-/// the cap between the stat and the read cannot allocate an unbounded buffer.
-/// The observed length is reported, never truncated.
+/// Only a regular file is opened: opening a FIFO blocks until a writer
+/// appears, so anything else (a FIFO, directory or device) is an
+/// `InvalidInput` error decided from metadata. The metadata check also
+/// rejects an oversized file without opening it; the read itself is bounded
+/// by `take(max_bytes + 1)`, so a file that grows past the cap between the
+/// stat and the read cannot allocate an unbounded buffer. The observed length
+/// is reported, never truncated.
 pub(crate) fn read_file_capped_bytes(
     path: &std::path::Path,
     max_bytes: u64,
 ) -> Result<Vec<u8>, CappedReadError> {
     let metadata = std::fs::metadata(path).map_err(CappedReadError::Io)?;
+    if !metadata.is_file() {
+        return Err(CappedReadError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        )));
+    }
     if metadata.len() > max_bytes {
         return Err(CappedReadError::TooLarge {
             limit: max_bytes,

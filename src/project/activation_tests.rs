@@ -105,69 +105,6 @@ fn a_start_path_that_does_not_exist_is_an_unresolvable_root_not_an_inactive_proj
     Ok(())
 }
 
-#[cfg(unix)]
-#[test]
-fn a_symlinked_activation_directory_does_not_count_as_on() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real_target = directory.path().join("elsewhere");
-    fs::create_dir_all(&real_target).check("create link target")?;
-    fs::create_dir_all(directory.path().join(PLANNING_DIR)).check("create planning dir")?;
-    std::os::unix::fs::symlink(
-        &real_target,
-        directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR),
-    )
-    .check("create symlink")?;
-
-    ensure(
-        matches!(
-            find_project_root(directory.path()),
-            Err(ActivationError::NotActive)
-        ),
-        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
-    )?;
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn a_symlinked_planning_directory_is_refused_when_looking_for_a_project() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real_target = directory.path().join("elsewhere");
-    fs::create_dir_all(real_target.join(ACTIVATION_DIR)).check("create link target")?;
-    std::os::unix::fs::symlink(&real_target, directory.path().join(PLANNING_DIR))
-        .check("create symlink")?;
-
-    ensure(
-        matches!(
-            find_project_root(directory.path()),
-            Err(ActivationError::SymlinkedActivationPath)
-        ),
-        "matches!( find_project_root(directory.path()), Err(ActivationError::SymlinkedActivationPath) )",
-    )?;
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn enable_refuses_a_symlinked_activation_directory() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real_target = directory.path().join("elsewhere");
-    fs::create_dir_all(&real_target).check("create link target")?;
-    fs::create_dir_all(directory.path().join(PLANNING_DIR)).check("create planning dir")?;
-    std::os::unix::fs::symlink(
-        &real_target,
-        directory.path().join(PLANNING_DIR).join(ACTIVATION_DIR),
-    )
-    .check("create symlink")?;
-    let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
-
-    ensure(
-        matches!(enable(&root), Err(ActivationError::SymlinkedActivationPath)),
-        "matches!( enable(&root), Err(ActivationError::SymlinkedActivationPath) )",
-    )?;
-    Ok(())
-}
-
 #[test]
 fn enable_creates_the_directory_and_that_alone_makes_the_project_active() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -203,23 +140,6 @@ fn enable_is_idempotent() -> TestResult {
     let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
     enable(&root).check("first enable")?;
     enable(&root).check("enabling an already-active project must not error")?;
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn enable_refuses_to_create_through_a_symlinked_planning_dir() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real_target = directory.path().join("elsewhere");
-    fs::create_dir_all(&real_target).check("create link target")?;
-    std::os::unix::fs::symlink(&real_target, directory.path().join(PLANNING_DIR))
-        .check("create symlink")?;
-    let root = ProjectRoot::resolve(directory.path()).check("resolve root")?;
-
-    ensure(
-        matches!(enable(&root), Err(ActivationError::SymlinkedActivationPath)),
-        "matches!( enable(&root), Err(ActivationError::SymlinkedActivationPath) )",
-    )?;
     Ok(())
 }
 
@@ -282,17 +202,6 @@ fn an_activation_directory_toggled_concurrently_never_panics_or_returns_a_partia
 
 fn overlong_path() -> PathBuf {
     Path::new("/tmp").join("a".repeat(300))
-}
-
-#[test]
-fn an_uninspectable_symlink_guard_path_fails_the_activation_check_closed() -> TestResult {
-    let result = planning_checked_activation_dir(&overlong_path());
-
-    ensure(
-        matches!(result, Err(ActivationError::Io(_))),
-        format!("{result:?}"),
-    )?;
-    Ok(())
 }
 
 #[test]

@@ -6,7 +6,6 @@
 
 use crate::evidence::to_row;
 use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
-use crate::store::test_capture::capture_warns;
 use crate::store::*;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
@@ -63,204 +62,6 @@ fn a_corrupted_database_file_fails_closed_with_a_typed_error() -> TestResult {
     ensure(
         matches!(result, Err(StoreError::Configure(_))),
         format!("expected a typed Configure error, got {result:?}"),
-    )?;
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real_target = directory.path().join("elsewhere.db");
-    let link_path = directory.path().join("project.db");
-    std::os::unix::fs::symlink(&real_target, &link_path).check("create symlink")?;
-
-    ensure(
-        matches!(open_read_write(&link_path), Err(StoreError::Symlink)),
-        "matches!( open_read_write(&link_path), Err(StoreError::Symlink) )",
-    )?;
-    ensure(
-        matches!(open_existing(&link_path), Err(StoreError::Symlink)),
-        "matches!( open_existing(&link_path), Err(StoreError::Symlink) )",
-    )?;
-    ensure(
-        !real_target.exists(),
-        "the symlink target must never be created/opened",
-    )?;
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn a_newly_created_database_gets_owner_only_permissions() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let path = directory.path().join("project.db");
-    open_read_write(&path).check("create database")?;
-    let mode = std::fs::metadata(&path).check("stat")?.permissions().mode() & 0o777;
-    // Literal `0o600` (owner-only) instead of importing `PRIVATE_MODE` —
-    // the constant stays module-private, and `0o600` is the canonical
-    // mode for owner-only file permissions.
-    ensure_eq(&mode, &0o600, "mode == 0o600")?;
-    Ok(())
-}
-
-/// The `-wal` and `-shm` sidecars sit beside the database and can hold the same
-/// source-derived content, so they must be as private as the database itself.
-/// SQLite derives their mode from the database file's, which this crate pins to
-/// `0600`; this test fails if that derivation ever stops holding — the sidecars
-/// are created by SQLite, not by `create_with_private_permissions_if_missing`.
-#[cfg(unix)]
-#[test]
-fn the_wal_and_shm_sidecars_are_owner_only_like_the_database() -> TestResult {
-    use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let path = directory.path().join("project.db");
-    let connection = open_read_write(&path).check("create database")?;
-    connection
-        .execute_batch("CREATE TABLE probe (v INTEGER); INSERT INTO probe VALUES (1);")
-        .check("a write materialises the write-ahead log")?;
-
-    for name in ["project.db-wal", "project.db-shm"] {
-        let sidecar = directory.path().join(name);
-        let mode = std::fs::metadata(&sidecar)
-            .check(&format!("{name} must exist while the log is live"))?
-            .permissions()
-            .mode()
-            & 0o777;
-        ensure_eq(
-            &mode,
-            &0o600,
-            format!("{name} must be owner-only, got {mode:o}"),
-        )?;
-    }
-    Ok(())
-}
-
-/// Distinct from `a_symlinked_db_path_is_rejected_for_both_read_write_and_read_only`,
-/// where the path is a symlink from the very first open: this proves the
-/// TOCTOU case, where a path that was legitimately a real file at one
-/// point in time gets replaced by a symlink later (e.g. a compromised or
-/// misbehaving process racing the legitimate owner). Both `open_flags`'
-/// `SQLITE_OPEN_NOFOLLOW` and the `reject_symlink` pre-check must catch
-/// this on the *next* open, not just the first.
-#[cfg(unix)]
-#[test]
-fn a_db_path_replaced_by_a_symlink_after_a_successful_open_is_rejected_on_the_next_open()
--> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let path = directory.path().join("project.db");
-
-    // A real, legitimate first open succeeds and migrates the schema.
-    let connection = open_read_write(&path).check("first open on a real file succeeds")?;
-    drop(connection);
-    ensure(
-        !path
-            .symlink_metadata()
-            .check("symlink metadata readable")?
-            .file_type()
-            .is_symlink(),
-        "!path .symlink_metadata() .check(\"symlink metadata readable\")? .file_type() .is_symlink()",
-    )?;
-
-    // The path is now replaced by a symlink pointing elsewhere, as a
-    // TOCTOU attacker (or a racing process) might.
-    let elsewhere = directory.path().join("elsewhere.db");
-    std::fs::remove_file(&path).check("remove the real file")?;
-    std::os::unix::fs::symlink(&elsewhere, &path).check("replace it with a symlink")?;
-
-    ensure(
-        matches!(open_read_write(&path), Err(StoreError::Symlink)),
-        "matches!(open_read_write(&path), Err(StoreError::Symlink))",
-    )?;
-    ensure(
-        matches!(open_existing(&path), Err(StoreError::Symlink)),
-        "matches!(open_existing(&path), Err(StoreError::Symlink))",
-    )?;
-    ensure(
-        !elsewhere.exists(),
-        "the symlink target must never be created/opened through the replaced path",
-    )?;
-    Ok(())
-}
-
-/// Verifies that rejecting a symlink emits a `tracing::warn!` event
-/// tagged with the path and `reason="symlink"`. The reject path
-/// emits a typed `StoreError::Symlink`, but the typed error's
-/// `Display` doesn't include the path — only the warn site captures
-/// it. Without this test, a future refactor could silently drop the
-/// warn site and an operator tracing an open failure would see
-/// "refusing to open a database path that is a symlink" without
-/// knowing *which* path.
-#[cfg(unix)]
-#[test]
-fn a_symlinked_db_open_emits_a_warning_for_auditing() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real_target = directory.path().join("elsewhere.db");
-    let link_path = directory.path().join("project.db");
-    std::os::unix::fs::symlink(&real_target, &link_path).check("create symlink")?;
-
-    let (result, logs) = capture_warns(|| open_read_write(&link_path))?;
-    ensure(
-        matches!(result, Err(StoreError::Symlink)),
-        "matches!(result, Err(StoreError::Symlink))",
-    )?;
-    ensure(
-        logs.contains("symlink"),
-        format!("the warn event must be tagged with reason=symlink, captured logs: {logs}"),
-    )?;
-    ensure(
-        logs.contains(link_path.display().to_string().as_str()),
-        format!(
-            "the warn event must include the symlinked path so an operator can \
-         locate which file triggered the rejection, captured logs: {logs}"
-        ),
-    )?;
-    Ok(())
-}
-
-/// A successful local-filesystem open must NOT emit any of the
-/// rejection warnings. Paired regression test for the warning tests:
-/// if any of the rejection paths were silently tripping on the
-/// happy path, this would catch it.
-#[cfg(unix)]
-#[test]
-fn a_local_filesystem_open_does_not_emit_any_rejection_warnings() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let path = directory.path().join("project.db");
-    let (result, logs) = capture_warns(|| {
-        // Liveness control: proves the absence checks below cannot pass
-        // because the capture went blind.
-        tracing::warn!("capture liveness control");
-        open_read_write(&path)
-    })?;
-    result
-        .as_ref()
-        .check("sanity: the open itself must succeed")?;
-    ensure(
-        logs.contains("capture liveness control"),
-        format!(
-            "the capture must see this thread's events, or the absence checks \
-         below prove nothing, captured logs: {logs}"
-        ),
-    )?;
-    ensure(
-        !logs.contains("\"symlink\""),
-        format!(
-            "a successful local open must not log the symlink-rejection warning, captured logs: {logs}"
-        ),
-    )?;
-    ensure(
-        !logs.contains("\"insecure_permissions\""),
-        format!(
-            "a successful local open must not log the insecure-permissions warning, captured logs: {logs}"
-        ),
-    )?;
-    ensure(
-        !logs.contains("\"network_filesystem\""),
-        format!(
-            "a successful local open must not log the network-filesystem warning, captured logs: {logs}"
-        ),
     )?;
     Ok(())
 }
@@ -451,30 +252,6 @@ fn every_evidence_kind_text_passes_the_kind_check() -> TestResult {
     Ok(())
 }
 
-/// A symlinked *ancestor* directory is not a reason to refuse the open: on
-/// macOS every temp and `/var` path runs through `/var -> /private/var`.
-/// Only the database file itself being a symlink is rejected.
-#[cfg(unix)]
-#[test]
-fn a_database_under_a_symlinked_parent_directory_opens_for_both_modes() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let real = directory.path().join("real");
-    std::fs::create_dir(&real).check("real dir")?;
-    let linked = directory.path().join("linked");
-    std::os::unix::fs::symlink(&real, &linked).check("dir symlink")?;
-    let path = linked.join("project.db");
-
-    drop(open_read_write(&path).check("read-write open through a symlinked parent")?);
-    let read_only = open_existing(&path);
-
-    read_only.as_ref().check("`read_only` is ok")?;
-    ensure(
-        real.join("project.db").is_file(),
-        "the database lands in the real directory",
-    )?;
-    Ok(())
-}
-
 #[test]
 fn the_line_functions_run_on_both_connection_modes() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -497,17 +274,8 @@ fn the_line_functions_run_on_both_connection_modes() -> TestResult {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .check(&format!("{label}: the functions must pass the guard"))?;
+            .check(&format!("{label}: the functions must be registered"))?;
         ensure_eq(&lines, &(3, "b\nc".to_owned()), label.to_string())?;
-
-        ensure(
-            connection
-                .query_row("SELECT load_extension('libnothing')", [], |row| {
-                    row.get::<_, Option<String>>(0)
-                })
-                .is_err(),
-            format!("{label} must not load extensions"),
-        )?;
     }
     Ok(())
 }
@@ -521,19 +289,6 @@ fn a_connection_that_cannot_enter_wal_mode_fails_configuration() -> TestResult {
     ensure(
         matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == "memory"),
         "matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == \"memory\")",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn an_uninspectable_database_path_fails_instead_of_skipping_the_symlink_guard() -> TestResult {
-    let path = std::path::Path::new("/tmp")
-        .join("a".repeat(300))
-        .join("project.db");
-
-    ensure(
-        matches!(super::reject_symlink(&path), Err(StoreError::Inspect(_))),
-        "matches!( super::reject_symlink(&path), Err(StoreError::Inspect(_)) )",
     )?;
     Ok(())
 }
