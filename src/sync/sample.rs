@@ -82,12 +82,14 @@ pub(super) fn sample_file(
     limits: &ResourceLimits,
 ) -> Result<Sample, SampleError> {
     let metadata = std::fs::metadata(&file.absolute_path).map_err(|source| SampleError::Read {
+        // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
         path: file.absolute_path.clone(),
         source,
     })?;
     let size = metadata.len();
     if size > limits.max_file_bytes {
         return Err(SampleError::TooLarge {
+            // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
             path: file.absolute_path.clone(),
             observed: size,
             limit: limits.max_file_bytes,
@@ -101,10 +103,12 @@ pub(super) fn sample_file(
     let bytes = util::read_file_capped_bytes(&file.absolute_path, limits.max_file_bytes).map_err(
         |error| match error {
             util::CappedReadError::Io(source) => SampleError::Read {
+                // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
                 path: file.absolute_path.clone(),
                 source,
             },
             util::CappedReadError::TooLarge { limit, observed } => SampleError::TooLarge {
+                // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
                 path: file.absolute_path.clone(),
                 observed,
                 limit,
@@ -123,6 +127,7 @@ pub(super) fn sample_file(
             // with a reason instead of stored wrong.
             Err(source) => {
                 return Err(SampleError::NotUtf8 {
+                    // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
                     path: file.absolute_path.clone(),
                     source,
                 });
@@ -130,6 +135,7 @@ pub(super) fn sample_file(
         }
     };
     Ok(Sample {
+        // KEEP clone: sample_file borrows &DiscoveredFile and returns an owned Sample
         relative_path: file.relative_path.clone(),
         is_binary,
         byte_len: bytes.len() as u64,

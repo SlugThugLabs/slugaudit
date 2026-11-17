@@ -94,6 +94,7 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     );
     let counters_before = crate::tools::ToolCounters::snapshot();
     let started = std::time::Instant::now();
+    // KEEP clone: tracing::Span is a shared handle cloned into the blocking worker while the caller keeps &span
     let blocking_span = span.clone();
 
     // Notify the consumer that the call has been received and is either
@@ -104,6 +105,7 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     notify_progress(target, 0.0, format!("{tool_name} ensuring_current")).await;
 
     let result = acquire_and_run(semaphore, tool_name, work, target, blocking_span)
+        // KEEP clone: Instrument::instrument takes an owned Span while log_completion borrows &span afterwards
         .instrument(span.clone())
         .await;
 

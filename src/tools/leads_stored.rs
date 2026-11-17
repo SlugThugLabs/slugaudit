@@ -69,6 +69,7 @@ impl Materialize for StoredLead {
     }
 
     fn to_values(&self) -> Vec<Cell> {
+        // KEEP clone: Materialize::to_values borrows &self and returns owned Cell::Text values
         vec![
             Cell::Text(self.mechanic.clone()),
             Cell::Text(self.file.clone()),
@@ -88,6 +89,7 @@ impl Materialize for StoredLead {
                 Cell::Text(detail),
                 Cell::Int(clipped),
                 Cell::Int(files_seen),
+                // KEEP clone: Materialize::from_values borrows &[Cell] and returns an owned StoredLead
             ] => Ok(Self {
                 mechanic: mechanic.clone(),
                 file: file.clone(),
@@ -183,6 +185,7 @@ impl<'a, 'w, 's> Feed<'a, 'w, 's> {
     }
 
     fn store(&mut self, mut row: StoredLead) -> Result<(), ErrorData> {
+        // KEEP clone: self.seen tracks distinct file paths across rows while row is pushed to sink
         self.seen.insert(row.file.clone());
         row.files_seen = to_i64(self.seen.len())?;
         self.sink.push(&row)

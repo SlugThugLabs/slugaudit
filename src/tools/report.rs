@@ -361,9 +361,8 @@ pub fn report(
         ));
     }
     let synced = ensure_synced(&request.0.path, sink, manager)?;
-    let revision_id = synced.revision_id.clone();
     let (sections, open_finding_count) = with_verified_read(&synced, |tx| {
-        let sections = read_sections(tx, &revision_id)
+        let sections = read_sections(tx, &synced.revision_id)
             .map_err(|error| operation_error("building the report", error))?;
         let open_finding_count = count_current(tx, &findings_path_of(tx)?)?;
         Ok((sections, open_finding_count))
@@ -381,8 +380,12 @@ pub fn report(
     if session.claim_report_note() {
         mechanics.note = Some(MECHANICS_NOTE.to_owned());
     }
-    let response =
-        sections.into_response(revision_id, open_finding_count, synced.discard, mechanics);
+    let response = sections.into_response(
+        synced.revision_id,
+        open_finding_count,
+        synced.discard,
+        mechanics,
+    );
     Ok(Json(response))
 }
 

@@ -47,7 +47,9 @@ impl LanguagesRead {
                 })
                 .cloned()
                 .collect(),
+            // KEEP clone: covers borrows &self and returns an owned Vec<String>
             Reads::ParsedFiles => self.parsed.clone(),
+            // KEEP clone: covers borrows &self and returns an owned Vec<String>
             Reads::Paths => self.paths.clone(),
         }
     }

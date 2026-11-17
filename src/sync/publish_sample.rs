@@ -59,6 +59,7 @@ pub(super) fn check_samples_match_pass1(
             && sample.identity.content_hash != p1_hash
         {
             return Err(PublishError::ChangedDuringSample {
+                // KEEP clone: error path returns an owned String from borrowed &[sample::Sample]
                 path: sample.relative_path.clone(),
             });
         }

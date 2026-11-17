@@ -64,6 +64,7 @@ pub fn to_row(item: &EvidenceItem) -> EvidenceRow {
             (None, None, None, None, None, None)
         };
     EvidenceRow {
+        // KEEP clone: to_row borrows &EvidenceItem and returns an owned EvidenceRow
         key: item.key.clone(),
         kind: kind_text(&item.kind),
         origin: origin_text(&item.origin),

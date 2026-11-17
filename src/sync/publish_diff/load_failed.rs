@@ -17,19 +17,19 @@ pub(super) fn add_load_failed_retries(
     if load_failed.is_empty() {
         return;
     }
-    let already: HashSet<String> = changes
+    let already: HashSet<&str> = changes
         .iter()
-        .map(|change| change.relative_path.clone())
+        .map(|change| change.relative_path.as_str())
         .collect();
-    changes.extend(
-        current
-            .iter()
-            .filter(|(path, _)| load_failed.contains(*path) && !already.contains(*path))
-            .map(|(path, _)| FileChange {
-                relative_path: (*path).to_owned(),
-                status: ChangeStatus::Modified,
-            }),
-    );
+    let retries: Vec<FileChange> = current
+        .iter()
+        .filter(|(path, _)| load_failed.contains(*path) && !already.contains(*path))
+        .map(|(path, _)| FileChange {
+            relative_path: (*path).to_owned(),
+            status: ChangeStatus::Modified,
+        })
+        .collect();
+    changes.extend(retries);
     changes.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 }
 

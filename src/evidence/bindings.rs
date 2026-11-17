@@ -69,6 +69,7 @@ pub(super) fn walk_bindings(
     out: &mut Extraction,
     counter: &mut usize,
 ) -> Result<(), PositionOverflow> {
+    // KEEP clone: tree_sitter_language_pack::Node is not Copy; walk stack owns Node handles
     let mut pending = vec![(root.clone(), 0)];
     while let Some((node, depth)) = pending.pop() {
         if super::deadline_spent(input.deadline) {

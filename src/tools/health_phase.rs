@@ -30,17 +30,17 @@ pub(super) fn compute_project_state(path: &str) -> Result<ProjectHealthFields, E
         return Ok(inactive_fields(HealthPhase::Disabled));
     };
 
-    let (database, revision_id, database_read_error) = match read_database(&database_path) {
-        DatabaseRead::Read(state) => {
-            let revision_id = state.revision_id.clone();
-            (Some(state), revision_id, None)
-        }
-        DatabaseRead::NeverSynced => (None, None, None),
-        DatabaseRead::Unreadable(error) => (None, None, Some(error)),
+    let (database, database_read_error) = match read_database(&database_path) {
+        DatabaseRead::Read(state) => (Some(state), None),
+        DatabaseRead::NeverSynced => (None, None),
+        DatabaseRead::Unreadable(error) => (None, Some(error)),
     };
 
     Ok(ProjectHealthFields {
-        phase: project_phase(revision_id.as_deref(), database_read_error.is_some()),
+        phase: project_phase(
+            database.as_ref().and_then(|d| d.revision_id.as_deref()),
+            database_read_error.is_some(),
+        ),
         remedy: None,
         database,
         database_read_error,

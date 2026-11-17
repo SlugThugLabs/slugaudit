@@ -66,8 +66,11 @@ fn key_of(scope: &CacheScope<'_>, registered: &Registered, glob: Option<&str>) -
         project: scope.project.to_owned(),
         revision: scope.revision.to_owned(),
         glob: glob.map(str::to_owned),
+        // KEEP clone: key_of borrows &Registered and returns an owned ScanKey
         id: registered.entry.id.clone(),
+        // KEEP clone: key_of borrows &Registered and returns an owned ScanKey
         language: registered.entry.language.clone(),
+        // KEEP clone: key_of borrows &Registered and returns an owned ScanKey
         query: registered.entry.query.clone(),
         source: source_tag(registered.source),
     }

@@ -54,6 +54,7 @@ pub fn session_findings_path(dir: &Path) -> Result<Option<PathBuf>, LockPoisoned
     Ok(sessions
         .as_ref()
         .and_then(|sessions| sessions.get(dir))
+        // KEEP clone: returns an owned PathBuf so the global SESSIONS MutexGuard can be released
         .map(|session| session.findings.clone()))
 }
 

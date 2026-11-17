@@ -34,6 +34,7 @@ impl Materialize for StoredFinding {
 
     fn to_values(&self) -> Vec<Cell> {
         let entry = &self.entry;
+        // KEEP clone: Materialize::to_values borrows &self and returns owned Cell::Text values
         vec![
             Cell::Int(entry.id),
             Cell::Text(entry.path.clone()),
@@ -57,6 +58,7 @@ impl Materialize for StoredFinding {
             _ => Err(LAYOUT),
         };
         let text = |cell: &Cell| match cell {
+            // KEEP clone: Materialize::from_values borrows &[Cell] and returns an owned FindingReadEntry
             Cell::Text(value) => Ok(value.clone()),
             _ => Err(LAYOUT),
         };
@@ -238,6 +240,7 @@ pub(super) fn clip_description(
     budget: usize,
 ) -> Result<(), ErrorData> {
     let chars: Vec<char> = entry.description.chars().collect();
+    // KEEP clone: restores the original description if even an empty description exceeds budget
     let original = entry.description.clone();
     // The flag is part of the serialized row, so the search must measure the
     // row as it will actually be returned (flag set), never one byte short.

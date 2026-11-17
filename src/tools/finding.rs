@@ -97,11 +97,10 @@ pub fn finding(
     validate_text_fields(request)?;
 
     let synced = ensure_synced(&request.path, sink, manager)?;
-    let revision_id = synced.revision_id.clone();
     let (source_hash, content) = with_verified_read(&synced, |tx| fetch_file(tx, &request.file))?;
     validate_line_range(request, &content)?;
     let mut response = with_findings_write(&synced, |tx| {
-        insert_finding(tx, request, source_hash, &revision_id)
+        insert_finding(tx, request, source_hash, &synced.revision_id)
     })?;
     response.database_discard = synced.discard;
     Ok(Json(response))

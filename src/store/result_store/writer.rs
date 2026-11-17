@@ -257,16 +257,21 @@ impl ResultWriter<'_> {
     ) -> Result<ResultHandle, ResultStoreError> {
         self.guard()?;
         let created_unix = self.store.now()?;
+        #[cfg(test)]
+        let state = self.final_state();
+        #[cfg(not(test))]
+        let state = "complete";
         let meta = ResultMeta {
-            tool: self.spec.tool.clone(),
-            project: self.spec.project.clone(),
-            revision_id: self.spec.revision_id.clone(),
-            columns: self.spec.columns.clone(),
+            tool: self.spec.tool,
+            project: self.spec.project,
+            revision_id: self.spec.revision_id,
+            columns: self.spec.columns,
+            // KEEP clone: finish borrows &serde_json::Value while ResultMeta owns it
             completeness: completeness.clone(),
             row_count: self.next_ord,
             created_unix,
         };
-        self.write_meta(&meta)?;
+        Self::write_meta(&mut self.conn, &meta, state)?;
         self.conn
             .execute_batch("COMMIT")
             .map_err(|error| ResultStoreError::from_sqlite("commit the result", error))?;
@@ -281,7 +286,11 @@ impl ResultWriter<'_> {
         Ok(handle)
     }
 
-    fn write_meta(&mut self, meta: &ResultMeta) -> Result<(), ResultStoreError> {
+    fn write_meta(
+        conn: &mut rusqlite::Connection,
+        meta: &ResultMeta,
+        state: &str,
+    ) -> Result<(), ResultStoreError> {
         let columns = serde_json::to_string(&meta.columns)
             .map_err(|error| ResultStoreError::json("encode the column names", error))?;
         let completeness = serde_json::to_string(&meta.completeness)
@@ -289,18 +298,13 @@ impl ResultWriter<'_> {
         let row_count = i64::try_from(meta.row_count).map_err(|_| ResultStoreError::Invalid {
             reason: "too many rows",
         })?;
-        #[cfg(test)]
-        let state = self.final_state();
-        #[cfg(not(test))]
-        let state = "complete";
         let put = |key: &str, value: &dyn ToSql| {
-            self.conn
-                .execute(
-                    "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-                    rusqlite::params![key, value],
-                )
-                .map(drop)
-                .map_err(|error| ResultStoreError::from_sqlite("write result metadata", error))
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+                rusqlite::params![key, value],
+            )
+            .map(drop)
+            .map_err(|error| ResultStoreError::from_sqlite("write result metadata", error))
         };
         put("tool", &meta.tool)?;
         put("project", &meta.project)?;
@@ -312,13 +316,12 @@ impl ResultWriter<'_> {
         put("bytes", &0_i64)?;
         put("state", &state)?;
         // The size is only known once everything else is in place.
-        let bytes = i64::try_from(result_file::measure_bytes(&self.conn)?).map_err(|_| {
+        let bytes = i64::try_from(result_file::measure_bytes(conn)?).map_err(|_| {
             ResultStoreError::Invalid {
                 reason: "result too large to measure",
             }
         })?;
-        self.conn
-            .execute("UPDATE meta SET value = ?1 WHERE key = 'bytes'", [bytes])
+        conn.execute("UPDATE meta SET value = ?1 WHERE key = 'bytes'", [bytes])
             .map_err(|error| ResultStoreError::from_sqlite("write result metadata", error))?;
         Ok(())
     }

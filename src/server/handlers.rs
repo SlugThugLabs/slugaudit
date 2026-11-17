@@ -30,6 +30,7 @@ use std::sync::Arc;
 /// `every_input_schema_matches_rmcp_and_has_an_object_root` pins that and
 /// that the result equals rmcp's checked schema, so rmcp drift is caught.
 fn input_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
+    // KEEP clone: schema_for_type returns a shared Arc<JsonObject>; clone to strip title/description without mutating the cached schema
     let mut schema = rmcp::handler::server::common::schema_for_type::<T>()
         .as_ref()
         .clone();
@@ -291,7 +292,7 @@ impl SlugAuditServer {
         peer: Peer<RoleServer>,
         request: Parameters<tools::HealthRequest>,
     ) -> Result<Json<tools::HealthResponse>, ErrorData> {
-        self.dispatch(meta, peer, "health", move |sink, manager| {
+        self.dispatch_health(meta, peer, move |sink, manager| {
             tools::health(&request, sink.as_ref(), &manager)
         })
         .await

@@ -64,6 +64,7 @@ pub(super) fn collect_skipped(
         if file.code == super::revision_skipped::SKIP_REASON_NOT_UTF8
             && let Some(id) = identity_by_path.get(relative.as_str())
         {
+            // KEEP clone: record owns its SourceIdentity while identity_by_path borrows &SourceIdentity
             record.identity = (*id).clone();
         }
         // A failed stat is already warned about, with the path, the requested
@@ -72,6 +73,7 @@ pub(super) fn collect_skipped(
         if record.reason != SKIP_REASON_STAT_FAILED {
             warn_skipped(file);
         }
+        // KEEP clone: discovered_paths and records both own the relative path String
         discovered_paths.insert(relative.clone());
         records.insert(relative, record);
     }
@@ -113,6 +115,7 @@ pub(super) fn diff_against_stored(
         .map(|(path, hash)| (path.as_str(), hash.as_str()))
         .collect();
     let current_refs = current_hashes(identities, skipped);
+    // KEEP clone: Vec<(&str, &str)> is borrowed again by load_failed, unchanged count, and aggregate_manifest_hash
     let mut changes = manifest::compare(stored_refs, current_refs.clone());
     if crate::parse::fetch_gate::load_failed_retry_due()? {
         load_failed::add_load_failed_retries(
@@ -198,26 +201,26 @@ pub(super) fn build_upserts_and_deletions(
     limits: &ResourceLimits,
     deadline: &Deadline,
 ) -> Result<(Vec<FileRecord>, Vec<String>), PublishError> {
-    let changed_paths: HashSet<String> = if parser_version_changed {
-        samples
-            .iter()
-            .map(|sample| sample.relative_path.clone())
-            .collect()
-    } else {
+    let changed_paths: Option<HashSet<&str>> = (!parser_version_changed).then(|| {
         changes
             .iter()
             .filter(|change| change.status != ChangeStatus::Deleted)
-            .map(|change| change.relative_path.clone())
+            .map(|change| change.relative_path.as_str())
             .collect()
-    };
+    });
     let deletions: Vec<String> = changes
         .iter()
         .filter(|change| change.status == ChangeStatus::Deleted)
+        // KEEP clone: deletions returns owned Vec<String> from borrowed &[FileChange]
         .map(|change| change.relative_path.clone())
         .collect();
-    let mut upserts = Vec::with_capacity(changed_paths.len());
+    let capacity = changed_paths.as_ref().map_or(samples.len(), HashSet::len);
+    let mut upserts = Vec::with_capacity(capacity);
     for sample in samples {
-        if changed_paths.contains(sample.relative_path.as_str()) {
+        let should_upsert = changed_paths
+            .as_ref()
+            .is_none_or(|paths| paths.contains(sample.relative_path.as_str()));
+        if should_upsert {
             // `to_file_record` runs tree-sitter analysis — the publish
             // path's most expensive per-file work — so it must sit inside
             // the deadline check rather than after it.

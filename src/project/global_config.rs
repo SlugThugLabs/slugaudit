@@ -288,7 +288,10 @@ pub(crate) fn resolve_limits(
     };
     let base = limits_for_profile(profile)?;
     let mut limits = global.apply_limit_keys(base)?;
-    env.apply(&mut limits, global.max_result_store_bytes.is_some())?;
+    env.apply(
+        &mut limits,
+        global.max_result_store_bytes.is_some_and(|v| v > 0),
+    )?;
     Ok(limits)
 }
 

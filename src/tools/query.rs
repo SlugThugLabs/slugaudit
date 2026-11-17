@@ -1,10 +1,13 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=The query tool contract in one place: request/response shapes, validation order, statement validation and every refusal message, including the PRAGMA refusal.
 use super::page::{LegacyPaging, Page, PageLimit};
 use super::page_size::{self, PageSize};
 use super::paginate::page_request;
 use super::query_clip::ClippedCell;
 use super::query_exec::run_query;
-use super::query_value::{NonFiniteCell, ensure_unique_column_names};
+pub(super) use super::query_sql::{
+    ABORT_NONE, ABORT_STEP_BUDGET, ABORT_WALL_CLOCK, describe_error, refuse_wrapped,
+    single_statement_body,
+};
+use super::query_value::NonFiniteCell;
 
 use crate::error_codes::{self, ErrorCode};
 use crate::model::ResourceLimits;
@@ -13,16 +16,8 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::MAX_PATH_BYTES;
-
-/// Which budget, if any, the progress handler recorded before the statement
-/// stopped. Shared with `query_exec`, which installs the handler.
-pub(super) const ABORT_NONE: u8 = 0;
-pub(super) const ABORT_STEP_BUDGET: u8 = 1;
-pub(super) const ABORT_WALL_CLOCK: u8 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 /// A read-only SQL question over the project's own database, paged with
@@ -232,190 +227,6 @@ fn validate_query_request<'a>(
         ));
     }
     Ok(trimmed)
-}
-
-/// Proves `sql` is exactly one statement and returns its text without the
-/// terminating `;`, so it can sit inside the wrapper's parentheses.
-///
-/// SQLite's own parser decides: `Connection::prepare` compiles the first
-/// statement and, when input remains after it, prepares that remainder and
-/// fails with `Error::MultipleStatement` only if the remainder holds a real
-/// statement (rusqlite 0.37.0 `src/lib.rs:770-775`). Whitespace, comments and
-/// bare `;` after the first statement are therefore accepted, and a `;`
-/// inside a literal, quoted identifier or comment never counts. No SQL is
-/// lexed for the statement body. `expanded_sql` (no parameters are bound) is the statement text
-/// SQLite consumed, which excludes any trailing comment after the `;`.
-pub(super) fn single_statement_body(
-    tx: &rusqlite::Transaction<'_>,
-    sql: &str,
-    abort_reason: &Arc<AtomicU8>,
-) -> Result<String, ErrorData> {
-    // Several PRAGMAs take effect while being *prepared* (the heap limits,
-    // `temp_store_directory`), and `prepare` also prepares every statement
-    // after the first to detect `MultipleStatement`. So every statement's
-    // first keyword is checked before the text reaches the parser. Every
-    // other non-SELECT kind has no prepare-time effect and is refused by the
-    // wrapper below.
-    if any_statement_is_pragma(sql) {
-        return Err(ErrorData::invalid_params(
-            "sql was refused: `query` accepts a single read-only SELECT/WITH statement, \
-             not PRAGMA (a PRAGMA can change process state while being prepared)",
-            None,
-        ));
-    }
-    let statement = tx.prepare(sql).map_err(|error| match error {
-        rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
-            "sql contains more than one statement; \
-             only a single read-only statement is supported",
-            None,
-        ),
-        other => describe_error(&other, abort_reason),
-    })?;
-    // Check the caller's own projection, before the wrapper turns it into a
-    // subquery: SQLite renames the second `id` of a subquery to `id:1`, so
-    // checking only the wrapped result would miss the duplicate and hand back
-    // a renamed key the caller never asked for.
-    let column_names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
-    ensure_unique_column_names(&column_names)?;
-    if !statement.readonly() {
-        return Err(ErrorData::invalid_params(
-            "sql was refused: `query` accepts a single read-only SELECT/WITH statement",
-            None,
-        ));
-    }
-    let text = statement.expanded_sql().ok_or_else(|| {
-        ErrorData::invalid_params("sql must contain a statement, not only comments", None)
-    })?;
-    Ok(text.trim_end().trim_end_matches(';').to_owned())
-}
-
-/// The refusal for a statement that SQLite parses on its own but cannot run
-/// as the wrapper's subquery: it is valid SQL of another kind. Only the
-/// wrapper's syntax error is classified this way, because the bare statement
-/// already compiled, so a syntax error can come only from the wrapping; any
-/// other failure keeps [`describe_error`]'s text.
-pub(super) fn refuse_wrapped(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
-    if !matches!(error, rusqlite::Error::SqlInputError { .. }) {
-        return describe_error(error, abort_reason);
-    }
-    ErrorData::invalid_params(
-        format!(
-            "sql was refused: `query` accepts a single read-only SELECT/WITH statement, and \
-             this is another kind of statement (PRAGMA, EXPLAIN, a write, DDL or a \
-             transaction command), so it cannot run as a subquery (SQLite: {error})"
-        ),
-        None,
-    )
-}
-
-/// Converts an aborted-query error into a message naming which budget was
-/// hit, rather than surfacing SQLite's generic "interrupted" text as if it
-/// were always the step budget. SQLite's own error is kept in the message
-/// and logged here, once.
-pub(super) fn describe_error(error: &rusqlite::Error, abort_reason: &Arc<AtomicU8>) -> ErrorData {
-    match abort_reason.load(Ordering::Relaxed) {
-        ABORT_STEP_BUDGET => ErrorData::invalid_params(
-            format!("query exceeded its virtual-machine step budget: {error}"),
-            None,
-        ),
-        ABORT_WALL_CLOCK => ErrorData::invalid_params(
-            format!("query exceeded its wall-clock time budget: {error}"),
-            None,
-        ),
-        _ => ErrorData::invalid_params(error.to_string(), sqlite_error_payload(error)),
-    }
-}
-
-/// True when any statement of `sql` (split at each `;` outside a literal,
-/// quoted identifier or comment) starts with `PRAGMA`.
-fn any_statement_is_pragma(sql: &str) -> bool {
-    let mut rest = sql;
-    loop {
-        if first_keyword_is_pragma(rest) {
-            return true;
-        }
-        match statement_end(rest).and_then(|end| rest.get(end..)?.get(1..)) {
-            Some(after) => rest = after,
-            None => return false,
-        }
-    }
-}
-
-/// Byte index of the first `;` in `sql` that ends a statement: one outside a
-/// single-, double- or backtick-quoted string, a `[bracket]` identifier, a
-/// `--` line comment and a `/* */` block comment. `None` when no statement
-/// ends in `sql`. Every delimiter is ASCII, so the index is a char boundary.
-fn statement_end(sql: &str) -> Option<usize> {
-    let bytes = sql.as_bytes();
-    let mut rest = bytes;
-    while let Some((&byte, after)) = rest.split_first() {
-        let (opener, closing): (usize, &[u8]) = match byte {
-            b';' => return bytes.len().checked_sub(rest.len()),
-            b'\'' => (1, b"'"),
-            b'"' => (1, b"\""),
-            b'`' => (1, b"`"),
-            b'[' => (1, b"]"),
-            b'-' if after.first() == Some(&b'-') => (2, b"\n"),
-            b'/' if after.first() == Some(&b'*') => (2, b"*/"),
-            _ => {
-                rest = after;
-                continue;
-            }
-        };
-        let body = rest.get(opener..)?;
-        let close = body
-            .windows(closing.len())
-            .position(|window| window == closing)?;
-        rest = body.get(close..)?.get(closing.len()..)?;
-    }
-    None
-}
-
-/// True when `sql`'s first token, after leading whitespace and comments, is
-/// the `PRAGMA` keyword (case-insensitive).
-fn first_keyword_is_pragma(sql: &str) -> bool {
-    let mut rest = sql;
-    loop {
-        rest = rest.trim_start_matches(|character: char| character.is_ascii_whitespace());
-        if let Some(comment) = rest.strip_prefix("--") {
-            // A line comment ends at the newline; without one it runs to the
-            // end of the statement, leaving no keyword.
-            rest = match comment.split_once('\n') {
-                Some((_, after)) => after,
-                None => "",
-            };
-            continue;
-        }
-        if let Some(comment) = rest.strip_prefix("/*") {
-            match comment.split_once("*/") {
-                Some((_, after)) => {
-                    rest = after;
-                    continue;
-                }
-                None => return false,
-            }
-        }
-        break;
-    }
-    rest.split(|character: char| !character.is_ascii_alphabetic())
-        .next()
-        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("pragma"))
-}
-
-/// `sql_error` when SQLite itself failed to compile or run the statement;
-/// `None` for a failure raised on this side of the boundary (an oversized
-/// value, a type conversion), whose message already names its own fix.
-fn sqlite_error_payload(error: &rusqlite::Error) -> Option<serde_json::Value> {
-    match error {
-        rusqlite::Error::SqliteFailure(..) | rusqlite::Error::SqlInputError { .. } => {
-            error_codes::payload(ErrorCode::SqlError)
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]

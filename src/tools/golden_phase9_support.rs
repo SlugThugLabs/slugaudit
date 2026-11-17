@@ -146,6 +146,7 @@ pub(super) fn rust_project() -> TestResult<tempfile::TempDir> {
         .collect();
     let refs: Vec<(&str, String)> = files
         .iter()
+        // KEEP clone: project_with takes &[(&str, String)] while files keeps ownership of name strings
         .map(|(name, body)| (name.as_str(), body.clone()))
         .collect();
     project_with(&refs)

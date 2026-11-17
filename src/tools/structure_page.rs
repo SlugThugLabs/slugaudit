@@ -7,8 +7,10 @@ use super::page::{Completeness, Page, PageLimit};
 use super::paginate::{Served, decode_rows};
 use super::structure::stored::{PageCut, StoredMatch, StructureExtra};
 use super::structure::{StructureMatch, StructureResponse};
-use super::structure_source::{MAX_SNIPPET_BYTES, truncate_snippet, truncate_text};
 use crate::model::{LineIndex, PositionOverflow, position_u32};
+
+pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
+const MAX_SNIPPET_BYTES: usize = 120;
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Json;
 use tree_sitter::{Query, QueryCapture, QueryMatch};
@@ -190,4 +192,37 @@ pub(super) fn structure_response(
         files_over_parse_limit: extra.files_over_parse_limit,
         parse_timed_out_file: extra.parse_timed_out_file,
     }))
+}
+
+fn prefix_within(text: &str, max_bytes: usize) -> String {
+    let mut room = max_bytes;
+    let mut kept = String::new();
+    for character in text.chars() {
+        match room.checked_sub(character.len_utf8()) {
+            Some(left) => room = left,
+            None => break,
+        }
+        kept.push(character);
+    }
+    kept
+}
+
+fn truncate_text(text: &str) -> (String, bool) {
+    if text.len() <= MAX_TEXT_BYTES {
+        return (text.to_owned(), false);
+    }
+    (prefix_within(text, MAX_TEXT_BYTES), true)
+}
+
+fn truncate_snippet(text: &str, max_bytes: usize) -> (String, bool) {
+    // An empty text has no first line; that is not an error, the snippet is empty.
+    let first_line = match text.lines().next() {
+        Some(line) => line.trim(),
+        None => "",
+    };
+    if first_line.len() <= max_bytes {
+        (first_line.to_owned(), text.lines().nth(1).is_some())
+    } else {
+        (prefix_within(first_line, max_bytes), true)
+    }
 }

@@ -55,6 +55,7 @@ fn bool_of(cell: &Cell) -> Result<bool, ResultStoreError> {
 
 fn text_of(cell: &Cell) -> Result<String, ResultStoreError> {
     match cell {
+        // KEEP clone: text_of borrows &Cell and returns an owned String
         Cell::Text(text) => Ok(text.clone()),
         _ => Err(invalid_layout()),
     }
@@ -86,6 +87,7 @@ impl Materialize for StoredMatch {
 
     fn to_values(&self) -> Vec<Cell> {
         let found = &self.found;
+        // KEEP clone: Materialize::to_values borrows &self and returns owned Cell::Text values
         vec![
             Cell::Text(found.file.clone()),
             Cell::Text(found.capture_name.clone()),

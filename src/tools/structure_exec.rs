@@ -109,6 +109,7 @@ impl Run<'_, '_, '_> {
                         content_bytes = content.len(),
                         "structure: parse cancelled at the execution budget; returning the matches so far",
                     );
+                    // KEEP clone: RunState owns the path String while scan borrows window.files
                     self.parse_timed_out_file = Some(file_path.clone());
                     return Ok(());
                 }
@@ -119,6 +120,7 @@ impl Run<'_, '_, '_> {
                     ));
                 }
                 Parsed::NoTree => {
+                    // KEEP clone: RunState owns the path String while scan borrows window.files
                     self.unparsed_files.push(file_path.clone());
                     self.count_scanned_file()?;
                     continue;

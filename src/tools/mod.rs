@@ -41,6 +41,7 @@ mod query;
 mod query_clip;
 mod query_exec;
 mod query_row_bound;
+mod query_sql;
 mod query_value;
 
 mod report;

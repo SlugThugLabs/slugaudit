@@ -31,6 +31,7 @@ pub(super) fn completeness_of(
     if let Some(file) = &run.parse_timed_out_file {
         return Ok(Completeness::Partial {
             limited_by: PageLimit::TimeBudget,
+            // KEEP clone: completeness borrows &RunOutput and returns an owned Completeness
             resume_after_file: Some(file.clone()),
             files_scanned,
             files_total,
@@ -39,6 +40,7 @@ pub(super) fn completeness_of(
     if window.files_not_scanned > 0 {
         return Ok(Completeness::Partial {
             limited_by: PageLimit::ScanWindow,
+            // KEEP clone: completeness borrows &SourceWindow and returns an owned Completeness
             resume_after_file: window.next_start_after_file.clone(),
             files_scanned,
             files_total,
@@ -61,6 +63,7 @@ pub(super) fn extra_of(
         bytes_not_scanned: window.bytes_not_scanned,
         next_start_after_file: run
             .parse_timed_out_file
+            // KEEP clone: parse_timed_out_file is also moved into StructureExtra below
             .clone()
             .or(window.next_start_after_file),
         unparsed_files: run.unparsed_files,

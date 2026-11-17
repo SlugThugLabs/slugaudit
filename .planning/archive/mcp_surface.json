@@ -291,6 +291,7 @@
             },
             "required": [
               "returned",
+              "total",
               "complete",
               "page_bytes",
               "bytes_used",
@@ -339,6 +340,7 @@
                     },
                     "required": [
                       "limited_by",
+                      "resume_after_file",
                       "files_scanned",
                       "files_total"
                     ]
@@ -552,6 +554,7 @@
               }
             },
             "required": [
+              "revision_id",
               "file_count"
             ]
           },
@@ -613,14 +616,20 @@
               }
             },
             "required": [
+              "database",
               "database_read_failed",
               "server",
-              "mechanic_cache"
+              "system_memory",
+              "system_memory_error",
+              "mechanic_cache",
+              "result_store"
             ]
           }
         },
         "required": [
-          "phase"
+          "phase",
+          "remedy",
+          "database"
         ],
         "type": "object",
         "properties": {
@@ -818,6 +827,7 @@
             },
             "required": [
               "returned",
+              "total",
               "complete",
               "page_bytes",
               "bytes_used",
@@ -866,6 +876,7 @@
                     },
                     "required": [
                       "limited_by",
+                      "resume_after_file",
                       "files_scanned",
                       "files_total"
                     ]
@@ -971,6 +982,7 @@
             "required": [
               "mechanic",
               "source",
+              "note",
               "count",
               "files",
               "covers"
@@ -1339,7 +1351,10 @@
             },
             "required": [
               "id",
-              "source"
+              "source",
+              "note",
+              "language",
+              "query"
             ]
           },
           "InvalidMechanic": {
@@ -1519,6 +1534,7 @@
             },
             "required": [
               "returned",
+              "total",
               "complete",
               "page_bytes",
               "bytes_used",
@@ -1567,6 +1583,7 @@
                     },
                     "required": [
                       "limited_by",
+                      "resume_after_file",
                       "files_scanned",
                       "files_total"
                     ]
@@ -1672,6 +1689,7 @@
             "required": [
               "mechanic",
               "source",
+              "note",
               "count",
               "files",
               "covers"
@@ -1771,9 +1789,12 @@
         },
         "required": [
           "action",
+          "id",
+          "source",
           "mechanics",
           "invalid",
-          "mechanics_invalid"
+          "mechanics_invalid",
+          "first_count"
         ],
         "type": "object",
         "properties": {
@@ -2208,6 +2229,7 @@
             },
             "required": [
               "returned",
+              "total",
               "complete",
               "page_bytes",
               "bytes_used",
@@ -2256,6 +2278,7 @@
                     },
                     "required": [
                       "limited_by",
+                      "resume_after_file",
                       "files_scanned",
                       "files_total"
                     ]
@@ -2705,6 +2728,7 @@
             "required": [
               "path",
               "parse_outcome",
+              "parse_error_reason",
               "extraction_completeness",
               "parser_availability"
             ]
@@ -2786,6 +2810,7 @@
               }
             },
             "required": [
+              "note",
               "entries",
               "invalid"
             ]
@@ -2826,7 +2851,10 @@
             },
             "required": [
               "id",
-              "source"
+              "source",
+              "note",
+              "language",
+              "query"
             ]
           },
           "MechanicSource": {
@@ -3158,6 +3186,7 @@
             },
             "required": [
               "returned",
+              "total",
               "complete",
               "page_bytes",
               "bytes_used",
@@ -3206,6 +3235,7 @@
                     },
                     "required": [
                       "limited_by",
+                      "resume_after_file",
                       "files_scanned",
                       "files_total"
                     ]
@@ -3349,8 +3379,10 @@
           "matches",
           "files_not_scanned",
           "bytes_not_scanned",
+          "next_start_after_file",
           "unparsed_files",
-          "files_over_parse_limit"
+          "files_over_parse_limit",
+          "parse_timed_out_file"
         ],
         "type": "object",
         "properties": {

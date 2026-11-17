@@ -108,6 +108,15 @@ jobs:
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      - name: Verify Cargo.toml version matches release tag
+        run: |
+          set -euo pipefail
+          pkg_ver="v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="slugaudit-mcp-rust") | .version')"
+          if [ "$pkg_ver" != "${RELEASE_TAG}" ]; then
+            echo "::error::Cargo.toml version (${pkg_ver}) does not match RELEASE_TAG (${RELEASE_TAG})"
+            exit 1
+          fi
+
       - name: Build release binary
         # --locked: the release must match the checked-in Cargo.lock, or
         # the build fails instead of silently resolving differently.

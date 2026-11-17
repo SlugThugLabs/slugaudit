@@ -22,7 +22,7 @@ pub struct Position {
 /// character-count arithmetic behind it overflowed `usize`. Reaching either
 /// means a caller computed a position wrong, so the file's extraction fails
 /// with this error.
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
 pub enum PositionOverflow {
     /// The line or column exceeds `u32::MAX`.
     #[error("source position {value} exceeds u32::MAX")]
@@ -203,7 +203,7 @@ impl<'a> LineIndex<'a> {
     fn chars_before(&self, offset: usize) -> Result<usize, PositionOverflow> {
         let block_chars = match &self.block_chars {
             Ok(table) => table,
-            Err(error) => return Err(error.clone()),
+            Err(error) => return Err(*error),
         };
         if block_chars.is_empty() {
             return Ok(offset);

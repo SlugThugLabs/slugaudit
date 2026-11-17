@@ -96,6 +96,7 @@ pub(super) fn walk_imports(
     out: &mut Extraction,
     counter: &mut usize,
 ) -> Result<(), crate::model::PositionOverflow> {
+    // KEEP clone: tree_sitter_language_pack::Node is not Copy; walk stack owns Node handles
     let mut pending = vec![(root.clone(), 0, false)];
     while let Some((node, depth, suppressed)) = pending.pop() {
         if super::deadline_spent(input.deadline) {

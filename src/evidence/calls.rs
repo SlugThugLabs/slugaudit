@@ -91,6 +91,7 @@ fn caller_below(node: &Node, kind: &str, source: &str, inherited: &Caller) -> Ca
     if RUST_FUNCTION_KINDS.contains(&kind) {
         function_name(node, source).map(|name| name.map(Rc::from))
     } else {
+        // KEEP clone: Caller is Result<Option<Rc<str>>, TextRangeError> shared across AST children
         inherited.clone()
     }
 }
@@ -150,6 +151,7 @@ fn call_parts(
 fn qualified_callee(callee: &Node, source: &str) -> Result<bool, TextRangeError> {
     let path = match generic_function_inner(callee) {
         Some(inner) => inner,
+        // KEEP clone: tree_sitter_language_pack::Node is not Copy; generic_function_inner returns an owned Node
         None => callee.clone(),
     };
     Ok(is_qualified(node_text(
@@ -211,6 +213,7 @@ fn walk(
             continue;
         };
         crate::evidence::push_children(&mut pending, &node, |child| {
+            // KEEP clone: each child node on the walk stack carries a cheap Rc<str>-backed Caller
             (child, child_depth, below.clone())
         });
     }
@@ -242,6 +245,7 @@ fn emit_call(
             origin: EvidenceOrigin::RustCallWalker,
             callee_text: parts.callee_text,
             callee_name: parts.callee_name,
+            // KEEP clone: parts.caller is also borrowed below for macro_calls::extract
             caller: parts.caller.clone(),
             macro_call,
             qualified: parts.qualified,

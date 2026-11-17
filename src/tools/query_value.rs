@@ -217,7 +217,9 @@ pub(super) fn values_of(row: &StoredRow) -> Vec<SqlValue> {
             Cell::Null => SqlValue::Null,
             Cell::Int(number) => SqlValue::Integer(*number),
             Cell::Real(number) => SqlValue::Real(*number),
+            // KEEP clone: stored_to_sql_values borrows &StoredRow and returns owned SqlValues
             Cell::Text(text) => SqlValue::Text(text.clone()),
+            // KEEP clone: stored_to_sql_values borrows &StoredRow and returns owned SqlValues
             Cell::Blob(bytes) => SqlValue::Blob(bytes.clone()),
         })
         .collect()
@@ -255,6 +257,7 @@ pub(super) fn non_finite_cells(
         .filter_map(|(column, value)| match value {
             SqlValue::Real(number) if !number.is_finite() => Some(NonFiniteCell {
                 row,
+                // KEEP clone: non_finite_cells borrows &[String] and returns owned NonFiniteCells
                 column: column.clone(),
                 value: if number.is_nan() {
                     "NaN"
@@ -326,6 +329,7 @@ pub(super) fn row_to_json(
     ensure_unique_column_names(column_names)?;
     let mut object = serde_json::Map::with_capacity(column_names.len());
     for (name, value) in column_names.iter().zip(values) {
+        // KEEP clone: Map::insert requires an owned String key while column_names is borrowed &[String]
         object.insert(name.clone(), sql_value_to_json(value));
     }
     Ok(serde_json::Value::Object(object))
@@ -340,6 +344,7 @@ fn object_of(column_names: &[String], values: Vec<SqlValue>) -> serde_json::Valu
             SqlValue::Text(text) => serde_json::Value::String(text),
             other => sql_value_to_json(&other),
         };
+        // KEEP clone: Map::insert requires an owned String key while column_names is borrowed &[String]
         object.insert(name.clone(), json);
     }
     serde_json::Value::Object(object)
@@ -355,6 +360,7 @@ pub(super) fn sql_value_to_json(value: &SqlValue) -> serde_json::Value {
             // Not representable in JSON: `null`, reported by `non_finite_cells`.
             None => serde_json::Value::Null,
         },
+        // KEEP clone: sql_value_to_json borrows &SqlValue and returns an owned JSON Value
         SqlValue::Text(text) => serde_json::Value::String(text.clone()),
         SqlValue::Blob(bytes) => serde_json::Value::String(util::hex_encode(bytes)),
     }

@@ -256,8 +256,8 @@ fn path_str(path: &Path) -> String {
 static FIXTURE: LazyLock<Option<Fixture>> = LazyLock::new(|| match Fixture::new() {
     Ok(fixture) => Some(fixture),
     Err(error) => {
-        eprintln!("Error: fuzz fixture setup failed, no input is exercised: {error}");
-        None
+        eprintln!("Error: fuzz fixture setup failed, aborting: {error}");
+        std::process::abort();
     }
 });
 

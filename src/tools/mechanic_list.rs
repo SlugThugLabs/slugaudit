@@ -61,6 +61,7 @@ impl Materialize for MechanicListing {
 
     fn to_values(&self) -> Vec<Cell> {
         vec![
+            // KEEP clone: Materialize::to_values borrows &self and returns owned Cell::Text
             Cell::Text(self.id.clone()),
             Cell::Text(self.source.as_str().to_owned()),
             optional_text(self.note.as_deref()),
@@ -75,6 +76,7 @@ impl Materialize for MechanicListing {
         };
         let text = |cell: &Cell| match cell {
             Cell::Null => Ok(None),
+            // KEEP clone: Materialize::from_values borrows &[Cell] and returns an owned MechanicListing
             Cell::Text(text) => Ok(Some(text.clone())),
             _ => Err(LAYOUT),
         };
@@ -82,6 +84,7 @@ impl Materialize for MechanicListing {
             return Err(LAYOUT);
         };
         Ok(Self {
+            // KEEP clone: Materialize::from_values borrows &[Cell] and returns an owned MechanicListing
             id: id.clone(),
             source: MechanicSource::parse(source).ok_or(LAYOUT)?,
             note: text(note)?,

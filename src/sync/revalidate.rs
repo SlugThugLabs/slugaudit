@@ -47,6 +47,7 @@ pub(super) fn revalidate_unchanged_since_sample(
         };
         if !unchanged {
             return Err(PublishError::ChangedDuringSample {
+                // KEEP clone: error path returns an owned String from borrowed upsert
                 path: upsert.relative_path.clone(),
             });
         }

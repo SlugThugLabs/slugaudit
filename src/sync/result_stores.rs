@@ -43,6 +43,29 @@ impl ResultStoreSlot {
     ///
     /// Whatever `ResultStore::open` reports (already logged by the store).
     pub fn for_dir(&self, runtime_dir: &Path) -> Result<Arc<ResultStore>, ResultStoreError> {
+        self.for_dir_with_resolved_limits(runtime_dir, None)
+    }
+
+    /// Like [`ResultStoreSlot::for_dir`], but uses `limits` (from `config.json`,
+    /// `SLUGAUDIT_*`, and any session `profile`) when the slot itself was not
+    /// pinned with test limits.
+    ///
+    /// # Errors
+    ///
+    /// Whatever `ResultStore::open` reports (already logged by the store).
+    pub fn for_dir_with_limits(
+        &self,
+        runtime_dir: &Path,
+        limits: ResultStoreLimits,
+    ) -> Result<Arc<ResultStore>, ResultStoreError> {
+        self.for_dir_with_resolved_limits(runtime_dir, Some(limits))
+    }
+
+    fn for_dir_with_resolved_limits(
+        &self,
+        runtime_dir: &Path,
+        resolved: Option<ResultStoreLimits>,
+    ) -> Result<Arc<ResultStore>, ResultStoreError> {
         // The slot lock is held across the open on purpose: two first calls
         // must not both open (and lock) the same directory. The open touches
         // only the results directory, never a result's rows.
@@ -57,7 +80,7 @@ impl ResultStoreSlot {
         // Release the previous store (and its owner lock) before opening the
         // next one.
         *slot = None;
-        let limits = match self.limits {
+        let limits = match self.limits.or(resolved) {
             Some(limits) => limits,
             None => ResultStoreLimits::from(process_limits().map_err(|error| {
                 tracing::error!(%error, "process limits environment is invalid");

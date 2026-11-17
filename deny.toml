@@ -4,7 +4,12 @@
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # Transitive via rmcp and schemars; upstream has no replacement yet ("No safe upgrade is available!").
+    { id = "RUSTSEC-2026-0543", reason = "chrono is pulled transitively by rmcp and schemars with no upstream alternative yet" },
+    # Applies only when opening an untrusted DB + mismatched -wal written by another party; project.db is local disposable scratch, and rusqlite 0.41 is a breaking API jump.
+    { id = "RUSTSEC-2026-0459", reason = "project.db is local disposable scratch owned by the user; rusqlite 0.37 -> 0.41 is a breaking API change deferred from this pass" },
+]
 
 [licenses]
 version = 2
@@ -67,4 +72,4 @@ skip = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://github.com/SlugThugLabs/slugplan"]

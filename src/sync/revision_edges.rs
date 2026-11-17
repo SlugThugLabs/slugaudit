@@ -50,6 +50,11 @@ pub(super) fn re_resolve_unresolved(
             })?
             .collect::<Result<_, _>>()?
     };
+    let mut lookup_id = tx.prepare_cached("SELECT id FROM files WHERE path = ?1")?;
+    let mut update_edge = tx.prepare_cached(
+        "UPDATE dependency_edges SET to_file_id = ?1, resolution_kind = 'Resolved', \
+         confidence = ?2 WHERE id = ?3",
+    )?;
     for (edge_id, from_path, language, raw) in rows {
         let mut edges = crate::graph::resolve_imports(
             &language,
@@ -63,19 +68,11 @@ pub(super) fn re_resolve_unresolved(
         let Some(target) = edge.to_relative_path else {
             continue;
         };
-        let target_id: Option<i64> = tx
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![target],
-                |row| row.get(0),
-            )
+        let target_id: Option<i64> = lookup_id
+            .query_row(params![target], |row| row.get(0))
             .optional()?;
         if let Some(target_id) = target_id {
-            tx.execute(
-                "UPDATE dependency_edges SET to_file_id = ?1, resolution_kind = 'Resolved', \
-                 confidence = ?2 WHERE id = ?3",
-                params![target_id, edge.confidence, edge_id],
-            )?;
+            update_edge.execute(params![target_id, edge.confidence, edge_id])?;
         }
     }
     Ok(())
@@ -92,10 +89,9 @@ pub(super) fn resolve_and_store(
     file_id: i64,
     known_paths: &HashSet<&str>,
 ) -> Result<(), rusqlite::Error> {
-    tx.execute(
-        "DELETE FROM dependency_edges WHERE from_file_id = ?1",
-        params![file_id],
-    )?;
+    let mut delete_edges =
+        tx.prepare_cached("DELETE FROM dependency_edges WHERE from_file_id = ?1")?;
+    delete_edges.execute(params![file_id])?;
 
     let Some(language) = file.language.as_deref() else {
         return Ok(());
@@ -122,30 +118,27 @@ pub(super) fn resolve_and_store(
     // every Unresolved edge on every call. The resolver is chosen by the
     // file's language.
     let resolver = crate::graph::resolver::get_resolver(language);
+    let mut lookup_id = tx.prepare_cached("SELECT id FROM files WHERE path = ?1")?;
+    let mut insert_edge = tx.prepare_cached(
+        "INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+    )?;
     for edge in edges {
         let to_file_id: Option<i64> = match &edge.to_relative_path {
-            Some(path) => tx
-                .query_row(
-                    "SELECT id FROM files WHERE path = ?1",
-                    params![path],
-                    |row| row.get(0),
-                )
+            Some(path) => lookup_id
+                .query_row(params![path], |row| row.get(0))
                 .optional()?,
             None => None,
         };
         let syntax_unmodeled = resolver.extract_reference(&edge.raw_import_text).is_none();
-        tx.execute(
-            "INSERT INTO dependency_edges (from_file_id, to_file_id, raw_import_text, resolution_kind, confidence, syntax_unmodeled) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                file_id,
-                to_file_id,
-                edge.raw_import_text,
-                edge.resolution_kind,
-                edge.confidence,
-                syntax_unmodeled,
-            ],
-        )?;
+        insert_edge.execute(params![
+            file_id,
+            to_file_id,
+            edge.raw_import_text,
+            edge.resolution_kind,
+            edge.confidence,
+            syntax_unmodeled,
+        ])?;
     }
     Ok(())
 }

@@ -6,8 +6,6 @@ use crate::parse::PROSE_LANGUAGE;
 use rmcp::ErrorData;
 use rusqlite::OptionalExtension;
 
-pub(super) const MAX_TEXT_BYTES: usize = 1_000_000;
-pub(super) const MAX_SNIPPET_BYTES: usize = 120;
 pub(super) const MAX_MULTI_FILE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 
 /// `structure` cannot run on prose: it is stored for `query` but never parsed.
@@ -34,6 +32,7 @@ pub(super) fn prose_not_parsed_error() -> ErrorData {
 pub(super) fn fetch_source(
     connection: &rusqlite::Connection,
     file: &str,
+    explicit_language: Option<&str>,
     max_parse_bytes: u64,
 ) -> Result<(String, String), ErrorData> {
     let row: Option<(Option<u64>, Option<String>)> = connection
@@ -44,13 +43,14 @@ pub(super) fn fetch_source(
         )
         .optional()
         .map_err(|error| internal_error("reading the indexed file row", error))?;
-    let Some((content_bytes, language)) = row else {
+    let Some((content_bytes, detected_language)) = row else {
         return Err(ErrorData::invalid_params(
             format!("{file} is not indexed in the current revision"),
             error_codes::payload(ErrorCode::FileNotIndexed),
         ));
     };
-    if language.as_deref() == Some(PROSE_LANGUAGE) {
+    let effective_language = explicit_language.or(detected_language.as_deref());
+    if effective_language == Some(PROSE_LANGUAGE) {
         return Err(prose_not_parsed_error());
     }
     let content_bytes = content_bytes.ok_or_else(|| {
@@ -59,7 +59,7 @@ pub(super) fn fetch_source(
             error_codes::payload(ErrorCode::FileNotIndexed),
         )
     })?;
-    let language = language.ok_or_else(|| {
+    let language = effective_language.map(str::to_owned).ok_or_else(|| {
         ErrorData::invalid_params(format!("{file} has no detected language"), None)
     })?;
     if content_bytes > max_parse_bytes {
@@ -115,9 +115,20 @@ impl SourceWindow {
 /// rule. Always bound as a parameter, never spliced into SQL.
 pub(super) fn pattern_to_glob(pattern: &str) -> String {
     if pattern.contains(['*', '?']) {
-        pattern.to_owned()
+        // SQLite GLOB has no `**` globstar (`*` already matches `/`), so
+        // `src/**/*.rs` would wrongly require at least two `/` separators and
+        // miss `src/main.rs`. Collapse `/**/` and leading `**/` before `*`.
+        let collapsed = pattern.replace("/**/", "/");
+        let collapsed = match collapsed.strip_prefix("**/") {
+            Some(rest) => rest,
+            None => &collapsed,
+        };
+        collapsed.replace("**", "*")
     } else {
-        format!("*{pattern}*")
+        // Escape `[` so literal bracketed paths like `users/[slug]` are not
+        // interpreted as SQLite GLOB character classes.
+        let escaped = pattern.replace('[', "[[]");
+        format!("*{escaped}*")
     }
 }
 
@@ -218,6 +229,7 @@ pub(super) fn fetch_sources_for_language(
             .ok_or_else(|| {
                 internal_error("counting the structure window", "the byte count overflowed")
             })?;
+        // KEEP clone: files owns path while last_examined tracks the scan cursor across skipped oversized files too
         last_examined = Some(path.clone());
         files.push((path, content));
     }
@@ -236,15 +248,15 @@ pub(super) fn fetch_sources_for_language(
             .map_err(|error| internal_error("counting files past the scan window", error))?;
     }
     Ok(SourceWindow {
-        files,
-        files_not_scanned,
-        bytes_not_scanned,
-        files_over_parse_limit,
         next_start_after_file: if files_not_scanned > 0 {
             last_examined
         } else {
             None
         },
+        files,
+        files_not_scanned,
+        bytes_not_scanned,
+        files_over_parse_limit,
     })
 }
 
@@ -259,7 +271,13 @@ pub(super) fn load_targets(
     bounds: WindowBounds,
 ) -> Result<(String, SourceWindow), ErrorData> {
     if let Some(file) = &request.file {
-        let (content, detected) = fetch_source(connection, file, bounds.max_parse_bytes)?;
+        let (content, detected) = fetch_source(
+            connection,
+            file,
+            request.language.as_deref(),
+            bounds.max_parse_bytes,
+        )?;
+        // KEEP clone: load_targets borrows &StructureRequest while SourceWindow owns (path, content) pairs
         let files = vec![(file.clone(), content)];
         return Ok((detected, SourceWindow::complete(files)));
     }
@@ -324,39 +342,4 @@ fn ensure_indexed_language(
         ),
         error_codes::payload(ErrorCode::UnknownLanguage),
     ))
-}
-
-/// The longest prefix of `text` that is at most `max_bytes` long and ends on a
-/// character boundary.
-fn prefix_within(text: &str, max_bytes: usize) -> String {
-    let mut room = max_bytes;
-    let mut kept = String::new();
-    for character in text.chars() {
-        match room.checked_sub(character.len_utf8()) {
-            Some(left) => room = left,
-            None => break,
-        }
-        kept.push(character);
-    }
-    kept
-}
-
-pub(super) fn truncate_text(text: &str) -> (String, bool) {
-    if text.len() <= MAX_TEXT_BYTES {
-        return (text.to_owned(), false);
-    }
-    (prefix_within(text, MAX_TEXT_BYTES), true)
-}
-
-pub(super) fn truncate_snippet(text: &str, max_bytes: usize) -> (String, bool) {
-    // An empty text has no first line; that is not an error, the snippet is empty.
-    let first_line = match text.lines().next() {
-        Some(line) => line.trim(),
-        None => "",
-    };
-    if first_line.len() <= max_bytes {
-        (first_line.to_owned(), text.lines().nth(1).is_some())
-    } else {
-        (prefix_within(first_line, max_bytes), true)
-    }
 }

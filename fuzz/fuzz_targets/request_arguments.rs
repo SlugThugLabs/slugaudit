@@ -36,13 +36,13 @@
 
 use libfuzzer_sys::fuzz_target;
 use slugaudit_mcp_rust::tools::{
-    FindingReadRequest, FindingRequest, HealthRequest, LeadsRequest, MechanicRequest,
-    ProjectControlRequest, QueryRequest, ReportRequest, StructureRequest,
+    FindingClearRequest, FindingReadRequest, FindingRequest, HealthRequest, LeadsRequest,
+    MechanicRequest, ProjectControlRequest, QueryRequest, ReportRequest, StructureRequest,
 };
 
-/// The nine tool request types, i.e. the `arguments` object of every
+/// The ten tool request types, i.e. the `arguments` object of every
 /// `tools/call` the server accepts.
-const KINDS: usize = 9;
+const KINDS: usize = 10;
 
 /// `query`'s and `structure`'s instance limits are the only per-field bounds
 /// the decode itself does not apply, and neither is a decode concern: a
@@ -86,6 +86,7 @@ fn decode(kind: usize, body: &[u8]) {
         5 => decode_as!(ReportRequest),
         6 => decode_as!(HealthRequest),
         7 => decode_as!(MechanicRequest),
+        8 => decode_as!(FindingClearRequest),
         _ => decode_as!(ProjectControlRequest),
     }
 }

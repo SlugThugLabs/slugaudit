@@ -39,7 +39,7 @@ pub use mechanic_scan_cache::{
 };
 pub use root::{ProjectRoot, RootError};
 pub use session_mechanics::{MAX_SESSION_MECHANICS, SessionMechanics};
-pub use session_profile::{session_profile, set_session_profile};
+pub use session_profile::{clear_session_profile, session_profile, set_session_profile};
 
 /// Test fixture: an empty `project.db` in `activation` (a
 /// `.planning/slugaudit` directory), which SQLite opens as a fresh database.

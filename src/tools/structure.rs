@@ -19,9 +19,9 @@ use stored::{CutFacts, PageCut, StoredMatch};
 use super::MAX_PATH_BYTES;
 const MAX_FILTER_BYTES: usize = 8 * 1024;
 
-use super::structure_source::MAX_MULTI_FILE_TOTAL_BYTES;
 #[cfg(test)]
-pub(super) use super::structure_source::MAX_TEXT_BYTES;
+pub(super) use super::structure_page::MAX_TEXT_BYTES;
+use super::structure_source::MAX_MULTI_FILE_TOTAL_BYTES;
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 /// A Tree-sitter query to run against one indexed file, or every indexed

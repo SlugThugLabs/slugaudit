@@ -24,6 +24,7 @@ pub(crate) async fn notify_progress(
     if let Some((peer, token)) = progress
         && let Err(error) = peer
             .notify_progress(
+                // KEEP clone: notify_progress borrows &(Peer, ProgressToken) across lifecycle calls while ProgressNotificationParam takes an owned token
                 ProgressNotificationParam::new(token.clone(), fraction)
                     .with_total(1.0)
                     .with_message(message),
@@ -42,6 +43,7 @@ pub(crate) fn progress_target(
     meta: &RequestMetaObject,
     peer: &Peer<RoleServer>,
 ) -> Option<(Peer<RoleServer>, ProgressToken)> {
+    // KEEP clone: Peer is an Arc-backed handle cloned from &Peer into the returned progress target
     meta.get_progress_token().map(|token| (peer.clone(), token))
 }
 
@@ -132,7 +134,9 @@ impl Throttle {
 
 impl McpProgressSink {
     fn spawn_notify(&self, fraction: f64, message: String) {
+        // KEEP clone: tokio::spawn requires 'static ownership of the Peer handle and ProgressToken
         let peer = self.peer.clone();
+        // KEEP clone: tokio::spawn requires 'static ownership of the Peer handle and ProgressToken
         let token = self.token.clone();
         // Per-event spawn is intentional: the future body is tiny (just
         // `notify_progress(...).await`), the throttled volume is small, and

@@ -77,8 +77,8 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     }
     let args = rest.into_iter();
     match first.as_str() {
-        "serve" => Ok(Command::Serve),
-        "help" | "--help" | "-h" => Ok(Command::Help),
+        "serve" => no_arguments("serve", args).map(|()| Command::Serve),
+        "help" | "--help" | "-h" => no_arguments("help", args).map(|()| Command::Help),
         "connect" => Ok(Command::Connect {
             agent: single_agent("connect", args)?,
         }),
@@ -87,8 +87,10 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
         }),
         "install" => no_arguments("install", args).map(|()| Command::Install),
         "menu" => no_arguments("menu", args).map(|()| Command::Menu),
-        "update" => Ok(Command::Update),
-        "version" | "--version" | "-V" | "-v" => Ok(Command::Version),
+        "update" => no_arguments("update", args).map(|()| Command::Update),
+        "version" | "--version" | "-V" | "-v" => {
+            no_arguments("version", args).map(|()| Command::Version)
+        }
         other => Err(format!(
             "unknown command {other:?}; expected one of: serve, connect, disconnect, install, update, menu, version, help"
         )),

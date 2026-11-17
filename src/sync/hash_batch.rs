@@ -59,6 +59,7 @@ fn hash_one(file: &DiscoveredFile, max_file_bytes: u64) -> Result<Hashed, Publis
     match hash_file(&file.relative_path, &file.absolute_path, max_file_bytes) {
         Ok(identity) => Ok(Hashed::Identity(identity)),
         Err(error @ HashError::TooLarge { .. }) => Ok(Hashed::Skipped(SkippedFile {
+            // KEEP clone: hash_one borrows &DiscoveredFile and returns an owned SkippedFile
             absolute_path: file.absolute_path.clone(),
             reason: error.to_string(),
             code: SKIP_REASON_OVERSIZE,

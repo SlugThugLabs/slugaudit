@@ -240,23 +240,25 @@ pub fn budget_payload(elapsed_ms: Option<u128>) -> Option<Value> {
 pub fn store_error(error: &crate::store::ResultStoreError) -> rmcp::ErrorData {
     use crate::store::ResultStoreError as E;
     let message = error.to_string();
-    let invalid = |code| rmcp::ErrorData::invalid_params(message.clone(), payload(code));
     match error {
-        E::Unavailable { .. } => rmcp::ErrorData::internal_error(
-            message.clone(),
-            payload(ErrorCode::ResultStoreUnavailable),
-        ),
-        E::Full { .. } => invalid(ErrorCode::ResultStoreFull),
-        E::TooLarge => invalid(ErrorCode::ResultTooLarge),
-        E::Expired => invalid(ErrorCode::ResultExpired),
-        E::Unknown => invalid(ErrorCode::UnknownCursor),
+        E::Unavailable { .. } => {
+            rmcp::ErrorData::internal_error(message, payload(ErrorCode::ResultStoreUnavailable))
+        }
+        E::Full { .. } => {
+            rmcp::ErrorData::invalid_params(message, payload(ErrorCode::ResultStoreFull))
+        }
+        E::TooLarge => rmcp::ErrorData::invalid_params(message, payload(ErrorCode::ResultTooLarge)),
+        E::Expired => rmcp::ErrorData::invalid_params(message, payload(ErrorCode::ResultExpired)),
+        E::Unknown => rmcp::ErrorData::invalid_params(message, payload(ErrorCode::UnknownCursor)),
+        // KEEP clone: store_error borrows &ResultStoreError while ErrorData::from consumes an owned error
         E::Lock(poisoned) => rmcp::ErrorData::from(poisoned.clone()),
+        // KEEP clone: store_error borrows &ResultStoreError while ErrorData::from consumes an owned error
         E::Clock(clock) => rmcp::ErrorData::from(clock.clone()),
         E::Invalid { .. }
         | E::Io { .. }
         | E::Sqlite { .. }
         | E::Json { .. }
-        | E::Corrupt { .. } => rmcp::ErrorData::internal_error(message.clone(), None),
+        | E::Corrupt { .. } => rmcp::ErrorData::internal_error(message, None),
     }
 }
 

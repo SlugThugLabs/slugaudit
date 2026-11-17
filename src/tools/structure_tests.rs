@@ -408,7 +408,7 @@ fn a_file_with_no_detected_language_is_refused_by_name() -> TestResult {
         .execute("UPDATE files SET language = NULL WHERE path = 'lib.rs'", [])
         .check("clear the detected language")?;
 
-    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", None, u64::MAX)
         .check_err("a file with no detected language must be refused")?;
 
     ensure_eq(
@@ -433,7 +433,7 @@ fn a_file_with_no_detected_language_is_refused_by_name() -> TestResult {
 fn a_database_failure_reading_a_file_is_an_internal_error_not_a_bad_argument() -> TestResult {
     let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
 
-    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", u64::MAX)
+    let error = crate::tools::structure_source::fetch_source(&connection, "lib.rs", None, u64::MAX)
         .check_err("a missing files table must fail")?;
 
     ensure_eq(

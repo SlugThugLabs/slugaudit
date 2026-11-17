@@ -16,7 +16,7 @@ use crate::parse;
 use crate::project;
 use crate::store;
 use rmcp::ErrorData;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 /// Reads the revision id the database holds after a sync. Every field is
@@ -123,40 +123,49 @@ pub(crate) fn ensure_project_row(
     const SCHEMA_VERSION: i64 = 1;
 
     let root_path = root.to_string_lossy();
-    let created_at =
-        crate::util::now_unix().map_err(|error| ProjectMetaError::Other(error.into()))?;
-
-    connection
-        .execute(
-            "INSERT OR IGNORE INTO project (\
-                id, project_id, root_path, contract_version, schema_version, created_at_unix\
-             ) VALUES (1, 'default', ?1, ?2, ?3, ?4)",
-            rusqlite::params![
-                root_path.as_ref(),
-                CONTRACT_VERSION,
-                SCHEMA_VERSION,
-                created_at
-            ],
-        )
-        .map_err(|error| {
-            ProjectMetaError::Other(ErrorData::internal_error(
-                format!("recording project metadata: {error}"),
-                None,
-            ))
-        })?;
-
-    let (stored_root_path, contract_version, schema_version): (String, i64, i64) = connection
+    let (stored_root_path, contract_version, schema_version) = if let Ok(Some(row)) = connection
         .query_row(
             "SELECT root_path, contract_version, schema_version FROM project WHERE id = 1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .map_err(|error| {
-            ProjectMetaError::Other(ErrorData::internal_error(
-                format!("reading project metadata: {error}"),
-                None,
-            ))
-        })?;
+        .optional()
+    {
+        row
+    } else {
+        let created_at =
+            crate::util::now_unix().map_err(|error| ProjectMetaError::Other(error.into()))?;
+        connection
+                .execute(
+                    "INSERT OR IGNORE INTO project (\
+                        id, project_id, root_path, contract_version, schema_version, created_at_unix\
+                     ) VALUES (1, 'default', ?1, ?2, ?3, ?4)",
+                    rusqlite::params![
+                        root_path.as_ref(),
+                        CONTRACT_VERSION,
+                        SCHEMA_VERSION,
+                        created_at
+                    ],
+                )
+                .map_err(|error| {
+                    ProjectMetaError::Other(ErrorData::internal_error(
+                        format!("recording project metadata: {error}"),
+                        None,
+                    ))
+                })?;
+        connection
+            .query_row(
+                "SELECT root_path, contract_version, schema_version FROM project WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|error| {
+                ProjectMetaError::Other(ErrorData::internal_error(
+                    format!("reading project metadata: {error}"),
+                    None,
+                ))
+            })?
+    };
 
     if contract_version != CONTRACT_VERSION || schema_version != SCHEMA_VERSION {
         return Err(ProjectMetaError::IncompatibleVersion {

@@ -127,7 +127,10 @@ CREATE TABLE IF NOT EXISTS files (
     last_revision_id INTEGER NOT NULL REFERENCES revisions (id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_files_hash ON files (content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_path_hash ON files (path, content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_language_path
+    ON files (language, path)
+    WHERE file_kind = 'indexed';
 
 -- One generic evidence table backs structures, imports, exports, comments,
 -- docstrings, symbols, diagnostics, and call sites — the kinds in
@@ -166,6 +169,9 @@ CREATE TABLE IF NOT EXISTS evidence (
 
 CREATE INDEX IF NOT EXISTS idx_evidence_kind ON evidence (kind);
 CREATE INDEX IF NOT EXISTS idx_evidence_file ON evidence (file_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_call_callee
+    ON evidence (json_extract(payload, '$.callee_name'), file_id)
+    WHERE kind = 'Call';
 
 -- Derived from import evidence during sync (src/graph/). Kept separate from
 -- `evidence` because traversal needs real from/to columns for recursive

@@ -132,6 +132,7 @@ fn sample_one(
         Err(error @ SampleError::NotUtf8 { .. }) => (error, SKIP_REASON_NOT_UTF8),
     };
     Ok(Sampled::Skipped(SkippedFile {
+        // KEEP clone: SkippedFile owns its PathBuf while sample_one borrows &DiscoveredFile
         absolute_path: file.absolute_path.clone(),
         reason: error.to_string(),
         code,

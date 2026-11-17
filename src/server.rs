@@ -146,7 +146,9 @@ impl SlugAuditServer {
         + 'static,
     ) -> Result<T, ErrorData> {
         let progress = progress_target(&meta, &peer);
+        // KEEP clone: run_blocking also consumes progress for lifecycle notifications
         let inner_sink = build_inner_sink(progress.clone());
+        // KEEP clone: SourceSyncManager is an Arc-backed handle cloned from &self into the 'static blocking closure
         let manager = self.manager.clone();
         run_blocking(
             Arc::clone(&self.blocking_ops),
@@ -155,6 +157,29 @@ impl SlugAuditServer {
             progress,
         )
         .await
+    }
+
+    /// Runs `health` on Tokio's blocking pool without waiting behind saturated
+    /// `blocking_ops` sync permits, so health checks still respond when syncs
+    /// are busy.
+    pub(crate) async fn dispatch_health<T: Send + 'static>(
+        &self,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        work: impl FnOnce(Arc<dyn ProgressSink>, sync::SourceSyncManager) -> Result<T, ErrorData>
+        + Send
+        + 'static,
+    ) -> Result<T, ErrorData> {
+        let progress = progress_target(&meta, &peer);
+        // KEEP clone: progress is passed to notify_progress if needed
+        let inner_sink = build_inner_sink(progress);
+        // KEEP clone: SourceSyncManager is an Arc-backed handle cloned from &self into the 'static blocking closure
+        let manager = self.manager.clone();
+        tokio::task::spawn_blocking(move || work(inner_sink, manager))
+            .await
+            .map_err(|error| {
+                ErrorData::internal_error(format!("health task failed: {error}"), None)
+            })?
     }
 }
 

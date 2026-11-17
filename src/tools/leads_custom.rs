@@ -43,8 +43,10 @@ pub(super) fn counts(
                 .get(index)
                 .ok_or_else(|| index_out_of_range("tallies", index, tallies.len()))?;
             Ok(MechanicCount {
+                // KEEP clone: borrows &Catalog and returns owned MechanicCount
                 mechanic: registered.entry.id.clone(),
                 source: registered.source,
+                // KEEP clone: borrows &Catalog and returns owned MechanicCount
                 note: Some(registered.entry.note.clone()),
                 count: tally.count,
                 files: tally.files,

@@ -329,7 +329,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -351,7 +351,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -415,15 +415,6 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
-
-[[package]]
-name = "fsevent-sys"
-version = "4.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76ee7a02da4d231650c7cea31349b889be2f45ddb3ef3032d2ec8185f6313fd2"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "futures"
@@ -658,26 +649,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inotify"
-version = "0.11.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4cc00ea907cab49550b7da656f80ebb97be1b997d931fbcd28d39734e17ce592"
-dependencies = [
- "bitflags",
- "inotify-sys",
- "libc",
-]
-
-[[package]]
-name = "inotify-sys"
-version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c033f80b2c113cdf91ab7a33faa9cbc014726dcad99880c8609af2a370edf37d"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -751,26 +722,6 @@ dependencies = [
  "cfg-if",
  "futures-util",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "kqueue"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d763e5b24120b4ddf50de6c92308156765aabfbbccebf401da7cff2d70a41ea"
-dependencies = [
- "kqueue-sys",
- "libc",
-]
-
-[[package]]
-name = "kqueue-sys"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07293a4e297ac234359b510362495713f75ea345d5307140414f20c69ffeb087"
-dependencies = [
- "bitflags",
- "libc",
 ]
 
 [[package]]
@@ -869,36 +820,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b18443e9c262bfe8fa82f51666e2642c53393f7e5c27b3e1aeab922cff5b9d8"
 dependencies = [
  "libc",
- "log",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "notify"
-version = "8.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d3d07927151ff8575b7087f245456e549fea62edf0ec4e565a5ee50c8402bc3"
-dependencies = [
- "bitflags",
- "fsevent-sys",
- "inotify",
- "kqueue",
- "libc",
- "log",
- "mio",
- "notify-types",
- "walkdir",
- "windows-sys 0.60.2",
-]
-
-[[package]]
-name = "notify-types"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
-dependencies = [
- "bitflags",
 ]
 
 [[package]]
@@ -907,7 +830,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1060,31 +983,36 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.5.0"
+version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fae7019994ae0fe4ada40b732f798f3ff26f0f04facb1477f1bf37eb4f18a2d3"
+checksum = "391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b"
 dependencies = [
  "chrono",
  "futures",
  "indexmap",
+ "libc",
  "pastey",
+ "percent-encoding",
  "pin-project-lite",
  "rmcp-macros",
  "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
+ "unicode-general-category",
+ "unicode-normalization",
  "uuid",
 ]
 
 [[package]]
 name = "rmcp-macros"
-version = "3.5.0"
+version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7e66877136e969d5a2d561ee5841b17717a0619aebd64abb47a2a2f46e34683"
+checksum = "3598e3f36f4af2b5219b133baf7d97a2197039225adc3d4acf3dd8805b5a2aef"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -1126,7 +1054,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1183,7 +1111,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1407,12 +1335,12 @@ version = "1.1.0"
 dependencies = [
  "blake3",
  "ignore",
- "notify",
  "rmcp",
  "rusqlite",
  "schemars",
  "serde",
  "serde_json",
+ "slugplan",
  "thiserror",
  "tokio",
  "tracing",
@@ -1435,10 +1363,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "slugplan"
+version = "0.1.1"
+source = "git+https://github.com/SlugThugLabs/slugplan?tag=v0.1.1#dc434866c5c03ae63096c63685467c509194ad8b"
+
+[[package]]
 name = "smallvec"
 version = "1.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
+
+[[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.60.2",
+]
 
 [[package]]
 name = "socks"
@@ -1512,7 +1455,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1554,6 +1497,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
+
+[[package]]
 name = "tokio"
 version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1564,6 +1513,7 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "signal-hook-registry",
+ "socket2",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -1719,10 +1669,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 
 [[package]]
+name = "unicode-general-category"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
 
 [[package]]
 name = "untrusted"
@@ -1906,7 +1871,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

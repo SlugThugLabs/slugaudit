@@ -225,7 +225,7 @@ pub fn project_control(
 
     match inner.action {
         ProjectControlAction::On => enable(&root, profile, sink, manager),
-        ProjectControlAction::Off => disable(&root),
+        ProjectControlAction::Off => disable(&root, manager),
     }
 }
 
@@ -275,10 +275,12 @@ fn enable(
     }
     let db_path = project::database_path(root);
     // A previous `off` removed `results/` under any store this process still
-    // holds for the directory; drop it so the next result recreates it. Not
-    // done on `off`: a result opened before it must stay readable.
-    if let (Some(m), Some(runtime_dir)) = (manager, db_path.parent()) {
-        m.result_stores().release_dir(runtime_dir)?;
+    // holds for the directory; drop it so the next result recreates it.
+    if let Some(m) = manager {
+        m.mechanic_scan_cache().clear_project(&db_path)?;
+        if let Some(runtime_dir) = db_path.parent() {
+            m.result_stores().release_dir(runtime_dir)?;
+        }
     }
     let mut discard = None;
     let mut connection = match store::open_read_write(&db_path) {
@@ -335,7 +337,15 @@ fn recover_corrupt_database(path: &std::path::Path) -> Result<rusqlite::Connecti
 /// `off` never touches `.gitignore` — removing a rule can unhide paths
 /// SlugAudit knows nothing about, and only `on` has a reason to add one.
 /// Every response from here therefore omits the `gitignore` field.
-fn disable(root: &ProjectRoot) -> Result<Json<ProjectControlResponse>, ErrorData> {
+fn disable(
+    root: &ProjectRoot,
+    manager: Option<&sync::SourceSyncManager>,
+) -> Result<Json<ProjectControlResponse>, ErrorData> {
+    let db_path = project::database_path(root);
+    if let Some(m) = manager {
+        m.mechanic_scan_cache().clear_project(&db_path)?;
+    }
+    project::clear_session_profile(root.as_path())?;
     let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
     // Nothing removed means there was no activation directory: already off.
     let status = if report.removed.is_empty() {

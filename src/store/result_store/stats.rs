@@ -59,6 +59,7 @@ impl Registry {
             refused_too_large: self.counters.refused_too_large,
             unknown_cursors: self.counters.unknown_cursors,
             expired_cursors: self.counters.expired_cursors,
+            // KEEP clone: stats borrows &SweepOutcome and returns owned StoreStats
             sweep: sweep.clone(),
             ..StoreStats::default()
         };

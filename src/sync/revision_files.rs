@@ -10,7 +10,7 @@
 use super::FileRecord;
 use super::RevisionError;
 use super::classify::classify;
-use crate::evidence::{self, EvidenceRow};
+use crate::evidence;
 use rusqlite::params;
 
 /// Upserts one indexed file's `files` row, then replaces its evidence.
@@ -31,8 +31,7 @@ pub(super) fn upsert_file(
     revision_db_id: i64,
 ) -> Result<i64, RevisionError> {
     validate_record(file)?;
-    insert_file_row(tx, file, revision_db_id)?;
-    let file_id = file_id_for_path(tx, &file.relative_path)?;
+    let file_id = insert_file_row(tx, file, revision_db_id)?;
     replace_evidence(tx, file_id, file)?;
     Ok(file_id)
 }
@@ -41,6 +40,7 @@ fn validate_record(file: &FileRecord) -> Result<(), RevisionError> {
     file.run
         .validate()
         .map_err(|reason| RevisionError::InvalidParserRun {
+            // KEEP clone: error path returns an owned String from borrowed FileRecord
             path: file.relative_path.clone(),
             reason,
         })
@@ -50,8 +50,8 @@ fn insert_file_row(
     tx: &rusqlite::Transaction<'_>,
     file: &FileRecord,
     revision_db_id: i64,
-) -> Result<(), RevisionError> {
-    tx.execute(
+) -> Result<i64, RevisionError> {
+    let mut statement = tx.prepare_cached(
         "INSERT INTO files (\
             path, file_kind, content, content_hash, hash_algorithm, byte_len, \
             modified_unix_seconds, language, language_detected, parser_availability, \
@@ -73,7 +73,10 @@ fn insert_file_row(
             parse_outcome = excluded.parse_outcome, \
             parse_error_reason = excluded.parse_error_reason, \
             extraction_completeness = excluded.extraction_completeness, \
-            last_revision_id = excluded.last_revision_id",
+            last_revision_id = excluded.last_revision_id \
+         RETURNING id",
+    )?;
+    let id: i64 = statement.query_row(
         params![
             file.relative_path,
             if file.is_binary { "binary" } else { "indexed" },
@@ -91,19 +94,9 @@ fn insert_file_row(
             revision_db_id,
             classify(&file.relative_path).as_sql_text(),
         ],
-    )?;
-    Ok(())
-}
-
-fn file_id_for_path(
-    tx: &rusqlite::Transaction<'_>,
-    relative_path: &str,
-) -> Result<i64, rusqlite::Error> {
-    tx.query_row(
-        "SELECT id FROM files WHERE path = ?1",
-        params![relative_path],
         |row| row.get(0),
-    )
+    )?;
+    Ok(id)
 }
 
 fn replace_evidence(
@@ -111,26 +104,20 @@ fn replace_evidence(
     file_id: i64,
     file: &FileRecord,
 ) -> Result<(), rusqlite::Error> {
-    tx.execute("DELETE FROM evidence WHERE file_id = ?1", params![file_id])?;
-    for item in &file.evidence {
-        insert_evidence(tx, file_id, &evidence::to_row(item))?;
+    let mut delete_stmt = tx.prepare_cached("DELETE FROM evidence WHERE file_id = ?1")?;
+    delete_stmt.execute(params![file_id])?;
+    if file.evidence.is_empty() {
+        return Ok(());
     }
-    Ok(())
-}
-
-/// Inserts one normalized evidence row for a file. The caller has already
-/// deleted the file's previous evidence, so this is a plain insert.
-fn insert_evidence(
-    tx: &rusqlite::Transaction<'_>,
-    file_id: i64,
-    row: &EvidenceRow,
-) -> Result<(), rusqlite::Error> {
-    tx.execute(
+    let mut insert_stmt = tx.prepare_cached(
         "INSERT INTO evidence (\
             file_id, key, kind, origin, span_availability, \
             start_byte, end_byte, start_line, start_column, end_line, end_column, payload\
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![
+    )?;
+    for item in &file.evidence {
+        let row = evidence::to_row(item);
+        insert_stmt.execute(params![
             file_id,
             row.key,
             row.kind,
@@ -143,7 +130,7 @@ fn insert_evidence(
             row.end_line,
             row.end_column,
             row.payload,
-        ],
-    )?;
+        ])?;
+    }
     Ok(())
 }

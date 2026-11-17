@@ -60,10 +60,14 @@ impl Catalog {
     /// Every loaded entry, session first, then builtin.
     pub(super) fn listings(&self) -> Vec<MechanicListing> {
         let custom = self.custom.iter().map(|registered| MechanicListing {
+            // KEEP clone: listings borrows &Catalog and returns owned MechanicListings
             id: registered.entry.id.clone(),
             source: registered.source,
+            // KEEP clone: listings borrows &Catalog and returns owned MechanicListings
             note: Some(registered.entry.note.clone()),
+            // KEEP clone: listings borrows &Catalog and returns owned MechanicListings
             language: Some(registered.entry.language.clone()),
+            // KEEP clone: listings borrows &Catalog and returns owned MechanicListings
             query: Some(registered.entry.query.clone()),
         });
         let builtin = MECHANICS.iter().map(|mechanic| MechanicListing {

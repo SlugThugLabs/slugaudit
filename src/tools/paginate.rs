@@ -120,6 +120,7 @@ impl RowSink<'_, '_> {
                 SinkError::ColumnsAlreadyDeclared,
             ));
         }
+        // KEEP clone: RowSink keeps pending ResultSpec as a template when set_columns opens the writer
         let mut spec = self.pending.clone();
         spec.columns = columns;
         *self.writer = Some(self.store.begin(spec).map_err(|e| store_error(&e))?);
@@ -234,13 +235,17 @@ where
             let runtime_dir = synced.database_path.parent().ok_or_else(|| {
                 internal_error("locating the runtime directory", "no parent directory")
             })?;
+            let store_limits = crate::store::ResultStoreLimits::from(&super::limits_for_root(
+                &super::project_root(path)?,
+            )?);
             let store = manager
                 .result_stores()
-                .for_dir(runtime_dir)
+                .for_dir_with_limits(runtime_dir, store_limits)
                 .map_err(|e| store_error(&e))?;
             let pending = ResultSpec {
                 tool: spec.tool.to_owned(),
                 project: project_label(runtime_dir)?,
+                // KEEP clone: synced is still borrowed by with_verified_read below
                 revision_id: synced.revision_id.clone(),
                 columns: Vec::new(),
             };
@@ -249,6 +254,7 @@ where
             let mut writer = if spec.columns.is_empty() {
                 None
             } else {
+                // KEEP clone: pending is also moved into RowSink below
                 let mut known = pending.clone();
                 known.columns.clone_from(&spec.columns);
                 Some(store.begin(known).map_err(|e| store_error(&e))?)
@@ -321,7 +327,7 @@ where
         );
         return Err(store_error(&store.refuse_foreign_tool()));
     }
-    let mut stored: Stored<E> = serde_json::from_value(meta.completeness.clone())
+    let mut stored: Stored<E> = serde::Deserialize::deserialize(&meta.completeness)
         .map_err(|error| internal_error("decoding the stored result extras", error))?;
     if let Some(requested) = spec.requested_page_bytes {
         // Clamped to the ceiling page one ran under, not to a re-derived one.
@@ -376,6 +382,7 @@ where
         } else {
             PageLimit::PageBytes
         },
+        // KEEP clone: read.meta is an Arc<ResultMeta> while Page owns revision_id
         revision_id: read.meta.revision_id.clone(),
         database_discard: None,
     };
@@ -383,6 +390,7 @@ where
         rows: read.rows,
         page,
         meta: stored.extra,
+        // KEEP clone: read.meta is an Arc<ResultMeta> while Served owns columns
         columns: read.meta.columns.clone(),
         at_ceiling,
     })

@@ -97,6 +97,7 @@ pub(super) fn assemble_matchers(
     // echo ignore-file line content) is not logged.
     for (dir, (gitignores, ignores)) in group_files_by_dir(ignore_files) {
         if let Some(matcher) = compile_ignore_matcher(&dir, &ignores) {
+            // KEEP clone: ignore_by_dir and gitignore_by_dir both own a PathBuf key per directory
             ignore_by_dir.insert(dir.clone(), matcher);
         }
         if let Some(matcher) = compile_gitignore_matcher(root, &dir, &gitignores) {
@@ -134,8 +135,10 @@ pub(super) fn group_files_by_dir(
         };
         let (gitignores, ignores) = files_by_dir.entry(parent.to_path_buf()).or_default();
         if file.file_name().and_then(|n| n.to_str()) == Some(".ignore") {
+            // KEEP clone: group_files_by_dir borrows &[PathBuf] and returns owned per-directory file lists
             ignores.push(file.clone());
         } else {
+            // KEEP clone: group_files_by_dir borrows &[PathBuf] and returns owned per-directory file lists
             gitignores.push(file.clone());
         }
     }

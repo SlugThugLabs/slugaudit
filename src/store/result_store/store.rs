@@ -159,6 +159,7 @@ impl ResultStore {
     ///
     /// `Expired` when the result was reclaimed (counted once, as for a read).
     pub fn tool_of(&self, id: ResultId) -> Result<String, ResultStoreError> {
+        // KEEP clone: tool_of returns an owned String from the shared Arc<ResultMeta>
         Ok(self.lookup(id)?.meta.tool.clone())
     }
 
@@ -176,11 +177,8 @@ impl ResultStore {
     /// Admits a committed result, reclaiming under pressure. One log line for
     /// the materialisation and one per reclaim; never rows.
     pub(super) fn admit(&self, id: ResultId, entry: Entry) -> Result<(), ResultStoreError> {
-        let (tool, revision, bytes) = (
-            entry.meta.tool.clone(),
-            entry.meta.revision_id.clone(),
-            entry.bytes,
-        );
+        let meta = Arc::clone(&entry.meta);
+        let bytes = entry.bytes;
         let (now, grace) = (self.now()?, self.limits.active_grace_secs);
         let budget = self.limits.max_bytes;
         // The guard is a temporary of this statement: it is released before
@@ -222,7 +220,7 @@ impl ResultStore {
         }
         // Dropping the entries closes their files, outside the registry lock.
         drop(reclaimed);
-        tracing::info!(result = %id, tool = %tool, revision = %revision, bytes, class = "Active", "result materialised");
+        tracing::info!(result = %id, tool = %meta.tool, revision = %meta.revision_id, bytes, class = "Active", "result materialised");
         Ok(())
     }
 

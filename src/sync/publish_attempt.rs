@@ -45,6 +45,7 @@ fn hash_and_diff(
     let unrepresentable = discovery::unrepresentable_paths(root, &discovery_skips);
     let mut discovered_paths: HashSet<String> = discovered
         .iter()
+        // KEEP clone: discovered_paths owns Strings so collect_skipped can insert newly resolved skipped paths
         .map(|file| file.relative_path.clone())
         .collect();
     let mut skipped_records: BTreeMap<String, SkippedRecord> = BTreeMap::new();
@@ -99,21 +100,26 @@ fn force_content_repairs(
         .iter()
         .map(|id| id.relative_path.as_str())
         .collect();
-    let mut already: HashSet<String> = diff
+    let already: HashSet<&str> = diff
         .changes
         .iter()
-        .map(|change| change.relative_path.clone())
+        .map(|change| change.relative_path.as_str())
         .collect();
-    for path in mismatched {
-        if !present.contains(path.as_str()) || !already.insert(path.clone()) {
-            continue;
-        }
+    // `mismatched` is a HashSet, so each path in `repairs` is already unique.
+    let repairs: Vec<String> = mismatched
+        .iter()
+        .filter(|path| present.contains(path.as_str()) && !already.contains(path.as_str()))
+        // KEEP clone: FileChange and UnchangedCountInconsistent own relative_path Strings while mismatched is borrowed
+        .cloned()
+        .collect();
+    for path in repairs {
         diff.unchanged = diff
             .unchanged
             .checked_sub(1)
+            // KEEP clone: error path needs an owned path String while path moves into FileChange below
             .ok_or_else(|| PublishError::UnchangedCountInconsistent { path: path.clone() })?;
         diff.changes.push(FileChange {
-            relative_path: path.clone(),
+            relative_path: path,
             status: ChangeStatus::Modified,
         });
     }
@@ -160,12 +166,14 @@ fn unchanged_report(
     if current_id_now != Some(baseline.revision_id.as_str()) {
         return Err(PublishError::Revision(
             revision::RevisionError::StaleBaseline {
+                // KEEP clone: unchanged_report borrows &CurrentRevision and returns owned RevisionError
                 expected: baseline.revision_id.clone(),
                 found: revision::baseline_label(current_id_now),
             },
         ));
     }
     Ok(PublishReport {
+        // KEEP clone: unchanged_report borrows &CurrentRevision and returns an owned PublishReport
         revision_id: baseline.revision_id.clone(),
         added: 0,
         modified: 0,

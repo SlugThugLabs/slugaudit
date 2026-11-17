@@ -208,6 +208,7 @@ fn collect_file_entry(
             kind,
         }),
         None => skipped.push(SkippedFile {
+            // KEEP clone: DiscoveryError::NonUtf8Path takes an owned PathBuf while SkippedFile also moves absolute_path
             reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
             absolute_path,
             code: super::revision_skipped::SKIP_REASON_UNREADABLE,

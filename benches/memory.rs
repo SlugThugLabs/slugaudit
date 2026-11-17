@@ -57,16 +57,14 @@ fn peak_rss_kib() -> Result<Option<u64>, String> {
 /// One timed iteration: a fresh database, project activation, then a full
 /// sync. Returns the sync's wall-clock time.
 fn timed_full_sync(project: &std::path::Path) -> TestResult<std::time::Duration> {
-    // Fresh database each iteration so the WAL doesn't grow
-    // between samples (which would inflate RSS).
-    let db_dir = tempfile::tempdir().check("create database dir")?;
-    let database_path = db_dir.path().join("project.db");
-    let connection =
-        slugaudit_mcp_rust::store::open_read_write(&database_path).check("open database")?;
-
     let project_root =
         slugaudit_mcp_rust::project::ProjectRoot::resolve(project).check("resolve project root")?;
     slugaudit_mcp_rust::project::enable(&project_root).check("activate project")?;
+    // Remove any existing database so every iteration measures a full cold sync
+    // rather than an unchanged fast-path check.
+    let database_path = slugaudit_mcp_rust::project::database_path(&project_root);
+    slugaudit_mcp_rust::store::remove_database_files(&database_path)
+        .check("remove previous bench database")?;
 
     let start = std::time::Instant::now();
     let synced = slugaudit_mcp_rust::sync::SourceSyncManager::new()
@@ -77,7 +75,6 @@ fn timed_full_sync(project: &std::path::Path) -> TestResult<std::time::Duration>
         .check("sync the fixture")?;
     let elapsed = start.elapsed();
     drop(synced);
-    drop(connection);
     Ok(elapsed)
 }
 

@@ -25,6 +25,18 @@ pub fn set_session_profile(root: &Path, profile: AuditProfile) -> Result<(), Loc
     Ok(())
 }
 
+/// Clears the session profile of the project at `root`, if one was set.
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the profile table was poisoned.
+pub fn clear_session_profile(root: &Path) -> Result<(), LockPoisoned> {
+    if let Some(profiles) = crate::util::lock(&PROFILES, "session_profiles")?.as_mut() {
+        profiles.remove(root);
+    }
+    Ok(())
+}
+
 /// The session profile of the project at `root`, if the model chose one in
 /// this process.
 ///

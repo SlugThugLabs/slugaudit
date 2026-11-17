@@ -167,6 +167,7 @@ fn base_object<'a>(
             }
             other => sql_value_to_json(other),
         };
+        // KEEP clone: Map::insert requires an owned String key while columns is borrowed &[String]
         object.insert(name.clone(), cell);
     }
     Ok((object, variables))

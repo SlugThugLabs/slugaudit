@@ -20,6 +20,7 @@
 
 use crate::util::{LockPoisoned, lock};
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 /// Default budget: the same size as the default query response ceiling.
@@ -176,6 +177,23 @@ impl MechanicScanCache {
                 misses: 0,
             })),
         }
+    }
+
+    /// Drops every cached entry for `project` (for example after a database
+    /// rebuild or `project_control off`/`on`, where SQLite's `rev-1` sequence
+    /// starts over at the same database path).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn clear_project(&self, project: &Path) -> Result<(), LockPoisoned> {
+        let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
+        let project_key = project.to_string_lossy();
+        inner
+            .entries
+            .retain(|stored| stored.key.project != project_key);
+        inner.recount_bytes();
+        Ok(())
     }
 
     /// The byte budget; a caller collecting rows to cache stops keeping them

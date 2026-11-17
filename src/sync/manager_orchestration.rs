@@ -56,6 +56,8 @@ impl SourceSyncManager {
         });
         let (root, database_path) = project::resolve_project(Path::new(path))
             .map_err(|error| map_activation_error(&error))?;
+        let sync_lock = self.project_sync_lock(root.as_path())?;
+        let _sync_guard = crate::util::lock(&sync_lock, "project_sync")?;
         // The first touch of a project in this process starts its session
         // findings fresh; every later call, and any rebuild of the project
         // database below, leaves the session findings file alone.
@@ -292,6 +294,7 @@ impl SourceSyncManager {
             }
             None => None,
         };
+        self.mechanic_scan_cache.clear_project(&database_path)?;
         let mut synced = publish_from_scratch(root, database_path, sink).inspect_err(|_| {
             sink.emit(ProgressEvent::Completed {
                 phase: "ensuring_current",
@@ -317,6 +320,7 @@ impl SourceSyncManager {
 /// message and no code, because `project_control` cannot fix it.
 pub(crate) fn map_activation_error(error: &project::ActivationError) -> ErrorData {
     if let project::ActivationError::Lock(poisoned) = error {
+        // KEEP clone: map_activation_error borrows &ActivationError while ErrorData::from consumes LockPoisoned
         return poisoned.clone().into();
     }
     let data = if matches!(error, project::ActivationError::NotActive) {
@@ -334,6 +338,7 @@ pub(crate) fn map_activation_error(error: &project::ActivationError) -> ErrorDat
 /// and a poisoned lock was already logged where it was detected.
 pub(crate) fn map_process_limits_error(error: &crate::model::EnvConfigError) -> ErrorData {
     if let crate::model::EnvConfigError::WarningLedger(poisoned) = error {
+        // KEEP clone: map_process_limits_error borrows &EnvConfigError while ErrorData::from consumes LockPoisoned
         return poisoned.clone().into();
     }
     ErrorData::internal_error(

@@ -243,17 +243,21 @@ pub(crate) fn read_database(database_path: &std::path::Path) -> DatabaseRead {
 }
 
 fn query_database_state(connection: &mut rusqlite::Connection) -> rusqlite::Result<DatabaseState> {
-    let (revision_id, parser_pack_version) = read_revision_fields(connection)?;
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+    let (revision_id, parser_pack_version) = read_revision_fields(&tx)?;
+    let file_count = count_files(&tx)?;
+    let skipped_file_count = count_skipped_files(&tx)?;
+    tx.commit()?;
     Ok(DatabaseState {
         revision_id,
         parser_pack_version,
-        file_count: count_files(connection)?,
-        skipped_file_count: count_skipped_files(connection)?,
+        file_count,
+        skipped_file_count,
     })
 }
 
 pub(super) fn read_revision_fields(
-    connection: &mut rusqlite::Connection,
+    connection: &rusqlite::Connection,
 ) -> rusqlite::Result<(Option<String>, Option<String>)> {
     Ok(match sync::current_revision_row(connection)? {
         Some((revision_id, parser_pack_version)) => (Some(revision_id), Some(parser_pack_version)),
@@ -261,11 +265,11 @@ pub(super) fn read_revision_fields(
     })
 }
 
-pub(super) fn count_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
+pub(super) fn count_files(connection: &rusqlite::Connection) -> rusqlite::Result<i64> {
     connection.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
 }
 
-fn count_skipped_files(connection: &mut rusqlite::Connection) -> rusqlite::Result<i64> {
+fn count_skipped_files(connection: &rusqlite::Connection) -> rusqlite::Result<i64> {
     connection.query_row(
         "SELECT count(*) FROM files WHERE file_kind = 'skipped'",
         [],
@@ -359,6 +363,7 @@ pub fn health(
         };
         Some(HealthDetail {
             database: fields.database.as_ref().map(|database| DatabaseDetail {
+                // KEEP clone: fields.database is moved into HealthResponse below
                 parser_pack_version: database.parser_pack_version.clone(),
                 skipped_file_count: database.skipped_file_count,
             }),

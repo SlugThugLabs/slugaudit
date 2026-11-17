@@ -48,6 +48,10 @@ pub struct ResultMeta {
     pub created_unix: i64,
 }
 
+/// Maximum open result-store entries retained at once so many small results
+/// cannot exhaust `RLIMIT_NOFILE` before hitting the byte budget.
+const MAX_OPEN_RESULTS: usize = 64;
+
 /// One registered result.
 pub(super) struct Entry {
     // A poisoned connection lock is not recovered: a read of it returns
@@ -152,19 +156,11 @@ impl Registry {
     ) -> Result<Vec<Reclaimed>, Refused> {
         if entry.bytes > budget {
             tally(&mut self.counters.refused_too_large);
-            return Err(Refused {
-                error: ResultStoreError::TooLarge,
-                entry: Box::new(entry),
-            });
+            return Err(refused(ResultStoreError::TooLarge, entry));
         }
         let plan = match self.plan_reclaim(entry.bytes, budget, now, grace_secs) {
             Ok(plan) => plan,
-            Err(error) => {
-                return Err(Refused {
-                    error,
-                    entry: Box::new(entry),
-                });
-            }
+            Err(error) => return Err(refused(error, entry)),
         };
         let mut reclaimed = Vec::with_capacity(plan.len());
         for (victim, class) in plan {
@@ -172,17 +168,15 @@ impl Registry {
                 // The plan only names results whose bytes are within
                 // `admitted_bytes`, so a failure here is inconsistent
                 // bookkeeping, not input.
-                self.admitted_bytes = match self.admitted_bytes.checked_sub(removed.bytes) {
-                    Some(remaining) => remaining,
-                    None => {
-                        return Err(Refused {
-                            error: ResultStoreError::corrupt(
-                                "admitted bytes are below a stored result's size",
-                            ),
-                            entry: Box::new(entry),
-                        });
-                    }
+                let Some(remaining) = self.admitted_bytes.checked_sub(removed.bytes) else {
+                    return Err(refused(
+                        ResultStoreError::corrupt(
+                            "admitted bytes are below a stored result's size",
+                        ),
+                        entry,
+                    ));
                 };
+                self.admitted_bytes = remaining;
                 match class {
                     ResultClass::Delivered => tally(&mut self.counters.reclaimed_delivered),
                     _ => tally(&mut self.counters.reclaimed_idle),
@@ -198,10 +192,10 @@ impl Registry {
             self.next_seq.checked_add(1),
             self.admitted_bytes.checked_add(entry.bytes),
         ) else {
-            return Err(Refused {
-                error: ResultStoreError::corrupt("result sequence or admitted bytes overflow"),
-                entry: Box::new(entry),
-            });
+            return Err(refused(
+                ResultStoreError::corrupt("result sequence or admitted bytes overflow"),
+                entry,
+            ));
         };
         entry.seq = self.next_seq;
         self.next_seq = next_seq;
@@ -218,8 +212,15 @@ impl Registry {
         grace_secs: u64,
     ) -> Result<Vec<(ResultId, ResultClass)>, ResultStoreError> {
         let mut used = self.admitted_bytes;
+        let total_entries = self.entries.len();
         let mut plan = Vec::new();
-        if fits_budget(used, bytes, budget) {
+        let fits = |used: u64, evicted: usize| {
+            fits_budget(used, bytes, budget)
+                && total_entries
+                    .checked_sub(evicted)
+                    .is_some_and(|n| n < MAX_OPEN_RESULTS)
+        };
+        if fits(used, 0) {
             return Ok(plan);
         }
         let mut candidates: Vec<_> = self
@@ -235,7 +236,7 @@ impl Registry {
                 ResultStoreError::corrupt("admitted bytes are below a stored result's size")
             })?;
             plan.push((id, class));
-            if fits_budget(used, bytes, budget) {
+            if fits(used, plan.len()) {
                 return Ok(plan);
             }
         }
@@ -249,5 +250,12 @@ impl Registry {
             .values()
             .filter(|entry| entry.class(now, grace_secs) == class)
             .count()
+    }
+}
+
+fn refused(error: ResultStoreError, entry: Entry) -> Refused {
+    Refused {
+        error,
+        entry: Box::new(entry),
     }
 }

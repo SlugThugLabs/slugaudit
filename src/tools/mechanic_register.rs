@@ -66,9 +66,11 @@ pub(super) fn add(
     let session = manager.session_mechanics();
     session.with_entries(|entries| check_free(entries, &entry.id))??;
     let mut catalog = mechanic_catalog::load(session, limits)?;
+    // KEEP clone: entry is also pushed into session_mechanics after the trial leads scan
     insert_candidate(&mut catalog, entry.clone(), query);
     let first = LeadsRequest {
         path: Some(path.to_owned()),
+        // KEEP clone: entry is moved into session_mechanics below
         mechanic: Some(entry.id.clone()),
         pattern: None,
         limit: request.limit,
@@ -78,12 +80,14 @@ pub(super) fn add(
         legacy_paging: crate::tools::LegacyPaging::default(),
     };
     let first_count = leads_with_catalog(&first, limits, &catalog, sink, manager)?;
+    // KEEP clone: entry moves into entries.push while the caller returns the id
+    let id = entry.id.clone();
     session.with_entries(|entries| {
         check_free(entries, &entry.id)?;
-        entries.push(entry.clone());
+        entries.push(entry);
         Ok::<(), ErrorData>(())
     })??;
-    Ok((entry.id, MechanicSource::Session, first_count))
+    Ok((id, MechanicSource::Session, first_count))
 }
 
 /// Places a candidate where it will be listed: after the session entries.

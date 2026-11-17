@@ -69,11 +69,13 @@ pub(crate) fn pick(candidates: &[String], known_paths: &HashSet<&str>) -> Resolu
         [only] => Resolution {
             kind: ResolutionKind::Resolved,
             confidence: Some("High"),
+            // KEEP clone: pick borrows &[String] candidates and returns an owned Resolution
             to_relative_path: Some((*only).clone()),
         },
         [first, _, ..] => Resolution {
             kind: ResolutionKind::Resolved,
             confidence: Some("Low"),
+            // KEEP clone: pick borrows &[String] candidates and returns an owned Resolution
             to_relative_path: Some((*first).clone()),
         },
     }

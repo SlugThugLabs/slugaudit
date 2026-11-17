@@ -26,6 +26,7 @@ impl SessionMechanics {
     ///
     /// Returns [`LockPoisoned`] when the entries were poisoned.
     pub fn entries(&self) -> Result<Vec<MechanicEntry>, LockPoisoned> {
+        // KEEP clone: snapshot releases the MutexGuard before returning an owned Vec<MechanicEntry>
         Ok(crate::util::lock(&self.entries, "session_mechanics")?.clone())
     }
 

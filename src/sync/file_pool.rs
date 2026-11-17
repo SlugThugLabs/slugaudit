@@ -74,6 +74,7 @@ where
     };
     thread::scope(|scope| {
         for _ in 0..worker_count {
+            // KEEP clone: each worker thread in the pool needs its own mpsc::Sender
             let tx = tx.clone();
             let pool = &pool;
             scope.spawn(move || pool.run_worker(&tx));
@@ -161,6 +162,7 @@ impl<F> Pool<'_, F> {
             // would silently miss a file. It fails the run instead.
             if let Err(error) = tx.send((idx, outcome)) {
                 self.abort(PublishError::SamplingResultLost {
+                    // KEEP clone: error path returns an owned String from borrowed &[DiscoveredFile]
                     path: file.relative_path.clone(),
                     reason: error.to_string(),
                 });
@@ -208,6 +210,7 @@ impl<F> Pool<'_, F> {
             .zip(self.files)
             .map(|(slot, file)| {
                 slot.ok_or_else(|| PublishError::SamplingResultLost {
+                    // KEEP clone: error path returns an owned String from borrowed &[DiscoveredFile]
                     path: file.relative_path.clone(),
                     reason: "no worker delivered an outcome for this file".to_owned(),
                 })

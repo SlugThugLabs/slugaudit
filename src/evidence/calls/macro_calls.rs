@@ -132,6 +132,7 @@ fn scan(
         let below = if in_frame {
             caller_below(&node, &kind, &fragment.wrapped, &caller)
         } else {
+            // KEEP clone: Caller is a cheap Rc<str>-backed handle shared across stack entries
             caller.clone()
         };
         // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
@@ -144,6 +145,7 @@ fn scan(
             node: child,
             fragment: Rc::clone(&fragment),
             depth: child_depth,
+            // KEEP clone: Caller is a cheap Rc<str>-backed handle shared across stack entries
             caller: below.clone(),
         });
         if in_frame && let Some(nested) = nested_macro_range(&node, &fragment) {
@@ -232,6 +234,7 @@ fn emit_call_row(
         return Ok(None);
     };
     let callee_text = node_text(wrapped, callee.start_byte(), callee.end_byte())?;
+    // KEEP clone: tree_sitter_language_pack::Node is not Copy; callee is also borrowed by qualified_callee below
     let name = match simple_name(callee.clone(), wrapped)? {
         Some(name) => name,
         None => callee_text.trim_end_matches('!').to_owned(),

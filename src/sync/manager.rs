@@ -13,9 +13,10 @@ mod orchestration;
 use super::discard_notice::DatabaseDiscard;
 pub(crate) use orchestration::{map_activation_error, map_process_limits_error};
 use rmcp::ErrorData;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// A project brought fully up to date, ready for a tool to query. Defined
 /// here (rather than in `tools::context`) so that `SourceSyncManager` can
@@ -90,6 +91,10 @@ pub struct SourceSyncManager {
     /// The lazily opened result store for paged results; see
     /// `result_stores`. Per-server state like the fields above.
     result_stores: super::result_stores::ResultStoreSlot,
+    /// Per-project singleflight mutexes so concurrent MCP calls on one repo
+    /// serialize cleanly in-process instead of stampeding disk and SQLite's
+    /// 5s busy timeout.
+    sync_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
 }
 
 impl SourceSyncManager {
@@ -103,6 +108,17 @@ impl SourceSyncManager {
     #[must_use]
     pub fn result_stores(&self) -> &super::result_stores::ResultStoreSlot {
         &self.result_stores
+    }
+
+    /// Returns the per-project sync mutex for `root`.
+    pub(super) fn project_sync_lock(&self, root: &Path) -> Result<Arc<Mutex<()>>, ErrorData> {
+        let mut table = crate::util::lock(&self.sync_locks, "project_sync_locks")?;
+        if let Some(lock) = table.get(root) {
+            return Ok(Arc::clone(lock));
+        }
+        let lock = Arc::new(Mutex::new(()));
+        table.insert(root.to_path_buf(), Arc::clone(&lock));
+        Ok(lock)
     }
 
     /// A manager whose result store obeys `limits`.
