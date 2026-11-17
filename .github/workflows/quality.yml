@@ -185,7 +185,7 @@ jobs:
       # Scheduled advisory runs live in `.github/workflows/advisories.yml`.
 
       - name: Install coverage tooling
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-llvm-cov
 
@@ -201,7 +201,7 @@ jobs:
         run: cargo run --quiet -p slugaudit-gates --bin check_coverage --locked
 
       - name: Install mutation testing tooling
-        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         with:
           tool: cargo-mutants
 
