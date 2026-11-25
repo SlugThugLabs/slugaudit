@@ -27,7 +27,10 @@ use failure::{FirstFailure, exit_code};
 
 /// MCP `initialize` request — exactly the first message an MCP host sends.
 /// Static string so the bench has no per-iteration allocation cost.
-const INITIALIZE_REQUEST: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"startup-bench","version":"0.0.0"}}}"#;
+const INITIALIZE_REQUEST: &str = concat!(
+    r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"startup-bench","version":"0.0.0"}}}"#,
+    "\n",
+);
 
 fn initialize_round_trip(binary_path: &std::path::Path) -> TestResult<std::time::Duration> {
     let mut child = Command::new(binary_path)
