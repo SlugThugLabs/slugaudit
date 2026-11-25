@@ -120,3 +120,18 @@ fn hash_reader_rejects_a_read_count_past_the_buffer() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn hash_file_refuses_non_regular_file_with_invalid_input() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
+    let Err(HashError::Read { source, .. }) = hash_file("dir", dir.path(), 1024) else {
+        return Err("directory must fail with HashError::Read".to_owned())
+            .check("unexpected outcome");
+    };
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::InvalidInput,
+        "non-regular file is rejected with InvalidInput",
+    )?;
+    Ok(())
+}

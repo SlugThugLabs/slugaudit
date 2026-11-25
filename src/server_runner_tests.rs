@@ -10,6 +10,7 @@ async fn run_blocking_propagates_a_successful_result() -> TestResult {
         "test",
         || Ok::<_, ErrorData>(42),
         None,
+        None,
     )
     .await;
     ensure_eq(&result.check("ok")?, &42, "result.check(\"ok\")? == 42")?;
@@ -23,6 +24,7 @@ async fn run_blocking_propagates_the_tools_own_typed_error() -> TestResult {
         Arc::clone(&semaphore),
         "test",
         || Err(ErrorData::invalid_params("bad request", None)),
+        None,
         None,
     )
     .await;
@@ -41,6 +43,7 @@ async fn a_panic_inside_the_blocking_closure_surfaces_as_a_typed_error_not_a_cra
         Arc::clone(&semaphore),
         "test",
         || std::panic::resume_unwind(Box::new("boom")),
+        None,
         None,
     )
     .await;
@@ -86,6 +89,7 @@ async fn a_closed_semaphore_fails_the_call_with_its_own_typed_error_before_runni
             work_ran.store(true, Ordering::SeqCst);
             Ok(())
         },
+        None,
         None,
     )
     .await;
@@ -138,6 +142,7 @@ async fn the_semaphore_bounds_concurrent_blocking_work() -> TestResult {
                     Ok::<_, ErrorData>(())
                 },
                 None,
+                None,
             )
             .await
         }));
@@ -153,6 +158,33 @@ async fn the_semaphore_bounds_concurrent_blocking_work() -> TestResult {
             peak.load(Ordering::SeqCst),
             PERMITS
         ),
+    )?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn run_blocking_sets_the_completion_flag_when_work_finishes() -> TestResult {
+    let semaphore = Arc::new(Semaphore::new(2));
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag_in_work = Arc::clone(&completed);
+
+    let result = run_blocking(
+        semaphore,
+        "test_completion_flag",
+        move || {
+            let saw_false = !flag_in_work.load(Ordering::Acquire);
+            Ok::<_, ErrorData>(saw_false)
+        },
+        None,
+        Some(Arc::clone(&completed)),
+    )
+    .await
+    .check("run_blocking succeeds")?;
+
+    ensure(result, "flag must stay false while blocking work runs")?;
+    ensure(
+        completed.load(Ordering::Acquire),
+        "flag must be tripped to true before run_blocking returns",
     )?;
     Ok(())
 }

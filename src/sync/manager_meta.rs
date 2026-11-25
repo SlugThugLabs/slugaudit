@@ -19,6 +19,35 @@ use rmcp::ErrorData;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
+/// Reads the per-database instance token (`project.project_id`) from the
+/// singleton `project` metadata row, or `None` if no metadata row exists yet.
+pub(crate) fn project_instance_id(
+    connection: &Connection,
+) -> Result<Option<String>, rusqlite::Error> {
+    connection
+        .query_row("SELECT project_id FROM project WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .optional()
+}
+
+/// Reads the database instance token after a sync, shaping any SQLite error
+/// with `database_path`.
+pub(crate) fn instance_id_after_sync(
+    connection: &Connection,
+    database_path: &Path,
+) -> Result<Option<String>, ErrorData> {
+    project_instance_id(connection).map_err(|error| {
+        ErrorData::internal_error(
+            format!(
+                "reading the project instance id of {}: {error}",
+                database_path.display()
+            ),
+            None,
+        )
+    })
+}
+
 /// Reads the revision id the database holds after a sync. Every field is
 /// present or the call errors with a named reason — a successful sync that
 /// cannot name its revision is a bug an operator must be able to see. The
@@ -204,12 +233,14 @@ pub(crate) fn ensure_project_row(
         Ok(None) => {
             let created_at =
                 crate::util::now_unix().map_err(|error| ProjectMetaError::Other(error.into()))?;
+            let instance_id = uuid::Uuid::new_v4().to_string();
             connection
                 .execute(
                     "INSERT OR IGNORE INTO project (\
                         id, project_id, root_path, contract_version, schema_version, created_at_unix\
-                     ) VALUES (1, 'default', ?1, ?2, ?3, ?4)",
+                     ) VALUES (1, ?1, ?2, ?3, ?4, ?5)",
                     rusqlite::params![
+                        instance_id,
                         expected_root.as_ref(),
                         PROJECT_CONTRACT_VERSION,
                         PROJECT_SCHEMA_VERSION,
@@ -255,7 +286,11 @@ pub(crate) fn map_publish_error(
     let budget = error.budget_elapsed_ms();
     let data = if budget.is_some() {
         error_codes::budget_payload(budget)
-    } else if matches!(error, publish::PublishError::ChangedDuringSample { .. }) {
+    } else if matches!(
+        error,
+        publish::PublishError::ChangedDuringSample { .. }
+            | publish::PublishError::Revision(super::revision::RevisionError::StaleBaseline { .. })
+    ) {
         error_codes::payload(ErrorCode::StaleRevision)
     } else {
         None
@@ -299,10 +334,12 @@ pub(crate) fn publish_from_scratch(
         publish(&mut connection, root.as_path(), parse::PACK_VERSION, sink).map_err(|error| {
             map_publish_error(root.as_path(), &error, "republishing after corruption")
         })?;
+    let db_instance_id = instance_id_after_sync(&connection, &database_path)?;
     drop(connection);
     Ok(SyncedProject {
         database_path,
         revision_id: report.revision_id,
+        db_instance_id,
         discard: None,
     })
 }

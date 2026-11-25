@@ -116,14 +116,19 @@ pub fn query(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<QueryResponse>, ErrorData> {
+    // Reject legacy paging and oversized paths before walking the filesystem
+    // to resolve project limits, matching `leads`, `structure`, and
+    // `finding_read`.
+    request.0.legacy_paging.refuse()?;
+    validate_entry(&request.0)?;
     // A continuation names no project and reads no limit: its page budget and
     // the ceiling an explicit `page_bytes` is clamped to are those stored with
-    // the result, so the process limits only fill the argument. A new request
-    // runs under its project's. Without either, `page_request` refuses the
-    // call below.
+    // the result, so the deterministic default only fills the unused argument.
+    // A new request runs under its project's. Without either, `page_request`
+    // refuses the call below.
     let limits = match (&request.0.cursor, &request.0.path) {
         (None, Some(path)) => super::resolve_limits(path)?,
-        _ => super::process_limits_for_tool()?,
+        _ => ResourceLimits::default(),
     };
     query_with_limits(request, &limits, sink, manager)
 }
@@ -146,9 +151,8 @@ fn query_with_limits(
     } = &request.0;
     legacy_paging.refuse()?;
     let trimmed = validate_query_request(request, limits)?;
-
-    let page = page_size::resolve(*page_bytes, limits)?;
     let paging = page_request(cursor.as_deref(), path.as_deref(), sink)?;
+    let page = page_size::resolve(*page_bytes, limits)?;
     let continuation = cursor.is_some();
 
     // Only a budget the request asked for overrides the one page one used.
@@ -193,6 +197,23 @@ fn query_with_limits(
     }))
 }
 
+/// Rejects an oversized `path` on a fresh request before any filesystem or
+/// limit-resolution work.
+fn validate_entry(request: &QueryRequest) -> Result<(), ErrorData> {
+    if request.cursor.is_none()
+        && request
+            .path
+            .as_deref()
+            .is_some_and(|path| crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES))
+    {
+        return Err(ErrorData::invalid_params(
+            format!("path exceeds {MAX_PATH_BYTES} bytes"),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Rejects oversized or empty inputs before any sync or SQL work, in the
 /// order the tool contract documents, and returns the SQL text without
 /// surrounding whitespace or terminating `;`. A continuation carries nothing
@@ -201,22 +222,12 @@ fn validate_query_request<'a>(
     request: &'a Parameters<QueryRequest>,
     limits: &ResourceLimits,
 ) -> Result<&'a str, ErrorData> {
-    let QueryRequest {
-        path, sql, cursor, ..
-    } = &request.0;
+    let QueryRequest { sql, cursor, .. } = &request.0;
     let trimmed = sql.trim().trim_end_matches(';');
     if cursor.is_some() {
         return Ok(trimmed);
     }
-    if path
-        .as_deref()
-        .is_some_and(|path| crate::util::exceeds_input_bytes(path, MAX_PATH_BYTES))
-    {
-        return Err(ErrorData::invalid_params(
-            format!("path exceeds {MAX_PATH_BYTES} bytes"),
-            None,
-        ));
-    }
+    validate_entry(&request.0)?;
     if trimmed.is_empty() {
         return Err(ErrorData::invalid_params("sql must not be empty", None));
     }

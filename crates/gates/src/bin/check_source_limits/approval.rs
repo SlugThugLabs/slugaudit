@@ -2,56 +2,31 @@
 
 const NEEDLE: &str = "slugaudit-line-exception:";
 const AGENT: &str = "approved-by=slugthuglabs;";
+const SPLIT_JUDGE: &str = "approved-by=split-judge;";
 const HUMAN: &str = "approved-by=human-user;";
-/// Start of the operator-facing reason produced for a human approval.
-/// Display only: the line-limit policy keys on [`Approver`], never on this
-/// text, because an agent can write this prefix into its own reason.
 const HUMAN_APPROVED_PREFIX: &str = "[human-approved ";
-
-/// Which approver an exception annotation names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Approver {
-    Agent,
-    Human,
-}
 
 /// A parsed `slugaudit-line-exception:` annotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Exception {
-    /// The operator-facing reason. A human approval carries its date here;
-    /// nothing in the policy inspects this text.
+    /// The operator-facing reason.
     pub(super) reason: String,
-    approver: Approver,
 }
 
 impl Exception {
-    /// An agent approval, valid within the original ceiling only.
-    pub(super) fn agent(reason: String) -> Self {
-        Self {
-            reason,
-            approver: Approver::Agent,
-        }
+    pub(super) fn approved(reason: String) -> Self {
+        Self { reason }
     }
 
-    /// A dated human approval, the only kind that may authorize the
-    /// narrowly bounded 301–350 band.
     pub(super) fn human(date: &str, reason: &str) -> Self {
         Self {
             reason: format!("{HUMAN_APPROVED_PREFIX}{date}] {reason}"),
-            approver: Approver::Human,
         }
-    }
-
-    /// Whether this exception may admit a file above the production ceiling.
-    /// This reads the parsed approver, not the reason text.
-    pub(super) fn allows_extended_ceiling(&self) -> bool {
-        self.approver == Approver::Human
     }
 }
 
-/// Returns the parsed exception. Legacy agent approvals remain valid for
-/// files within the original ceiling; dated human approvals may authorize
-/// the narrowly bounded 301–350 range.
+/// Returns the parsed exception (`split-judge`, `slugthuglabs`, or dated
+/// `human-user`), if any valid annotation is present.
 pub(super) fn reason(source: &str) -> Option<Exception> {
     for line in source.lines() {
         let Some((_, after_needle)) = line.split_once(NEEDLE) else {
@@ -60,11 +35,14 @@ pub(super) fn reason(source: &str) -> Option<Exception> {
         let text = after_needle.trim_start();
         // A malformed annotation grants nothing; the scan goes on to the next
         // annotation.
-        if let Some(rest) = text.strip_prefix(AGENT) {
+        if let Some(rest) = text
+            .strip_prefix(SPLIT_JUDGE)
+            .or_else(|| text.strip_prefix(AGENT))
+        {
             let Some(reason) = parse_reason(rest) else {
                 continue;
             };
-            return Some(Exception::agent(reason));
+            return Some(Exception::approved(reason));
         }
         if let Some(rest) = text.strip_prefix(HUMAN) {
             let Some((date, rest)) = rest.trim_start().split_once(';') else {

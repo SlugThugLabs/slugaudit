@@ -53,6 +53,8 @@ pub struct StructureRequest {
     /// For patterns normalized evidence and `query` can't easily express.
     /// At most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a
     /// longer query is refused with `invalid_params` before it is compiled.
+    /// Required without `cursor`; ignored with one.
+    #[serde(default)]
     pub query: String,
     /// Whether to include full matched source text up to `MAX_TEXT_BYTES`.
     /// Defaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.
@@ -176,7 +178,7 @@ pub fn structure(
     let limits = if request.0.cursor.is_none() && !request_path.is_empty() {
         super::resolve_limits(request_path)?
     } else {
-        super::process_limits_for_tool()?
+        ResourceLimits::default()
     };
     serve(request, &limits, MAX_MULTI_FILE_TOTAL_BYTES, sink, manager)
 }

@@ -124,9 +124,7 @@ pub use tool_counters::ToolCounters;
 
 pub(crate) use input_caps::{MAX_CURSOR_BYTES, MAX_PATH_BYTES};
 pub(crate) use sql_predicates::{CREDENTIAL_PATH_PREDICATE, PARSER_FAILURE_PREDICATE};
-pub(crate) use tool_limits::{
-    limits_for_root, process_limits_for_tool, project_root, resolve_limits,
-};
+pub(crate) use tool_limits::{limits_for_root, project_root, resolve_limits};
 
 // `ToolCounters` is deliberately not tested here. Its three counters are
 // process-wide `AtomicU64`s that any test in this binary may bump and

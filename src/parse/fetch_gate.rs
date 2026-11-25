@@ -11,7 +11,12 @@
 //! process, so a server restart retries immediately.
 
 use crate::util::LockPoisoned;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
+
+/// Process-wide single-flight lock that serializes concurrent uncached grammar
+/// fetches so an offline host pays at most one HTTP timeout across workers.
+static FETCH_LOCK: Mutex<()> = Mutex::new(());
 
 /// How long the gate stays closed after a fetch failure. Long enough that an
 /// offline host pays the fetch timeout once per session rather than once per
@@ -22,10 +27,12 @@ pub(crate) const GRAMMAR_FETCH_COOLDOWN: Duration = Duration::from_mins(10);
 #[cfg(not(test))]
 mod state {
     use crate::util::LockPoisoned;
+    use std::collections::BTreeSet;
     use std::sync::{LazyLock, Mutex};
     use std::time::{Duration, Instant};
 
     static LAST_FAILURE: Mutex<Option<Duration>> = Mutex::new(None);
+    static LOCALLY_FAILED: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
     /// The instant the gate's timeline starts at: its first use.
     static ORIGIN: LazyLock<Instant> = LazyLock::new(Instant::now);
 
@@ -44,6 +51,16 @@ mod state {
         )?))
     }
 
+    /// Runs `change` on the set of languages with permanent local load failures.
+    pub(super) fn with_locally_failed<T>(
+        change: impl FnOnce(&mut BTreeSet<String>) -> T,
+    ) -> Result<T, LockPoisoned> {
+        Ok(change(&mut *crate::util::lock(
+            &LOCALLY_FAILED,
+            "grammar_local_load_failures",
+        )?))
+    }
+
     pub(super) fn grammar_cached(language: &str) -> bool {
         tree_sitter_language_pack::has_parser(language)
     }
@@ -56,11 +73,13 @@ mod state {
 mod state {
     use crate::util::LockPoisoned;
     use std::cell::Cell;
+    use std::collections::BTreeSet;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     thread_local! {
         static LAST_FAILURE: Mutex<Option<Duration>> = const { Mutex::new(None) };
+        static LOCALLY_FAILED: Mutex<BTreeSet<String>> = const { Mutex::new(BTreeSet::new()) };
         static SKEW: Cell<Duration> = const { Cell::new(Duration::ZERO) };
         static CACHED: Cell<bool> = const { Cell::new(false) };
         /// The instant this thread's gate timeline starts at.
@@ -85,6 +104,18 @@ mod state {
         LAST_FAILURE.with(|last| Ok(change(&mut *crate::util::lock(last, "grammar_fetch_gate")?)))
     }
 
+    /// Runs `change` on this thread's set of languages with permanent local load failures.
+    pub(super) fn with_locally_failed<T>(
+        change: impl FnOnce(&mut BTreeSet<String>) -> T,
+    ) -> Result<T, LockPoisoned> {
+        LOCALLY_FAILED.with(|failed| {
+            Ok(change(&mut *crate::util::lock(
+                failed,
+                "grammar_local_load_failures",
+            )?))
+        })
+    }
+
     pub(super) fn grammar_cached(_language: &str) -> bool {
         CACHED.with(Cell::get)
     }
@@ -99,25 +130,97 @@ mod state {
     }
 }
 
+/// Outcome of attempting to enter a grammar-fetch slot for a language.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum FetchSlot<T> {
+    /// The fetch gate is cooling down and the grammar is not cached.
+    Blocked,
+    /// `work` ran (either unserialized because the grammar was already cached,
+    /// or serialized under the single-flight fetch lock).
+    Ran(T),
+}
+
+fn lock_fetch() -> Result<MutexGuard<'static, ()>, LockPoisoned> {
+    crate::util::lock(&FETCH_LOCK, "grammar_fetch_single_flight")
+}
+
 /// Records that a grammar fetch just failed, closing the gate.
 ///
 /// # Errors
 ///
 /// Returns [`LockPoisoned`] when the gate's state was poisoned.
 pub(crate) fn record_fetch_failure() -> Result<(), LockPoisoned> {
-    let now = state::now();
-    state::with_last_failure(|last| *last = Some(now))
+    state::with_last_failure(|last| {
+        let now = state::now();
+        *last = Some(last.map_or(now, |prev| prev.max(now)));
+    })
+}
+
+/// Records a permanent local (non-fetch) grammar load failure for `language`
+/// so unchanged `LoadFailed` rows for this language are not retried on every
+/// sync until the server restarts.
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate's state was poisoned.
+pub(crate) fn record_local_load_failure(language: &str) -> Result<(), LockPoisoned> {
+    state::with_locally_failed(|failed| {
+        failed.insert(language.to_owned());
+    })
+}
+
+/// True when `language` previously suffered a permanent local (non-fetch) load
+/// failure in this process.
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate's state was poisoned.
+pub(crate) fn is_locally_failed(language: &str) -> Result<bool, LockPoisoned> {
+    state::with_locally_failed(|failed| failed.contains(language))
 }
 
 fn cooling_down() -> Result<bool, LockPoisoned> {
-    let now = state::now();
     state::with_last_failure(|last| {
+        let now = state::now();
         // A failure stamped after `now` has not aged at all: still cooling down.
         last.is_some_and(|at| {
             now.checked_sub(at)
                 .is_none_or(|elapsed| elapsed < GRAMMAR_FETCH_COOLDOWN)
         })
     })
+}
+
+/// Runs `work` for `language`, serializing concurrent uncached grammar fetches
+/// behind a process-wide single-flight lock.
+///
+/// When `language` is already cached, `work` runs immediately without holding
+/// the fetch lock. When it is not cached, this acquires the fetch lock and
+/// re-checks both the cache and cool-down gate before invoking `work`.
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate or single-flight lock was poisoned.
+pub(crate) fn with_fetch_slot<T>(
+    language: &str,
+    work: impl FnOnce() -> Result<T, LockPoisoned>,
+) -> Result<FetchSlot<T>, LockPoisoned> {
+    if state::grammar_cached(language) {
+        return Ok(FetchSlot::Ran(work()?));
+    }
+    if cooling_down()? {
+        return Ok(FetchSlot::Blocked);
+    }
+    let guard = lock_fetch()?;
+    if state::grammar_cached(language) {
+        drop(guard);
+        return Ok(FetchSlot::Ran(work()?));
+    }
+    if cooling_down()? {
+        return Ok(FetchSlot::Blocked);
+    }
+    let result = work()?;
+    drop(guard);
+    Ok(FetchSlot::Ran(result))
 }
 
 /// True when a stored `LoadFailed` row should be re-parsed now: no fetch has
@@ -130,17 +233,6 @@ fn cooling_down() -> Result<bool, LockPoisoned> {
 /// Returns [`LockPoisoned`] when the gate's state was poisoned.
 pub(crate) fn load_failed_retry_due() -> Result<bool, LockPoisoned> {
     Ok(!cooling_down()?)
-}
-
-/// True when extraction for `language` must not call the pack: the gate is
-/// closed and the grammar is not already on this host (the pack's
-/// `has_parser`), so the call would attempt a download.
-///
-/// # Errors
-///
-/// Returns [`LockPoisoned`] when the gate's state was poisoned.
-pub(crate) fn blocks_fetch(language: &str) -> Result<bool, LockPoisoned> {
-    Ok(cooling_down()? && !state::grammar_cached(language))
 }
 
 /// Test controls for the gate's clock and grammar cache.
@@ -163,3 +255,7 @@ pub(crate) mod test_controls {
         state::set_cached(cached);
     }
 }
+
+#[cfg(test)]
+#[path = "fetch_gate_tests.rs"]
+mod tests;

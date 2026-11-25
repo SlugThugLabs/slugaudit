@@ -414,14 +414,23 @@ pub fn decode_rows<R: Materialize>(rows: &[StoredRow]) -> Result<Vec<R>, ErrorDa
 ///
 /// # Errors
 ///
-/// `invalid_params` when there is neither a cursor nor a path.
+/// `invalid_params` when `cursor` exceeds `MAX_CURSOR_BYTES`, or when there is
+/// neither a cursor nor a path.
 pub fn page_request<'a>(
     cursor: Option<&'a str>,
     path: Option<&'a str>,
     sink: &'a dyn ProgressSink,
 ) -> Result<PageRequest<'a>, ErrorData> {
     match (cursor, path) {
-        (Some(token), _) => Ok(PageRequest::Cursor(token)),
+        (Some(token), _) => {
+            if crate::util::exceeds_input_bytes(token, super::MAX_CURSOR_BYTES) {
+                return Err(ErrorData::invalid_params(
+                    format!("cursor exceeds {} bytes", super::MAX_CURSOR_BYTES),
+                    None,
+                ));
+            }
+            Ok(PageRequest::Cursor(token))
+        }
         (None, Some(path)) => Ok(PageRequest::Fresh { path, sink }),
         (None, None) => Err(ErrorData::invalid_params(
             "path is required when no cursor is given",

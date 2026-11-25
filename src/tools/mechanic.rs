@@ -83,10 +83,11 @@ pub struct MechanicRequest {
     /// Any path inside the active project. Required unless `cursor` is given.
     #[serde(default)]
     pub path: Option<String>,
-    /// `add`, `remove`, or `list`. Ignored when `cursor` is given: a cursor
-    /// only ever continues a stored `list`, and never registers or removes
-    /// anything.
-    pub action: MechanicAction,
+    /// `add`, `remove`, or `list`. Required unless `cursor` is given; ignored
+    /// when `cursor` is given: a cursor only ever continues a stored `list`,
+    /// and never registers or removes anything.
+    #[serde(default)]
+    pub action: Option<MechanicAction>,
     /// `list` only: the `page.cursor` of the previous page, copied exactly.
     /// It continues the list as it was when the first page was read, without
     /// a `path`; every other field except `page_bytes` is ignored. To page
@@ -188,9 +189,12 @@ pub fn mechanic(
     let path = request.path.as_deref().ok_or_else(|| {
         ErrorData::invalid_params("path is required when no cursor is given", None)
     })?;
+    let action = request.action.ok_or_else(|| {
+        ErrorData::invalid_params("action is required when no cursor is given", None)
+    })?;
     let root = super::project_root(path)?;
     let limits = super::limits_for_root(&root)?;
-    let (id, source, first_count) = match request.action {
+    let (id, source, first_count) = match action {
         MechanicAction::List => return list::list(request, sink, manager).map(Json),
         MechanicAction::Add => {
             let (id, source, first_count) = add(request, path, &limits, sink, manager)?;
@@ -203,14 +207,14 @@ pub fn mechanic(
     };
     let catalog = mechanic_catalog::load(manager.session_mechanics(), &limits)?;
     tracing::info!(
-        action = ?request.action,
+        action = ?action,
         source = ?source,
         registered = catalog.custom.len(),
         mechanics_invalid = catalog.invalid.len(),
         "mechanic call completed"
     );
     Ok(Json(MechanicResponse {
-        action: request.action,
+        action,
         id,
         source,
         mechanics: catalog.listings(),

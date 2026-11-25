@@ -387,3 +387,31 @@ fn an_oversized_description_is_clipped_on_a_char_boundary_and_flagged() -> TestR
     ensure(response.page.complete, "response.page.complete")?;
     Ok(())
 }
+
+#[test]
+fn finding_read_rejects_an_oversized_cursor_with_invalid_params() -> TestResult {
+    let error = finding_read(
+        &Parameters(FindingReadRequest {
+            path: None,
+            file: None,
+            cursor: Some("c".repeat(crate::tools::MAX_CURSOR_BYTES + 1)),
+            legacy_paging: LegacyPaging::default(),
+        }),
+        &crate::progress::NoopProgressSink,
+        &sync::SourceSyncManager::default(),
+    )
+    .err()
+    .check("oversized cursor is refused")?;
+
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message,
+        &format!("cursor exceeds {} bytes", crate::tools::MAX_CURSOR_BYTES),
+        "error.message names MAX_CURSOR_BYTES",
+    )?;
+    Ok(())
+}

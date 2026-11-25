@@ -201,22 +201,46 @@ pub fn disconnect_agent(
     home: Option<&Path>,
 ) -> Result<DisconnectOutcome, ConnectError> {
     let mut touched = false;
-    // Only entries slugaudit actually writes to carry a removable file entry,
-    // and only where the written shape is established; detection-only paths
-    // (`.claude.json`, `config.yaml`, `config.toml`) are left untouched.
-    if let Some(home) = home
-        && agent.writes_config_file()
-        && agent.shape.write_section().is_some()
-        && let Some(path) = agent.config.resolve(home)
-    {
-        touched = remove_json_slugaudit(&path, agent.shape.sections())?;
-    }
+    // Run the CLI remove before touching the JSON file: for `CliDirect`
+    // agents that also have a `file_fallback` JSON path, removing the JSON
+    // entry first would cause the client CLI to fail on an already-removed entry.
+    let can_fallback_json =
+        home.is_some() && agent.file_fallback && agent.shape.write_section().is_some();
+    let mut cli_error = None;
     if matches!(agent.strategy, Strategy::CliDirect)
         && let Some(cli) = agent.cli
         && crate::probe::cli_on_path(cli)
     {
-        connect_cli::run_remove(agent, cli)?;
+        match connect_cli::run_remove(agent, cli) {
+            Ok(()) => touched = true,
+            Err(err) if can_fallback_json => cli_error = Some((cli, err)),
+            Err(err) => return Err(err),
+        }
+    }
+    // Only entries slugaudit actually writes to carry a removable file entry,
+    // and only where the written shape is established; detection-only paths
+    // (`.claude.json`, `config.yaml`, `config.toml`) are left untouched.
+    let mut json_removed = false;
+    if let Some(home) = home
+        && agent.writes_config_file()
+        && agent.shape.write_section().is_some()
+        && let Some(path) = agent.config.resolve(home)
+        && remove_json_slugaudit(&path, agent.shape.sections())?
+    {
+        json_removed = true;
         touched = true;
+    }
+    if let Some((cli, err)) = cli_error {
+        if json_removed {
+            tracing::warn!(
+                agent = agent.id,
+                cli,
+                error = %err,
+                "CLI remove failed, but fallback JSON entry was removed",
+            );
+        } else {
+            return Err(err);
+        }
     }
     Ok(if touched {
         DisconnectOutcome::Disconnected

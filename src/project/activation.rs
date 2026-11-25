@@ -189,6 +189,9 @@ pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     } else {
         std::fs::remove_file(&activation)?;
     }
+    // Clear again after removal so a concurrent `begin_process_session` cannot
+    // leave a stale lock FD for the unlinked directory in `SESSIONS`.
+    super::findings_session::end_process_session(root)?;
     report.removed.push(activation);
     let planning = root.as_path().join(PLANNING_DIR);
     match std::fs::remove_dir(&planning) {

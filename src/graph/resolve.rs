@@ -15,12 +15,8 @@ use std::path::Path;
 /// path names nothing inside the project, and dropping the excess `..`
 /// would map `../x` from the root onto the in-project `x` (a false edge).
 pub(super) fn normalize_join(base_dir: &str, relative: &str) -> Option<String> {
-    let mut segments: Vec<&str> = if base_dir.is_empty() {
-        Vec::new()
-    } else {
-        base_dir.split('/').collect()
-    };
-    for part in relative.split('/') {
+    let mut segments: Vec<&str> = Vec::new();
+    for part in base_dir.split('/').chain(relative.split('/')) {
         match part {
             "" | "." => {}
             ".." => {

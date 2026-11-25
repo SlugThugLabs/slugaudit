@@ -312,6 +312,40 @@ fn a_call_at_file_scope_or_in_an_anonymous_function_has_no_caller() -> TestResul
 }
 
 #[test]
+fn nested_functions_and_lambdas_resolve_the_nearest_enclosing_caller() -> TestResult {
+    let source = concat!(
+        "def outer():\n",
+        "    before()\n",
+        "    def inner():\n",
+        "        inside_inner()\n",
+        "    fn_val = lambda: inside_lambda()\n",
+        "    after()\n",
+    );
+
+    let rows = calls("python", source)?;
+    let callers: Vec<(Option<&str>, Option<&str>)> = rows
+        .iter()
+        .map(|row| {
+            (
+                field(&row.payload, "callee_name").as_str(),
+                field(&row.payload, "caller").as_str(),
+            )
+        })
+        .collect();
+    ensure_eq(
+        &callers,
+        &vec![
+            (Some("before"), Some("outer")),
+            (Some("inside_inner"), Some("inner")),
+            (Some("inside_lambda"), None),
+            (Some("after"), Some("outer")),
+        ],
+        "each call maps to its nearest enclosing function or None inside a lambda",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn every_embedded_call_query_compiles_with_exactly_one_callee_capture() -> TestResult {
     for entry in &CALL_QUERIES {
         let grammar = require_grammar(entry.language)?;

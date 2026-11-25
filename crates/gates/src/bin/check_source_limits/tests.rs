@@ -1,7 +1,9 @@
 //! Unit tests for `check_source_limits`.
 
 use super::approval::{Exception, reason as exception_reason};
-use super::counter::{PRODUCTION_CEILING, TEST_FILE_CEILING, Verdict, code_lines, verdict};
+use super::counter::{
+    PRODUCTION_EXCEPTION_FLOOR, TEST_FILE_EXCEPTION_FLOOR, Verdict, code_lines, verdict,
+};
 use super::{FileOutcome, check_file};
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
@@ -250,7 +252,7 @@ fn a_malformed_annotation_does_not_end_the_scan() -> TestResult {
 
         ensure_eq(
             &exception_reason(&src),
-            &Some(Exception::agent("later".to_owned())),
+            &Some(Exception::approved("later".to_owned())),
             malformed,
         )?;
     }
@@ -271,36 +273,46 @@ fn dated_human_exception_is_parsed() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn split_judge_exception_is_parsed() -> TestResult {
+    let src = "// slugaudit-line-exception: approved-by=split-judge; reason=single cohesive job\n";
+    ensure_eq(
+        &exception_reason(src)
+            .map(|exception| exception.reason)
+            .as_deref(),
+        &Some("single cohesive job"),
+        "split-judge exception parses",
+    )?;
+    Ok(())
+}
+
 // --- line-limit policy (verdict) ---
 
 #[test]
-fn test_files_auto_pass_up_to_the_500_ceiling() -> TestResult {
+fn test_files_auto_pass_up_to_500_and_allow_exceptions_above() -> TestResult {
     ensure_eq(
         &verdict(0, None, true),
         &Verdict::Pass,
         "verdict(0, None, true) == Verdict::Pass",
     )?;
     ensure_eq(
-        &verdict(300, Some(Exception::agent("reason".to_owned())), true),
-        &Verdict::Pass,
-        "verdict(300, Some(Exception::agent(\"reason\".to_owned())), true) == Verdict::Pass",
-    )?;
-    ensure_eq(
         &verdict(500, None, true),
         &Verdict::Pass,
         "verdict(500, None, true) == Verdict::Pass",
     )?;
-    Ok(())
-}
-
-#[test]
-fn test_files_over_500_hard_fail_even_with_an_exception() -> TestResult {
     ensure_eq(
-        &verdict(501, Some(Exception::agent("reason".to_owned())), true),
-        &Verdict::FailHard {
-            ceiling: TEST_FILE_CEILING,
+        &verdict(501, None, true),
+        &Verdict::FailNeedsException {
+            floor: TEST_FILE_EXCEPTION_FLOOR,
         },
-        "verdict(501, Some(Exception::agent(\"reason\".to_owned())), true) == Verdict::FailHard { ceiling: TEST_FILE_CEILING }",
+        "test file > 500 without exception needs one",
+    )?;
+    ensure_eq(
+        &verdict(501, Some(Exception::approved("reason".to_owned())), true),
+        &Verdict::PassWithException {
+            reason: "reason".into(),
+        },
+        "test file > 500 with exception passes",
     )?;
     Ok(())
 }
@@ -321,128 +333,34 @@ fn production_files_below_the_exception_floor_auto_pass() -> TestResult {
 }
 
 #[test]
-fn production_files_need_an_exception_from_200_to_300() -> TestResult {
+fn production_files_at_or_above_200_need_an_exception_with_no_hard_cap() -> TestResult {
     ensure_eq(
         &verdict(200, None, false),
-        &Verdict::FailNeedsException,
-        "verdict(200, None, false) == Verdict::FailNeedsException",
+        &Verdict::FailNeedsException {
+            floor: PRODUCTION_EXCEPTION_FLOOR,
+        },
+        "200 lines without exception fails",
     )?;
     ensure_eq(
-        &verdict(300, None, false),
-        &Verdict::FailNeedsException,
-        "verdict(300, None, false) == Verdict::FailNeedsException",
+        &verdict(600, None, false),
+        &Verdict::FailNeedsException {
+            floor: PRODUCTION_EXCEPTION_FLOOR,
+        },
+        "600 lines without exception fails",
     )?;
     ensure_eq(
-        &verdict(250, Some(Exception::agent("contract".to_owned())), false),
+        &verdict(250, Some(Exception::approved("contract".to_owned())), false),
         &Verdict::PassWithException {
             reason: "contract".into(),
         },
-        "verdict(250, Some(Exception::agent(\"contract\".to_owned())), false) == Verdict::PassWithException { reason: \"contract\".into() }",
+        "250 lines with exception passes",
     )?;
-    Ok(())
-}
-
-#[test]
-fn production_files_over_300_hard_fail_even_with_an_exception() -> TestResult {
     ensure_eq(
-        &verdict(301, Some(Exception::agent("reason".to_owned())), false),
-        &Verdict::FailHard {
-            ceiling: PRODUCTION_CEILING,
-        },
-        "verdict(301, Some(Exception::agent(\"reason\".to_owned())), false) == Verdict::FailHard { ceiling: PRODUCTION_CEILING }",
-    )?;
-    Ok(())
-}
-
-const HUMAN_ANNOTATION: &str =
-    "// slugaudit-line-exception: approved-by=human-user; date=2026-10-18; reason=cohesive\n";
-const AGENT_ANNOTATION: &str =
-    "// slugaudit-line-exception: approved-by=slugthuglabs; reason=cohesive\n";
-
-#[test]
-fn a_dated_human_exception_passes_a_production_file_at_301_lines() -> TestResult {
-    let exception = exception_reason(HUMAN_ANNOTATION).check("human annotation parses")?;
-
-    ensure_eq(
-        &verdict(301, Some(exception.clone()), false),
+        &verdict(600, Some(Exception::approved("cohesive".to_owned())), false),
         &Verdict::PassWithException {
-            reason: exception.reason,
+            reason: "cohesive".into(),
         },
-        "verdict(301, Some(exception.clone()), false) == Verdict::PassWithException { reason: exception.reason }",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_dated_human_exception_passes_a_production_file_at_350_lines() -> TestResult {
-    let exception = exception_reason(HUMAN_ANNOTATION).check("human annotation parses")?;
-
-    ensure_eq(
-        &verdict(350, Some(exception.clone()), false),
-        &Verdict::PassWithException {
-            reason: exception.reason,
-        },
-        "verdict(350, Some(exception.clone()), false) == Verdict::PassWithException { reason: exception.reason }",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn an_agent_exception_fails_hard_at_301_and_350_lines() -> TestResult {
-    let exception = exception_reason(AGENT_ANNOTATION).check("agent annotation parses")?;
-    let expected = Verdict::FailHard {
-        ceiling: PRODUCTION_CEILING,
-    };
-
-    ensure_eq(
-        &verdict(301, Some(exception.clone()), false),
-        &expected,
-        "verdict(301, Some(exception.clone()), false) == expected",
-    )?;
-    ensure_eq(
-        &verdict(350, Some(exception), false),
-        &expected,
-        "verdict(350, Some(exception), false) == expected",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn an_agent_reason_imitating_the_human_display_prefix_fails_hard() -> TestResult {
-    // Admission must key on the parsed approver, not the *reason text*: an
-    // agent could otherwise write the reserved display prefix itself and buy
-    // the 301–350 band.
-    let annotation = "// slugaudit-line-exception: approved-by=slugthuglabs; \
-                      reason=[human-approved 2026-10-19] pretend\n";
-    let exception = exception_reason(annotation).check("agent annotation parses")?;
-
-    ensure_eq(
-        &verdict(301, Some(exception.clone()), false),
-        &Verdict::FailHard {
-            ceiling: PRODUCTION_CEILING,
-        },
-        "verdict(301, Some(exception.clone()), false) == Verdict::FailHard { ceiling: PRODUCTION_CEILING }",
-    )?;
-    ensure_eq(
-        &verdict(350, Some(exception), false),
-        &Verdict::FailHard {
-            ceiling: PRODUCTION_CEILING,
-        },
-        "verdict(350, Some(exception), false) == Verdict::FailHard { ceiling: PRODUCTION_CEILING }",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_dated_human_exception_does_not_rescue_351_lines() -> TestResult {
-    let exception = exception_reason(HUMAN_ANNOTATION).check("human annotation parses")?;
-
-    ensure_eq(
-        &verdict(351, Some(exception), false),
-        &Verdict::FailHard {
-            ceiling: PRODUCTION_CEILING,
-        },
-        "verdict(351, Some(exception), false) == Verdict::FailHard { ceiling: PRODUCTION_CEILING }",
+        "600 lines with exception passes (no hard cap)",
     )?;
     Ok(())
 }
@@ -462,18 +380,17 @@ fn check_file_reports_a_pass_line_with_a_root_relative_path() -> TestResult {
 }
 
 #[test]
-fn check_file_fails_a_file_over_the_hard_ceiling() -> TestResult {
+fn check_file_fails_a_file_at_or_above_floor_without_exception() -> TestResult {
     let dir = tempfile::tempdir().check("tempdir")?;
     let path = dir.path().join("big.rs");
-    let source = "fn a() {}\n".repeat(PRODUCTION_CEILING + 1);
+    let source = "fn a() {}\n".repeat(PRODUCTION_EXCEPTION_FLOOR);
     std::fs::write(&path, source).check("write")?;
     ensure_eq(
         &check_file(dir.path(), &path),
         &FileOutcome::Failure(format!(
-            "big.rs: {} code lines (>{PRODUCTION_CEILING}; hard failure)",
-            PRODUCTION_CEILING + 1
+            "big.rs: {PRODUCTION_EXCEPTION_FLOOR} code lines (>= {PRODUCTION_EXCEPTION_FLOOR} requires a split-judge review / approved exception)"
         )),
-        "check_file(dir.path(), &path) == FileOutcome::Failure(format!( \"big.rs: {} code lines (>{PRODUCTION_CEILING}; hard failure)\", PRODUCTION_CEILING + 1 ))",
+        "file at floor without exception fails",
     )?;
     Ok(())
 }

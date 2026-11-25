@@ -10,7 +10,9 @@
 //! indexed-file write path stays focused on content rows.
 
 use super::classify::classify;
+use super::revision::{RevisionError, check_deadline};
 use crate::model::SourceIdentity;
+use crate::util::Deadline;
 use rusqlite::{Transaction, params};
 
 /// `files.skip_reason` for a file over the per-file import ceiling. A code
@@ -56,13 +58,16 @@ pub(super) struct SkippedRecord {
 ///
 /// # Errors
 ///
-/// Returns a database error from the first row that fails.
+/// Returns [`RevisionError::TimeBudgetExceeded`] when `deadline` is spent, or
+/// a database error from the first row that fails.
 pub(super) fn upsert_skipped_files(
     tx: &Transaction<'_>,
     records: &[SkippedRecord],
     revision_db_id: i64,
-) -> Result<(), rusqlite::Error> {
+    deadline: Option<&Deadline>,
+) -> Result<(), RevisionError> {
     for record in records {
+        check_deadline(deadline)?;
         upsert_skipped_file(tx, record, revision_db_id)?;
     }
     Ok(())
@@ -78,14 +83,13 @@ pub(super) fn upsert_skipped_files(
 ///
 /// # Errors
 ///
-/// Returns a database error if the upsert, the id lookup, or the evidence /
-/// edge cleanup fails.
+/// Returns a database error if the upsert or the evidence / edge cleanup fails.
 pub(super) fn upsert_skipped_file(
     tx: &Transaction<'_>,
     record: &SkippedRecord,
     revision_db_id: i64,
 ) -> Result<(), rusqlite::Error> {
-    tx.execute(
+    let mut upsert_stmt = tx.prepare_cached(
         "INSERT INTO files (\
             path, file_kind, skip_reason, content, content_hash, hash_algorithm, byte_len, \
             modified_unix_seconds, language, language_detected, parser_availability, \
@@ -108,7 +112,10 @@ pub(super) fn upsert_skipped_file(
             parse_outcome = 'NotAttempted', \
             parse_error_reason = NULL, \
             extraction_completeness = 'Unavailable', \
-            last_revision_id = excluded.last_revision_id",
+            last_revision_id = excluded.last_revision_id \
+         RETURNING id",
+    )?;
+    let file_id: i64 = upsert_stmt.query_row(
         params![
             record.relative_path,
             record.reason,
@@ -119,10 +126,6 @@ pub(super) fn upsert_skipped_file(
             revision_db_id,
             classify(&record.relative_path).as_sql_text(),
         ],
-    )?;
-    let file_id: i64 = tx.query_row(
-        "SELECT id FROM files WHERE path = ?1",
-        params![record.relative_path],
         |row| row.get(0),
     )?;
     // A file that was indexed and became skipped must not keep the evidence
@@ -130,10 +133,9 @@ pub(super) fn upsert_skipped_file(
     // beside live Symbol rows would be the same overclaim `ContentOnly`
     // exists to remove, and an import edge from content we no longer hold
     // would resolve against a file whose text is gone.
-    tx.execute("DELETE FROM evidence WHERE file_id = ?1", params![file_id])?;
-    tx.execute(
-        "DELETE FROM dependency_edges WHERE from_file_id = ?1",
-        params![file_id],
-    )?;
+    tx.prepare_cached("DELETE FROM evidence WHERE file_id = ?1")?
+        .execute(params![file_id])?;
+    tx.prepare_cached("DELETE FROM dependency_edges WHERE from_file_id = ?1")?
+        .execute(params![file_id])?;
     Ok(())
 }

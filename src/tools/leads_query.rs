@@ -18,6 +18,7 @@ use super::leads_mechanics::{MECHANICS, Mechanic};
 use super::mechanic::MechanicSource;
 use rmcp::ErrorData;
 use rusqlite::{Transaction, params_from_iter};
+use std::collections::HashMap;
 
 /// Longest `detail` string returned per row. Callee text and comment lines
 /// can be arbitrarily long; the caller can always read the file itself.
@@ -161,7 +162,8 @@ pub(super) fn stream_rows(
 }
 
 /// The per-file histogram of one page's files, in first-appearance order.
-/// Pages come back ordered by path, so equal paths are adjacent.
+/// Compact pages can span multiple mechanics so the same file may reappear
+/// non-adjacently; counts are accumulated per distinct file.
 ///
 /// # Errors
 ///
@@ -170,17 +172,20 @@ pub(super) fn page_file_counts<'a>(
     files: impl Iterator<Item = &'a str>,
 ) -> Result<Vec<FileCount>, ErrorData> {
     let mut counts: Vec<FileCount> = Vec::new();
+    let mut index_by_file: HashMap<&'a str, usize> = HashMap::new();
     for file in files {
-        match counts.last_mut() {
-            Some(last) if last.file == file => {
-                last.count = last.count.checked_add(1).ok_or_else(|| {
-                    ErrorData::internal_error("a page's per-file row count overflowed", None)
-                })?;
-            }
-            _ => counts.push(FileCount {
+        if let Some(&index) = index_by_file.get(file)
+            && let Some(entry) = counts.get_mut(index)
+        {
+            entry.count = entry.count.checked_add(1).ok_or_else(|| {
+                ErrorData::internal_error("a page's per-file row count overflowed", None)
+            })?;
+        } else {
+            index_by_file.insert(file, counts.len());
+            counts.push(FileCount {
                 file: file.to_owned(),
                 count: 1,
-            }),
+            });
         }
     }
     Ok(counts)

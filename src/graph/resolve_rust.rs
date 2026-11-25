@@ -11,8 +11,7 @@ use super::resolve::parent_dir;
 use super::resolver::{LanguageResolver, Resolution, ResolutionKind, external, pick};
 use super::rust_mod_parents::{RustModuleParents, resolve_super_with_parents};
 use super::rust_paths::{
-    first_resolved, resolve_rust_from_base, resolve_rust_module_file, rust_module_dir,
-    strip_trailing_glob,
+    resolve_rust_from_base, resolve_rust_module_file, rust_module_dir, strip_trailing_glob,
 };
 use super::rust_use_tree::parse_rust_import;
 use std::collections::HashSet;
@@ -98,6 +97,28 @@ fn crate_src_dir(importing_relative_path: &str, known_paths: &HashSet<&str>) -> 
     }
 }
 
+fn resolve_self(
+    text: &str,
+    importing_relative_path: &str,
+    known_paths: &HashSet<&str>,
+) -> Resolution {
+    let rest = match text.split_once("::") {
+        Some((_, rest)) => rest,
+        None => "",
+    };
+    let strict = rust_module_dir(importing_relative_path);
+    let legacy = parent_dir(importing_relative_path);
+    let from_strict = resolve_rust_from_base(rest, &strict, known_paths, Some("Low"));
+    if from_strict.kind == ResolutionKind::Resolved {
+        return from_strict;
+    }
+    let from_legacy = resolve_rust_from_base(rest, &legacy, known_paths, Some("Low"));
+    if from_legacy.kind == ResolutionKind::Resolved {
+        return from_legacy;
+    }
+    resolve_rust_module_file(&strict, known_paths, Some("Low"))
+}
+
 fn resolve_with_parents(
     reference: &ImportReference,
     importing_relative_path: &str,
@@ -105,6 +126,10 @@ fn resolve_with_parents(
     rust_parents: &RustModuleParents,
 ) -> Resolution {
     let text = reference.text.trim();
+
+    if text.starts_with("::") {
+        return external();
+    }
 
     if text == "crate" {
         let base = crate_src_dir(importing_relative_path, known_paths);
@@ -129,13 +154,7 @@ fn resolve_with_parents(
     }
 
     if text == "self" || text.starts_with("self::") {
-        let rest = match text.split_once("::") {
-            Some((_, rest)) => rest,
-            None => "",
-        };
-        let strict = rust_module_dir(importing_relative_path);
-        let legacy = parent_dir(importing_relative_path);
-        return first_resolved(rest, &[strict, legacy], known_paths);
+        return resolve_self(text, importing_relative_path, known_paths);
     }
 
     if text == "super" || text.starts_with("super::") {

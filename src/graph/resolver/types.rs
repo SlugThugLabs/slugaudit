@@ -17,7 +17,7 @@ pub(crate) struct Resolution {
 
 /// Whether an import was resolved to a real file, identified as external,
 /// or left unresolved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ResolutionKind {
     Resolved,
     Unresolved,

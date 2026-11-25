@@ -225,15 +225,53 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
     Ok(())
 }
 
-/// The incomparable branch must say the comparison could not be made — never
-/// that a newer release was found — and a failed verification must leave the
-/// installed binary untouched. The branch deliberately falls through to the
-/// fetch (the message says so); the mismatching digest is what makes this test
-/// assert "no replacement", without claiming the branch itself skips it.
+/// A non-numeric / pre-release remote tag must be refused when the installed
+/// binary carries a numeric release version: nothing is downloaded beyond the
+/// release metadata and the installed binary is left untouched.
 #[test]
-fn run_update_reports_the_exact_incomparable_message_without_replacing() -> TestResult {
+fn run_update_refuses_non_numeric_remote_release_without_downloading() -> TestResult {
     let sandbox = UpdateSandbox::new()?;
     sandbox.plant_curl("v1.2.0-rc1", MATCHING_DIGEST)?;
+    sandbox.plant_sha256sum(MATCHING_DIGEST)?;
+
+    let output = sandbox.run()?;
+
+    ensure_eq(
+        &output.status.code(),
+        &Some(1),
+        format!(
+            "a non-numeric remote release must exit nonzero: {}",
+            text(&output.stderr)
+        ),
+    )?;
+    let stderr = text(&output.stderr);
+    ensure(
+        stderr.contains("published release version is not a numeric release"),
+        format!("the refusal reason must be reported: {stderr}"),
+    )?;
+    ensure_eq(
+        &fs::read(&sandbox.target).check("read the installed binary")?,
+        &OLD_BINARY.as_bytes(),
+        "a refused remote tag must leave the target untouched",
+    )?;
+    ensure(
+        !sandbox.previous().exists(),
+        "nothing may be retained when nothing is replaced",
+    )?;
+    let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
+    ensure(
+        !curl.contains("/releases/download/"),
+        format!("a refused remote tag must not download any asset: {curl}"),
+    )?;
+    Ok(())
+}
+
+/// A checksum mismatch on a valid newer release must exit nonzero and leave
+/// the installed binary untouched.
+#[test]
+fn run_update_checksum_mismatch_leaves_target_untouched() -> TestResult {
+    let sandbox = UpdateSandbox::new()?;
+    sandbox.plant_curl("v1.2.0", MATCHING_DIGEST)?;
     sandbox.plant_sha256sum(MISMATCHING_DIGEST)?;
 
     let output = sandbox.run()?;
@@ -245,16 +283,6 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() -> Test
             "a failed checksum must exit nonzero: {}",
             text(&output.stderr)
         ),
-    )?;
-    ensure_eq(
-        &text(&output.stdout),
-        &format!(
-            "This build's version ({CURRENT_VERSION}) could not be compared with the \
-             published v1.2.0-rc1; fetching it as though it were newer.\n\
-             Updating slugaudit v{CURRENT_VERSION} -> 1.2.0-rc1 at {}...\n",
-            sandbox.target.display()
-        ),
-        "the incomparable message must not claim a comparison happened",
     )?;
     let stderr = text(&output.stderr);
     ensure(
@@ -272,13 +300,6 @@ fn run_update_reports_the_exact_incomparable_message_without_replacing() -> Test
     ensure(
         !sandbox.previous().exists(),
         "nothing may be retained when nothing is replaced",
-    )?;
-    let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
-    ensure(
-        curl.contains(&format!(
-            "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.2.0-rc1/{ASSET}"
-        )),
-        format!("the incomparable branch must still fetch the release: {curl}"),
     )?;
     Ok(())
 }

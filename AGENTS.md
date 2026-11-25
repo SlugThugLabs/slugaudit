@@ -78,8 +78,10 @@ history conflicts with the owner, the owner wins.
 - Don't rewrite working code without a reason: a bug, a broken rule, or the
   owner's request. A function or file that mixes separate responsibilities is
   a broken rule; length alone is not. Never split code only to meet a line
-  count.
-  <!-- Owner decision (2026-11-02): over 200 lines per file or 50 per function is fine when the code does one job. The limits exist to stop god files, not to force splits. -->
+  count. For any file at or above 200 code lines, run `split-judge`; if it
+  says `KEEP`, record a `slugaudit-line-exception: approved-by=split-judge; reason=...`
+  comment — there is no hard cap.
+  <!-- Owner decision (2026-11-02, updated 2026-11-25): over 200 lines per file or 50 per function is fine when the code does one job. No hard cap; run split-judge on files over 200 and trust its verdict. -->
 - Never write a judgment about the code (for example, "module X is fine")
   into a file that outlives the session.
 - Errors fail the operation and are logged once. No `let _ =` on a Result,

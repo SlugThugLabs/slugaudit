@@ -68,6 +68,12 @@ pub(crate) fn hash_reader(
     ))
 }
 
+/// Opens `path` as a regular file without blocking on FIFOs or other special
+/// files, delegating to [`crate::util::open_regular_file_nonblocking`].
+pub(super) fn open_regular_file_nonblocking(path: &Path) -> std::io::Result<std::fs::File> {
+    crate::util::open_regular_file_nonblocking(path).map(|(file, _metadata)| file)
+}
+
 /// # Errors
 ///
 /// Returns [`HashError::Read`] if `absolute_path` can't be opened or read,
@@ -80,7 +86,7 @@ pub fn hash_file(
     absolute_path: &Path,
     max_bytes: u64,
 ) -> Result<SourceIdentity, HashError> {
-    let file = std::fs::File::open(absolute_path).map_err(|source| HashError::Read {
+    let file = open_regular_file_nonblocking(absolute_path).map_err(|source| HashError::Read {
         path: absolute_path.to_path_buf(),
         source,
     })?;

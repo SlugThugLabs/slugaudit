@@ -467,6 +467,32 @@ fn an_agent_cli_that_cannot_be_executed_is_reported_as_a_command_failure() -> Te
     Ok(())
 }
 
+#[test]
+fn verify_client_uses_verify_cli_and_skips_detection_only_clis() -> TestResult {
+    let warp = find_agent("warp").check("warp")?;
+    let cursor = find_agent("cursor").check("cursor")?;
+    let claude = find_agent("claude").check("claude")?;
+    let zed = find_agent("zed").check("zed")?;
+
+    ensure_eq(
+        &verify_client(&warp),
+        &None,
+        "warp's detection-only oz must not be suggested for mcp list",
+    )?;
+    ensure_eq(
+        &verify_client(&cursor),
+        &Some("agent"),
+        "cursor must suggest its verify_cli",
+    )?;
+    ensure_eq(
+        &verify_client(&claude),
+        &Some("claude"),
+        "CliDirect agents suggest their cli",
+    )?;
+    ensure_eq(&verify_client(&zed), &None, "zed has no CLI")?;
+    Ok(())
+}
+
 #[path = "connect_binary_tests.rs"]
 mod binary_tests;
 

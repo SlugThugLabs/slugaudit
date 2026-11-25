@@ -38,18 +38,18 @@ fn a_prompt_answer_is_read_one_line_at_a_time_and_none_at_end_of_input() -> Test
 }
 
 #[test]
-fn an_over_long_prompt_line_is_capped_and_its_rest_is_not_read_as_the_next_answer() -> TestResult {
+fn an_over_long_prompt_line_is_rejected_and_its_rest_is_not_read_as_the_next_answer() -> TestResult
+{
     let long = "9".repeat(10_000);
     let mut input = std::io::Cursor::new(format!("{long}\n3\n").into_bytes());
 
-    let capped = read_capped_line(&mut input).check("capped line")?;
-    let next = read_capped_line(&mut input).check("next line")?;
-
+    let error = read_capped_line(&mut input).check_err("over-long line must be rejected")?;
     ensure_eq(
-        &capped.map(|line| line.len()),
-        &Some(256),
-        "capped.map(|line| line.len()) == Some(256)",
+        &error.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "over-long line returns InvalidData",
     )?;
+    let next = read_capped_line(&mut input).check("next line")?;
     ensure_eq(
         &next.as_deref(),
         &Some("3\n"),
@@ -59,14 +59,31 @@ fn an_over_long_prompt_line_is_capped_and_its_rest_is_not_read_as_the_next_answe
 }
 
 #[test]
-fn a_prompt_line_cut_inside_a_multibyte_character_does_not_fail_the_read() -> TestResult {
-    let mut input = std::io::Cursor::new(format!("{}é\n", "a".repeat(255)).into_bytes());
+fn a_non_newline_stream_cannot_drain_unboundedly() -> TestResult {
+    let mut input = std::io::BufReader::new(std::io::repeat(b'a'));
 
-    let line = read_capped_line(&mut input).check("lossy, not an error")?;
+    let error = read_capped_line(&mut input)
+        .check_err("infinite non-newline stream must fail boundedly")?;
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "unterminated stream returns InvalidData",
+    )?;
+    Ok(())
+}
 
-    ensure(
-        line.is_some_and(|text| text.starts_with(&"a".repeat(255))),
-        "line.is_some_and(|text| text.starts_with(&\"a\".repeat(255)))",
+#[test]
+fn a_truncated_yes_prefix_is_rejected_instead_of_accepted() -> TestResult {
+    let mut output = Vec::new();
+    let padded = format!("y{}nope\n", " ".repeat(255));
+    let mut input = std::io::Cursor::new(padded.into_bytes());
+
+    let error = ask_yes_no(&mut output, &mut input, "q ")
+        .check_err("over-long line with leading 'y' must not be accepted")?;
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "truncated yes returns InvalidData",
     )?;
     Ok(())
 }
@@ -108,20 +125,24 @@ fn a_yes_answer_is_accepted_and_anything_else_declines() -> TestResult {
 }
 
 #[test]
-fn an_over_long_answer_is_bounded_and_end_of_input_declines() -> TestResult {
+fn an_over_long_answer_is_rejected_and_end_of_input_declines() -> TestResult {
     let mut output = Vec::new();
     let long = format!("{}\n", "y".repeat(10_000));
 
-    let capped = ask_yes_no(
+    let error = ask_yes_no(
         &mut output,
         &mut std::io::Cursor::new(long.into_bytes()),
         "q ",
     )
-    .check("reads")?;
+    .check_err("over-long answer must fail with InvalidData")?;
     let end =
         ask_yes_no(&mut output, &mut std::io::Cursor::new(Vec::new()), "q ").check("reads")?;
 
-    ensure(!capped, "256 y's are not 'y'")?;
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "over-long answer returns InvalidData",
+    )?;
     ensure(!end, "end of input declines")?;
     Ok(())
 }

@@ -263,29 +263,59 @@ pub(super) fn unrepresentable_paths(root: &Path, skipped: &[SkippedFile]) -> Has
         .collect()
 }
 
+/// Whether `bytes` sniffs as binary (a NUL byte within the first
+/// [`BINARY_SNIFF_BYTES`] bytes). Shared by discovery (`sniff_kind`) and
+/// sampling (`sample_file`) so binary classification never drifts between
+/// passes.
+#[must_use]
+pub(super) fn is_binary_bytes(bytes: &[u8]) -> bool {
+    bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
+}
+
+fn sniff_reader(reader: &mut impl std::io::Read) -> std::io::Result<FileKind> {
+    let mut buffer = [0_u8; BINARY_SNIFF_BYTES];
+    let mut total = 0_usize;
+    while total < BINARY_SNIFF_BYTES {
+        let Some(slice) = buffer.get_mut(total..) else {
+            break;
+        };
+        match reader.read(slice) {
+            Ok(0) => break,
+            Ok(bytes_read) => {
+                // KEEP saturating: bytes_read <= slice.len() == BINARY_SNIFF_BYTES - total, so total never exceeds BINARY_SNIFF_BYTES
+                total = total.saturating_add(bytes_read);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let sample = match buffer.get(..total) {
+        Some(slice) => slice,
+        None => &buffer,
+    };
+    if is_binary_bytes(sample) {
+        Ok(FileKind::Binary)
+    } else {
+        Ok(FileKind::Indexed)
+    }
+}
+
 /// Sniffs whether `path` is binary (a NUL byte in the first
 /// `BINARY_SNIFF_BYTES`) or indexable text. This is the single source of
 /// truth for binary-ness: discovery calls it for every file it yields, so
 /// a file whose binary-ness changed is classified the same way on every
 /// sync.
 pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(|source| DiscoveryError::Read {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let mut buffer = [0_u8; BINARY_SNIFF_BYTES];
-    let read = file
-        .read(&mut buffer)
-        .map_err(|source| DiscoveryError::Read {
+    let mut file = super::hash_io::open_regular_file_nonblocking(path).map_err(|source| {
+        DiscoveryError::Read {
             path: path.to_path_buf(),
             source,
-        })?;
-    if buffer.iter().take(read).any(|byte| *byte == 0) {
-        Ok(FileKind::Binary)
-    } else {
-        Ok(FileKind::Indexed)
-    }
+        }
+    })?;
+    sniff_reader(&mut file).map_err(|source| DiscoveryError::Read {
+        path: path.to_path_buf(),
+        source,
+    })
 }
 
 /// Walks the project root for non-binary and binary files alike, honoring

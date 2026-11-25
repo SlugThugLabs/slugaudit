@@ -21,7 +21,7 @@ pub(crate) fn with_verified_read<T>(
     let mut connection = store::open_existing(&synced.database_path)
         .map_err(|error| internal_error("opening the project database", error))?;
     let tx = start_read_transaction(&mut connection)?;
-    verify_revision_matches(&tx, &synced.revision_id)?;
+    verify_revision_matches(&tx, synced)?;
     let result = f(&tx)?;
     tx.commit()
         .map_err(|error| operation_error("committing the read transaction", error))?;
@@ -117,16 +117,29 @@ pub(super) fn current_revision(connection: &rusqlite::Connection) -> Result<Stri
 
 fn verify_revision_matches(
     connection: &rusqlite::Connection,
-    expected_revision_id: &str,
+    synced: &SyncedProject,
 ) -> Result<(), ErrorData> {
     let current = current_revision(connection)?;
-    if current != expected_revision_id {
+    if current != synced.revision_id {
         return Err(ErrorData::internal_error(
             format!(
-                "revision changed concurrently (expected {expected_revision_id}, now {current}); retry the call"
+                "revision changed concurrently (expected {}, now {current}); retry the call",
+                synced.revision_id
             ),
             error_codes::payload(ErrorCode::StaleRevision),
         ));
+    }
+    if let Some(expected_instance) = synced.db_instance_id.as_deref() {
+        let actual_instance = sync::project_instance_id(connection)
+            .map_err(|error| internal_error("reading the project instance id", error))?;
+        if actual_instance.as_deref() != Some(expected_instance) {
+            return Err(ErrorData::internal_error(
+                format!(
+                    "project database was rebuilt concurrently (expected instance {expected_instance}); retry the call"
+                ),
+                error_codes::payload(ErrorCode::StaleRevision),
+            ));
+        }
     }
     Ok(())
 }

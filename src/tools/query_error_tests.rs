@@ -147,3 +147,83 @@ fn a_value_over_the_per_value_cap_carries_no_sql_error_code() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn query_rejects_an_oversized_cursor_with_invalid_params() -> TestResult {
+    let error = query(
+        &Parameters(QueryRequest {
+            path: None,
+            sql: String::new(),
+            cursor: Some("c".repeat(crate::tools::MAX_CURSOR_BYTES + 1)),
+            legacy_paging: LegacyPaging::default(),
+            page_bytes: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .check("oversized cursor is refused")?;
+
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message,
+        &format!("cursor exceeds {} bytes", crate::tools::MAX_CURSOR_BYTES),
+        "error.message names MAX_CURSOR_BYTES",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_refuses_legacy_paging_and_oversized_path_before_resolving_limits() -> TestResult {
+    let legacy_req: QueryRequest = serde_json::from_value(serde_json::json!({
+        "path": "/definitely/not/an/enabled/project",
+        "sql": "SELECT 1",
+        "offset": 1,
+    }))
+    .check("deserialize legacy paging request")?;
+    let legacy = query(
+        &Parameters(legacy_req),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .check("legacy paging is refused before project resolution")?;
+    ensure_eq(
+        &legacy.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "legacy.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure(
+        legacy.message.contains("cursor"),
+        format!("legacy error names cursor: {}", legacy.message),
+    )?;
+
+    let oversized = query(
+        &Parameters(QueryRequest {
+            path: Some("p".repeat(MAX_PATH_BYTES + 1)),
+            sql: "SELECT 1".to_owned(),
+            cursor: None,
+            legacy_paging: LegacyPaging::default(),
+            page_bytes: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .check("oversized path is refused before project resolution")?;
+    ensure_eq(
+        &oversized.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "oversized.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &oversized.message,
+        &format!("path exceeds {MAX_PATH_BYTES} bytes"),
+        "oversized.message names MAX_PATH_BYTES",
+    )?;
+    Ok(())
+}

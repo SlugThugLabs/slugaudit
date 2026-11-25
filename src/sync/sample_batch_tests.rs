@@ -172,3 +172,51 @@ fn claim_bytes_accepts_up_to_the_limit_and_refuses_past_it() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn pass2_treats_too_large_and_not_utf8_hash_mismatch_as_changed_during_sample() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "grew.rs", &[b'x'; 64])?;
+    write(project.path(), "corrupted.rs", &[0xff, 0xfe, b'a'])?;
+    let limits = ResourceLimits {
+        max_file_bytes: 32,
+        ..ResourceLimits::default()
+    };
+
+    let grew = [indexed(project.path(), "grew.rs")];
+    let grew_id = [SourceIdentity::new(
+        "grew.rs".to_owned(),
+        "pass1-h".to_owned(),
+    )];
+    let grew_err = sample_pass2_with_deadline(
+        &grew,
+        &grew_id,
+        &limits,
+        &crate::progress::NoopProgressSink,
+        &generous(),
+    )
+    .check_err("TooLarge in Pass 2 must trigger retry")?;
+    ensure(
+        matches!(&grew_err, PublishError::ChangedDuringSample { path } if path == "grew.rs"),
+        format!("got {grew_err:?}"),
+    )?;
+
+    let bad = [indexed(project.path(), "corrupted.rs")];
+    let stale_id = [SourceIdentity::new(
+        "corrupted.rs".to_owned(),
+        "stale-pass1-hash".to_owned(),
+    )];
+    let bad_err = sample_pass2_with_deadline(
+        &bad,
+        &stale_id,
+        &ResourceLimits::default(),
+        &crate::progress::NoopProgressSink,
+        &generous(),
+    )
+    .check_err("NotUtf8 with mismatched Pass 1 hash must trigger retry")?;
+    ensure(
+        matches!(&bad_err, PublishError::ChangedDuringSample { path } if path == "corrupted.rs"),
+        format!("got {bad_err:?}"),
+    )?;
+    Ok(())
+}

@@ -2,7 +2,7 @@
 //! limits for a request path, or the process limits when no project is named,
 //! and the tool error for each way resolving them fails.
 
-use crate::model::{ResourceLimits, process_limits};
+use crate::model::ResourceLimits;
 use rmcp::ErrorData;
 
 /// The process and project resource limits for `path`, resolved before the
@@ -27,15 +27,6 @@ pub(crate) fn project_root(path: &str) -> Result<std::path::PathBuf, ErrorData> 
     crate::project::find_project_root(std::path::Path::new(path))
         .map(|root| root.as_path().to_path_buf())
         .map_err(|error| crate::sync::map_activation_error(&error))
-}
-
-/// The process-wide limits, or the tool error for an environment that is
-/// invalid and was never validated at startup (a library embedder; the shipped
-/// binary validates before serving).
-pub(crate) fn process_limits_for_tool() -> Result<ResourceLimits, ErrorData> {
-    process_limits()
-        .copied()
-        .map_err(|error| crate::sync::map_process_limits_error(&error))
 }
 
 /// The limits for the project at `root`: defaults, the global file, the

@@ -519,6 +519,10 @@ fn a_load_failure_that_is_not_a_fetch_failure_does_not_close_the_gate() -> TestR
         crate::parse::fetch_gate::load_failed_retry_due().check("read the fetch gate")?,
         "crate::parse::fetch_gate::load_failed_retry_due().check(\"read the fetch gate\")?",
     )?;
+    ensure(
+        crate::parse::fetch_gate::is_locally_failed("rust").check("read local load failure")?,
+        "non-fetch load failure must record language as locally failed",
+    )?;
     Ok(())
 }
 

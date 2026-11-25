@@ -403,7 +403,14 @@ fn update_fetch_failed_download_removes_the_partial_file() -> TestResult {
     let script = bin.path().join("curl");
     std::fs::write(
         &script,
-        "#!/bin/sh\nfor a; do last=\"$a\"; done\nprintf partial > \"$last\"\nexit 22\n",
+        "#!/bin/sh\n\
+         dest=\n\
+         while [ $# -gt 0 ]; do\n\
+           if [ \"$1\" = \"-o\" ]; then dest=$2; shift 2; continue; fi\n\
+           shift\n\
+         done\n\
+         printf partial > \"$dest\"\n\
+         exit 22\n",
     )
     .check("write fake curl")?;
     make_executable(&script)?;
@@ -427,7 +434,7 @@ fn update_fetch_failed_download_removes_the_partial_file() -> TestResult {
 
 #[test]
 fn both_curl_calls_share_one_bounded_https_only_argument_list() -> TestResult {
-    let command = curl_command("https://example.test/x", 30, 10_000_000);
+    let command = curl_command("https://example.test/x", 30, 10_000_000, None);
 
     let args: Vec<_> = command
         .get_args()
@@ -438,6 +445,7 @@ fn both_curl_calls_share_one_bounded_https_only_argument_list() -> TestResult {
         &args,
         &[
             "-fsSL",
+            "--globoff",
             "--max-time",
             "30",
             "--max-filesize",
@@ -446,9 +454,84 @@ fn both_curl_calls_share_one_bounded_https_only_argument_list() -> TestResult {
             "=https",
             "--proto-redir",
             "=https",
+            "--tlsv1.2",
+            "--",
             "https://example.test/x",
         ],
-        "args == [ \"-fsSL\", \"--max-time\", \"30\", \"--max-filesize\", \"10000000\", \"--proto\", \"=https\", \"--proto-redir\", ...",
+        "metadata curl args include --globoff, --tlsv1.2 and -- before url",
     )?;
+
+    let dl_command = curl_command(
+        "https://example.test/SHA256SUMS",
+        300,
+        CHECKSUMS_MAX_BYTES,
+        Some(Path::new("/tmp/sums")),
+    );
+    let dl_args: Vec<_> = dl_command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    ensure_eq(
+        &dl_args,
+        &[
+            "-fsSL",
+            "--globoff",
+            "--max-time",
+            "300",
+            "--max-filesize",
+            &CHECKSUMS_MAX_BYTES.to_string(),
+            "--proto",
+            "=https",
+            "--proto-redir",
+            "=https",
+            "--tlsv1.2",
+            "-o",
+            "/tmp/sums",
+            "--",
+            "https://example.test/SHA256SUMS",
+        ],
+        "download curl args place -o before -- and url",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn curl_get_capped_rejects_oversized_stdout() -> TestResult {
+    let bin = tempfile::tempdir().check("fake bin dir")?;
+    let log = bin.path().join("curl-argv.log");
+    plant_fake_curl(bin.path(), &log, "0123456789abcdefX", "", 0)?;
+
+    let err = with_replaced_path(bin.path(), || {
+        curl_get_capped("https://example.invalid/x", 16)
+    })?
+    .check_err("oversized stdout must fail")?;
+    ensure(
+        matches!(&err, UpdateError::Network(msg) if msg.contains("exceeded 16 bytes")),
+        format!("expected Network size error, got {err:?}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn download_capped_removes_and_rejects_oversized_file() -> TestResult {
+    let bin = tempfile::tempdir().check("temp dir")?;
+    let script = bin.path().join("curl");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-o\" ]; then dest=$2; shift 2; continue; fi\n  shift\ndone\nprintf '0123456789abcdefX' > \"$dest\"\n",
+    )
+    .check("write fake curl")?;
+    make_executable(&script)?;
+    let dest = bin.path().join("asset");
+
+    let err = with_replaced_path(bin.path(), || {
+        download_capped("https://example.invalid/x", &dest, "download to", 16)
+    })?
+    .check_err("oversized download must fail")?;
+    ensure(
+        matches!(&err, UpdateError::Download { source, .. } if matches!(source.as_ref(), UpdateError::Network(m) if m.contains("exceeded 16 bytes"))),
+        format!("expected Download(Network) size error, got {err:?}"),
+    )?;
+    ensure(!dest.exists(), "oversized download must be removed")?;
     Ok(())
 }

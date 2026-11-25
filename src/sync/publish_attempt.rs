@@ -7,13 +7,12 @@ use super::discovery;
 use super::hash_batch;
 use super::manifest::{ChangeStatus, FileChange};
 use super::publish::{PublishError, PublishReport};
-use super::publish_diff::{self, build_upserts_and_deletions};
+use super::publish_diff::{self, build_upserts_and_deletions, filter_skipped_records};
 use super::publish_sample::{check_samples_match_pass1, files_to_sample};
 use super::race_hook::{self, RacePoint};
-use super::revalidate::revalidate_unchanged_since_sample;
 use super::revision;
 use super::revision_skipped::SkippedRecord;
-use super::sample::{self, sample_all_with_deadline};
+use super::sample::{self, sample_pass2_with_deadline};
 use crate::model::{ResourceLimits, SourceIdentity};
 use crate::progress::ProgressSink;
 use crate::util::Deadline;
@@ -70,10 +69,15 @@ fn hash_and_diff(
     let mut skipped = discovery_skips;
     skipped.extend(hashing_skips);
 
-    let mut diff =
-        publish_diff::diff_against_stored(connection, &identities, &skipped_records_vec, deadline)?;
+    let mut diff = publish_diff::diff_against_stored(
+        connection,
+        &discovered,
+        &identities,
+        &skipped_records_vec,
+        deadline,
+    )?;
     let mismatched = super::verify_stored::content_mismatches(connection, deadline)?;
-    force_content_repairs(&mut diff, &mismatched, &identities)?;
+    force_content_repairs(&mut diff, &mismatched, &identities, &skipped_records_vec)?;
 
     Ok(DiffState {
         discovered,
@@ -86,12 +90,14 @@ fn hash_and_diff(
     })
 }
 
-/// Marks every database-side content mismatch that still exists on disk as
-/// `Modified`, so the publish re-reads the file and rewrites the row.
+/// Marks every database-side content mismatch that still exists on disk
+/// (whether hashed or skipped) as `Modified`, so the publish re-reads the file
+/// or rewrites the skipped existence row.
 fn force_content_repairs(
     diff: &mut publish_diff::Diff,
     mismatched: &HashSet<String>,
     identities: &[SourceIdentity],
+    skipped: &[SkippedRecord],
 ) -> Result<(), PublishError> {
     if mismatched.is_empty() {
         return Ok(());
@@ -99,6 +105,7 @@ fn force_content_repairs(
     let present: HashSet<&str> = identities
         .iter()
         .map(|id| id.relative_path.as_str())
+        .chain(skipped.iter().map(|record| record.relative_path.as_str()))
         .collect();
     let already: HashSet<&str> = diff
         .changes
@@ -200,7 +207,8 @@ pub(super) fn try_publish(
         .map(|revision| revision.revision_id.as_str());
 
     let state = hash_and_diff(connection, root, limits, deadline)?;
-    super::publish::replace_unrepresentable_paths(connection, &state.unrepresentable)?;
+    let unrepresentable_changed =
+        super::publish::stored_unrepresentable_paths(connection)? != state.unrepresentable;
 
     let parser_version_changed = baseline
         .as_ref()
@@ -208,6 +216,7 @@ pub(super) fn try_publish(
 
     if state.diff.changes.is_empty()
         && !parser_version_changed
+        && !unrepresentable_changed
         && let Some(current) = &baseline
     {
         return unchanged_report(
@@ -226,7 +235,7 @@ pub(super) fn try_publish(
         parser_version_changed,
     );
     let (samples, sampling_skips) =
-        sample_all_with_deadline(&files_to_sample, limits, sink, deadline)?;
+        sample_pass2_with_deadline(&files_to_sample, &state.identities, limits, sink, deadline)?;
     check_samples_match_pass1(&samples, &state.identities)?;
 
     let mut discovered_paths = state.discovered_paths;
@@ -244,12 +253,12 @@ pub(super) fn try_publish(
     race_hook::fire(root, RacePoint::BeforeCommit);
 
     let inputs = CommitInputs {
-        discovered: &state.discovered,
         discovered_paths,
         samples,
         diff: state.diff,
         skipped,
         skipped_records,
+        unrepresentable_paths: state.unrepresentable,
     };
 
     commit_attempt(
@@ -264,33 +273,33 @@ pub(super) fn try_publish(
 }
 
 /// The write-side inputs prepared across Pass 1 and Pass 2.
-struct CommitInputs<'a> {
-    discovered: &'a [discovery::DiscoveredFile],
+struct CommitInputs {
     discovered_paths: HashSet<String>,
     samples: Vec<sample::Sample>,
     diff: publish_diff::Diff,
     skipped: Vec<discovery::SkippedFile>,
     skipped_records: Vec<SkippedRecord>,
+    unrepresentable_paths: HashSet<Vec<u8>>,
 }
 
-/// The write half of an attempt: build the delta, revalidate what the diff
-/// claimed was unchanged, and publish it as one CAS revision.
+/// The write half of an attempt: build the delta and publish it as one CAS
+/// revision.
 fn commit_attempt(
     connection: &mut Connection,
     expected_current: Option<&str>,
     parser_pack_version: &str,
-    inputs: CommitInputs<'_>,
+    inputs: CommitInputs,
     parser_version_changed: bool,
     limits: &ResourceLimits,
     deadline: &Deadline,
 ) -> Result<PublishReport, PublishError> {
     let CommitInputs {
-        discovered,
         discovered_paths,
         samples,
         diff,
         skipped,
         skipped_records,
+        unrepresentable_paths,
     } = inputs;
     let re_resolve_unresolved = diff.added > 0 || diff.deleted > 0;
     let (upserts, deletions) = build_upserts_and_deletions(
@@ -300,7 +309,8 @@ fn commit_attempt(
         limits,
         deadline,
     )?;
-    revalidate_unchanged_since_sample(discovered, &upserts, limits, deadline)?;
+    let rewrite_all = expected_current.is_none() || parser_version_changed;
+    let skipped_to_write = filter_skipped_records(skipped_records, &diff.changes, rewrite_all);
 
     let revision_id = revision::publish_revision(
         connection,
@@ -310,9 +320,11 @@ fn commit_attempt(
             parser_pack_version,
             upserts: &upserts,
             deletions: &deletions,
-            skipped: &skipped_records,
+            skipped: &skipped_to_write,
             discovered_paths: &discovered_paths,
             re_resolve_unresolved,
+            unrepresentable_paths: &unrepresentable_paths,
+            deadline: Some(deadline),
         },
     )?;
 

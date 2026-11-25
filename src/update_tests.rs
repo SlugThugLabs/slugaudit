@@ -243,7 +243,7 @@ fn verify_checksum_fails_when_binary_file_missing() -> TestResult {
     let dir = tempfile::tempdir().check("temp dir")?;
     let missing_binary = dir.path().join("missing_bin");
     let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(&sums_file, format!("abc  {ASSET}\n")).check("write sums")?;
+    std::fs::write(&sums_file, format!("{}  {ASSET}\n", "0".repeat(64))).check("write sums")?;
     let err = verify_checksum(&missing_binary, &sums_file).check_err("the call must fail")?;
     ensure(
         err.to_string().contains("checksum verification failed"),
@@ -284,6 +284,12 @@ fn update_error_display_covers_all_variants() -> TestResult {
     ensure(
         UpdateError::NoTag.to_string().contains("tag name"),
         "UpdateError::NoTag.to_string().contains(\"tag name\")",
+    )?;
+    ensure(
+        UpdateError::InvalidReleaseVersion("1.0.0-rc1".into())
+            .to_string()
+            .contains("numeric release"),
+        "UpdateError::InvalidReleaseVersion mentions numeric release",
     )?;
     ensure(
         UpdateError::Checksum("bad hash".into())
@@ -397,12 +403,31 @@ fn update_fetches_only_a_newer_or_incomparable_release() -> TestResult {
     ];
 
     for (current, latest, expected) in cases {
-        ensure_eq(
-            &update_decision(current, latest),
-            &expected,
-            format!("{current} vs {latest}"),
-        )?;
+        let label = format!("{current} vs {latest}");
+        let actual = update_decision(current, latest).check(&label)?;
+        ensure_eq(&actual, &expected, label)?;
     }
+    Ok(())
+}
+
+#[test]
+fn verify_checksum_rejects_oversized_sums_file() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
+    let binary = dir.path().join("fake_bin");
+    std::fs::write(&binary, b"content").check("write binary")?;
+    let sums_file = dir.path().join("SHA256SUMS");
+    let oversized_len = usize::try_from(CHECKSUMS_MAX_BYTES)
+        .check("cap")?
+        .checked_add(1)
+        .check("oversized len")?;
+    let oversized = "a".repeat(oversized_len);
+    std::fs::write(&sums_file, oversized).check("write oversized sums")?;
+
+    let err = verify_checksum(&binary, &sums_file).check_err("oversized sums must fail")?;
+    ensure(
+        err.to_string().contains("reading checksums"),
+        format!("unexpected error: {err}"),
+    )?;
     Ok(())
 }
 
@@ -560,27 +585,6 @@ fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() -> Test
         &source.kind(),
         &std::io::ErrorKind::NotFound,
         "source.kind() == std::io::ErrorKind::NotFound",
-    )?;
-    Ok(())
-}
-
-/// On a platform with no published asset `run_update` must refuse before any
-/// network call. Compiled only where the refusal is reachable; Linux/x86_64
-/// (the platform this repository builds and tests) never takes it.
-#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
-#[test]
-fn run_update_refuses_a_platform_with_no_published_asset() -> TestResult {
-    let result = run_update();
-
-    let Err(UpdateError::UnsupportedPlatform { os, arch }) = result else {
-        return Err(format!("expected UnsupportedPlatform, got {result:?}"))
-            .check("unexpected outcome");
-    };
-    ensure_eq(&os, &std::env::consts::OS, "os == std::env::consts::OS")?;
-    ensure_eq(
-        &arch,
-        &std::env::consts::ARCH,
-        "arch == std::env::consts::ARCH",
     )?;
     Ok(())
 }

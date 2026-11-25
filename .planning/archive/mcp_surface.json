@@ -1198,10 +1198,6 @@
             ]
           }
         },
-        "required": [
-          "action"
-        ],
-        "type": "object",
         "properties": {
           "path": {
             "description": "Any path inside the active project. Required unless `cursor` is given.",
@@ -1212,8 +1208,16 @@
             "default": null
           },
           "action": {
-            "description": "`add`, `remove`, or `list`. Ignored when `cursor` is given: a cursor\nonly ever continues a stored `list`, and never registers or removes\nanything.",
-            "$ref": "#/$defs/MechanicAction"
+            "description": "`add`, `remove`, or `list`. Required unless `cursor` is given; ignored\nwhen `cursor` is given: a cursor only ever continues a stored `list`,\nand never registers or removes anything.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MechanicAction"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "cursor": {
             "description": "`list` only: the `page.cursor` of the previous page, copied exactly.\nIt continues the list as it was when the first page was read, without\na `path`; every other field except `page_bytes` is ignored. To page\nthe first count `add` returns, use that response's own `page.cursor`\nwith `leads`.",
@@ -1275,7 +1279,8 @@
             "minimum": 0,
             "default": null
           }
-        }
+        },
+        "type": "object"
       },
       "outputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3034,9 +3039,6 @@
       "description": "Inspect and extract code AST structures from a file or across the project using Tree-sitter. Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) to search across matching project files (a `language` no indexed file has fails with `unknown_language`, listing the languages indexed here). Returns matched AST nodes with `file`, `start_line`, `end_line` (1-based, inclusive), and `text` snippet. The `query` must name at least one capture with `@name`. Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, Python `(function_definition name: (identifier) @name body: (block) @body)`, TypeScript/JS `(function_declaration name: (identifier) @name)`, or whole-node `(class_definition) @cls`. `notices` warns when the language is untested (only Rust is).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "required": [
-          "query"
-        ],
         "properties": {
           "path": {
             "description": "Any path inside the active project. Required without `cursor`;\nignored with one.",
@@ -3076,8 +3078,9 @@
             "default": null
           },
           "query": {
-            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a\nlonger query is refused with `invalid_params` before it is compiled.",
-            "type": "string"
+            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a\nlonger query is refused with `invalid_params` before it is compiled.\nRequired without `cursor`; ignored with one.",
+            "type": "string",
+            "default": ""
           },
           "full_text": {
             "description": "Whether to include full matched source text up to `MAX_TEXT_BYTES`.\nDefaults to true for single-file queries, and false (lean 1-line snippet) for multi-file queries.",

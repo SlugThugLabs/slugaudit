@@ -46,34 +46,99 @@ impl std::error::Error for CappedReadError {
     }
 }
 
+/// Platform `O_NONBLOCK` flag for opening paths without blocking on FIFOs.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NONBLOCK: i32 = 0o4000;
+/// Platform `O_NONBLOCK` flag for opening paths without blocking on FIFOs.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+))]
+const O_NONBLOCK: i32 = 0x0004;
+
+/// Opens `path` as a regular file without blocking on FIFOs or other special
+/// files. On Unix targets with a known `O_NONBLOCK` value, opens with
+/// `O_NONBLOCK` first and verifies `is_file()` on the opened descriptor so a
+/// FIFO never blocks `open` and a path swap cannot slip between stat and open.
+pub(crate) fn open_regular_file_nonblocking(
+    path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+    ))]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(O_NONBLOCK)
+            .open(path)?
+    };
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly",
+    )))]
+    let file = {
+        let pre = std::fs::metadata(path)?;
+        if !pre.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a regular file", path.display()),
+            ));
+        }
+        std::fs::File::open(path)?
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    Ok((file, metadata))
+}
+
 /// Reads a file's bytes, refusing to load more than `max_bytes`.
 ///
-/// Only a regular file is opened: opening a FIFO blocks until a writer
-/// appears, so anything else (a FIFO, directory or device) is an
-/// `InvalidInput` error decided from metadata. The metadata check also
-/// rejects an oversized file without opening it; the read itself is bounded
-/// by `take(max_bytes + 1)`, so a file that grows past the cap between the
-/// stat and the read cannot allocate an unbounded buffer. The observed length
-/// is reported, never truncated.
+/// Only a regular file is read: opening a FIFO without `O_NONBLOCK` blocks
+/// until a writer appears, so [`open_regular_file_nonblocking`] opens
+/// non-blocking on Unix and verifies `is_file()` on the opened descriptor,
+/// returning `InvalidInput` for a FIFO, directory, or device. The opened
+/// descriptor's metadata also rejects an oversized file before allocating; the
+/// read itself is bounded by `take(max_bytes + 1)`, so a file that grows past
+/// the cap between the stat and the read cannot allocate an unbounded buffer.
+/// The observed length is reported, never truncated.
 pub(crate) fn read_file_capped_bytes(
     path: &std::path::Path,
     max_bytes: u64,
 ) -> Result<Vec<u8>, CappedReadError> {
-    let metadata = std::fs::metadata(path).map_err(CappedReadError::Io)?;
-    if !metadata.is_file() {
-        return Err(CappedReadError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{} is not a regular file", path.display()),
-        )));
-    }
+    let (file, metadata) = open_regular_file_nonblocking(path).map_err(CappedReadError::Io)?;
     if metadata.len() > max_bytes {
         return Err(CappedReadError::TooLarge {
             limit: max_bytes,
             observed: metadata.len(),
         });
     }
-    let file = std::fs::File::open(path).map_err(CappedReadError::Io)?;
-    let mut bytes = Vec::with_capacity(metadata.len().min(64 * 1024) as usize);
+    let mut bytes = match usize::try_from(metadata.len().min(64 * 1024)) {
+        Ok(cap) => Vec::with_capacity(cap),
+        Err(_) => Vec::new(),
+    };
     // KEEP saturating: at a cap of u64::MAX no read can exceed it, so reading up to u64::MAX bytes loses nothing
     file.take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)

@@ -90,10 +90,14 @@ async fn progress_sink_off_runtime_thread_delivers_notification() -> TestResult 
         .check("read initialize response")?
         .check("initialize response line")?;
 
-    let sink = build_inner_sink(Some((
-        running.peer().clone(),
-        ProgressToken(rmcp::model::NumberOrString::Number(7)),
-    )));
+    let completed = Arc::new(AtomicBool::new(false));
+    let sink = build_inner_sink(
+        Some((
+            running.peer().clone(),
+            ProgressToken(rmcp::model::NumberOrString::Number(7)),
+        )),
+        Arc::clone(&completed),
+    );
     let emitter = std::thread::spawn(move || {
         sink.emit(ProgressEvent::Sampling {
             phase: "sample",
@@ -127,6 +131,59 @@ async fn progress_sink_off_runtime_thread_delivers_notification() -> TestResult 
             .check("notification has a message")?,
         &"sample: 1/2",
         "value[\"params\"][\"message\"] == \"sample: 1/2\"",
+    )?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn progress_sink_suppresses_notifications_after_completion_flag_is_set() -> TestResult {
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let (server_io, client_io) = tokio::io::duplex(65536);
+    let server = tokio::spawn(async move {
+        crate::server::SlugAuditServer::new()
+            .serve(server_io)
+            .await
+            .check("server must complete the handshake")
+    });
+    let (read_half, mut write_half) = tokio::io::split(client_io);
+    let mut lines = BufReader::new(read_half).lines();
+    write_half
+        .write_all(
+            concat!(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+                "\n",
+                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .check("client write")?;
+    let running = server.await.check("server task")??;
+    lines
+        .next_line()
+        .await
+        .check("read initialize response")?
+        .check("initialize response line")?;
+
+    let completed = Arc::new(AtomicBool::new(true));
+    let sink = build_inner_sink(
+        Some((
+            running.peer().clone(),
+            ProgressToken(rmcp::model::NumberOrString::Number(9)),
+        )),
+        completed,
+    );
+    sink.emit(ProgressEvent::Started { phase: "late" });
+    sink.emit(ProgressEvent::Completed { phase: "late" });
+
+    let received =
+        tokio::time::timeout(std::time::Duration::from_millis(100), lines.next_line()).await;
+    ensure(
+        received.is_err(),
+        "no stale progress notification may arrive once completed is true",
     )?;
     Ok(())
 }

@@ -127,6 +127,7 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
                         TOOL,
                         move || Ok::<_, ErrorData>(value),
                         None,
+                        None,
                     )
                     .await
                     .check("call succeeds")?;
@@ -220,6 +221,7 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() -> TestResult {
                     TOOL,
                     || Err::<(), _>(ErrorData::invalid_params("bad request", None)),
                     None,
+                    None,
                 )
                 .await
             })
@@ -287,6 +289,7 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() -> TestResult {
                     )
                 },
                 None,
+                None,
             ))
         },
         Level::INFO,
@@ -338,6 +341,7 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
                         &crate::sync::SourceSyncManager::default(),
                     )
                 },
+                None,
                 None,
             ))
         },
@@ -424,6 +428,7 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
                         &crate::sync::SourceSyncManager::default(),
                     )
                 },
+                None,
                 None,
             ))
         },

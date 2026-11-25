@@ -34,6 +34,7 @@ fn rust_mod_path_extracts_top_level_external_module_attribute() -> TestResult {
             "path_attr": "custom/foo.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "top-level external mod receives rust_mod_path",
     )?;
@@ -51,6 +52,7 @@ fn rust_mod_path_extracts_cfg_attr_with_multiple_predicates_and_attrs() -> TestR
             "path_attr": "foo_tests.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "cfg_attr with nested predicate and multiple attrs extracts path",
     )?;
@@ -68,6 +70,7 @@ fn rust_mod_path_extracts_nested_cfg_attr_and_comment_separated_attr() -> TestRe
             "path_attr": "unix_tests.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "nested cfg_attr and doc comment before mod still attach path",
     )?;
@@ -88,6 +91,7 @@ fn rust_mod_path_unquotes_escaped_and_raw_string_literals() -> TestResult {
             "path_attr": "a\\b\"c/d.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "escaped string literal unquoted",
     )?;
@@ -100,6 +104,7 @@ fn rust_mod_path_unquotes_escaped_and_raw_string_literals() -> TestResult {
             "path_attr": "raw/sub.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "raw string literal unquoted",
     )?;
@@ -112,6 +117,7 @@ fn rust_mod_path_unquotes_escaped_and_raw_string_literals() -> TestResult {
             "path_attr": "raw/\"quoted\".rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "raw hashed string literal unquoted",
     )?;
@@ -156,6 +162,7 @@ fn rust_mod_path_tracks_inline_ancestors_and_custom_inline_path() -> TestResult 
             "path_attr": "leaf.rs",
             "inline_dir": "outer/match",
             "inline_depth": 2,
+            "inline_segments": ["outer", "match"],
         }),
         "nested inline ancestors joined with raw prefix stripped",
     )?;
@@ -165,6 +172,7 @@ fn rust_mod_path_tracks_inline_ancestors_and_custom_inline_path() -> TestResult 
             "path_attr": "inner.rs",
             "inline_dir": "custom_root",
             "inline_depth": 1,
+            "inline_segments": ["custom_root"],
         }),
         "inline mod #[path] overrides ancestor directory segment",
     )?;
@@ -226,6 +234,7 @@ fn rust_mod_path_disambiguates_duplicate_module_names_by_span() -> TestResult {
             "path_attr": "inner_dup.rs",
             "inline_dir": "dup",
             "inline_depth": 1,
+            "inline_segments": ["dup"],
         }),
         "inner external dup carries outer inline_dir",
     )?;
@@ -243,6 +252,7 @@ fn rust_mod_path_matches_raw_identifier_external_module() -> TestResult {
             "path_attr": "kw_type.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "external raw identifier module matched",
     )?;
@@ -261,8 +271,79 @@ fn rust_mod_path_handles_nested_block_comments_inside_cfg_attr() -> TestResult {
             "path_attr": "nested_comment.rs",
             "inline_dir": "",
             "inline_depth": 0,
+            "inline_segments": [],
         }),
         "nested block comment inside cfg_attr does not terminate attribute parsing early",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_mod_path_preserves_multi_segment_inline_path_depth() -> TestResult {
+    let source = concat!(
+        "#[path = \"a/b\"]\n",
+        "mod outer {\n",
+        "    #[path = \"leaf.rs\"]\n",
+        "    mod leaf;\n",
+        "}\n",
+    );
+    let modules = rust_module_items(source)?;
+    let leaf = find_module(&modules, "leaf")?;
+    ensure_eq(
+        field(&leaf.payload, "rust_mod_path"),
+        &json!({
+            "path_attr": "leaf.rs",
+            "inline_dir": "a/b",
+            "inline_depth": 1,
+            "inline_segments": ["a/b"],
+        }),
+        "multi-segment inline #[path] preserves a single module-nesting segment",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_mod_path_emits_metadata_for_plain_external_mod_under_inline_path() -> TestResult {
+    let source = concat!(
+        "#[path = \"custom_dir\"]\n",
+        "mod outer {\n",
+        "    mod child;\n",
+        "    mod nested {\n",
+        "        mod r#match;\n",
+        "    }\n",
+        "}\n",
+        "mod plain_outer {\n",
+        "    mod plain_child;\n",
+        "}\n",
+    );
+    let modules = rust_module_items(source)?;
+    ensure_eq(
+        field(&find_module(&modules, "child")?.payload, "rust_mod_path"),
+        &json!({
+            "path_attr": "child",
+            "inline_dir": "custom_dir",
+            "inline_depth": 1,
+            "inline_segments": ["custom_dir"],
+        }),
+        "plain external mod under inline #[path] receives rust_mod_path",
+    )?;
+    ensure_eq(
+        field(&find_module(&modules, "r#match")?.payload, "rust_mod_path"),
+        &json!({
+            "path_attr": "match",
+            "inline_dir": "custom_dir/nested",
+            "inline_depth": 2,
+            "inline_segments": ["custom_dir", "nested"],
+        }),
+        "nested raw-ident external mod under inline #[path] strips r# in path_attr",
+    )?;
+    ensure(
+        field(
+            &find_module(&modules, "plain_child")?.payload,
+            "rust_mod_path",
+        )
+        .is_null(),
+        "plain external mod without any #[path] ancestor does not get rust_mod_path",
     )?;
     Ok(())
 }

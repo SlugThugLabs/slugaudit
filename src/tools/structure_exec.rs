@@ -33,7 +33,7 @@ pub(super) fn run_query(
     limits: &ResourceLimits,
     mode: &OutputMode,
     sink: &mut RowSink<'_, '_>,
-) -> Result<RunOutput, ErrorData> {
+) -> Result<(RunOutput, Option<String>), ErrorData> {
     require_captures(query)?;
     let mut parser = Parser::new();
     parser
@@ -49,6 +49,8 @@ pub(super) fn run_query(
         files_scanned: 0,
         unparsed_files: Vec::new(),
         parse_timed_out_file: None,
+        last_completed_file: None,
+        budget_resume_after: None,
     };
     run.scan_files(&mut parser, files)?;
     if run.timed_out {
@@ -57,11 +59,14 @@ pub(super) fn run_query(
             None,
         ));
     }
-    Ok(RunOutput {
-        files_scanned: run.files_scanned,
-        unparsed_files: run.unparsed_files,
-        parse_timed_out_file: run.parse_timed_out_file,
-    })
+    Ok((
+        RunOutput {
+            files_scanned: run.files_scanned,
+            unparsed_files: run.unparsed_files,
+            parse_timed_out_file: run.parse_timed_out_file,
+        },
+        run.budget_resume_after,
+    ))
 }
 
 /// One query execution's budget and accumulated output.
@@ -77,15 +82,20 @@ struct Run<'q, 'w, 's> {
     /// Files finished before the scan stopped.
     files_scanned: usize,
     unparsed_files: Vec<String>,
-    /// Multi-file: the file whose parse the deadline cancelled.
+    /// Multi-file: the file whose parse exhausted the full budget on its own.
     parse_timed_out_file: Option<String>,
+    /// Multi-file: the last file fully scanned before stopping.
+    last_completed_file: Option<String>,
+    /// Multi-file: resume point when a later file's parse hit the shared
+    /// deadline after earlier files already finished.
+    budget_resume_after: Option<String>,
 }
 
 impl Run<'_, '_, '_> {
     /// Scans files in order until they run out or the deadline passes. A
     /// parse the deadline cancels ends a multi-file scan with what earlier
-    /// files produced, flagged by `parse_timed_out_file`; for a single file
-    /// there is nothing to return, so it is the budget error.
+    /// files produced; for a single file there is nothing to return, so it
+    /// is the budget error.
     fn scan_files(
         &mut self,
         parser: &mut Parser,
@@ -99,18 +109,8 @@ impl Run<'_, '_, '_> {
             let spent = || deadline.is_some_and(|deadline| Instant::now() >= deadline);
             let tree = match parse_within(parser, content, spent) {
                 Parsed::Tree(tree) => tree,
-                Parsed::Cancelled if self.mode.single_file => {
-                    self.timed_out = true;
-                    return Ok(());
-                }
                 Parsed::Cancelled => {
-                    tracing::warn!(
-                        file = %file_path,
-                        content_bytes = content.len(),
-                        "structure: parse cancelled at the execution budget; returning the matches so far",
-                    );
-                    // KEEP clone: RunState owns the path String while scan borrows window.files
-                    self.parse_timed_out_file = Some(file_path.clone());
+                    self.handle_cancelled_parse(file_path, content.len());
                     return Ok(());
                 }
                 Parsed::NoTree if self.mode.single_file => {
@@ -122,7 +122,7 @@ impl Run<'_, '_, '_> {
                 Parsed::NoTree => {
                     // KEEP clone: RunState owns the path String while scan borrows window.files
                     self.unparsed_files.push(file_path.clone());
-                    self.count_scanned_file()?;
+                    self.finish_file(file_path)?;
                     continue;
                 }
             };
@@ -130,13 +130,40 @@ impl Run<'_, '_, '_> {
             if self.timed_out {
                 break;
             }
-            self.count_scanned_file()?;
+            self.finish_file(file_path)?;
         }
         Ok(())
     }
 
-    /// Counts one more finished file.
-    fn count_scanned_file(&mut self) -> Result<(), ErrorData> {
+    /// Records a cancelled parse: single-file scans fail with the budget
+    /// error; multi-file scans with earlier completed files resume before this
+    /// file so it gets a fresh budget; only a first file that exhausts the
+    /// full budget on its own is marked as `parse_timed_out_file` and skipped.
+    fn handle_cancelled_parse(&mut self, file_path: &str, content_bytes: usize) {
+        if self.mode.single_file {
+            self.timed_out = true;
+            return;
+        }
+        if self.files_scanned > 0 {
+            tracing::warn!(
+                file = %file_path,
+                content_bytes,
+                "structure: parse cancelled at the execution budget after earlier files; resuming before this file",
+            );
+            self.budget_resume_after = self.last_completed_file.take();
+            return;
+        }
+        tracing::warn!(
+            file = %file_path,
+            content_bytes,
+            "structure: parse cancelled at the execution budget; returning the matches so far",
+        );
+        self.parse_timed_out_file = Some(file_path.to_owned());
+    }
+
+    /// Records one more finished file and remembers it as the resume point.
+    fn finish_file(&mut self, file_path: &str) -> Result<(), ErrorData> {
+        self.last_completed_file = Some(file_path.to_owned());
         self.files_scanned = self.files_scanned.checked_add(1).ok_or_else(|| {
             ErrorData::internal_error("structure: the scanned-file count overflowed", None)
         })?;
@@ -144,12 +171,18 @@ impl Run<'_, '_, '_> {
     }
 
     /// Whether another file may be scanned; records a passed deadline.
+    /// When a multi-file scan already finished earlier files, stops with a
+    /// resumable partial result instead of discarding completed matches.
     fn out_of_budget(&mut self) -> bool {
         if self
             .deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
-            self.timed_out = true;
+            if !self.mode.single_file && self.files_scanned > 0 {
+                self.budget_resume_after = self.last_completed_file.take();
+            } else {
+                self.timed_out = true;
+            }
             return true;
         }
         false
@@ -223,7 +256,7 @@ pub(super) fn produce(
         },
         single_file,
     };
-    let run = run_query(
+    let (run, budget_resume_after) = run_query(
         &compiled_query,
         &ts_language,
         &window.files,
@@ -231,10 +264,10 @@ pub(super) fn produce(
         &mode,
         rows,
     )?;
-    let completeness = completeness_of(&window, &run)?;
+    let completeness = completeness_of(&window, &run, budget_resume_after.as_deref())?;
     Ok(Produced {
         completeness,
-        extra: extra_of(target_language, window, run, cut),
+        extra: extra_of(target_language, window, run, budget_resume_after, cut),
     })
 }
 

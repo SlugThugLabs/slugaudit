@@ -529,6 +529,21 @@ fn a_pattern_filters_a_credential_predicate_that_is_an_or_chain() -> TestResult 
     Ok(())
 }
 
+#[test]
+fn compact_page_file_counts_merges_non_adjacent_files_in_first_appearance_order() -> TestResult {
+    let counts = crate::tools::leads_query::page_file_counts(
+        ["a.rs", "b.rs", "a.rs", "c.rs", "b.rs", "a.rs"].into_iter(),
+    )
+    .check("page_file_counts succeeds")?;
+    let pairs: Vec<(&str, i64)> = counts.iter().map(|c| (c.file.as_str(), c.count)).collect();
+    ensure_eq(
+        &pairs,
+        &[("a.rs", 3), ("b.rs", 2), ("c.rs", 1)],
+        "non-adjacent files are merged without duplicates in first-appearance order",
+    )?;
+    Ok(())
+}
+
 #[path = "leads_page_tests.rs"]
 mod leads_page_tests;
 

@@ -104,6 +104,7 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() -> TestResult {
             error,
             PublishError::TimeBudgetExceeded { .. }
                 | PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
+                | PublishError::Revision(crate::sync::RevisionError::TimeBudgetExceeded { .. })
         ),
         format!("expected a time-budget error, got {error:?}"),
     )?;
@@ -250,6 +251,7 @@ fn a_parse_that_outlives_the_sync_budget_still_fails_the_publish() -> TestResult
             error,
             PublishError::TimeBudgetExceeded { .. }
                 | PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
+                | PublishError::Revision(crate::sync::RevisionError::TimeBudgetExceeded { .. })
         ),
         format!("expected a time-budget error, got {error:?}"),
     )?;

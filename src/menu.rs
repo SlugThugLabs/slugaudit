@@ -19,9 +19,15 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
     loop {
         let style = Style::stdout();
         cli::out(format_args!("{}", render_menu(&style)))?;
-        let choice = next_choice(
+        let max_invalid = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            None
+        } else {
+            Some(MAX_NON_INTERACTIVE_INVALID_ATTEMPTS)
+        };
+        let choice = next_choice_with_limit(
             &mut crate::prompt::read_prompt_line,
             &mut std::io::stdout().lock(),
+            max_invalid,
         )?;
         match choice {
             MenuChoice::Install => install_step()?,
@@ -43,15 +49,39 @@ pub fn run_menu() -> Result<bool, Box<dyn std::error::Error>> {
 const INVALID_CHOICE: &str =
     "Invalid choice; pick a number from the list.\nChoose an option [1-6]: ";
 
+/// Maximum consecutive invalid choices accepted when stdin is not a terminal.
+const MAX_NON_INTERACTIVE_INVALID_ATTEMPTS: usize = 16;
+
 /// Reads menu answers until one is valid. A bad answer prints one error line
 /// and re-asks on the choice line only; the banner is never redrawn.
+#[cfg(test)]
 fn next_choice(
     read: &mut impl FnMut() -> std::io::Result<Option<String>>,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<MenuChoice> {
+    next_choice_with_limit(read, out, Some(MAX_NON_INTERACTIVE_INVALID_ATTEMPTS))
+}
+
+/// Reads menu answers until one is valid, optionally failing after
+/// `max_invalid` consecutive invalid answers (used when stdin is not a
+/// terminal so piped streams of invalid lines cannot loop unboundedly).
+fn next_choice_with_limit(
+    read: &mut impl FnMut() -> std::io::Result<Option<String>>,
+    out: &mut impl std::io::Write,
+    max_invalid: Option<usize>,
+) -> std::io::Result<MenuChoice> {
+    let mut invalid_attempts: usize = 0;
     loop {
         if let Some(choice) = menu_choice(read()?.as_deref()) {
             return Ok(choice);
+        }
+        // KEEP saturating: invalid_attempts is only compared against max_invalid; clamping at usize::MAX never resets below any limit
+        invalid_attempts = invalid_attempts.saturating_add(1);
+        if max_invalid.is_some_and(|limit| invalid_attempts >= limit) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "too many invalid menu choices on non-interactive input",
+            ));
         }
         cli::write_to(out, format_args!("{INVALID_CHOICE}"))?;
     }

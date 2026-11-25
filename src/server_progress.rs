@@ -8,6 +8,7 @@ use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use rmcp::model::{ProgressNotificationParam, ProgressToken, RequestMetaObject};
 use rmcp::{Peer, RoleServer};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Sends one MCP `/notifications/progress` notification when the caller
 /// requested progress, and nothing otherwise. Best-effort: a send failure is
@@ -72,6 +73,10 @@ pub(crate) struct McpProgressSink {
     /// events are emitted from plain `std::thread::scope` workers that have
     /// no runtime context, where `tokio::task::spawn` would panic.
     runtime: tokio::runtime::Handle,
+    /// Tripped by `run_blocking` right before sending `1.0 completed` so
+    /// late-scheduled inner progress tasks never emit stale notifications
+    /// after completion or after the tool response.
+    completed: Arc<AtomicBool>,
 }
 
 /// Coalesces events that arrive less than `window` apart: the first event
@@ -134,6 +139,10 @@ impl Throttle {
 
 impl McpProgressSink {
     fn spawn_notify(&self, fraction: f64, message: String) {
+        if self.completed.load(Ordering::Acquire) {
+            return;
+        }
+        let completed = Arc::clone(&self.completed);
         // KEEP clone: tokio::spawn requires 'static ownership of the Peer handle and ProgressToken
         let peer = self.peer.clone();
         // KEEP clone: tokio::spawn requires 'static ownership of the Peer handle and ProgressToken
@@ -145,6 +154,9 @@ impl McpProgressSink {
         // and never returned, matching `run_blocking`'s "broken progress
         // channel can never turn a successful tool call into an error" stance.
         self.runtime.spawn(async move {
+            if completed.load(Ordering::Acquire) {
+                return;
+            }
             notify_progress(Some(&(peer, token)), fraction, message).await;
         });
     }
@@ -194,6 +206,7 @@ impl ProgressSink for McpProgressSink {
 /// the sync layer can call `emit` unconditionally without branching.
 pub(crate) fn build_inner_sink(
     progress: Option<(Peer<RoleServer>, ProgressToken)>,
+    completed: Arc<AtomicBool>,
 ) -> Arc<dyn ProgressSink> {
     match progress {
         Some((peer, token)) => Arc::new(McpProgressSink {
@@ -203,6 +216,7 @@ pub(crate) fn build_inner_sink(
             // 100 ms ≈ 10 notifications/second — enough to show a live
             // i/N ratio without flooding the host on a huge import.
             sampling_throttle: Throttle::new(std::time::Duration::from_millis(100)),
+            completed,
         }),
         None => Arc::new(NoopProgressSink),
     }

@@ -440,5 +440,25 @@ fn context_probe(seen: &Seen) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&St
     }
 }
 
+#[test]
+fn page_request_rejects_an_oversized_cursor() -> TestResult {
+    let huge = "c".repeat(crate::tools::MAX_CURSOR_BYTES + 1);
+    let error = page_request(Some(&huge), None, &NoopProgressSink)
+        .err()
+        .check("oversized cursor is refused")?;
+
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error.message,
+        &format!("cursor exceeds {} bytes", crate::tools::MAX_CURSOR_BYTES),
+        "error.message names MAX_CURSOR_BYTES",
+    )?;
+    Ok(())
+}
+
 #[path = "paginate_context_store_tests.rs"]
 mod context_store_tests;

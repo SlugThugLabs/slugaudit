@@ -13,7 +13,7 @@ use crate::server_progress::notify_progress;
 use rmcp::model::ProgressToken;
 use rmcp::{ErrorData, Peer, RoleServer};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
@@ -81,6 +81,7 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
     tool_name: &'static str,
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
     progress: Option<(Peer<RoleServer>, ProgressToken)>,
+    completed: Option<Arc<AtomicBool>>,
 ) -> Result<T, ErrorData> {
     // `call_id` and `session_id` live on the span (not only on the
     // completion line) so the start line and every line a tool adds to the
@@ -108,6 +109,12 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
         // KEEP clone: Instrument::instrument takes an owned Span while log_completion borrows &span afterwards
         .instrument(span.clone())
         .await;
+
+    // Gate any late-scheduled inner progress tasks before emitting the final
+    // lifecycle notification so stale notifications cannot follow `1.0 completed`.
+    if let Some(flag) = &completed {
+        flag.store(true, Ordering::Release);
+    }
 
     // Final progress notification: the work is done and the response is
     // about to be returned. Progress reaches 1.0 whether the work succeeded

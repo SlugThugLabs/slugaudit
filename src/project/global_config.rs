@@ -187,6 +187,18 @@ impl GlobalConfig {
     /// warnings already logged was poisoned.
     pub fn apply_limit_keys(
         &self,
+        limits: ResourceLimits,
+    ) -> Result<ResourceLimits, crate::util::LockPoisoned> {
+        let mut limits = self.apply_limit_keys_unclamped(limits)?;
+        limits.clamp_parse_to_file_bytes()?;
+        Ok(limits)
+    }
+
+    /// Applies the config's limit keys without clamping `max_parse_bytes` to
+    /// `max_file_bytes`, so higher-precedence `SLUGAUDIT_MAX_FILE_BYTES` can
+    /// raise `max_file_bytes` before `resolve_limits` runs the clamp once.
+    fn apply_limit_keys_unclamped(
+        &self,
         mut limits: ResourceLimits,
     ) -> Result<ResourceLimits, crate::util::LockPoisoned> {
         if let Some(file_bytes) =
@@ -234,7 +246,6 @@ impl GlobalConfig {
         )? {
             limits.result_active_grace_secs = grace_secs;
         }
-        limits.clamp_parse_to_file_bytes()?;
         Ok(limits)
     }
 }
@@ -287,7 +298,7 @@ pub(crate) fn resolve_limits(
         None => AuditProfile::Adaptive,
     };
     let base = limits_for_profile(profile)?;
-    let mut limits = global.apply_limit_keys(base)?;
+    let mut limits = global.apply_limit_keys_unclamped(base)?;
     env.apply(
         &mut limits,
         global.max_result_store_bytes.is_some_and(|v| v > 0),

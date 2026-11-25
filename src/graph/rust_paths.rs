@@ -104,8 +104,9 @@ pub(super) fn resolve_rust_from_base(
     resolve_rust_path(segments, base_dir, known_paths, forced_confidence)
 }
 
-/// Tries each candidate base directory in order and returns the first that
-/// actually resolves, falling back to the base module's *own* file.
+/// Tries each candidate base directory in priority order, checking both
+/// child paths under `base` and `base`'s own module file before falling back
+/// to the next base.
 pub(super) fn first_resolved(
     rest: &str,
     bases: &[String],
@@ -116,11 +117,9 @@ pub(super) fn first_resolved(
         if resolution.kind == ResolutionKind::Resolved {
             return resolution;
         }
-    }
-    for base in bases {
-        let resolution = resolve_rust_module_file(base, known_paths, Some("Low"));
-        if resolution.kind == ResolutionKind::Resolved {
-            return resolution;
+        let module_file = resolve_rust_module_file(base, known_paths, Some("Low"));
+        if module_file.kind == ResolutionKind::Resolved {
+            return module_file;
         }
     }
     unresolved()
@@ -134,21 +133,20 @@ fn resolve_rust_path(
 ) -> Resolution {
     let parts: Vec<&str> = segments
         .split("::")
+        .map(|part| match part.strip_prefix("r#") {
+            Some(stripped) => stripped,
+            None => part,
+        })
         .filter(|part| !part.is_empty())
         .collect();
     if parts.is_empty() {
         return unresolved();
     }
     for take in (1..=parts.len()).rev() {
-        let Some(joined) = normalize_join(
-            base_dir,
-            &parts
-                .iter()
-                .take(take)
-                .copied()
-                .collect::<Vec<_>>()
-                .join("/"),
-        ) else {
+        let Some(prefix) = parts.get(..take) else {
+            continue;
+        };
+        let Some(joined) = normalize_join(base_dir, &prefix.join("/")) else {
             continue;
         };
         let candidates = vec![format!("{joined}.rs"), format!("{joined}/mod.rs")];

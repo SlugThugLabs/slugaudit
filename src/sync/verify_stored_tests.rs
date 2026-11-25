@@ -103,3 +103,50 @@ fn a_spent_deadline_fails_the_check_before_comparing() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn non_text_storage_classes_null_indexed_and_populated_skipped_are_flagged() -> TestResult {
+    let (_dir, connection) = seeded_connection()?;
+    let text = "fn ok() {}\n";
+    let hash = blake3::hash(text.as_bytes()).to_string();
+    insert_file(&connection, "int.rs", text, &hash)?;
+    insert_file(&connection, "blob.rs", text, &hash)?;
+    insert_file(&connection, "null_idx.rs", text, &hash)?;
+    connection
+        .execute("UPDATE files SET content = 42 WHERE path = 'int.rs'", [])
+        .check("set integer content")?;
+    connection
+        .execute(
+            "UPDATE files SET content = CAST(content AS BLOB) WHERE path = 'blob.rs'",
+            [],
+        )
+        .check("set blob content")?;
+    connection
+        .execute(
+            "UPDATE files SET content = NULL WHERE path = 'null_idx.rs'",
+            [],
+        )
+        .check("null indexed content")?;
+    connection
+        .execute(
+            "INSERT INTO files \
+                (path, file_kind, skip_reason, content, content_hash, hash_algorithm, \
+                 parser_availability, parse_outcome, extraction_completeness, last_revision_id) \
+             VALUES ('pop_skip.rs', 'skipped', 'oversize', 'bogus', 'h', \
+                     'stat-identity', 'Unavailable', 'NotAttempted', 'Unavailable', 1)",
+            [],
+        )
+        .check("insert populated skipped row")?;
+
+    let mut mismatched: Vec<String> = content_mismatches(&connection, &deadline())
+        .check("check")?
+        .into_iter()
+        .collect();
+    mismatched.sort();
+    ensure_eq(
+        &mismatched,
+        &["blob.rs", "int.rs", "null_idx.rs", "pop_skip.rs"],
+        "all storage-class and nullness violations are flagged",
+    )?;
+    Ok(())
+}

@@ -32,7 +32,6 @@ mod publish_sample;
 mod race_hook;
 mod recovery_log;
 mod result_stores;
-mod revalidate;
 mod revision;
 mod revision_edges;
 mod revision_files;
@@ -46,6 +45,7 @@ pub use discovery::{DiscoveredFile, DiscoveryError, FileKind, SkippedFile, disco
 pub use hash::{HashError, aggregate_manifest_hash, hash_bytes, hash_file};
 pub use manager::{SourceSyncManager, SyncedProject};
 pub(crate) use manager::{map_activation_error, map_process_limits_error, session_findings_for};
+pub(crate) use manager_meta::project_instance_id;
 pub use manifest::{ChangeStatus, FileChange, compare};
 pub use publish::{PublishError, PublishReport, publish};
 pub(crate) use publish_log::failure_context as publish_failure_context;

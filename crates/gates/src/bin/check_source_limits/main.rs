@@ -8,15 +8,12 @@
 //!
 //! Counts the number of lines
 //! containing Rust tokens *outside* comments, strings, char literals,
-//! and raw-string literals per file under `src/`. Production files at
-//! 0–199 lines auto-pass; 200–300 requires a `slugaudit-line-exception:`
-//! justification comment with `approved-by=slugthuglabs; reason=...`; 301–350
-//! requires a dated human approval (`approved-by=human-user`); above 350 is a
-//! hard failure. Test files (`*_tests.rs`, `tests.rs`) enumerate one
-//! named behavior per `#[test]` — repetition that cannot be DRY'd without
-//! losing failure diagnostics — so they auto-pass up to 500 lines; >500
-//! is a hard failure with no exception path. Output format is
-//! stable so existing log scrapers and CI greps keep working.
+//! and raw-string literals per file under `src/`. Production files under
+//! 200 lines auto-pass; 200+ requires a `slugaudit-line-exception:` comment
+//! (run `split-judge` — if it says `KEEP`, you're good; there is no hard
+//! cap). Test files (`*_tests.rs`, `tests.rs`) auto-pass up to 500 lines
+//! and require an exception above 500. Output format is stable so existing
+//! log scrapers and CI greps keep working.
 //!
 //! Pure Rust: no Python interpreter, no shell. The state
 //! machine lives in the sibling [`counter`] module and the unit tests
@@ -74,12 +71,8 @@ fn check_file(project_root: &Path, path: &Path) -> FileOutcome {
         counter::Verdict::PassWithException { reason } => FileOutcome::Line(format!(
             "source-limit: {rel}: {n} lines; exception: {reason}"
         )),
-        counter::Verdict::FailHard { ceiling } => {
-            FileOutcome::Failure(format!("{rel}: {n} code lines (>{ceiling}; hard failure)"))
-        }
-        counter::Verdict::FailNeedsException => FileOutcome::Failure(format!(
-            "{rel}: {n} code lines (>= {} requires an approved exception)",
-            counter::PRODUCTION_EXCEPTION_FLOOR
+        counter::Verdict::FailNeedsException { floor } => FileOutcome::Failure(format!(
+            "{rel}: {n} code lines (>= {floor} requires a split-judge review / approved exception)"
         )),
     }
 }

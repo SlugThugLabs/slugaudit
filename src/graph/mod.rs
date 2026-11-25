@@ -14,7 +14,9 @@ mod rust_use_tree;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub(crate) use rust_mod_parents::{RustModuleParents, insert_rust_mod_parent};
+pub(crate) use rust_mod_parents::{
+    RustModuleParents, insert_rust_mod_parent, insert_rust_mod_parent_segments,
+};
 use std::collections::HashSet;
 
 /// One import evidence item's resolution outcome, ready to become a

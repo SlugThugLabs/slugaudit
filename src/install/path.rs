@@ -37,9 +37,13 @@ pub(crate) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
-/// Appends `text` to `path` (creating it) and syncs it to disk.
+/// Appends `text` to `path` (creating parent directories and the file if
+/// absent) and syncs it to disk.
 fn append_durably(path: &Path, text: &str) -> Result<(), std::io::Error> {
     use std::io::Write as _;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -52,7 +56,7 @@ fn append_durably(path: &Path, text: &str) -> Result<(), std::io::Error> {
 /// append for the current `$SHELL`. Reads `$HOME` and `$SHELL`; a `bin_dir`
 /// that is not valid UTF-8 is refused, since the line cannot name it exactly.
 fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
-    let home = super::non_empty_var("HOME").ok_or(InstallError::NoHome)?;
+    let home = super::non_empty_var("HOME").ok_or(InstallError::ShellConfigHomeMissing)?;
     // An unset, non-UTF-8 or unrecognized $SHELL is refused rather than
     // guessed to be bash: editing the wrong rc file is worse than asking.
     let shell = match std::env::var("SHELL") {

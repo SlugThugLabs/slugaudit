@@ -63,6 +63,7 @@ fn a_publish_revision_database_failure_is_the_database_variant() -> TestResult {
     let mut connection =
         rusqlite::Connection::open(db_dir.path().join("project.db")).check("open bare db")?;
     let discovered = HashSet::new();
+    let unrepresentable = HashSet::new();
 
     let error = publish_revision(
         &mut connection,
@@ -75,6 +76,8 @@ fn a_publish_revision_database_failure_is_the_database_variant() -> TestResult {
             skipped: &[],
             discovered_paths: &discovered,
             re_resolve_unresolved: false,
+            unrepresentable_paths: &unrepresentable,
+            deadline: None,
         },
     )
     .check_err("a database without the schema cannot publish a revision")?;
@@ -121,6 +124,7 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() -> TestResult {
         evidence: Vec::new(),
     };
     let discovered = HashSet::new();
+    let unrepresentable = HashSet::new();
 
     let error = publish_revision(
         &mut connection,
@@ -133,6 +137,8 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() -> TestResult {
             skipped: &[],
             discovered_paths: &discovered,
             re_resolve_unresolved: false,
+            unrepresentable_paths: &unrepresentable,
+            deadline: None,
         },
     )
     .check_err("an invalid parser run must fail the publish")?;
@@ -167,6 +173,125 @@ fn a_baseline_label_is_the_revision_id_or_none() -> TestResult {
         &baseline_label(None),
         &"none",
         "baseline_label(None) == \"none\"",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn publish_revision_fails_closed_when_deadline_is_spent() -> TestResult {
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
+    let discovered = HashSet::new();
+    let unrepresentable = HashSet::new();
+    let expired = crate::util::Deadline::after(std::time::Duration::ZERO);
+
+    let error = publish_revision(
+        &mut connection,
+        &RevisionInputs {
+            expected_current: None,
+            manifest_hash: "manifest",
+            parser_pack_version: "1.0",
+            upserts: &[],
+            deletions: &[],
+            skipped: &[],
+            discovered_paths: &discovered,
+            re_resolve_unresolved: false,
+            unrepresentable_paths: &unrepresentable,
+            deadline: Some(&expired),
+        },
+    )
+    .check_err("spent deadline must abort revision publish")?;
+
+    ensure(
+        matches!(error, RevisionError::TimeBudgetExceeded { .. }),
+        format!("expected TimeBudgetExceeded, got {error:?}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn stale_baseline_leaves_unrepresentable_paths_unchanged() -> TestResult {
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
+    let discovered = HashSet::new();
+    let initial_unrep = HashSet::from([b"bad-\xff.rs".to_vec()]);
+
+    let rev1 = publish_revision(
+        &mut connection,
+        &RevisionInputs {
+            expected_current: None,
+            manifest_hash: "m1",
+            parser_pack_version: "1.0",
+            upserts: &[],
+            deletions: &[],
+            skipped: &[],
+            discovered_paths: &discovered,
+            re_resolve_unresolved: false,
+            unrepresentable_paths: &initial_unrep,
+            deadline: None,
+        },
+    )
+    .check("first revision")?;
+    ensure_eq(&rev1, &"rev-1", "first revision id")?;
+
+    // A stale CAS attempt with different unrepresentable_paths must fail
+    // without mutating unrepresentable_paths.
+    let stale_unrep = HashSet::from([b"other-\xfe.rs".to_vec()]);
+    let error = publish_revision(
+        &mut connection,
+        &RevisionInputs {
+            expected_current: None,
+            manifest_hash: "m2",
+            parser_pack_version: "1.0",
+            upserts: &[],
+            deletions: &[],
+            skipped: &[],
+            discovered_paths: &discovered,
+            re_resolve_unresolved: false,
+            unrepresentable_paths: &stale_unrep,
+            deadline: None,
+        },
+    )
+    .check_err("stale baseline must fail")?;
+    ensure(
+        matches!(error, RevisionError::StaleBaseline { .. }),
+        format!("expected StaleBaseline, got {error:?}"),
+    )?;
+
+    let stored = crate::sync::publish::stored_unrepresentable_paths(&connection)
+        .check("read stored unrepresentable_paths")?;
+    ensure_eq(&stored, &initial_unrep, "unrepresentable_paths unchanged")?;
+    Ok(())
+}
+
+#[test]
+fn apply_deletions_and_upsert_skipped_files_respect_spent_deadline() -> TestResult {
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
+    let expired = crate::util::Deadline::after(std::time::Duration::ZERO);
+    let tx = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .check("begin tx")?;
+
+    let del_err = apply_deletions(&tx, &["gone.rs".to_owned()], Some(&expired))
+        .check_err("apply_deletions must fail on spent deadline")?;
+    ensure(
+        matches!(del_err, RevisionError::TimeBudgetExceeded { .. }),
+        format!("expected TimeBudgetExceeded from apply_deletions, got {del_err:?}"),
+    )?;
+
+    let skipped = vec![super::revision_skipped::SkippedRecord {
+        relative_path: "big.bin".to_owned(),
+        reason: super::revision_skipped::SKIP_REASON_OVERSIZE.to_owned(),
+        identity: SourceIdentity::new("big.bin".to_owned(), "stat-h".to_owned()),
+        byte_len: Some(999),
+        modified_unix_seconds: None,
+    }];
+    let skip_err = super::revision_skipped::upsert_skipped_files(&tx, &skipped, 1, Some(&expired))
+        .check_err("upsert_skipped_files must fail on spent deadline")?;
+    ensure(
+        matches!(skip_err, RevisionError::TimeBudgetExceeded { .. }),
+        format!("expected TimeBudgetExceeded from upsert_skipped_files, got {skip_err:?}"),
     )?;
     Ok(())
 }

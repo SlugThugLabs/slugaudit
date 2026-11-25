@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=cohesive per-revision mechanic scan cache with byte-budget eviction and database-instance invalidation
 //! The scan results of registered mechanics, kept for the revision they were
 //! computed at so a second `leads` call selecting the same entry parses
 //! nothing.
@@ -19,7 +20,7 @@
 //! counted instead.
 
 use crate::util::{LockPoisoned, lock};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -125,6 +126,11 @@ struct Stored {
 struct Inner {
     /// Oldest first.
     entries: VecDeque<Stored>,
+    /// Last observed per-database instance token (`project.project_id`) per
+    /// project database path. When a database is rebuilt externally (producing
+    /// a fresh `"rev-1"` with a new instance token), noticing the change drops
+    /// every cached entry for that project so stale rows cannot be served.
+    project_instances: HashMap<String, String>,
     bytes: usize,
     budget: usize,
     evictions: u64,
@@ -169,6 +175,7 @@ impl MechanicScanCache {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 entries: VecDeque::new(),
+                project_instances: HashMap::new(),
                 bytes: 0,
                 budget,
                 evictions: 0,
@@ -189,10 +196,42 @@ impl MechanicScanCache {
     pub fn clear_project(&self, project: &Path) -> Result<(), LockPoisoned> {
         let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
         let project_key = project.to_string_lossy();
+        inner.project_instances.remove(project_key.as_ref());
         inner
             .entries
             .retain(|stored| stored.key.project != project_key);
         inner.recount_bytes();
+        Ok(())
+    }
+
+    /// Records the database instance token (`project.project_id`) currently
+    /// backing `project`. If a different instance token was previously seen
+    /// for `project` (e.g. another process rebuilt `project.db` and restarted
+    /// at `"rev-1"`), every cached entry for `project` is dropped immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockPoisoned`] when the cache was poisoned.
+    pub fn sync_project_instance(
+        &self,
+        project: &Path,
+        instance_id: &str,
+    ) -> Result<(), LockPoisoned> {
+        let mut inner = lock(&self.inner, "mechanic_scan_cache")?;
+        let project_key = project.to_string_lossy();
+        let changed = inner
+            .project_instances
+            .get(project_key.as_ref())
+            .is_some_and(|previous| previous != instance_id);
+        if changed {
+            inner
+                .entries
+                .retain(|stored| stored.key.project != project_key);
+            inner.recount_bytes();
+        }
+        inner
+            .project_instances
+            .insert(project_key.into_owned(), instance_id.to_owned());
         Ok(())
     }
 

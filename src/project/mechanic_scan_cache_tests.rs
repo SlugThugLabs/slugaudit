@@ -119,3 +119,33 @@ fn remove_id_drops_every_entry_of_that_id_only() -> TestResult {
         .check("the cache still holds key b")?;
     Ok(())
 }
+
+#[test]
+fn sync_project_instance_drops_cached_entries_when_db_instance_changes_at_same_revision()
+-> TestResult {
+    let cache = MechanicScanCache::default();
+    let project = Path::new("p");
+    cache
+        .sync_project_instance(project, "instance-1")
+        .check("record initial instance")?;
+    cache.insert(key("rev-1", "a"), rows(1)?).check("insert")?;
+
+    // Same instance keeps the entry.
+    cache
+        .sync_project_instance(project, "instance-1")
+        .check("same instance")?;
+    cache
+        .get(&key("rev-1", "a"))
+        .check("look up")?
+        .check("entry still present for same instance")?;
+
+    // A rebuilt database with a new instance id invalidates even the same rev-1.
+    cache
+        .sync_project_instance(project, "instance-2")
+        .check("new instance")?;
+    ensure(
+        cache.get(&key("rev-1", "a")).check("look up")?.is_none(),
+        "rebuilt instance must invalidate cached rev-1 entries",
+    )?;
+    Ok(())
+}

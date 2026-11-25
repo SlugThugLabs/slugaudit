@@ -169,20 +169,40 @@ fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial(
     ensure_eq(&names, &["alpha"], "names == [\"alpha\"]")?;
     ensure_eq(
         &response.parse_timed_out_file.as_deref(),
-        &Some("big.rs"),
-        "response.parse_timed_out_file.as_deref() == Some(\"big.rs\")",
+        &None,
+        "earlier files consumed part of the budget, so big.rs must be retried rather than skipped",
     )?;
     ensure_eq(
         &response.next_start_after_file.as_deref(),
-        &Some("big.rs"),
-        "response.next_start_after_file.as_deref() == Some(\"big.rs\")",
+        &Some("a.rs"),
+        "response.next_start_after_file.as_deref() == Some(\"a.rs\")",
     )?;
     ensure_eq(
         &response.page.limited_by,
         &PageLimit::TimeBudget,
         "response.page.limited_by == PageLimit::TimeBudget",
     )?;
-    ensure(!response.page.complete, "the timed-out file remains")?;
+    ensure(!response.page.complete, "the unscanned file remains")?;
+
+    let mut resumed = multi_file(&project);
+    resumed.0.start_after_file = response.next_start_after_file;
+    let second = call(&resumed, &limits).check("resumed scan marks big.rs timed out")?;
+    ensure_eq(
+        &second.parse_timed_out_file.as_deref(),
+        &Some("big.rs"),
+        "big.rs exhausted a full budget on its own",
+    )?;
+    ensure_eq(
+        &second.next_start_after_file.as_deref(),
+        &Some("big.rs"),
+        "resuming again advances past big.rs",
+    )?;
+    ensure_eq(
+        &second.page.limited_by,
+        &PageLimit::TimeBudget,
+        "second.page.limited_by == PageLimit::TimeBudget",
+    )?;
+    ensure(!second.page.complete, "the timed-out file remains")?;
     Ok(())
 }
 
@@ -203,5 +223,43 @@ fn a_single_file_parse_cancelled_at_the_deadline_is_the_budget_error() -> TestRe
         &"structure query exceeded its execution time budget",
         "error.message.as_ref() == \"structure query exceeded its execution time budget\"",
     )?;
+    Ok(())
+}
+
+#[test]
+fn a_multi_file_deadline_between_files_returns_a_resumable_partial_page() -> TestResult {
+    let project = activated_project("f000.rs", b"pub fn f000() {}\n")?;
+    for index in 1..400 {
+        let name = format!("f{index:03}.rs");
+        let body = format!("pub fn f{index:03}() {{}}\n");
+        std::fs::write(project.path().join(name), body).check("write fixture file")?;
+    }
+    let limits = ResourceLimits {
+        max_structure_execution_time: Duration::from_millis(1),
+        ..ResourceLimits::default()
+    };
+
+    let response = call(&multi_file(&project), &limits)
+        .check("expired deadline between files returns partial page, not error")?;
+
+    ensure(
+        !response.matches.is_empty(),
+        "earlier completed matches preserved",
+    )?;
+    ensure_eq(
+        &response.parse_timed_out_file,
+        &None,
+        "no single file exhausted the full budget on its own",
+    )?;
+    ensure(
+        response.next_start_after_file.is_some(),
+        "partial response names resume_after_file",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::TimeBudget,
+        "limited_by reports TimeBudget",
+    )?;
+    ensure(!response.page.complete, "unscanned files remain")?;
     Ok(())
 }

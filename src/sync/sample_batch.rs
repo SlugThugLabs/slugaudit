@@ -22,9 +22,10 @@ use super::file_pool::{self, Pass};
 use super::publish::PublishError;
 use super::revision_skipped::{SKIP_REASON_NOT_UTF8, SKIP_REASON_OVERSIZE};
 use super::sample::{Sample, SampleError, sample_file};
-use crate::model::ResourceLimits;
+use crate::model::{ResourceLimits, SourceIdentity};
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::util::Deadline;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The sampling pass, as its log lines and time-budget error name it.
@@ -66,8 +67,41 @@ enum Sampled {
 /// concurrent workers: a worker that would push the total above
 /// `max_total_import_bytes` fails the run with
 /// [`PublishError::ImportTooLarge`].
+#[cfg(test)]
 pub(super) fn sample_all_with_deadline(
     discovered: &[DiscoveredFile],
+    limits: &ResourceLimits,
+    sink: &dyn ProgressSink,
+    deadline: &Deadline,
+) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
+    sample_batch(discovered, None, limits, sink, deadline)
+}
+
+/// Pass 2 sampling against Pass 1 stream-hashes (`identities`).
+///
+/// Any file in `discovered` already passed Pass 1 under `limits.max_file_bytes`,
+/// so `SampleError::TooLarge` means the file grew between Pass 1 and Pass 2 and
+/// aborts the attempt with [`PublishError::ChangedDuringSample`]. Likewise, a
+/// `SampleError::NotUtf8` whose sampled bytes no longer hash to Pass 1's hash
+/// aborts with [`PublishError::ChangedDuringSample`] instead of recording Pass
+/// 1's stale hash on a `not_utf8` skip row.
+pub(super) fn sample_pass2_with_deadline(
+    discovered: &[DiscoveredFile],
+    identities: &[SourceIdentity],
+    limits: &ResourceLimits,
+    sink: &dyn ProgressSink,
+    deadline: &Deadline,
+) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
+    let pass1_hashes: HashMap<&str, &str> = identities
+        .iter()
+        .map(|id| (id.relative_path.as_str(), id.content_hash.as_str()))
+        .collect();
+    sample_batch(discovered, Some(&pass1_hashes), limits, sink, deadline)
+}
+
+fn sample_batch(
+    discovered: &[DiscoveredFile],
+    pass1_hashes: Option<&HashMap<&str, &str>>,
     limits: &ResourceLimits,
     sink: &dyn ProgressSink,
     deadline: &Deadline,
@@ -75,7 +109,7 @@ pub(super) fn sample_all_with_deadline(
     let total = discovered.len();
     let total_bytes = AtomicU64::new(0);
     let outcomes = file_pool::run(discovered, deadline, SAMPLE_PASS, |idx, file| {
-        let outcome = sample_one(file, limits, &total_bytes)?;
+        let outcome = sample_one(file, pass1_hashes, limits, &total_bytes)?;
         let current = idx
             .checked_add(1)
             .ok_or(PublishError::SamplingIndexOutOfRange { index: idx, total })?;
@@ -103,16 +137,19 @@ pub(super) fn sample_all_with_deadline(
 /// Samples one file and claims its bytes against the import ceiling. A file
 /// over the per-file ceiling or not valid UTF-8 cannot be indexed at all: it
 /// is skipped like discovery skips an unreadable file, and every other file
-/// keeps going.
+/// keeps going. When `pass1_hashes` is present (Pass 2), a file that became
+/// oversized or whose non-UTF-8 bytes no longer match Pass 1's hash fails with
+/// [`PublishError::ChangedDuringSample`].
 ///
 /// # Errors
 ///
 /// [`PublishError::ImportTooLarge`] when the file's bytes would push the
 /// run past the import ceiling, [`PublishError::ChangedDuringSample`] for a
-/// file deleted since the walk, and the read error for any other read
+/// file deleted or mutated since Pass 1, and the read error for any other read
 /// failure.
 fn sample_one(
     file: &DiscoveredFile,
+    pass1_hashes: Option<&HashMap<&str, &str>>,
     limits: &ResourceLimits,
     total_bytes: &AtomicU64,
 ) -> Result<Sampled, PublishError> {
@@ -128,8 +165,29 @@ fn sample_one(
                 source,
             ));
         }
+        Err(SampleError::TooLarge { .. }) if pass1_hashes.is_some() => {
+            return Err(PublishError::ChangedDuringSample {
+                // KEEP clone: error path returns an owned String from borrowed &DiscoveredFile
+                path: file.relative_path.clone(),
+            });
+        }
         Err(error @ SampleError::TooLarge { .. }) => (error, SKIP_REASON_OVERSIZE),
-        Err(error @ SampleError::NotUtf8 { .. }) => (error, SKIP_REASON_NOT_UTF8),
+        Err(error @ SampleError::NotUtf8 { .. }) => {
+            if let Some(hashes) = pass1_hashes
+                && let SampleError::NotUtf8 {
+                    ref content_hash, ..
+                } = error
+                && hashes
+                    .get(file.relative_path.as_str())
+                    .is_some_and(|&expected| expected != content_hash)
+            {
+                return Err(PublishError::ChangedDuringSample {
+                    // KEEP clone: error path returns an owned String from borrowed &DiscoveredFile
+                    path: file.relative_path.clone(),
+                });
+            }
+            (error, SKIP_REASON_NOT_UTF8)
+        }
     };
     Ok(Sampled::Skipped(SkippedFile {
         // KEEP clone: SkippedFile owns its PathBuf while sample_one borrows &DiscoveredFile

@@ -54,10 +54,39 @@ fn place(staged: &Path, target: &Path) -> Result<(), PlaceError> {
         }
     };
     make_executable(staged).map_err(step("mark executable", staged))?;
+    sync_staged_file(staged).map_err(step("sync the staged binary", staged))?;
     let previous = target.with_file_name(PREVIOUS_BINARY_NAME);
     crate::install::retain_previous_binary(target)
         .map_err(step("retain the previous binary at", &previous))?;
-    std::fs::rename(staged, target).map_err(step("move the new binary to", target))
+    std::fs::rename(staged, target).map_err(step("move the new binary to", target))?;
+    if let Some(parent) = target.parent() {
+        sync_directory_best_effort(parent);
+    }
+    Ok(())
+}
+
+/// Flushes staged binary data and metadata to disk before renaming it into
+/// place, so a crash after the rename cannot expose a zero-length executable.
+fn sync_staged_file(path: &Path) -> Result<(), std::io::Error> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .sync_all()
+}
+
+/// Best-effort directory `fsync` after an atomic rename so the updated
+/// directory entry is durable on filesystems that support it.
+fn sync_directory_best_effort(dir: &Path) {
+    match std::fs::File::open(dir).and_then(|handle| handle.sync_all()) {
+        Ok(()) => {}
+        Err(error) => {
+            tracing::warn!(
+                path = %dir.display(),
+                error = %error,
+                "could not sync install directory after rename"
+            );
+        }
+    }
 }
 
 #[cfg(unix)]

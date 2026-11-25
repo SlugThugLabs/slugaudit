@@ -68,6 +68,12 @@ pub enum RevisionError {
     /// The system clock cannot timestamp the revision.
     #[error(transparent)]
     Clock(#[from] crate::util::ClockError),
+    /// The revision write transaction exceeded the shared wall-clock deadline.
+    #[error("revision publish exceeded its wall-clock time budget after {elapsed_ms} ms")]
+    TimeBudgetExceeded {
+        /// Elapsed wall-clock milliseconds when the budget tripped.
+        elapsed_ms: u128,
+    },
 }
 
 /// The inputs one publish transaction needs, grouped by role.
@@ -106,6 +112,24 @@ pub(super) struct RevisionInputs<'a> {
     /// path set. True when this revision added or removed a path, because
     /// either can change an unchanged importer's resolution.
     pub(super) re_resolve_unresolved: bool,
+    /// Raw bytes of discovered paths that cannot be represented as UTF-8 text,
+    /// persisted atomically inside the revision transaction after the CAS
+    /// baseline check succeeds.
+    pub(super) unrepresentable_paths: &'a HashSet<Vec<u8>>,
+    /// Optional wall-clock deadline enforced inside the write transaction so a
+    /// long publish fails closed rather than holding SQLite's write lock past
+    /// the sync budget.
+    pub(super) deadline: Option<&'a util::Deadline>,
+}
+
+/// Fails closed when an optional wall-clock [`util::Deadline`] is spent.
+pub(super) fn check_deadline(deadline: Option<&util::Deadline>) -> Result<(), RevisionError> {
+    if let Some(elapsed) = deadline.and_then(util::Deadline::exceeded) {
+        return Err(RevisionError::TimeBudgetExceeded {
+            elapsed_ms: elapsed.as_millis(),
+        });
+    }
+    Ok(())
 }
 
 /// Publishes one revision atomically under compare-and-swap: the write
@@ -134,7 +158,10 @@ pub(super) fn publish_revision(
         skipped,
         discovered_paths,
         re_resolve_unresolved,
+        unrepresentable_paths,
+        deadline,
     } = *inputs;
+    check_deadline(deadline)?;
     // The sequence below is the load-bearing ordering stated in the doc
     // comment; each step is a private helper in THIS file so the mutation
     // scope over revision.rs keeps covering the whole publish path.
@@ -143,18 +170,23 @@ pub(super) fn publish_revision(
     let (revision_db_id, revision_id) =
         insert_revision_row(&tx, manifest_hash, parser_pack_version)?;
 
-    apply_deletions(&tx, deletions)?;
-    let upserted_ids = write_upserts_and_skipped(&tx, upserts, skipped, revision_db_id)?;
+    apply_deletions(&tx, deletions, deadline)?;
+    let upserted_ids = write_upserts_and_skipped(&tx, upserts, skipped, revision_db_id, deadline)?;
+    super::publish::replace_unrepresentable_paths_in_tx(&tx, unrepresentable_paths)?;
     let stored = revision_edges::stored_paths(&tx)?;
     let known_ref: HashSet<&str> = discovered_paths
         .iter()
         .chain(&stored)
         .map(String::as_str)
         .collect();
-    resolve_edges(&tx, upserts, &upserted_ids, &known_ref)?;
-    if re_resolve_unresolved {
-        revision_edges::re_resolve_unresolved(&tx, &known_ref)?;
-    }
+    resolve_edges(
+        &tx,
+        upserts,
+        &upserted_ids,
+        &known_ref,
+        re_resolve_unresolved,
+        deadline,
+    )?;
     flip_current_revision(&tx, revision_db_id)?;
 
     tx.commit()?;
@@ -196,6 +228,7 @@ fn insert_revision_row(
 fn apply_deletions(
     tx: &rusqlite::Transaction<'_>,
     deletions: &[String],
+    deadline: Option<&util::Deadline>,
 ) -> Result<(), RevisionError> {
     if deletions.is_empty() {
         return Ok(());
@@ -206,14 +239,17 @@ fn apply_deletions(
          (SELECT id FROM files WHERE path IN ({PATH_SET_SUBQUERY}))"
     );
     {
-        let mut statement = tx.prepare(&statement_sql)?;
+        let mut statement = tx.prepare_cached(&statement_sql)?;
         for batch in deletions.chunks(DELETED_PATH_BATCH) {
+            check_deadline(deadline)?;
             let paths = paths_json_array(batch.iter().map(String::as_str))?;
             statement.execute([paths])?;
         }
     }
+    let mut delete_file = tx.prepare_cached("DELETE FROM files WHERE path = ?1")?;
     for path in deletions {
-        tx.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+        check_deadline(deadline)?;
+        delete_file.execute(params![path])?;
     }
     Ok(())
 }
@@ -230,12 +266,15 @@ fn write_upserts_and_skipped(
     upserts: &[FileRecord],
     skipped: &[SkippedRecord],
     revision_db_id: i64,
+    deadline: Option<&util::Deadline>,
 ) -> Result<Vec<i64>, RevisionError> {
     let mut upserted_ids = Vec::with_capacity(upserts.len());
     for file in upserts {
+        check_deadline(deadline)?;
         upserted_ids.push(revision_files::upsert_file(tx, file, revision_db_id)?);
     }
-    revision_skipped::upsert_skipped_files(tx, skipped, revision_db_id)?;
+    check_deadline(deadline)?;
+    revision_skipped::upsert_skipped_files(tx, skipped, revision_db_id, deadline)?;
     Ok(upserted_ids)
 }
 
@@ -248,11 +287,17 @@ fn resolve_edges(
     upserts: &[FileRecord],
     upserted_ids: &[i64],
     known_paths: &HashSet<&str>,
+    re_resolve_unresolved: bool,
+    deadline: Option<&util::Deadline>,
 ) -> Result<(), RevisionError> {
-    for (file, file_id) in upserts.iter().zip(upserted_ids.iter().copied()) {
-        revision_edges::resolve_and_store(tx, file, file_id, known_paths)?;
-    }
-    Ok(())
+    revision_edges::resolve_revision_edges(
+        tx,
+        upserts,
+        upserted_ids,
+        known_paths,
+        re_resolve_unresolved,
+        deadline,
+    )
 }
 
 /// Flips the `is_current` pointer last — two statements: clear the old

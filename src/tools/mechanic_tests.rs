@@ -39,7 +39,7 @@ pub(super) fn add(path: &str, id: &str, language: &str, query: &str) -> Mechanic
         path: Some(path.to_owned()),
         cursor: None,
         legacy_paging: LegacyPaging::default(),
-        action: MechanicAction::Add,
+        action: Some(MechanicAction::Add),
         id: Some(id.to_owned()),
         language: Some(language.to_owned()),
         query: Some(query.to_owned()),
@@ -54,7 +54,7 @@ pub(super) fn action(path: &str, action: MechanicAction, id: Option<&str>) -> Me
         path: Some(path.to_owned()),
         cursor: None,
         legacy_paging: LegacyPaging::default(),
-        action,
+        action: Some(action),
         id: id.map(str::to_owned),
         language: None,
         query: None,
@@ -509,6 +509,32 @@ fn a_pack_alias_language_is_refused_with_its_canonical_name() -> TestResult {
     let error = refusal(&manager, add(&path, "sh_eval", "shell", "(command) @c"))?;
 
     assert_refused(&error, "use `bash`")?;
+    Ok(())
+}
+
+#[test]
+fn mechanic_rejects_an_oversized_cursor_with_invalid_params() -> TestResult {
+    let manager = sync::SourceSyncManager::default();
+    let error = refusal(
+        &manager,
+        MechanicRequest {
+            path: None,
+            action: Some(MechanicAction::List),
+            cursor: Some("c".repeat(crate::tools::MAX_CURSOR_BYTES + 1)),
+            legacy_paging: LegacyPaging::default(),
+            id: None,
+            language: None,
+            query: None,
+            note: None,
+            limit: None,
+            page_bytes: None,
+        },
+    )?;
+
+    assert_refused(
+        &error,
+        &format!("cursor exceeds {} bytes", crate::tools::MAX_CURSOR_BYTES),
+    )?;
     Ok(())
 }
 

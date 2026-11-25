@@ -11,7 +11,7 @@ pub use interactive::{run_connect_interactive, run_disconnect_interactive};
 
 use crate::cli;
 use crate::cli::ConnectError;
-use crate::connect_agents::{AgentDef, find_agent};
+use crate::connect_agents::{AgentDef, Strategy, find_agent};
 use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
 use crate::install::{config_home, running_binary, slugaudit_dir};
 use std::path::{Path, PathBuf};
@@ -91,6 +91,15 @@ fn connection_state(agent: &AgentDef, home: Option<&Path>) -> Result<bool, Conne
     }
 }
 
+/// The CLI executable to suggest in `Verify with: <client> mcp list`, if any.
+fn verify_client(agent: &AgentDef) -> Option<&'static str> {
+    agent.verify_cli.or_else(|| {
+        matches!(agent.strategy, Strategy::CliDirect)
+            .then_some(agent.cli)
+            .flatten()
+    })
+}
+
 /// Registers with `agent`; `already_connected` only chooses the progress line.
 fn connect_one(agent: AgentDef, already_connected: bool) -> Result<(), ConnectError> {
     let binary = binary_path(running_binary())?;
@@ -109,7 +118,7 @@ fn connect_one(agent: AgentDef, already_connected: bool) -> Result<(), ConnectEr
     }
     connect_agent(&agent, &binary, home.as_deref())?;
     cli::out(format_args!("Done.\n"))?;
-    if let Some(client) = agent.cli {
+    if let Some(client) = verify_client(&agent) {
         cli::out(format_args!("Verify with: {client} mcp list\n"))?;
     }
     Ok(())

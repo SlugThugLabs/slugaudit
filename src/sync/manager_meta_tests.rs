@@ -411,3 +411,20 @@ fn a_rebuild_whose_activation_directory_vanished_fails_without_recreating_it() -
     ensure(!activation.exists(), "the directory is not recreated")?;
     Ok(())
 }
+
+#[test]
+fn map_publish_error_attaches_stale_revision_for_stale_baseline() -> TestResult {
+    let error = crate::sync::publish::PublishError::Revision(
+        crate::sync::revision::RevisionError::StaleBaseline {
+            expected: "rev-1".to_owned(),
+            found: "rev-2".to_owned(),
+        },
+    );
+    let mapped = map_publish_error(Path::new("/tmp/project"), &error, "sync");
+    ensure_eq(
+        &mapped.data,
+        &crate::error_codes::payload(crate::error_codes::ErrorCode::StaleRevision),
+        "StaleBaseline maps to StaleRevision error code",
+    )?;
+    Ok(())
+}

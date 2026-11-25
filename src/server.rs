@@ -105,6 +105,10 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
 pub struct SlugAuditServer {
     tool_router: ToolRouter<Self>,
     blocking_ops: Arc<Semaphore>,
+    /// Separate semaphore for `health`, independent of `blocking_ops`, so
+    /// health checks never block behind saturated sync permits while still
+    /// running through `server_runner::run_blocking`.
+    health_ops: Arc<Semaphore>,
     /// Per-server `SourceSyncManager`: the last-sync timestamps, session
     /// mechanics, the mechanic scan cache and the paged-result store. `Clone` is the cheap clone of
     /// `SourceSyncManager` itself — its shared state is shared across
@@ -127,15 +131,44 @@ impl SlugAuditServer {
         Self {
             tool_router: Self::tool_router(),
             blocking_ops: Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCKING_OPS)),
+            health_ops: Arc::new(Semaphore::new(MAX_CONCURRENT_BLOCKING_OPS)),
             manager,
         }
     }
 
     /// Shared tool-call plumbing: derive the caller's progress target,
     /// build the inner progress sink, clone the manager, and run the
-    /// tool's blocking work under the semaphore. Each `#[tool]` handler
-    /// stays declarative — it only names the tool and its work closure,
-    /// so the tool handlers don't each repeat this prologue (DRY).
+    /// tool's blocking work under `semaphore`.
+    async fn dispatch_with_semaphore<T: Send + 'static>(
+        &self,
+        semaphore: Arc<Semaphore>,
+        meta: RequestMetaObject,
+        peer: Peer<RoleServer>,
+        tool_name: &'static str,
+        work: impl FnOnce(Arc<dyn ProgressSink>, sync::SourceSyncManager) -> Result<T, ErrorData>
+        + Send
+        + 'static,
+    ) -> Result<T, ErrorData> {
+        let progress = progress_target(&meta, &peer);
+        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // KEEP clone: run_blocking also consumes progress for lifecycle notifications
+        let inner_sink = build_inner_sink(progress.clone(), Arc::clone(&completed));
+        // KEEP clone: SourceSyncManager is an Arc-backed handle cloned from &self into the 'static blocking closure
+        let manager = self.manager.clone();
+        run_blocking(
+            semaphore,
+            tool_name,
+            move || work(inner_sink, manager),
+            progress,
+            Some(completed),
+        )
+        .await
+    }
+
+    /// Shared tool-call plumbing for standard tools under `blocking_ops`.
+    /// Each `#[tool]` handler stays declarative — it only names the tool
+    /// and its work closure, so the tool handlers don't each repeat this
+    /// prologue (DRY).
     async fn dispatch<T: Send + 'static>(
         &self,
         meta: RequestMetaObject,
@@ -145,23 +178,14 @@ impl SlugAuditServer {
         + Send
         + 'static,
     ) -> Result<T, ErrorData> {
-        let progress = progress_target(&meta, &peer);
-        // KEEP clone: run_blocking also consumes progress for lifecycle notifications
-        let inner_sink = build_inner_sink(progress.clone());
-        // KEEP clone: SourceSyncManager is an Arc-backed handle cloned from &self into the 'static blocking closure
-        let manager = self.manager.clone();
-        run_blocking(
-            Arc::clone(&self.blocking_ops),
-            tool_name,
-            move || work(inner_sink, manager),
-            progress,
-        )
-        .await
+        self.dispatch_with_semaphore(Arc::clone(&self.blocking_ops), meta, peer, tool_name, work)
+            .await
     }
 
-    /// Runs `health` on Tokio's blocking pool without waiting behind saturated
-    /// `blocking_ops` sync permits, so health checks still respond when syncs
-    /// are busy.
+    /// Runs `health` through `run_blocking` under its own dedicated semaphore
+    /// so health checks never wait behind saturated `blocking_ops` sync
+    /// permits while still receiving tracing, error logging, `ToolCounters`,
+    /// and progress lifecycle notifications.
     pub(crate) async fn dispatch_health<T: Send + 'static>(
         &self,
         meta: RequestMetaObject,
@@ -170,16 +194,8 @@ impl SlugAuditServer {
         + Send
         + 'static,
     ) -> Result<T, ErrorData> {
-        let progress = progress_target(&meta, &peer);
-        // KEEP clone: progress is passed to notify_progress if needed
-        let inner_sink = build_inner_sink(progress);
-        // KEEP clone: SourceSyncManager is an Arc-backed handle cloned from &self into the 'static blocking closure
-        let manager = self.manager.clone();
-        tokio::task::spawn_blocking(move || work(inner_sink, manager))
+        self.dispatch_with_semaphore(Arc::clone(&self.health_ops), meta, peer, "health", work)
             .await
-            .map_err(|error| {
-                ErrorData::internal_error(format!("health task failed: {error}"), None)
-            })?
     }
 }
 

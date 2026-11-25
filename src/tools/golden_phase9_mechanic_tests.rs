@@ -15,7 +15,7 @@ fn mechanic_request(
         path: Some(path_of(project)?),
         cursor: None,
         legacy_paging: LegacyPaging::default(),
-        action,
+        action: Some(action),
         id: None,
         language: None,
         query: None,

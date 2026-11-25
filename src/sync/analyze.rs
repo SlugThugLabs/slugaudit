@@ -103,28 +103,35 @@ pub(super) fn analyze(
             ParseOutcome::OVERSIZE_FOR_PARSE,
         ));
     }
-    if crate::parse::fetch_gate::blocks_fetch(&language)? {
-        return Ok(cooldown_result(relative_path, language));
-    }
-    // One budget for every parse of this file: the per-file allowance, or the
-    // sync's own remainder when that is sooner. `bound` says which it was.
-    let (file_deadline, bound) = deadline.capped(parse_wall_clock);
-    Ok(match run_extraction(&language, content, &file_deadline) {
-        Ok(extraction) if extraction.timed_out => {
-            timeout_result(relative_path, language, extraction.items, bound)
-        }
-        Ok(extraction) => succeeded_result(relative_path, language, extraction),
-        Err(ExtractError::Pack(error)) if is_load_failure(&error) => {
-            if is_fetch_failure(&error) {
-                crate::parse::fetch_gate::record_fetch_failure()?;
+    match crate::parse::fetch_gate::with_fetch_slot(&language, || {
+        // One budget for every parse of this file: the per-file allowance, or the
+        // sync's own remainder when that is sooner. `bound` says which it was.
+        let (file_deadline, bound) = deadline.capped(parse_wall_clock);
+        let result = match run_extraction(&language, content, &file_deadline) {
+            Ok(extraction) if extraction.timed_out => {
+                timeout_result(relative_path, language.clone(), extraction.items, bound)
             }
-            load_failed_result(relative_path, language, &error)
+            Ok(extraction) => succeeded_result(relative_path, language.clone(), extraction),
+            Err(ExtractError::Pack(error)) if is_load_failure(&error) => {
+                if is_fetch_failure(&error) {
+                    crate::parse::fetch_gate::record_fetch_failure()?;
+                } else {
+                    crate::parse::fetch_gate::record_local_load_failure(&language)?;
+                }
+                load_failed_result(relative_path, language.clone(), &error)
+            }
+            Err(ExtractError::Pack(PackError::ParseTimeout { .. })) => {
+                timeout_result(relative_path, language.clone(), Vec::new(), bound)
+            }
+            Err(error) => parse_failed_result(relative_path, language.clone(), &error),
+        };
+        Ok(result)
+    })? {
+        crate::parse::fetch_gate::FetchSlot::Blocked => {
+            Ok(cooldown_result(relative_path, language))
         }
-        Err(ExtractError::Pack(PackError::ParseTimeout { .. })) => {
-            timeout_result(relative_path, language, Vec::new(), bound)
-        }
-        Err(error) => parse_failed_result(relative_path, language, &error),
-    })
+        crate::parse::fetch_gate::FetchSlot::Ran(result) => Ok(result),
+    }
 }
 
 #[cfg(test)]

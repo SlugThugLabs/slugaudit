@@ -478,3 +478,49 @@ fn database_corrupted_during_publish_is_automatically_rebuilt() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn ensure_current_emits_completed_on_early_error_path() -> TestResult {
+    use crate::progress::{ProgressEvent, ProgressSink};
+    use slugaudit_test_check::CheckErr;
+    use std::sync::Mutex;
+
+    struct RecordingSink {
+        events: Mutex<Vec<(&'static str, &'static str)>>,
+    }
+    impl ProgressSink for RecordingSink {
+        fn emit(&self, event: ProgressEvent) {
+            let entry = match event {
+                ProgressEvent::Started { phase } => ("started", phase),
+                ProgressEvent::Completed { phase } => ("completed", phase),
+                ProgressEvent::Sampling { phase, .. } => ("sampling", phase),
+            };
+            if let Ok(mut guard) = self.events.lock() {
+                guard.push(entry);
+            }
+        }
+    }
+
+    let unactivated = tempfile::tempdir().check("unactivated dir")?;
+    let manager = SourceSyncManager::new();
+    let sink = RecordingSink {
+        events: Mutex::new(Vec::new()),
+    };
+
+    let _error = manager
+        .ensure_current(&unactivated.path().to_string_lossy(), &sink)
+        .map(|_| ())
+        .check_err("unactivated project must fail")?;
+
+    let events = sink.events.lock().check("lock recorded events")?;
+    let expected: &[(&str, &str)] = &[
+        ("started", "ensuring_current"),
+        ("completed", "ensuring_current"),
+    ];
+    ensure_eq(
+        &events.as_slice(),
+        &expected,
+        "early error path must emit Completed after Started",
+    )?;
+    Ok(())
+}

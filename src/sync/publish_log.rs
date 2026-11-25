@@ -107,6 +107,7 @@ fn revision_failure_fields(error: &RevisionError) -> (&'static str, Option<&Path
         }
         RevisionError::StaleBaseline { .. } => ("revision_stale_baseline", None),
         RevisionError::Clock(_) => ("revision_clock", None),
+        RevisionError::TimeBudgetExceeded { .. } => ("revision_time_budget_exceeded", None),
     }
 }
 

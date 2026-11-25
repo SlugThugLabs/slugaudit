@@ -115,6 +115,7 @@ fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Opti
         (
             PublishError::Sample(sample::SampleError::NotUtf8 {
                 path: PathBuf::from("bytes.rs"),
+                content_hash: String::new(),
                 source: not_utf8,
             }),
             "sample_not_utf8",

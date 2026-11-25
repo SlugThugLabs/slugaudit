@@ -31,12 +31,19 @@
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use update_fetch::{
-    ASSET, ASSET_ARCH, ASSET_OS, LatestRelease, compare_versions, download, fetch_latest_release,
-    platform_supported,
+    ASSET, ASSET_ARCH, ASSET_OS, CHECKSUMS_MAX_BYTES, LatestRelease, UpdateDecision, download,
+    download_capped, fetch_latest_release, platform_supported, update_decision,
 };
+
+#[cfg(test)]
+use update_proc::parse_binary_version;
+use update_proc::{installed_version, parse_expected_digest};
 
 #[path = "update_fetch.rs"]
 mod update_fetch;
+
+#[path = "update_proc.rs"]
+mod update_proc;
 
 #[derive(Debug, Error)]
 /// Self-update failures. Each names the real cause (spawn, network, checksum,
@@ -66,6 +73,9 @@ pub enum UpdateError {
     /// The release response carried no tag name.
     #[error("the GitHub release response did not include a tag name")]
     NoTag,
+    /// The published release tag is not a plain dot-separated numeric version.
+    #[error("published release version is not a numeric release: {0}")]
+    InvalidReleaseVersion(String),
     /// The downloaded binary did not verify against the release checksums.
     #[error("checksum verification failed: {0}")]
     Checksum(String),
@@ -108,12 +118,18 @@ pub enum UpdateError {
     },
 }
 
-/// The absolute path the binary that `slugaudit update` should replace.
-/// Prefers the stable install path when present (matches what `connect`
-/// registers), otherwise the running executable.
-fn target_binary() -> Result<PathBuf, UpdateError> {
+/// The running executable and the absolute path `slugaudit update` should
+/// replace (preferring the stable install path when present, matching
+/// `connect`).
+fn resolve_binaries() -> Result<(PathBuf, PathBuf), UpdateError> {
     let running = crate::install::running_binary().map_err(UpdateError::Target)?;
-    crate::connect::prefer_slugthug_binary(&running).map_err(UpdateError::Target)
+    let target = crate::connect::prefer_slugthug_binary(&running).map_err(UpdateError::Target)?;
+    Ok((running, target))
+}
+
+#[cfg(test)]
+fn target_binary() -> Result<PathBuf, UpdateError> {
+    resolve_binaries().map(|(_, target)| target)
 }
 
 /// Downloads the release, verifies its checksum, and atomically replaces the
@@ -138,18 +154,20 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
 
     let result = (|| -> Result<(), UpdateError> {
         download(&latest.asset_url, &temp_exe, "download binary to")?;
-        download(&latest.checksums_url, &temp_sums, "download checksums to")?;
-
+        download_capped(
+            &latest.checksums_url,
+            &temp_sums,
+            "download checksums to",
+            CHECKSUMS_MAX_BYTES,
+        )?;
         verify_checksum(&temp_exe, &temp_sums)?;
-
-        crate::install_place::place_staged_binary(&temp_exe, target).map_err(|error| {
+        crate::install_place::place_staged_binary(&temp_exe, target).map_err(|e| {
             UpdateError::Stage {
-                action: error.action,
-                path: error.path,
-                source: error.source,
+                action: e.action,
+                path: e.path,
+                source: e.source,
             }
-        })?;
-        Ok(())
+        })
     })();
 
     // Best-effort cleanup of temp files whether or not we succeeded.
@@ -166,22 +184,12 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
 /// has no `ASSET` entry, or if the digests differ — the old binary is never
 /// touched on failure.
 fn verify_checksum(binary_path: &Path, sums_path: &Path) -> Result<(), UpdateError> {
-    let sums = std::fs::read_to_string(sums_path)
+    let sums = crate::util::read_file_capped(sums_path, CHECKSUMS_MAX_BYTES)
         .map_err(|error| UpdateError::Checksum(format!("reading checksums: {error}")))?;
-    // SHA256SUMS lines are `<hex>  <filename>`; match by the trailing
-    // filename so entries for other assets (if the release ever ships more)
-    // are ignored.
-    let expected = sums
-        .lines()
-        .filter_map(|line| line.rsplit_once(' '))
-        .find_map(|(hash, name)| (name.trim() == ASSET).then(|| hash.trim().to_ascii_lowercase()))
-        .ok_or_else(|| {
-            UpdateError::Checksum(format!(
-                "SHA256SUMS has no entry for {ASSET}; refusing to update"
-            ))
-        })?;
+    let expected = parse_expected_digest(&sums)?;
 
     let output = std::process::Command::new("sha256sum")
+        .arg("--")
         .arg(binary_path)
         .output()
         .map_err(|error| UpdateError::ToolSpawn {
@@ -212,29 +220,6 @@ fn parse_digest(stdout: &str) -> Result<String, UpdateError> {
         .ok_or_else(|| UpdateError::Checksum("sha256sum printed no digest".to_owned()))
 }
 
-/// What `update` does after comparing this build with the published release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UpdateDecision {
-    /// This build is the published version or newer: nothing to fetch.
-    UpToDate,
-    /// The published release is newer: fetch it.
-    Newer,
-    /// One side is not a plain dotted version (a dev build): fetch it anyway,
-    /// without claiming it is newer.
-    Incomparable,
-}
-
-fn update_decision(current: &str, latest: &str) -> UpdateDecision {
-    match compare_versions(current, latest) {
-        Ok(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal) => UpdateDecision::UpToDate,
-        Ok(std::cmp::Ordering::Less) => UpdateDecision::Newer,
-        Err(error) => {
-            tracing::info!(%error, "versions are not comparable; fetching the release anyway");
-            UpdateDecision::Incomparable
-        }
-    }
-}
-
 /// Refuses a platform the single published asset cannot run on. Takes the
 /// OS/architecture so the refusal is testable on the supported platform.
 fn ensure_platform_supported(os: &'static str, arch: &'static str) -> Result<(), UpdateError> {
@@ -255,18 +240,18 @@ fn ensure_platform_supported(os: &'static str, arch: &'static str) -> Result<(),
 /// determined, when downloading, verifying, or replacing the binary fails, or
 /// when writing the progress text fails.
 pub fn run_update() -> Result<(), UpdateError> {
-    let current = env!("CARGO_PKG_VERSION");
-
     // Refused before any network call: the only published asset is for one
     // platform, and its checksum would pass on any other.
     ensure_platform_supported(std::env::consts::OS, std::env::consts::ARCH)?;
 
+    let (running, target) = resolve_binaries()?;
+    let current = installed_version(&running, &target);
     let latest = fetch_latest_release()?;
 
-    // Compare by version when the local build carries a numeric version; if
-    // it doesn't parse (e.g. a dev build), assume the published latest is
-    // what we want and proceed to fetch it.
-    match update_decision(current, &latest.version) {
+    // Compare by version when the target build carries a numeric version; if
+    // it doesn't parse (e.g. a dev build) and the published latest is a valid
+    // numeric release, assume the published latest is what we want and proceed.
+    match update_decision(&current, &latest.version)? {
         UpdateDecision::UpToDate => {
             crate::cli::out(format_args!(
                 "slugaudit is already up to date (v{current}).\n"
@@ -293,7 +278,6 @@ pub fn run_update() -> Result<(), UpdateError> {
         }
     }
 
-    let target = target_binary()?;
     crate::cli::out(format_args!(
         "Updating slugaudit v{current} -> {} at {}...\n",
         latest.version,
@@ -311,3 +295,7 @@ pub fn run_update() -> Result<(), UpdateError> {
 #[cfg(test)]
 #[path = "update_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "update_version_tests.rs"]
+mod version_tests;

@@ -88,6 +88,26 @@ fn fail_closed_an_explicit_profile_runs_without_detectable_memory() -> TestResul
 }
 
 #[test]
+fn global_config_fixed_profile_starts_without_detectable_memory_when_env_profile_is_unset()
+-> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    temp_env::with_var_unset("SLUGAUDIT_PROFILE", || {
+        let limits = ResourceLimits::from_env_with(
+            Some(crate::model::AuditProfile::Lean),
+            crate::model::system_ram::detect_from_for_test,
+        )
+        .check("global lean profile needs no memory detection")?;
+
+        ensure_eq(
+            &limits.max_file_bytes,
+            &(32 * 1024 * 1024),
+            "limits.max_file_bytes == 32 * 1024 * 1024",
+        )?;
+        Ok(())
+    })
+}
+
+#[test]
 fn fail_closed_an_uninstalled_limits_cell_with_an_invalid_env_returns_the_error_and_installs_nothing()
 -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK

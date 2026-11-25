@@ -9,9 +9,10 @@
 //! macro bodies and keeps callees no query pattern names (see `calls.rs`).
 
 use super::call_queries::{CALL_QUERIES, CallQuery, MAX_CALLEE_DEPTH};
+use super::caller_index::{FunctionIndex, collect_functions};
 use super::site::{CallSite, call_item};
 use crate::evidence::deadline_spent as spent;
-use crate::evidence::{Extraction, NoTree, NodeError, TextRangeError, node_text};
+use crate::evidence::{Extraction, NoTree, NodeError, node_text};
 use crate::model::{EvidenceOrigin, LineIndex, PositionOverflow};
 use crate::parse::budget::{Parsed, parse_within};
 use crate::util::Deadline;
@@ -100,6 +101,10 @@ fn run(
     deadline: Option<&Deadline>,
 ) -> Result<Extraction, PositionOverflow> {
     let mut out = Extraction::default();
+    let functions = collect_functions(entry, tree, source, deadline, &mut out);
+    if out.timed_out {
+        return Ok(out);
+    }
     let mut cut = false;
     let mut progress = |_state: &QueryCursorState| -> ControlFlow<()> {
         if spent(deadline) {
@@ -120,7 +125,7 @@ fn run(
             break;
         }
         for capture in found.captures {
-            match call_site(entry, capture.node, source, lines) {
+            match call_site(entry, capture.node, source, lines, &functions) {
                 Ok(Some(site)) => {
                     // Every row is pushed here and nowhere else, so its key
                     // number is the count of rows before it.
@@ -155,6 +160,7 @@ fn call_site(
     callee: Node<'_>,
     source: &str,
     lines: &LineIndex<'_>,
+    functions: &FunctionIndex,
 ) -> Result<Option<CallSite>, NodeError> {
     let mut above = callee.parent();
     let mut call = None;
@@ -179,7 +185,7 @@ fn call_site(
         qualified: super::site::is_qualified(&callee_text),
         callee_text,
         callee_name,
-        caller: enclosing_caller(entry, call, source)?,
+        caller: functions.enclosing_caller(call.start_byte(), call.end_byte()),
         macro_call: false,
         span: crate::evidence::range_span(
             (call.start_byte(), call.end_byte()),
@@ -188,44 +194,6 @@ fn call_site(
             "call query",
         )?,
     }))
-}
-
-/// The name of the nearest enclosing function-like node, or `None` at file
-/// scope or inside an anonymous function (as the Rust walker does for a
-/// closure).
-fn enclosing_caller(
-    entry: &CallQuery,
-    call: Node<'_>,
-    source: &str,
-) -> Result<Option<String>, TextRangeError> {
-    let mut current = call.parent();
-    while let Some(node) = current {
-        if entry.function_kinds.contains(&node.kind()) {
-            return function_name(node, source);
-        }
-        current = node.parent();
-    }
-    Ok(None)
-}
-
-/// A function node's `name` field, or — for C, whose name sits in a
-/// declarator chain (`function_definition` → `function_declarator` →
-/// `identifier`, possibly through `pointer_declarator`) — the identifier at
-/// the end of its `declarator` fields. A loop: the chain follows file content.
-fn function_name(function: Node<'_>, source: &str) -> Result<Option<String>, TextRangeError> {
-    let mut current = function;
-    let name = loop {
-        if let Some(name) = current.child_by_field_name("name") {
-            break Some(name);
-        }
-        match current.child_by_field_name("declarator") {
-            Some(declarator) if declarator.kind() == "identifier" => break Some(declarator),
-            Some(declarator) => current = declarator,
-            None => break None,
-        }
-    };
-    name.map(|name| node_text(source, name.start_byte(), name.end_byte()).map(str::to_owned))
-        .transpose()
 }
 
 #[cfg(test)]

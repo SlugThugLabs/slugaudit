@@ -220,10 +220,12 @@ impl ConfigPath {
 
 /// Expands the `%APPDATA%/` token Windows clients document; every other path
 /// is already home-relative. `None` when the token is used but `APPDATA` is
-/// unset: the roaming directory is not guessed from `home`.
+/// unset or empty: the roaming directory is not guessed from `home`.
 fn expand_os_tokens(rel: &str, home: &Path) -> Option<PathBuf> {
     match rel.strip_prefix("%APPDATA%/") {
-        Some(rest) => std::env::var_os("APPDATA").map(|appdata| PathBuf::from(appdata).join(rest)),
+        Some(rest) => std::env::var_os("APPDATA")
+            .filter(|value| !value.is_empty())
+            .map(|appdata| PathBuf::from(appdata).join(rest)),
         None => Some(home.join(rel)),
     }
 }
@@ -285,6 +287,9 @@ mod tests {
         let unset = temp_env::with_var_unset("APPDATA", || {
             expand_os_tokens("%APPDATA%/Claude/c.json", home)
         });
+        let empty = temp_env::with_var("APPDATA", Some(""), || {
+            expand_os_tokens("%APPDATA%/Claude/c.json", home)
+        });
 
         ensure_eq(
             &set,
@@ -295,6 +300,11 @@ mod tests {
             &unset,
             &None,
             "an unset APPDATA must not become home/AppData",
+        )?;
+        ensure_eq(
+            &empty,
+            &None,
+            "an empty APPDATA must not produce a relative path",
         )?;
         ensure_eq(
             &expand_os_tokens(".config/x.json", home),

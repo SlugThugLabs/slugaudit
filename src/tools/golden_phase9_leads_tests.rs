@@ -95,7 +95,7 @@ fn mechanic_request(
 ) -> TestResult<MechanicRequest> {
     Ok(MechanicRequest {
         path: Some(path_of(project)?),
-        action,
+        action: Some(action),
         cursor: None,
         legacy_paging: LegacyPaging::default(),
         id: None,

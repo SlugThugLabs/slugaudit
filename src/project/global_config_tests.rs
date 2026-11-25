@@ -478,3 +478,31 @@ fn a_configured_result_store_budget_and_grace_override_the_profile_defaults() ->
     )?;
     Ok(())
 }
+
+#[test]
+fn env_max_file_bytes_prevents_global_config_from_prematurely_clamping_max_parse_bytes()
+-> TestResult {
+    let global = GlobalConfig {
+        max_file_bytes: Some(10_000),
+        ..Default::default()
+    };
+    let env = EnvOverrides {
+        max_file_bytes: Some(10_000_000),
+        ..Default::default()
+    };
+
+    let resolved = resolve_limits(&global, &env, Some(AuditProfile::Lean))
+        .check("resolve_limits with env max_file_bytes")?;
+
+    ensure_eq(
+        &resolved.max_file_bytes,
+        &10_000_000,
+        "resolved.max_file_bytes == 10_000_000",
+    )?;
+    ensure_eq(
+        &resolved.max_parse_bytes,
+        &(2 * 1024 * 1024),
+        "higher-precedence SLUGAUDIT_MAX_FILE_BYTES must not let config.json clamp max_parse_bytes",
+    )?;
+    Ok(())
+}

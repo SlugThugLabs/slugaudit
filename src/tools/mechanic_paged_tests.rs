@@ -298,3 +298,38 @@ fn paged_mechanic_continuation_keeps_the_page_budget_of_page_one() -> TestResult
     cursor_of(&second)?.check("still several pages")?;
     Ok(())
 }
+
+#[test]
+fn paged_mechanic_deserializes_cursor_only_wire_json_and_requires_action_fresh() -> TestResult {
+    let project = python_project()?;
+    let path = path_of(&project)?;
+    let manager = sync::SourceSyncManager::default();
+    two_registered(&manager, &path)?;
+    let first = call(&manager, list_page(&path, SMALL_PAGE)).check("page one")?;
+    let token = cursor_of(&first)?.check("more pages remain")?;
+
+    let wire: MechanicRequest = serde_json::from_value(serde_json::json!({ "cursor": token }))
+        .check("cursor-only JSON deserializes")?;
+    let second = call(&manager, wire).check("cursor-only continuation succeeds")?;
+    ensure(
+        !second.mechanics.is_empty(),
+        "continuation returns listings",
+    )?;
+
+    let missing_action: MechanicRequest =
+        serde_json::from_value(serde_json::json!({ "path": path }))
+            .check("fresh request without action deserializes")?;
+    let error =
+        call(&manager, missing_action).check_err("fresh call without action must be refused")?;
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "missing action on fresh call is invalid_params",
+    )?;
+    ensure_eq(
+        &error.message,
+        &"action is required when no cursor is given",
+        "error names missing action",
+    )?;
+    Ok(())
+}

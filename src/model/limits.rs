@@ -236,18 +236,43 @@ impl ResourceLimits {
     /// parsed fails with an error naming it (never its value). Duration
     /// fields are parsed as whole seconds.
     ///
+    /// When `SLUGAUDIT_PROFILE` is unset, falls back to the global
+    /// `config.json` `profile` before defaulting to `Adaptive`, so a host
+    /// whose memory cannot be detected can still start when `config.json`
+    /// selects a fixed profile (`lean` or `audit`).
+    ///
     /// # Errors
     ///
     /// Returns [`EnvConfigError`] for a set-but-invalid variable or an
     /// Adaptive profile on a host whose memory cannot be detected.
     pub(super) fn from_env() -> Result<Self, EnvConfigError> {
+        let global_profile = match crate::project::GlobalConfig::load() {
+            Ok(config) => config.profile,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "global config could not be loaded while initializing process limits",
+                );
+                None
+            }
+        };
+        Self::from_env_with(global_profile, detect_system_memory)
+    }
+
+    /// Like [`Self::from_env`], taking the fallback profile (from
+    /// `GlobalConfig`) and memory detector explicitly.
+    pub(super) fn from_env_with(
+        global_profile: Option<super::profile::AuditProfile>,
+        detect: impl FnOnce() -> Result<SystemMemoryInfo, MemoryDetectError>,
+    ) -> Result<Self, EnvConfigError> {
         let env = EnvOverrides::read()?;
-        // No `SLUGAUDIT_PROFILE`: the default profile (Adaptive).
-        let profile = match env.profile {
+        // `SLUGAUDIT_PROFILE` beats `GlobalConfig.profile`, which beats the
+        // default `Adaptive` profile.
+        let profile = match env.profile.or(global_profile) {
             Some(profile) => profile,
             None => super::profile::AuditProfile::Adaptive,
         };
-        let mut limits = base_limits(profile, detect_system_memory)?;
+        let mut limits = base_limits(profile, detect)?;
         env.apply(&mut limits, false)?;
         Ok(limits)
     }

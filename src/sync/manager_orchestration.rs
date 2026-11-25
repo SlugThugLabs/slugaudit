@@ -9,8 +9,8 @@
 
 use super::super::discard_notice::DatabaseDiscard;
 use super::super::manager_meta::{
-    ProjectMetaError, ensure_project_row, map_publish_error, publish_from_scratch,
-    revision_after_sync,
+    ProjectMetaError, ensure_project_row, instance_id_after_sync, map_publish_error,
+    publish_from_scratch, revision_after_sync,
 };
 use super::super::publish::{PublishReport, publish};
 use super::super::recovery_log::{DatabaseRecovery, log_database_recovery};
@@ -28,6 +28,27 @@ struct Discard {
     notice: DatabaseDiscard,
     /// Fills `discarding the <what> project database: ...`.
     what: &'static str,
+}
+
+/// Emits `ProgressEvent::Completed` for a started phase on every exit path,
+/// including early `?` returns.
+struct PhaseCompletionGuard<'a> {
+    sink: &'a dyn ProgressSink,
+    phase: &'static str,
+}
+
+impl<'a> PhaseCompletionGuard<'a> {
+    fn start(sink: &'a dyn ProgressSink, phase: &'static str) -> Self {
+        sink.emit(ProgressEvent::Started { phase });
+        Self { sink, phase }
+    }
+}
+
+impl Drop for PhaseCompletionGuard<'_> {
+    fn drop(&mut self) {
+        self.sink
+            .emit(ProgressEvent::Completed { phase: self.phase });
+    }
 }
 
 impl SourceSyncManager {
@@ -51,9 +72,7 @@ impl SourceSyncManager {
         sink: &dyn ProgressSink,
     ) -> Result<SyncedProject, ErrorData> {
         let start = std::time::Instant::now();
-        sink.emit(ProgressEvent::Started {
-            phase: "ensuring_current",
-        });
+        let _phase_guard = PhaseCompletionGuard::start(sink, "ensuring_current");
         let (root, database_path) = project::resolve_project(Path::new(path))
             .map_err(|error| map_activation_error(&error))?;
         let sync_lock = self.project_sync_lock(root.as_path())?;
@@ -85,6 +104,11 @@ impl SourceSyncManager {
                 Err(synced) => return Ok(synced),
             };
         let revision_id = revision_after_sync(&connection, &database_path)?;
+        let db_instance_id = instance_id_after_sync(&connection, &database_path)?;
+        if let Some(instance_id) = db_instance_id.as_deref() {
+            self.mechanic_scan_cache
+                .sync_project_instance(&database_path, instance_id)?;
+        }
 
         let duration_ms = crate::clock::duration_millis(start.elapsed())?;
         self.stamp_last_sync(duration_ms)?;
@@ -97,12 +121,10 @@ impl SourceSyncManager {
             "ensure_current completed",
         );
 
-        sink.emit(ProgressEvent::Completed {
-            phase: "ensuring_current",
-        });
         Ok(SyncedProject {
             database_path,
             revision_id,
+            db_instance_id,
             discard: None,
         })
     }
@@ -150,9 +172,6 @@ impl SourceSyncManager {
                     database_path,
                     &DatabaseRecovery::OpenFailed { error: &error },
                 );
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
                 Err(ErrorData::internal_error(
                     format!("opening the project database for sync: {error}"),
                     None,
@@ -200,12 +219,7 @@ impl SourceSyncManager {
                 )
                 .map(Err)
             }
-            Err(error) => {
-                sink.emit(ProgressEvent::Completed {
-                    phase: "ensuring_current",
-                });
-                Err(map_publish_error(root.as_path(), &error, "sync"))
-            }
+            Err(error) => Err(map_publish_error(root.as_path(), &error, "sync")),
         }
     }
 
@@ -283,9 +297,9 @@ impl SourceSyncManager {
     /// Shared tail for the missing, corruption and stale-database paths:
     /// with `Some(discard)` it first deletes the bad database (a failure
     /// ends the call as `discarding the <what> project database: ...`), then
-    /// rebuilds the database from scratch, stamps the sync time, and emits
-    /// the completion signal. `None` is the missing-database path, which
-    /// discards nothing. Extracted so the recovery paths cannot drift apart.
+    /// rebuilds the database from scratch and stamps the sync time. `None` is
+    /// the missing-database path, which discards nothing. Extracted so the
+    /// recovery paths cannot drift apart.
     fn rebuild_and_finish(
         &self,
         root: &project::ProjectRoot,
@@ -307,17 +321,14 @@ impl SourceSyncManager {
             None => None,
         };
         self.mechanic_scan_cache.clear_project(&database_path)?;
-        let mut synced = publish_from_scratch(root, database_path, sink).inspect_err(|_| {
-            sink.emit(ProgressEvent::Completed {
-                phase: "ensuring_current",
-            });
-        })?;
+        let mut synced = publish_from_scratch(root, database_path, sink)?;
+        if let Some(instance_id) = synced.db_instance_id.as_deref() {
+            self.mechanic_scan_cache
+                .sync_project_instance(&synced.database_path, instance_id)?;
+        }
         synced.discard = notice;
         let duration_ms = crate::clock::duration_millis(start.elapsed())?;
         self.stamp_last_sync(duration_ms)?;
-        sink.emit(ProgressEvent::Completed {
-            phase: "ensuring_current",
-        });
         Ok(synced)
     }
 }

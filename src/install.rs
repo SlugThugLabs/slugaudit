@@ -5,12 +5,14 @@ use thiserror::Error;
 
 mod path;
 
-/// The value of environment variable `name`, treating an empty value as unset:
-/// an empty path would resolve against the current directory.
+/// The value of environment variable `name`, treating an empty or relative
+/// value as unset: a relative path would resolve against the current directory
+/// and leak CWD-relative entries into shell `PATH` or global MCP configs.
 fn non_empty_var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
 }
 
 /// The shared home directory for slug-branded products. An empty
@@ -55,6 +57,9 @@ pub enum InstallError {
     /// directory.
     #[error("could not determine an install location: neither SLUGTHUG_HOME nor HOME is set")]
     NoHome,
+    /// `HOME` is unset, so the user's shell startup file cannot be located.
+    #[error("could not locate shell startup file: HOME is unset")]
+    ShellConfigHomeMissing,
     /// The install directory could not be created.
     #[error("could not create {path}: {inner}")]
     Mkdir {
@@ -122,8 +127,10 @@ pub(crate) fn running_binary() -> Result<PathBuf, std::io::Error> {
     std::env::current_exe().or_else(|current_error| {
         let argument = std::env::args_os().next().ok_or(current_error)?;
         let path = PathBuf::from(argument);
-        if path.is_absolute() || path.components().count() > 1 {
+        if path.is_absolute() {
             Ok(path)
+        } else if path.components().count() > 1 {
+            std::env::current_dir().map(|cwd| cwd.join(path))
         } else {
             which::which(&path).map_err(|error| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, error.to_string())

@@ -427,3 +427,74 @@ fn rust_pub_in_path_visibility_is_stripped_from_a_use_item() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn rust_super_prefers_parent_module_file_over_grandparent_or_root_build_rs() -> TestResult {
+    let known = paths(&["src/lib.rs", "src/a.rs", "build.rs"]);
+    let from_top = RustResolver.resolve(&refer("super::build"), "src/a.rs", &known);
+    ensure_eq(
+        &from_top.to_relative_path.as_deref(),
+        &Some("src/lib.rs"),
+        "super::build from src/a.rs must resolve to src/lib.rs, not root build.rs",
+    )?;
+
+    let no_lib = paths(&[
+        "src/a.rs",
+        "build.rs",
+        "crates/api/src/a.rs",
+        "crates/api/build.rs",
+    ]);
+    ensure_eq(
+        &RustResolver
+            .resolve(&refer("super::build"), "src/a.rs", &no_lib)
+            .kind,
+        &ResolutionKind::Unresolved,
+        "super::build must not climb above src into repo root",
+    )?;
+    ensure_eq(
+        &RustResolver
+            .resolve(&refer("super::build"), "crates/api/src/a.rs", &no_lib)
+            .kind,
+        &ResolutionKind::Unresolved,
+        "super::build must not climb above crates/api/src into crate root",
+    )?;
+
+    let nested = paths(&["src/a/mod.rs", "src/a/b.rs", "src/item.rs"]);
+    let from_nested = RustResolver.resolve(&refer("super::item"), "src/a/b.rs", &nested);
+    ensure_eq(
+        &from_nested.to_relative_path.as_deref(),
+        &Some("src/a/mod.rs"),
+        "super::item from src/a/b.rs must resolve to src/a/mod.rs before grandparent sibling",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_raw_identifier_segments_strip_r_hash_prefix() -> TestResult {
+    let known = paths(&["src/lib.rs", "src/match.rs", "src/type/mod.rs"]);
+    let file_mod = RustResolver.resolve(&refer("crate::r#match::Foo"), "src/lib.rs", &known);
+    ensure_eq(
+        &file_mod.to_relative_path.as_deref(),
+        &Some("src/match.rs"),
+        "crate::r#match::Foo resolves to src/match.rs",
+    )?;
+    let dir_mod = RustResolver.resolve(&refer("crate::r#type::Bar"), "src/lib.rs", &known);
+    ensure_eq(
+        &dir_mod.to_relative_path.as_deref(),
+        &Some("src/type/mod.rs"),
+        "crate::r#type::Bar resolves to src/type/mod.rs",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_leading_double_colon_path_is_always_external() -> TestResult {
+    let known = paths(&["src/lib.rs", "src/foo.rs"]);
+    let res = RustResolver.resolve(&refer("::foo::Bar"), "src/lib.rs", &known);
+    ensure_eq(
+        &res.kind,
+        &ResolutionKind::External,
+        "leading :: path must resolve as External even when local foo.rs exists",
+    )?;
+    Ok(())
+}

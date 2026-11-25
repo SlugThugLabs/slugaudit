@@ -22,12 +22,13 @@ use std::sync::Mutex;
 /// deletes it.
 pub(super) const LEGACY_FINDINGS_FILENAME: &str = "findings.db";
 
-/// One project's session in this process: its findings file and the lock
-/// handle that keeps the file marked live. The handle is never read; holding
-/// it open is the point.
+/// One project's session in this process: its findings file, its lock path,
+/// and the lock handle that keeps the file marked live. The handle is never
+/// read; holding it open is the point.
 pub(crate) struct Session {
     findings: PathBuf,
-    _lock: File,
+    lock_path: PathBuf,
+    lock: File,
 }
 
 /// Sessions this process has started, keyed by activation directory.
@@ -70,15 +71,26 @@ pub fn session_findings_path(dir: &Path) -> Result<Option<PathBuf>, LockPoisoned
 /// untouched, so the next call retries. Returns [`ActivationError::Lock`]
 /// when the session table was poisoned.
 pub fn begin_process_session(root: &ProjectRoot) -> Result<(), ActivationError> {
+    begin_process_session_with(root, |_| Ok(()))
+}
+
+/// Core of [`begin_process_session`]; `after_create` runs between creating the
+/// own lock file and locking it (a no-op in production; tests inject a
+/// concurrent sweep or brief lock holder).
+fn begin_process_session_with(
+    root: &ProjectRoot,
+    after_create: impl FnMut(&Path) -> Result<(), ActivationError>,
+) -> Result<(), ActivationError> {
     let dir = activation_dir(root);
     let mut sessions = crate::util::lock(&SESSIONS, "findings_sessions")?;
     let sessions = sessions.get_or_insert_with(HashMap::new);
-    if sessions.contains_key(&dir) {
-        return Ok(());
+    if let Some(existing) = sessions.get(&dir) {
+        if session_is_live(existing)? {
+            return Ok(());
+        }
+        sessions.remove(&dir);
     }
-    let id = uuid::Uuid::new_v4().simple().to_string();
-    let lock_path = dir.join(lock_name(&id));
-    let lock = take_own_lock(&lock_path)?;
+    let (id, lock_path, lock) = take_own_lock_with(&dir, after_create)?;
     // Own lock first, so a concurrent process's sweep sees this file as live.
     sweep_dead_sessions(&dir, &id)?;
     let findings = dir.join(db_name(&id));
@@ -86,42 +98,90 @@ pub fn begin_process_session(root: &ProjectRoot) -> Result<(), ActivationError> 
         dir,
         Session {
             findings,
-            _lock: lock,
+            lock_path,
+            lock,
         },
     );
     Ok(())
 }
 
+/// Checks whether a cached session's lock file is still the live file on disk.
+/// An `off`/`on` cycle in another process or a concurrent `disable` can unlink
+/// or replace the lock file while this process still holds its old FD.
+fn session_is_live(session: &Session) -> Result<bool, ActivationError> {
+    let path_meta = match std::fs::metadata(&session.lock_path) {
+        Ok(meta) => meta,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            return Ok(false);
+        }
+        Err(source) => return Err(session_error(&session.lock_path, source)),
+    };
+    same_lock_file(&session.lock, &path_meta, &session.lock_path)
+}
+
+#[cfg(unix)]
+fn same_lock_file(
+    lock: &File,
+    path_meta: &std::fs::Metadata,
+    lock_path: &Path,
+) -> Result<bool, ActivationError> {
+    use std::os::unix::fs::MetadataExt;
+    let fd_meta = lock
+        .metadata()
+        .map_err(|source| session_error(lock_path, source))?;
+    Ok(path_meta.dev() == fd_meta.dev() && path_meta.ino() == fd_meta.ino())
+}
+
+#[cfg(not(unix))]
+fn same_lock_file(
+    _lock: &File,
+    _path_meta: &std::fs::Metadata,
+    _lock_path: &Path,
+) -> Result<bool, ActivationError> {
+    Ok(true)
+}
+
 /// Attempts at taking the own lock file that a concurrent sweep deleted.
 const LOCK_ATTEMPTS: usize = 3;
 
-/// Creates the own lock file and locks it. A sweep running in another process
-/// can list the file after it is created and lock it before this process does,
-/// then delete it as a dead session's. Locking the deleted file would hold a
-/// lock nobody can see, so after locking, the path must still exist; if not,
-/// start over. Only this process creates this name (a sweep never creates a
-/// lock file), so "still exists" means the file locked is the one named.
-fn take_own_lock(lock_path: &Path) -> Result<File, ActivationError> {
+/// Creates a fresh own lock file and locks it. A sweep running in another
+/// process can list the file after it is created and lock it before this
+/// process does, then delete it as a dead session's. Locking the deleted file
+/// would hold a lock nobody can see, so after locking, the path must still
+/// exist; if not, start over with a fresh UUID so a deleted lock is never
+/// recreated under the same ID.
+fn take_own_lock_with(
+    dir: &Path,
+    mut after_create: impl FnMut(&Path) -> Result<(), ActivationError>,
+) -> Result<(String, PathBuf, File), ActivationError> {
+    let mut last_path = dir.to_path_buf();
     for _ in 0..LOCK_ATTEMPTS {
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let lock_path = dir.join(lock_name(&id));
         // Owner decision (2026-10-31): the lock only tells a live session's findings file from a dead one; each agent session keeps its own findings and never wipes another's.
         let lock = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
-            .open(lock_path)
-            .map_err(|source| session_error(lock_path, source))?;
-        #[cfg(test)]
-        run_window_hook(lock_path)?;
-        lock_when_free(&lock, lock_path)?;
+            .open(&lock_path)
+            .map_err(|source| session_error(&lock_path, source))?;
+        after_create(&lock_path)?;
+        lock_when_free(&lock, &lock_path)?;
         if lock_path
             .try_exists()
-            .map_err(|source| session_error(lock_path, source))?
+            .map_err(|source| session_error(&lock_path, source))?
         {
-            return Ok(lock);
+            return Ok((id, lock_path, lock));
         }
+        last_path = lock_path;
     }
     Err(session_error(
-        lock_path,
+        &last_path,
         std::io::Error::other("the lock file was deleted repeatedly while locking it"),
     ))
 }
@@ -193,32 +253,6 @@ pub(crate) fn put_session_for_test(
 pub(crate) fn forget_root_for_test(root: &ProjectRoot) -> Result<(), LockPoisoned> {
     drop(take_session_for_test(root)?);
     Ok(())
-}
-
-#[cfg(test)]
-type WindowHook = Box<dyn FnOnce(&Path) -> Result<(), ActivationError>>;
-
-#[cfg(test)]
-thread_local! {
-    /// Test seam: runs once, on the next lock acquisition of this thread,
-    /// between creating the own lock file and locking it, so a test can play
-    /// the sweep of another process in that window.
-    static WINDOW_HOOK: std::cell::RefCell<Option<WindowHook>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn set_window_hook_for_test(
-    hook: impl FnOnce(&Path) -> Result<(), ActivationError> + 'static,
-) {
-    WINDOW_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
-}
-
-#[cfg(test)]
-fn run_window_hook(lock_path: &Path) -> Result<(), ActivationError> {
-    match WINDOW_HOOK.with(|slot| slot.borrow_mut().take()) {
-        Some(hook) => hook(lock_path),
-        None => Ok(()),
-    }
 }
 
 #[cfg(test)]

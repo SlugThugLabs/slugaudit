@@ -59,9 +59,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
     }
-    // A set-but-invalid SLUGAUDIT_* variable, or an Adaptive profile on a host
-    // whose memory cannot be detected, stops the server here rather than
-    // running with limits the operator did not ask for.
+    // A malformed global config, a set-but-invalid SLUGAUDIT_* variable, or an
+    // Adaptive profile on a host whose memory cannot be detected stops the
+    // server here rather than running with limits the operator did not ask for.
+    if let Err(error) = slugaudit_mcp_rust::project::GlobalConfig::load() {
+        cli::err(format_args!("Error: {error}\n"))?;
+        std::process::exit(1);
+    }
     if let Err(error) = init_process_limits() {
         cli::err(format_args!("Error: {error}\n"))?;
         std::process::exit(1);

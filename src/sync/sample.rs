@@ -1,6 +1,6 @@
 // slugaudit-line-exception: approved-by=slugthuglabs; reason=one per-file sampling pipeline: the bounded read, the skip and UTF-8 classification, and folding that sample's analysis into its FileRecord
 use super::analyze::analyze;
-use super::discovery::{DiscoveredFile, FileKind, is_vanished};
+use super::discovery::{DiscoveredFile, is_binary_bytes, is_vanished};
 use super::hash;
 use super::publish::PublishError;
 use super::revision::FileRecord;
@@ -21,8 +21,10 @@ pub(crate) use super::evidence_limits::apply_evidence_limits;
 
 // The parallel batch loop lives in `sample_batch`, which keeps this file
 // within its source-size budget. Re-exported here so importers resolve
-// `crate::sync::sample::sample_all_with_deadline` through this module's path.
+// `crate::sync::sample::sample_*_with_deadline` through this module's path.
+#[cfg(test)]
 pub(super) use super::sample_batch::sample_all_with_deadline;
+pub(super) use super::sample_batch::sample_pass2_with_deadline;
 
 #[derive(Debug, Error)]
 /// Per-file sampling failures. `TooLarge` and `NotUtf8` skip that file with
@@ -51,6 +53,9 @@ pub enum SampleError {
     NotUtf8 {
         /// Absolute path of the non-UTF-8 file.
         path: PathBuf,
+        /// BLAKE3 hex hash of the bytes read during sampling, so Pass 2 can
+        /// verify they still match Pass 1 before committing a `not_utf8` skip.
+        content_hash: String,
         /// Where the bytes stop being valid UTF-8.
         #[source]
         source: std::str::Utf8Error,
@@ -116,7 +121,8 @@ pub(super) fn sample_file(
         },
     )?;
 
-    let is_binary = file.kind == FileKind::Binary;
+    let identity = hash::hash_bytes(&file.relative_path, &bytes);
+    let is_binary = is_binary_bytes(&bytes);
     let content = if is_binary {
         None
     } else {
@@ -129,6 +135,7 @@ pub(super) fn sample_file(
                 return Err(SampleError::NotUtf8 {
                     // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
                     path: file.absolute_path.clone(),
+                    content_hash: identity.content_hash,
                     source,
                 });
             }
@@ -139,7 +146,7 @@ pub(super) fn sample_file(
         relative_path: file.relative_path.clone(),
         is_binary,
         byte_len: bytes.len() as u64,
-        identity: hash::hash_bytes(&file.relative_path, &bytes),
+        identity,
         content,
         modified_unix_seconds: util::mtime_unix_seconds(&metadata),
     })

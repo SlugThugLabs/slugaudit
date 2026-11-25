@@ -25,67 +25,39 @@ pub(crate) fn code_lines(source: &str) -> usize {
         .count()
 }
 
-/// The gate's line ceilings. Test files get a higher ceiling because each
-/// `#[test]` names one behavior contract — repetition that cannot be
-/// DRY'd without losing the failure diagnostics that make a red test
-/// actionable — while production code is expected to earn its length.
-pub(crate) const TEST_FILE_CEILING: usize = 500;
-pub(crate) const PRODUCTION_CEILING: usize = 300;
-/// A dated human approval may extend the soft ceiling by this bounded
-/// amount; even explicit approval cannot rescue a genuinely oversized file.
-pub(crate) const HUMAN_APPROVED_CEILING: usize = 350;
+/// Soft review floors. There is no hard cap: any file at or above its floor
+/// passes once `split-judge` (or the owner) confirms it does one job and a
+/// `slugaudit-line-exception:` comment records why.
+pub(crate) const TEST_FILE_EXCEPTION_FLOOR: usize = 501;
 /// Production files at or above this length require an approved
-/// `slugaudit-line-exception:` comment.
+/// `slugaudit-line-exception:` comment (after `split-judge` says `KEEP`).
 pub(crate) const PRODUCTION_EXCEPTION_FLOOR: usize = 200;
 
 /// How `main` reports a single file: within limits (optionally via an
-/// approved exception) or a violation.
+/// approved exception) or needing a `split-judge` check / exception.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Verdict {
     Pass,
     PassWithException { reason: String },
-    FailHard { ceiling: usize },
-    FailNeedsException,
+    FailNeedsException { floor: usize },
 }
 
-/// The gate's policy. Test files (`*_tests.rs`, `tests.rs`) auto-pass up
-/// to [`TEST_FILE_CEILING`] with no exception requirement; above it they
-/// hard-fail. Production files: 0–199 auto-pass; 200–300 pass only with
-/// any parsed exception; 301–[`HUMAN_APPROVED_CEILING`] pass only with a
-/// dated human exception (the parsed approver is human), otherwise fail
-/// with the [`PRODUCTION_CEILING`]; above [`HUMAN_APPROVED_CEILING`] always
-/// fail, whatever the exception.
+/// The gate's policy. Production files auto-pass below
+/// [`PRODUCTION_EXCEPTION_FLOOR`] (200); test files (`*_tests.rs`, `tests.rs`)
+/// auto-pass below [`TEST_FILE_EXCEPTION_FLOOR`] (501). Above the floor there
+/// is no hard cap — any valid `slugaudit-line-exception:` passes.
 pub(crate) fn verdict(code_lines: usize, exception: Option<Exception>, test_file: bool) -> Verdict {
-    if test_file {
-        if code_lines > TEST_FILE_CEILING {
-            return Verdict::FailHard {
-                ceiling: TEST_FILE_CEILING,
-            };
-        }
-        return Verdict::Pass;
-    }
-    if code_lines > PRODUCTION_CEILING {
-        // Admission keys on the parsed approver, never on the reason text:
-        // an agent annotation whose reason begins with the human display
-        // prefix must not buy the extended ceiling.
-        if let Some(exception) = exception
-            && code_lines <= HUMAN_APPROVED_CEILING
-            && exception.allows_extended_ceiling()
-        {
-            return Verdict::PassWithException {
-                reason: exception.reason,
-            };
-        }
-        return Verdict::FailHard {
-            ceiling: PRODUCTION_CEILING,
-        };
-    }
-    if code_lines >= PRODUCTION_EXCEPTION_FLOOR {
+    let floor = if test_file {
+        TEST_FILE_EXCEPTION_FLOOR
+    } else {
+        PRODUCTION_EXCEPTION_FLOOR
+    };
+    if code_lines >= floor {
         return match exception {
             Some(exception) => Verdict::PassWithException {
                 reason: exception.reason,
             },
-            None => Verdict::FailNeedsException,
+            None => Verdict::FailNeedsException { floor },
         };
     }
     Verdict::Pass

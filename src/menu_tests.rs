@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::menu_render::{MENU, section_label};
-use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::Path;
 
 #[test]
@@ -189,6 +189,23 @@ fn colored_menu_ends_on_the_prompt_without_a_trailing_newline() -> TestResult {
         &colored.lines().count(),
         &MENU.lines().count(),
         "colored.lines().count() == MENU.lines().count()",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn non_interactive_menu_bounds_consecutive_invalid_attempts() -> TestResult {
+    let mut out = Vec::new();
+    let error = next_choice_with_limit(
+        &mut || Ok(Some("invalid\n".to_owned())),
+        &mut out,
+        Some(MAX_NON_INTERACTIVE_INVALID_ATTEMPTS),
+    )
+    .check_err("repeated invalid non-interactive choices must fail boundedly")?;
+    ensure_eq(
+        &error.kind(),
+        &std::io::ErrorKind::InvalidInput,
+        "returns InvalidInput after bound",
     )?;
     Ok(())
 }

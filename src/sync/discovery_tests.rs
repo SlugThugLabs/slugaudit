@@ -518,3 +518,48 @@ fn a_failed_walk_publishes_no_revision_and_deletes_no_stored_rows() -> TestResul
     )?;
     Ok(())
 }
+
+#[test]
+fn sniff_reader_retries_eintr_and_loops_across_short_reads() -> TestResult {
+    struct ChunkedReader {
+        step: usize,
+    }
+    impl std::io::Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let current = self.step;
+            // KEEP saturating: test reader runs at most 4 steps
+            self.step = self.step.saturating_add(1);
+            match current {
+                0 => Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "EINTR",
+                )),
+                1 => {
+                    let chunk = b"hello";
+                    let Some(dest) = buf.get_mut(..chunk.len()) else {
+                        return Ok(0);
+                    };
+                    dest.copy_from_slice(chunk);
+                    Ok(chunk.len())
+                }
+                2 => {
+                    let Some(first) = buf.first_mut() else {
+                        return Ok(0);
+                    };
+                    *first = 0;
+                    Ok(1)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    let mut reader = ChunkedReader { step: 0 };
+    let kind = super::sniff_reader(&mut reader).check("sniff across EINTR and short reads")?;
+    ensure_eq(
+        &kind,
+        &FileKind::Binary,
+        "NUL byte in later short read must still classify as binary",
+    )?;
+    Ok(())
+}

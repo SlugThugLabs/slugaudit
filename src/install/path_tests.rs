@@ -361,3 +361,55 @@ fn a_non_utf8_bin_dir_is_refused_instead_of_writing_a_lossy_path_line() -> TestR
     )?;
     Ok(())
 }
+
+#[test]
+fn add_to_path_creates_missing_fish_config_directory() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let bin_dir = temp.path().join(".slugthug/slugaudit");
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/usr/bin/fish"))),
+        ],
+        || -> TestResult {
+            add_to_path(&bin_dir).check("fish add_to_path succeeds without pre-existing dir")?;
+            let config = temp.path().join(".config/fish/config.fish");
+            let contents = std::fs::read_to_string(&config).check("read fish config")?;
+            ensure(
+                contents.contains(&format!("fish_add_path {}", bin_dir.display())),
+                format!("expected fish_add_path entry, got: {contents}"),
+            )?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn path_config_reports_shell_config_home_missing_when_home_is_unset() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    temp_env::with_vars(
+        [
+            ("SLUGTHUG_HOME", Some(temp.path().as_os_str())),
+            ("HOME", None::<&std::ffi::OsStr>),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || -> TestResult {
+            let error = path_config(&temp.path().join("slugaudit"))
+                .check_err("unset HOME must fail shell config lookup")?;
+            ensure(
+                matches!(error, InstallError::ShellConfigHomeMissing),
+                format!("expected ShellConfigHomeMissing, got {error:?}"),
+            )?;
+            let message = error.to_string();
+            ensure(
+                message.contains("HOME") && !message.contains("SLUGTHUG_HOME"),
+                format!("message should name HOME without SLUGTHUG_HOME: {message}"),
+            )?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}

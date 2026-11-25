@@ -13,6 +13,7 @@ fn missing_handle() -> SyncedProject {
     SyncedProject {
         database_path: PathBuf::from("/definitely/missing/slugaudit-project.db"),
         revision_id: "rev-1".to_owned(),
+        db_instance_id: None,
         discard: None,
     }
 }
@@ -61,6 +62,7 @@ fn verified_read_fails_cleanly_on_a_corrupt_database() -> TestResult {
     let handle = SyncedProject {
         database_path,
         revision_id: "rev-1".to_owned(),
+        db_instance_id: None,
         discard: None,
     };
 
@@ -80,6 +82,7 @@ fn verified_read_reports_a_failure_reading_the_current_revision() -> TestResult 
     let handle = SyncedProject {
         database_path,
         revision_id: "rev-1".to_owned(),
+        db_instance_id: None,
         discard: None,
     };
 
@@ -173,5 +176,40 @@ fn verified_read_reports_a_failed_transaction_start_with_an_active_transaction()
     connection
         .execute_batch("ROLLBACK")
         .check("close the outer transaction")?;
+    Ok(())
+}
+
+/// Replacing the database file with a freshly rebuilt database at the same
+/// `"rev-1"` revision id must still fail `with_verified_read` with
+/// `StaleRevision` because the per-database instance token changed.
+#[test]
+fn verified_read_detects_rebuilt_database_at_same_revision_id() -> TestResult {
+    let (project, synced) = synced_project()?;
+    ensure_eq(&synced.revision_id, &"rev-1", "initial revision is rev-1")?;
+    ensure(
+        synced.db_instance_id.is_some(),
+        "initial sync records a db_instance_id",
+    )?;
+
+    // Simulate another process discarding and rebuilding project.db at rev-1.
+    crate::store::discard_corrupt_database(&synced.database_path).check("discard db")?;
+    let rebuilt = ensure_synced_no_progress(
+        &project.path().to_string_lossy(),
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .check("rebuild sync")?;
+    ensure_eq(&rebuilt.revision_id, &"rev-1", "rebuilt revision is rev-1")?;
+    ensure(
+        rebuilt.db_instance_id != synced.db_instance_id,
+        "rebuilt database gets a distinct instance id",
+    )?;
+
+    let error = with_verified_read(&synced, |_tx| Ok(()))
+        .check_err("old handle must reject rebuilt database even at rev-1")?;
+    ensure_eq(
+        &error.data,
+        &crate::error_codes::payload(crate::error_codes::ErrorCode::StaleRevision),
+        "rebuilt database returns StaleRevision",
+    )?;
     Ok(())
 }

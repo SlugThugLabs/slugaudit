@@ -2,7 +2,8 @@ use super::*;
 use crate::graph::reference::ImportReference;
 use crate::graph::resolver::ResolutionKind;
 use crate::graph::rust_mod_parents::{
-    RustModuleParents, insert_rust_mod_parent, resolve_rust_path_attr,
+    RustModuleParents, insert_rust_mod_parent, insert_rust_mod_parent_segments,
+    resolve_rust_path_attr, resolve_rust_path_attr_segments,
 };
 use crate::graph::test_support::paths;
 use slugaudit_test_check::{TestResult, ensure, ensure_eq};
@@ -27,8 +28,13 @@ fn path_attr_resolves_relative_to_declaring_files_parent_dir() -> TestResult {
     )?;
     ensure_eq(
         &resolve_rust_path_attr("src/a.rs", "tests.rs", "inner"),
-        &Some("src/inner/tests.rs".to_owned()),
-        "inline_dir joins between declaring parent dir and path_attr",
+        &Some("src/a/inner/tests.rs".to_owned()),
+        "inline_dir in non-mod.rs file joins under rust_module_dir",
+    )?;
+    ensure_eq(
+        &resolve_rust_path_attr("src/a/mod.rs", "tests.rs", "inner"),
+        &Some("src/a/inner/tests.rs".to_owned()),
+        "inline_dir in mod.rs file joins under parent dir",
     )?;
     ensure_eq(
         &resolve_rust_path_attr("src/a.rs", "../../outside.rs", ""),
@@ -170,8 +176,8 @@ fn inline_mod_path_attr_handles_all_super_levels() -> TestResult {
     let known = paths(&[
         "src/a/mod.rs",
         "src/a/host.rs",
-        "src/a/inner/tests.rs",
-        "src/a/inner/sibling.rs",
+        "src/a/host/inner/tests.rs",
+        "src/a/host/inner/sibling.rs",
     ]);
     let mut parents = RustModuleParents::new();
     insert_rust_mod_parent(&mut parents, "src/a/host.rs", "tests.rs", "inner");
@@ -179,7 +185,7 @@ fn inline_mod_path_attr_handles_all_super_levels() -> TestResult {
     // 1 super (< levels_in_declaring = 2): inline mod `inner` inside host.rs
     let one_super = RustResolver.resolve_with_rust_parents(
         &refer("super::*"),
-        "src/a/inner/tests.rs",
+        "src/a/host/inner/tests.rs",
         &known,
         &parents,
     );
@@ -191,20 +197,20 @@ fn inline_mod_path_attr_handles_all_super_levels() -> TestResult {
 
     let inline_sibling = RustResolver.resolve_with_rust_parents(
         &refer("super::sibling::Item"),
-        "src/a/inner/tests.rs",
+        "src/a/host/inner/tests.rs",
         &known,
         &parents,
     );
     ensure_eq(
         &inline_sibling.to_relative_path.as_deref(),
-        &Some("src/a/inner/sibling.rs"),
+        &Some("src/a/host/inner/sibling.rs"),
         "single super inside an inline module resolves a sibling module under that inline module directory",
     )?;
 
     // 2 supers (== levels_in_declaring = 2): declaring file host.rs itself
     let two_super = RustResolver.resolve_with_rust_parents(
         &refer("super::super::*"),
-        "src/a/inner/tests.rs",
+        "src/a/host/inner/tests.rs",
         &known,
         &parents,
     );
@@ -217,7 +223,7 @@ fn inline_mod_path_attr_handles_all_super_levels() -> TestResult {
     // 3 supers (> levels_in_declaring = 2): walks past host.rs to src/a/mod.rs
     let three_super = RustResolver.resolve_with_rust_parents(
         &refer("super::super::super::*"),
-        "src/a/inner/tests.rs",
+        "src/a/host/inner/tests.rs",
         &known,
         &parents,
     );
@@ -233,40 +239,40 @@ fn inline_mod_path_attr_handles_all_super_levels() -> TestResult {
 fn nested_two_level_inline_mod_path_attr_resolves_each_enclosing_inline_dir() -> TestResult {
     let known = paths(&[
         "src/host.rs",
-        "src/outer/inner/leaf.rs",
-        "src/outer/inner/in_inner.rs",
-        "src/outer/in_outer.rs",
+        "src/host/outer/inner/leaf.rs",
+        "src/host/outer/inner/in_inner.rs",
+        "src/host/outer/in_outer.rs",
     ]);
     let mut parents = RustModuleParents::new();
     insert_rust_mod_parent(&mut parents, "src/host.rs", "leaf.rs", "outer/inner");
 
     let in_inner = RustResolver.resolve_with_rust_parents(
         &refer("super::in_inner::Item"),
-        "src/outer/inner/leaf.rs",
+        "src/host/outer/inner/leaf.rs",
         &known,
         &parents,
     );
     ensure_eq(
         &in_inner.to_relative_path.as_deref(),
-        &Some("src/outer/inner/in_inner.rs"),
+        &Some("src/host/outer/inner/in_inner.rs"),
         "single super inside two nested inline modules resolves against outer/inner",
     )?;
 
     let in_outer = RustResolver.resolve_with_rust_parents(
         &refer("super::super::in_outer::Item"),
-        "src/outer/inner/leaf.rs",
+        "src/host/outer/inner/leaf.rs",
         &known,
         &parents,
     );
     ensure_eq(
         &in_outer.to_relative_path.as_deref(),
-        &Some("src/outer/in_outer.rs"),
+        &Some("src/host/outer/in_outer.rs"),
         "double super inside two nested inline modules resolves against outer",
     )?;
 
     let host_glob = RustResolver.resolve_with_rust_parents(
         &refer("super::super::super::*"),
-        "src/outer/inner/leaf.rs",
+        "src/host/outer/inner/leaf.rs",
         &known,
         &parents,
     );
@@ -294,6 +300,143 @@ fn cyclic_path_attrs_terminate_within_hop_cap() -> TestResult {
             ResolutionKind::Resolved | ResolutionKind::Unresolved
         ),
         "cyclic #[path] must terminate cleanly without hanging or panicking",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn multi_segment_and_parent_relative_inline_segments_preserve_depth_and_normalize() -> TestResult {
+    let known = paths(&[
+        "src/sub/host.rs",
+        "src/sub/host/a/b/leaf.rs",
+        "src/sub/host/a/b/sibling.rs",
+        "src/sub/common/leaf2.rs",
+        "src/sub/common/helper.rs",
+    ]);
+    let mut parents = RustModuleParents::new();
+    insert_rust_mod_parent_segments(
+        &mut parents,
+        "src/sub/host.rs",
+        "leaf.rs",
+        vec!["a/b".to_owned()],
+    );
+    insert_rust_mod_parent_segments(
+        &mut parents,
+        "src/sub/host.rs",
+        "leaf2.rs",
+        vec!["../common".to_owned()],
+    );
+
+    let sibling = RustResolver.resolve_with_rust_parents(
+        &refer("super::sibling::Item"),
+        "src/sub/host/a/b/leaf.rs",
+        &known,
+        &parents,
+    );
+    ensure_eq(
+        &sibling.to_relative_path.as_deref(),
+        &Some("src/sub/host/a/b/sibling.rs"),
+        "single super inside #[path = \"a/b\"] resolves sibling under src/sub/host/a/b",
+    )?;
+
+    let host_from_two = RustResolver.resolve_with_rust_parents(
+        &refer("super::super::*"),
+        "src/sub/host/a/b/leaf.rs",
+        &known,
+        &parents,
+    );
+    ensure_eq(
+        &host_from_two.to_relative_path.as_deref(),
+        &Some("src/sub/host.rs"),
+        "double super inside single multi-segment inline #[path = \"a/b\"] reaches declaring file",
+    )?;
+
+    let parent_rel = RustResolver.resolve_with_rust_parents(
+        &refer("super::helper::Item"),
+        "src/sub/common/leaf2.rs",
+        &known,
+        &parents,
+    );
+    ensure_eq(
+        &parent_rel.to_relative_path.as_deref(),
+        &Some("src/sub/common/helper.rs"),
+        "parent-relative inline #[path = \"../common\"] normalizes base_dir for super:: resolution",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn absolute_and_escaping_inline_segments_are_rejected() -> TestResult {
+    ensure_eq(
+        &resolve_rust_path_attr("src/a.rs", "tests.rs", "/abs/dir"),
+        &None,
+        "absolute inline_dir is rejected",
+    )?;
+    ensure_eq(
+        &resolve_rust_path_attr_segments(
+            "src/a.rs",
+            "tests.rs",
+            &["inner".to_owned(), "/abs".to_owned()],
+        ),
+        &None,
+        "absolute inline segment is rejected",
+    )?;
+    ensure_eq(
+        &resolve_rust_path_attr_segments("src/a.rs", "tests.rs", &["../../../escape".to_owned()]),
+        &None,
+        "escaping inline segment from non-mod.rs is rejected",
+    )?;
+    ensure_eq(
+        &resolve_rust_path_attr_segments("src/lib.rs", "tests.rs", &["../../escape".to_owned()]),
+        &None,
+        "escaping inline segment from lib.rs is rejected",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn implicit_external_mod_under_inline_path_registers_both_file_and_mod_rs() -> TestResult {
+    let known = paths(&[
+        "src/lib.rs",
+        "src/custom_dir/child.rs",
+        "src/custom_dir/nested/mod.rs",
+    ]);
+    let mut parents = RustModuleParents::new();
+    insert_rust_mod_parent_segments(
+        &mut parents,
+        "src/lib.rs",
+        "child",
+        vec!["custom_dir".to_owned()],
+    );
+    insert_rust_mod_parent_segments(
+        &mut parents,
+        "src/lib.rs",
+        "nested",
+        vec!["custom_dir".to_owned()],
+    );
+
+    let file_res = RustResolver.resolve_with_rust_parents(
+        &refer("super::super::*"),
+        "src/custom_dir/child.rs",
+        &known,
+        &parents,
+    );
+    ensure_eq(
+        &file_res.to_relative_path.as_deref(),
+        &Some("src/lib.rs"),
+        "implicit child.rs under inline #[path] resolves back to declaring file",
+    )?;
+
+    let mod_res = RustResolver.resolve_with_rust_parents(
+        &refer("super::super::*"),
+        "src/custom_dir/nested/mod.rs",
+        &known,
+        &parents,
+    );
+    ensure_eq(
+        &mod_res.to_relative_path.as_deref(),
+        &Some("src/lib.rs"),
+        "implicit nested/mod.rs under inline #[path] resolves back to declaring file",
     )?;
     Ok(())
 }

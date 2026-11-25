@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::FileKind;
 use crate::sync::publish::PublishError;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::sync::Arc;
@@ -434,6 +435,28 @@ fn a_skipped_record_for_a_statable_file_does_not_warn() -> TestResult {
     ensure(
         !logs.contains("stat failed for a skipped file"),
         format!("a readable file must not warn:\n{logs}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn sample_file_recomputes_binary_classification_from_actual_bytes() -> TestResult {
+    let dir = tempfile::tempdir().check("tempdir")?;
+    let path = dir.path().join("changed.rs");
+    std::fs::write(&path, b"pub fn text() {}\n").check("write utf8 text")?;
+    let stale_binary = DiscoveredFile {
+        relative_path: "changed.rs".to_owned(),
+        absolute_path: path,
+        kind: crate::sync::discovery::FileKind::Binary,
+    };
+
+    let sample = sample_file(&stale_binary, &ResourceLimits::default()).check("sample")?;
+
+    ensure(!sample.is_binary, "UTF-8 text must not stay binary")?;
+    ensure_eq(
+        &sample.content.as_deref(),
+        &Some("pub fn text() {}\n"),
+        "content is populated from actual bytes",
     )?;
     Ok(())
 }

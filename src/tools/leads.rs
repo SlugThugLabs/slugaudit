@@ -316,8 +316,8 @@ pub fn leads(
     let limits = match (&request.0.cursor, &request.0.path) {
         // A continuation names no project and reads no limit: its page budget
         // and the ceiling it is clamped to are those stored with the result.
-        // The process limits only fill the argument.
-        (Some(_), _) => super::process_limits_for_tool()?,
+        // The deterministic default only fills the unused argument.
+        (Some(_), _) => ResourceLimits::default(),
         (None, Some(path)) => super::resolve_limits(path)?,
         (None, None) => return Err(missing_path()),
     };

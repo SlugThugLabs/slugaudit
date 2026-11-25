@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 mod call_queries;
+mod caller_index;
 mod macro_calls;
 mod query_calls;
 mod site;

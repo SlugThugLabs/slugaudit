@@ -110,6 +110,7 @@ fn publish_step(
     re_resolve: bool,
 ) -> TestResult<String> {
     let discovered: HashSet<String> = known.iter().map(|path| (*path).to_owned()).collect();
+    let unrepresentable = HashSet::new();
     publish_revision(
         connection,
         &RevisionInputs {
@@ -121,6 +122,8 @@ fn publish_step(
             skipped: &[],
             discovered_paths: &discovered,
             re_resolve_unresolved: re_resolve,
+            unrepresentable_paths: &unrepresentable,
+            deadline: None,
         },
     )
     .check("publish revision")

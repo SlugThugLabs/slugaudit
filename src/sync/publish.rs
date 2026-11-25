@@ -13,11 +13,7 @@ pub use super::publish_cas::publish;
 #[cfg(test)]
 pub(super) use super::publish_cas::{MAX_CAS_RETRIES, is_retryable, publish_with_limits};
 #[cfg(test)]
-pub(super) use super::publish_diff::build_upserts_and_deletions;
-#[cfg(test)]
 pub(super) use super::race_hook;
-#[cfg(test)]
-pub(super) use super::revalidate::revalidate_unchanged_since_sample;
 #[cfg(test)]
 pub(super) use super::revision::RevisionError;
 #[cfg(test)]
@@ -139,7 +135,10 @@ impl PublishError {
     #[must_use]
     pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
         match self {
-            PublishError::TimeBudgetExceeded { elapsed_ms, .. } => Some(*elapsed_ms),
+            PublishError::TimeBudgetExceeded { elapsed_ms, .. }
+            | PublishError::Revision(revision::RevisionError::TimeBudgetExceeded { elapsed_ms }) => {
+                Some(*elapsed_ms)
+            }
             PublishError::Discovery(error) => error.budget_elapsed_ms(),
             _ => None,
         }
@@ -220,31 +219,38 @@ pub struct PublishReport {
     pub skipped: Vec<discovery::SkippedFile>,
 }
 
-/// Replaces the persisted set of discovered non-UTF-8 paths with the set a
-/// walk just produced. The table is disposable derived state: every sync
-/// walks the whole tree, so the replacement is exact, and an unchanged set
-/// writes nothing. A failed write fails the sync pass — `report` must never
-/// read a count its latest walk did not produce.
+/// Replaces the persisted set of discovered non-UTF-8 paths inside an active
+/// revision transaction (after the CAS baseline check has succeeded). The table
+/// is disposable derived state: every sync walks the whole tree, so the
+/// replacement is exact, and an unchanged set writes nothing.
+pub(super) fn replace_unrepresentable_paths_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    paths: &HashSet<Vec<u8>>,
+) -> Result<(), rusqlite::Error> {
+    if stored_unrepresentable_paths(tx)? == *paths {
+        return Ok(());
+    }
+    tx.execute("DELETE FROM unrepresentable_paths", [])?;
+    let mut insert =
+        tx.prepare("INSERT OR IGNORE INTO unrepresentable_paths (path) VALUES (?1)")?;
+    for path in paths {
+        insert.execute([path])?;
+    }
+    Ok(())
+}
+
+/// Test-only standalone wrapper around [`replace_unrepresentable_paths_in_tx`].
+#[cfg(test)]
 pub(super) fn replace_unrepresentable_paths(
     connection: &mut rusqlite::Connection,
     paths: &HashSet<Vec<u8>>,
 ) -> Result<(), rusqlite::Error> {
-    if stored_unrepresentable_paths(connection)? == *paths {
-        return Ok(());
-    }
     let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute("DELETE FROM unrepresentable_paths", [])?;
-    {
-        let mut insert =
-            tx.prepare("INSERT OR IGNORE INTO unrepresentable_paths (path) VALUES (?1)")?;
-        for path in paths {
-            insert.execute([path])?;
-        }
-    }
+    replace_unrepresentable_paths_in_tx(&tx, paths)?;
     tx.commit()
 }
 
-fn stored_unrepresentable_paths(
+pub(super) fn stored_unrepresentable_paths(
     connection: &rusqlite::Connection,
 ) -> Result<HashSet<Vec<u8>>, rusqlite::Error> {
     let mut statement = connection.prepare("SELECT path FROM unrepresentable_paths")?;

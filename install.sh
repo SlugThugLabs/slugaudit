@@ -10,11 +10,19 @@ TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 PREVIOUS_PATH="${TARGET_PATH}.prev"
 GITHUB_REPO="SlugThugLabs/slugaudit"
 
-# Temp dir for downloads and cargo builds; removed on every exit path.
+# Temp dir and staging files; removed on every exit path.
 TMP_DIR=""
+STAGED_BIN=""
+STAGED_PREV=""
 cleanup() {
     if [ -n "${TMP_DIR}" ]; then
         rm -rf "${TMP_DIR}"
+    fi
+    if [ -n "${STAGED_BIN}" ]; then
+        rm -f "${STAGED_BIN}"
+    fi
+    if [ -n "${STAGED_PREV}" ]; then
+        rm -f "${STAGED_PREV}"
     fi
 }
 trap cleanup EXIT
@@ -33,10 +41,21 @@ retain_previous() {
         echo "Error: ${PREVIOUS_PATH} exists and is not a regular file; refusing to replace ${TARGET_PATH}." >&2
         exit 1
     fi
-    if ! cp -p "${TARGET_PATH}" "${PREVIOUS_PATH}"; then
+    STAGED_PREV="$(mktemp "${INSTALL_DIR}/.slugaudit.prev.XXXXXX")"
+    if ! cp -p "${TARGET_PATH}" "${STAGED_PREV}" || ! mv -f "${STAGED_PREV}" "${PREVIOUS_PATH}"; then
         echo "Error: could not retain the current binary as ${PREVIOUS_PATH}; refusing to replace it." >&2
         exit 1
     fi
+    STAGED_PREV=""
+}
+
+# Stages the new binary in ${INSTALL_DIR} and atomically moves it into place.
+install_binary() {
+    local src="$1"
+    STAGED_BIN="$(mktemp "${INSTALL_DIR}/.slugaudit.new.XXXXXX")"
+    install -m 0755 "${src}" "${STAGED_BIN}"
+    mv -f "${STAGED_BIN}" "${TARGET_PATH}"
+    STAGED_BIN=""
 }
 
 # Print banner
@@ -59,11 +78,17 @@ ARCH="$(uname -m)"
 
 mkdir -p "${INSTALL_DIR}"
 
-if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -q "slugaudit-mcp-rust" Cargo.toml 2>/dev/null; then
+if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -Eq '^name = "slugaudit-mcp-rust"$' Cargo.toml 2>/dev/null; then
     echo "==> Building directly from local repository with cargo..."
+    TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+    BUILT_BIN="${TARGET_DIR}/release/slugaudit"
     cargo build --release --locked --bin slugaudit
+    if [ ! -f "${BUILT_BIN}" ]; then
+        echo "Error: expected built binary at ${BUILT_BIN}, but it was not found." >&2
+        exit 1
+    fi
     retain_previous
-    install -m 0755 target/release/slugaudit "${TARGET_PATH}"
+    install_binary "${BUILT_BIN}"
 elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     echo "==> Downloading latest release for Linux x86_64..."
     ASSET_NAME="slugaudit-x86_64-unknown-linux-gnu"
@@ -74,43 +99,62 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
     TMP_SUMS="${TMP_DIR}/SHA256SUMS"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "${DOWNLOAD_URL}" -o "${TMP_FILE}"
-        curl -fsSL "${CHECKSUM_URL}" -o "${TMP_SUMS}"
+        curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 "${DOWNLOAD_URL}" -o "${TMP_FILE}"
+        curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 "${CHECKSUM_URL}" -o "${TMP_SUMS}"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "${TMP_FILE}" "${DOWNLOAD_URL}"
-        wget -qO "${TMP_SUMS}" "${CHECKSUM_URL}"
+        wget --https-only --timeout=300 -qO "${TMP_FILE}" "${DOWNLOAD_URL}"
+        wget --https-only --timeout=300 -qO "${TMP_SUMS}" "${CHECKSUM_URL}"
     else
         echo "Error: curl or wget is required to download SlugAudit." >&2
         exit 1
     fi
 
     echo "==> Verifying SHA256 checksum..."
+    EXPECTED_SHA="$(awk -v target="${ASSET_NAME}" '
+        {
+            sub(/\r$/, "")
+            if (NF == 2) {
+                name = $2
+                sub(/^\*/, "", name)
+                sub(/^\.\//, "", name)
+                if (name == target) {
+                    print tolower($1)
+                    exit
+                }
+            }
+        }
+    ' "${TMP_SUMS}")"
+
+    if ! printf '%s\n' "${EXPECTED_SHA}" | grep -Eq '^[0-9a-f]{64}$'; then
+        echo "Error: SHA256SUMS has no valid entry for ${ASSET_NAME}." >&2
+        exit 1
+    fi
+
     if command -v sha256sum >/dev/null 2>&1; then
-        (cd "${TMP_DIR}" && sha256sum --check --ignore-missing SHA256SUMS >/dev/null 2>&1) || {
-            echo "Error: SHA256 checksum verification failed." >&2
-            exit 1
-        }
+        ACTUAL_SHA="$(sha256sum -- "${TMP_FILE}" | awk '{print tolower($1)}')"
     elif command -v shasum >/dev/null 2>&1; then
-        (cd "${TMP_DIR}" && shasum -a 256 --check --ignore-missing SHA256SUMS >/dev/null 2>&1) || {
-            echo "Error: SHA256 checksum verification failed." >&2
-            exit 1
-        }
+        ACTUAL_SHA="$(shasum -a 256 -- "${TMP_FILE}" | awk '{print tolower($1)}')"
     else
         echo "Error: sha256sum or shasum is required to verify the downloaded binary." >&2
         exit 1
     fi
 
+    if [ "${ACTUAL_SHA}" != "${EXPECTED_SHA}" ]; then
+        echo "Error: SHA256 checksum verification failed for ${ASSET_NAME}." >&2
+        exit 1
+    fi
+
     retain_previous
-    install -m 0755 "${TMP_FILE}" "${TARGET_PATH}"
+    install_binary "${TMP_FILE}"
 elif command -v cargo >/dev/null 2>&1; then
     echo "==> Installing via cargo..."
     TMP_DIR="$(mktemp -d)"
-    cargo install --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit --root "${TMP_DIR}"
+    cargo install --locked --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit --root "${TMP_DIR}"
     retain_previous
-    install -m 0755 "${TMP_DIR}/bin/slugaudit" "${TARGET_PATH}"
+    install_binary "${TMP_DIR}/bin/slugaudit"
 else
-    echo "Error: Pre-built binary currently available for Linux x86_64."
-    echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --git https://github.com/${GITHUB_REPO}.git --bin slugaudit"
+    echo "Error: Pre-built binary currently available for Linux x86_64." >&2
+    echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --locked --git https://github.com/${GITHUB_REPO}.git --bin slugaudit" >&2
     exit 1
 fi
 

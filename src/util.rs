@@ -17,7 +17,8 @@ use std::sync::Mutex;
 pub use crate::clock::ClockError;
 pub(crate) use crate::clock::mtime_unix_seconds;
 pub(crate) use capped_read::{
-    CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped, read_file_capped_bytes,
+    CappedReadError, MAX_FOREIGN_TEXT_BYTES, open_regular_file_nonblocking, read_file_capped,
+    read_file_capped_bytes,
 };
 pub(crate) use rust_comments::{skip_ws_and_comments, strip_comments};
 pub(crate) use style::Style;

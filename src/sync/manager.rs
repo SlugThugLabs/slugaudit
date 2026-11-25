@@ -16,7 +16,7 @@ use rmcp::ErrorData;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 /// A project brought fully up to date, ready for a tool to query. Defined
 /// here (rather than in `tools::context`) so that `SourceSyncManager` can
@@ -27,6 +27,10 @@ pub struct SyncedProject {
     pub database_path: PathBuf,
     /// The revision the database is current at.
     pub revision_id: String,
+    /// Per-database instance token (`project.project_id`) captured when this
+    /// sync completed, so `with_verified_read` detects a concurrent database
+    /// rebuild even when both databases are at `"rev-1"`.
+    pub(crate) db_instance_id: Option<String>,
     /// Set only on the call that discarded and rebuilt the project database
     /// (corruption, version bump, root mismatch); `None` on every other call.
     pub discard: Option<DatabaseDiscard>,
@@ -93,8 +97,9 @@ pub struct SourceSyncManager {
     result_stores: super::result_stores::ResultStoreSlot,
     /// Per-project singleflight mutexes so concurrent MCP calls on one repo
     /// serialize cleanly in-process instead of stampeding disk and SQLite's
-    /// 5s busy timeout.
-    sync_locks: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>>,
+    /// 5s busy timeout. Held as `Weak` references and pruned on lookup so
+    /// removed/ephemeral project roots never leak entries.
+    sync_locks: Arc<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>>,
 }
 
 impl SourceSyncManager {
@@ -110,14 +115,16 @@ impl SourceSyncManager {
         &self.result_stores
     }
 
-    /// Returns the per-project sync mutex for `root`.
+    /// Returns the per-project sync mutex for `root`, pruning expired weak
+    /// entries so inactive roots do not accumulate unboundedly.
     pub(super) fn project_sync_lock(&self, root: &Path) -> Result<Arc<Mutex<()>>, ErrorData> {
         let mut table = crate::util::lock(&self.sync_locks, "project_sync_locks")?;
-        if let Some(lock) = table.get(root) {
-            return Ok(Arc::clone(lock));
+        table.retain(|_, weak| weak.strong_count() > 0);
+        if let Some(lock) = table.get(root).and_then(Weak::upgrade) {
+            return Ok(lock);
         }
         let lock = Arc::new(Mutex::new(()));
-        table.insert(root.to_path_buf(), Arc::clone(&lock));
+        table.insert(root.to_path_buf(), Arc::downgrade(&lock));
         Ok(lock)
     }
 
@@ -225,6 +232,31 @@ mod recovery_tests {
             &error.message,
             &format!("discarding the stale project database: {discard_error}"),
             "error.message == format!(\"discarding the stale project database: {discard_error}\")",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn project_sync_lock_shares_live_mutex_and_prunes_dropped_entries() -> TestResult {
+        let manager = SourceSyncManager::default();
+        let root_a = PathBuf::from("/tmp/slugaudit-lock-a");
+        let root_b = PathBuf::from("/tmp/slugaudit-lock-b");
+
+        let lock_a1 = manager.project_sync_lock(&root_a).check("lock a1")?;
+        let lock_a2 = manager.project_sync_lock(&root_a).check("lock a2")?;
+        slugaudit_test_check::ensure(
+            Arc::ptr_eq(&lock_a1, &lock_a2),
+            "concurrent callers on the same root share one mutex",
+        )?;
+        drop(lock_a1);
+        drop(lock_a2);
+
+        let _lock_b = manager.project_sync_lock(&root_b).check("lock b")?;
+        let table = crate::util::lock(&manager.sync_locks, "sync_locks").check("inspect table")?;
+        ensure_eq(
+            &table.len(),
+            &1,
+            "expired weak entry for root_a was pruned on next lookup",
         )?;
         Ok(())
     }

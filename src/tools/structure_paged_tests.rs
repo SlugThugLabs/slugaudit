@@ -525,25 +525,30 @@ fn paged_structure_continuation_keeps_the_page_budget_of_page_one() -> TestResul
     // The continuation names no page_bytes and runs under the larger default.
     let second = page_of(&project, Some(&token), None, &manager)?;
 
-    ensure_eq(
-        &first.page.page_bytes,
-        &SMALL_PAGE,
-        "first.page.page_bytes == SMALL_PAGE",
-    )?;
-    ensure_eq(
-        &second.page.page_bytes,
-        &SMALL_PAGE,
-        "second.page.page_bytes == SMALL_PAGE",
-    )?;
-    ensure(
-        second.page.bytes_used <= SMALL_PAGE,
-        "second.page.bytes_used <= SMALL_PAGE",
-    )?;
-    ensure_eq(
-        &second.page.limited_by,
-        &PageLimit::PageBytes,
-        "second.page.limited_by == PageLimit::PageBytes",
-    )?;
+    ensure_eq(&first.page.page_bytes, &SMALL_PAGE, "page one budget")?;
+    ensure_eq(&second.page.page_bytes, &SMALL_PAGE, "page two budget")?;
+    ensure(second.page.bytes_used <= SMALL_PAGE, "bytes_used <= budget")?;
+    ensure_eq(&second.page.limited_by, &PageLimit::PageBytes, "limited_by")?;
     second.page.cursor.as_ref().check("still several pages")?;
+    Ok(())
+}
+
+#[test]
+fn paged_structure_deserializes_cursor_only_wire_json_continuation() -> TestResult {
+    let project = two_file_project()?;
+    let manager = SourceSyncManager::default();
+    let first = page_of(&project, None, Some(SMALL_PAGE), &manager)?;
+    let token = first.page.cursor.check("a second page exists")?;
+    let wire: StructureRequest =
+        serde_json::from_value(serde_json::json!({ "cursor": token })).check("parses")?;
+    let second = call(&Parameters(wire), MAX_MULTI_FILE_TOTAL_BYTES, &manager).check("serves")?;
+    ensure(!second.matches.is_empty(), "continuation returns matches")?;
+    let missing: StructureRequest = serde_json::from_value(
+        serde_json::json!({ "path": project.path().to_string_lossy(), "language": "rust" }),
+    )
+    .check("parses without query")?;
+    let err = call(&Parameters(missing), MAX_MULTI_FILE_TOTAL_BYTES, &manager)
+        .check_err("fresh call without query must be refused")?;
+    ensure_eq(&err.code, &rmcp::model::ErrorCode::INVALID_PARAMS, "code")?;
     Ok(())
 }

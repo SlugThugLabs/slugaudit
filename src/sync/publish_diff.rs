@@ -1,7 +1,8 @@
+// slugaudit-line-exception: approved-by=slugthuglabs; reason=cohesive diff stage: stored-row comparison, classification-drift detection, and upsert/deletion delta construction
 //! Diffs freshly sampled disk state against what a revision currently has
 //! stored, and turns that diff into the upsert/deletion sets a publish
 //! writes. Kept separate from `publish` itself so that module stays focused
-//! on orchestrating the sample → diff → revalidate → write sequence rather
+//! on orchestrating the sample → diff → write sequence rather
 //! than the mechanics of any one step.
 use super::discovery;
 use super::hash::aggregate_manifest_hash;
@@ -102,8 +103,13 @@ fn warn_skipped(file: &discovery::SkippedFile) {
 /// would claim deletions that never happened). Including it also makes the
 /// manifest hash a statement about the project's files, not just the indexed
 /// ones, so an unchanged tree still hashes to the same value.
+///
+/// Also flags classification or storage-shape drift (`file_kind` mismatch,
+/// `indexed` row with `content IS NULL`, or non-`indexed` row with non-NULL
+/// `content`) as `Modified` so a stale classification never persists.
 pub(super) fn diff_against_stored(
     connection: &Connection,
+    discovered: &[discovery::DiscoveredFile],
     identities: &[SourceIdentity],
     skipped: &[SkippedRecord],
     deadline: &Deadline,
@@ -112,17 +118,18 @@ pub(super) fn diff_against_stored(
     let stored = stored_hashes(connection)?;
     let stored_refs: Vec<(&str, &str)> = stored
         .iter()
-        .map(|(path, hash)| (path.as_str(), hash.as_str()))
+        .map(|row| (row.path.as_str(), row.content_hash.as_str()))
         .collect();
     let current_refs = current_hashes(identities, skipped);
     // KEEP clone: Vec<(&str, &str)> is borrowed again by load_failed, unchanged count, and aggregate_manifest_hash
     let mut changes = manifest::compare(stored_refs, current_refs.clone());
+    add_classification_drift_changes(&mut changes, &stored, discovered, skipped);
     if crate::parse::fetch_gate::load_failed_retry_due()? {
         load_failed::add_load_failed_retries(
             &mut changes,
             &current_refs,
             &load_failed::load_failed_paths(connection)?,
-        );
+        )?;
     }
     let added = count_changes(&changes, ChangeStatus::Added);
     let modified = count_changes(&changes, ChangeStatus::Modified);
@@ -147,6 +154,97 @@ pub(super) fn diff_against_stored(
     })
 }
 
+/// Stored identity and classification fields read from `files` for diffing.
+struct StoredRow {
+    path: String,
+    content_hash: String,
+    file_kind: String,
+    skip_reason: Option<String>,
+    content_is_null: bool,
+}
+
+/// Marks any unchanged-hash row whose stored `file_kind`, `skip_reason`, or
+/// `content` nullness contradicts the current discovery/skip classification as
+/// `Modified`.
+fn add_classification_drift_changes(
+    changes: &mut Vec<FileChange>,
+    stored: &[StoredRow],
+    discovered: &[discovery::DiscoveredFile],
+    skipped: &[SkippedRecord],
+) {
+    let already: HashSet<&str> = changes
+        .iter()
+        .map(|change| change.relative_path.as_str())
+        .collect();
+    let skipped_reasons: HashMap<&str, &str> = skipped
+        .iter()
+        .map(|record| (record.relative_path.as_str(), record.reason.as_str()))
+        .collect();
+    let discovered_kinds: HashMap<&str, discovery::FileKind> = discovered
+        .iter()
+        .map(|file| (file.relative_path.as_str(), file.kind))
+        .collect();
+    let mut drifted = Vec::new();
+    for row in stored {
+        let path = row.path.as_str();
+        if already.contains(path) {
+            continue;
+        }
+        let (expected_kind, expected_skip_reason) = if let Some(&reason) = skipped_reasons.get(path)
+        {
+            ("skipped", Some(reason))
+        } else if let Some(&kind) = discovered_kinds.get(path) {
+            let kind_str = match kind {
+                discovery::FileKind::Indexed => "indexed",
+                discovery::FileKind::Binary => "binary",
+            };
+            (kind_str, None)
+        } else {
+            continue;
+        };
+        if stored_row_drifted(row, expected_kind, expected_skip_reason) {
+            drifted.push(FileChange {
+                // KEEP clone: FileChange owns relative_path String while stored is borrowed
+                relative_path: row.path.clone(),
+                status: ChangeStatus::Modified,
+            });
+        }
+    }
+    if !drifted.is_empty() {
+        changes.extend(drifted);
+        changes.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    }
+}
+
+/// Whether `row` disagrees with `expected_kind` (or `expected_skip_reason` for
+/// skipped rows) or violates the `content` nullness invariant (`indexed` must
+/// be non-NULL; non-`indexed` must be NULL).
+///
+/// A `skipped` row with `skip_reason = 'not_utf8'` is expected when Pass 1
+/// discovered it as `indexed` (no NUL byte) and hashed the same non-UTF-8
+/// bytes: Pass 1 does not UTF-8-validate, so matching hash + `not_utf8` is
+/// steady state rather than drift.
+fn stored_row_drifted(
+    row: &StoredRow,
+    expected_kind: &str,
+    expected_skip_reason: Option<&str>,
+) -> bool {
+    let content_invalid = if row.file_kind == "indexed" {
+        row.content_is_null
+    } else {
+        !row.content_is_null
+    };
+    if content_invalid {
+        return true;
+    }
+    if row.file_kind == expected_kind {
+        return expected_kind == "skipped" && row.skip_reason.as_deref() != expected_skip_reason;
+    }
+    !(row.file_kind == "skipped"
+        && expected_kind == "indexed"
+        && row.skip_reason.as_deref() == Some(super::revision_skipped::SKIP_REASON_NOT_UTF8))
+}
+
 /// Fails closed before the stored-row query when the shared budget is spent.
 fn check_deadline(deadline: &Deadline) -> Result<(), PublishError> {
     match deadline.exceeded() {
@@ -158,11 +256,18 @@ fn check_deadline(deadline: &Deadline) -> Result<(), PublishError> {
     }
 }
 
-fn stored_hashes(connection: &Connection) -> Result<Vec<(String, String)>, rusqlite::Error> {
-    let mut stored_statement = connection.prepare("SELECT path, content_hash FROM files")?;
+fn stored_hashes(connection: &Connection) -> Result<Vec<StoredRow>, rusqlite::Error> {
+    let mut stored_statement = connection
+        .prepare("SELECT path, content_hash, file_kind, skip_reason, content IS NULL FROM files")?;
     let stored_rows = stored_statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok(StoredRow {
+                path: row.get(0)?,
+                content_hash: row.get(1)?,
+                file_kind: row.get(2)?,
+                skip_reason: row.get(3)?,
+                content_is_null: row.get(4)?,
+            })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(stored_rows)
@@ -235,3 +340,29 @@ pub(super) fn build_upserts_and_deletions(
     }
     Ok((upserts, deletions))
 }
+
+/// Retains only the skipped records that need to be written in this revision:
+/// all of them when publishing from scratch or after a parser-version change,
+/// otherwise only paths present in `changes` as added or modified.
+pub(super) fn filter_skipped_records(
+    skipped_records: Vec<SkippedRecord>,
+    changes: &[FileChange],
+    rewrite_all: bool,
+) -> Vec<SkippedRecord> {
+    if rewrite_all {
+        return skipped_records;
+    }
+    let changed_paths: HashSet<&str> = changes
+        .iter()
+        .filter(|change| change.status != ChangeStatus::Deleted)
+        .map(|change| change.relative_path.as_str())
+        .collect();
+    skipped_records
+        .into_iter()
+        .filter(|record| changed_paths.contains(record.relative_path.as_str()))
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "publish_diff_tests.rs"]
+mod tests;

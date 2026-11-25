@@ -8,11 +8,11 @@
 //! resolver: if a new language ships, this is the only file that
 //! needs to grow.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use super::generic::{GenericResolver, GenericResolverConfig, LanguageResolver};
-use super::types::Resolution;
+use super::types::{Resolution, ResolutionKind};
 use crate::graph::resolve_rust::RustResolver;
 use crate::graph::rust_mod_parents::RustModuleParents;
 
@@ -113,7 +113,7 @@ pub(crate) fn resolve_many(
         }];
     }
 
-    let mut results: Vec<ExtractedResolution> = Vec::new();
+    let mut dedup = DedupState::new();
     for reference in &references {
         let resolution = resolver.resolve_with_rust_parents(
             reference,
@@ -121,9 +121,9 @@ pub(crate) fn resolve_many(
             known_paths,
             rust_parents,
         );
-        push_deduped(&mut results, resolution, false);
+        dedup.push(resolution, false);
     }
-    results
+    dedup.results
 }
 
 fn confidence_rank(confidence: Option<&'static str>) -> u8 {
@@ -135,34 +135,46 @@ fn confidence_rank(confidence: Option<&'static str>) -> u8 {
     }
 }
 
-fn push_deduped(
-    results: &mut Vec<ExtractedResolution>,
-    resolution: Resolution,
-    syntax_unmodeled: bool,
-) {
-    if let Some(target_path) = resolution.to_relative_path.as_deref() {
-        if let Some(existing) = results.iter_mut().find(|entry| {
-            entry.resolution.kind == resolution.kind
-                && entry.resolution.to_relative_path.as_deref() == Some(target_path)
-        }) {
-            if confidence_rank(resolution.confidence)
-                > confidence_rank(existing.resolution.confidence)
-            {
-                existing.resolution.confidence = resolution.confidence;
-            }
-            return;
+struct DedupState {
+    results: Vec<ExtractedResolution>,
+    by_target: HashMap<(ResolutionKind, String), usize>,
+    targetless: HashSet<(ResolutionKind, Option<&'static str>, bool)>,
+}
+
+impl DedupState {
+    fn new() -> Self {
+        Self {
+            results: Vec::new(),
+            by_target: HashMap::new(),
+            targetless: HashSet::new(),
         }
-    } else if results.iter().any(|entry| {
-        entry.resolution.to_relative_path.is_none()
-            && entry.resolution.kind == resolution.kind
-            && entry.resolution.confidence == resolution.confidence
-            && entry.syntax_unmodeled == syntax_unmodeled
-    }) {
-        return;
     }
 
-    results.push(ExtractedResolution {
-        resolution,
-        syntax_unmodeled,
-    });
+    fn push(&mut self, resolution: Resolution, syntax_unmodeled: bool) {
+        if let Some(target_path) = resolution.to_relative_path.as_deref() {
+            let key = (resolution.kind, target_path.to_owned());
+            if let Some(&idx) = self.by_target.get(&key) {
+                if let Some(existing) = self.results.get_mut(idx)
+                    && confidence_rank(resolution.confidence)
+                        > confidence_rank(existing.resolution.confidence)
+                {
+                    existing.resolution.confidence = resolution.confidence;
+                }
+                return;
+            }
+            let idx = self.results.len();
+            self.by_target.insert(key, idx);
+        } else if !self.targetless.insert((
+            resolution.kind,
+            resolution.confidence,
+            syntax_unmodeled,
+        )) {
+            return;
+        }
+
+        self.results.push(ExtractedResolution {
+            resolution,
+            syntax_unmodeled,
+        });
+    }
 }

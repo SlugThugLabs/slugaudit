@@ -4,8 +4,10 @@
 //! Kept separate from `revision.rs` so that module stays focused on the
 //! file/evidence/findings write sequence rather than edge resolution.
 use super::FileRecord;
+use super::revision::{RevisionError, check_deadline};
 use crate::graph::RustModuleParents;
 use crate::model::EvidenceKind;
+use crate::util::Deadline;
 use rusqlite::{OptionalExtension, Transaction, params};
 use std::collections::{BTreeSet, HashSet};
 
@@ -19,88 +21,118 @@ pub(super) fn stored_paths(tx: &Transaction<'_>) -> Result<HashSet<String>, rusq
     stored.collect()
 }
 
-/// Re-resolves stored `Unresolved` edges, `#[path]` child files, and Rust
-/// files with `super::` or `Low`-confidence edges after a revision changed paths.
-pub(super) fn re_resolve_unresolved(
+/// Resolves and replaces outgoing edges for every upserted file, then
+/// re-resolves all affected dependent files in a single deduplicated pass.
+///
+/// Loads `RustModuleParents` at most once per revision, accumulates affected
+/// dependent `file_id`s into a single `BTreeSet<i64>` (both Rust dependents
+/// across all upserted Rust files and `re_resolve_unresolved` targets), and
+/// enforces `deadline` across both the upsert loop and dependent re-resolution.
+pub(super) fn resolve_revision_edges(
     tx: &Transaction<'_>,
+    upserts: &[FileRecord],
+    upserted_ids: &[i64],
     known_paths: &HashSet<&str>,
-) -> Result<(), rusqlite::Error> {
-    let rust_parents = load_rust_module_parents(tx)?;
-    let mut affected: BTreeSet<i64> = tx
-        .prepare_cached(
-            "SELECT DISTINCT de.from_file_id FROM dependency_edges de \
-             JOIN files f ON de.from_file_id = f.id \
-             WHERE de.resolution_kind = 'Unresolved' AND de.syntax_unmodeled = 0 \
-               AND f.language IS NOT NULL",
-        )?
-        .query_map([], |row| row.get::<_, i64>(0))?
-        .collect::<Result<_, _>>()?;
-    collect_rust_ids(
-        tx,
-        rust_parents.keys().map(String::as_str),
-        None,
-        &mut affected,
-    )?;
-    collect_rust_dependents(tx, false, &mut affected)?;
-    let context = EdgeContext {
-        known_paths,
-        rust_parents: &rust_parents,
-    };
-    re_resolve_ids(tx, &affected, &context)
-}
-
-/// Re-resolves and replaces every outgoing edge for `file`, plus any unchanged
-/// Rust file whose `super::` or `Low`-confidence edge may change.
-pub(super) fn resolve_and_store(
-    tx: &Transaction<'_>,
-    file: &FileRecord,
-    file_id: i64,
-    known_paths: &HashSet<&str>,
-) -> Result<(), rusqlite::Error> {
-    let Some(language) = file.language.as_deref() else {
-        return delete_file_edges(tx, file_id);
-    };
-    let sources: Vec<String> = file
-        .evidence
+    re_resolve_unresolved: bool,
+    deadline: Option<&Deadline>,
+) -> Result<(), RevisionError> {
+    check_deadline(deadline)?;
+    let has_rust_upserts = upserts
         .iter()
-        .filter(|item| item.kind == EvidenceKind::Import)
-        .filter_map(|item| item.payload.get("source")?.as_str().map(str::to_owned))
-        .collect();
-    if language != "rust" {
+        .any(|file| file.language.as_deref() == Some("rust"));
+    let mut affected = BTreeSet::new();
+    let mut rust_parents: Option<RustModuleParents> = None;
+
+    if re_resolve_unresolved {
+        let parents = load_rust_module_parents(tx)?;
+        collect_unresolved_importers(tx, &mut affected)?;
+        collect_rust_ids(tx, parents.keys().map(String::as_str), None, &mut affected)?;
+        collect_rust_dependents(tx, false, &mut affected)?;
+        rust_parents = Some(parents);
+    } else if has_rust_upserts {
+        collect_rust_dependents(tx, true, &mut affected)?;
+    }
+
+    let empty_parents = RustModuleParents::new();
+    for (file, file_id) in upserts.iter().zip(upserted_ids.iter().copied()) {
+        check_deadline(deadline)?;
+        let Some(language) = file.language.as_deref() else {
+            delete_file_edges(tx, file_id)?;
+            continue;
+        };
+        let sources: Vec<String> = file
+            .evidence
+            .iter()
+            .filter(|item| item.kind == EvidenceKind::Import)
+            .filter_map(|item| item.payload.get("source")?.as_str().map(str::to_owned))
+            .collect();
+        if language != "rust" {
+            let context = EdgeContext {
+                known_paths,
+                rust_parents: &empty_parents,
+            };
+            replace_file_edges(
+                tx,
+                file_id,
+                language,
+                &file.relative_path,
+                &sources,
+                &context,
+            )?;
+            continue;
+        }
+        if rust_parents.is_none() && needs_rust_parents(file, &sources, &affected) {
+            rust_parents = Some(load_rust_module_parents(tx)?);
+        }
+        let active_parents = rust_parents.as_ref().map_or(&empty_parents, |p| p);
         let context = EdgeContext {
             known_paths,
-            rust_parents: &RustModuleParents::new(),
+            rust_parents: active_parents,
         };
-        return replace_file_edges(
+        replace_file_edges(
             tx,
             file_id,
             language,
             &file.relative_path,
             &sources,
             &context,
-        );
+        )?;
+        if !re_resolve_unresolved && !active_parents.is_empty() {
+            let declared = active_parents
+                .iter()
+                .filter(|(_, parent)| parent.declaring_file == file.relative_path)
+                .map(|(child_path, _)| child_path.as_str());
+            collect_rust_ids(tx, declared, Some(file_id), &mut affected)?;
+        }
     }
 
-    let mut dependents = BTreeSet::new();
-    collect_rust_dependents(tx, true, &mut dependents)?;
-    let rust_parents = if needs_rust_parents(file, &sources, &dependents) {
-        load_rust_module_parents(tx)?
-    } else {
-        RustModuleParents::new()
-    };
-    let context = EdgeContext {
-        known_paths,
-        rust_parents: &rust_parents,
-    };
-    replace_file_edges(
-        tx,
-        file_id,
-        language,
-        &file.relative_path,
-        &sources,
-        &context,
+    if !affected.is_empty() {
+        if rust_parents.is_none() && has_rust_upserts {
+            rust_parents = Some(load_rust_module_parents(tx)?);
+        }
+        let context = EdgeContext {
+            known_paths,
+            rust_parents: rust_parents.as_ref().map_or(&empty_parents, |p| p),
+        };
+        re_resolve_ids(tx, &affected, &context, deadline)?;
+    }
+    Ok(())
+}
+
+fn collect_unresolved_importers(
+    tx: &Transaction<'_>,
+    out: &mut BTreeSet<i64>,
+) -> Result<(), rusqlite::Error> {
+    let mut statement = tx.prepare_cached(
+        "SELECT DISTINCT de.from_file_id FROM dependency_edges de \
+         JOIN files f ON de.from_file_id = f.id \
+         WHERE de.resolution_kind = 'Unresolved' AND de.syntax_unmodeled = 0 \
+           AND f.language IS NOT NULL",
     )?;
-    re_resolve_rust_dependents(tx, &file.relative_path, file_id, &mut dependents, &context)
+    for row in statement.query_map([], |row| row.get::<_, i64>(0))? {
+        out.insert(row?);
+    }
+    Ok(())
 }
 
 struct EdgeContext<'a> {
@@ -120,42 +152,45 @@ fn needs_rust_parents(file: &FileRecord, sources: &[String], dependents: &BTreeS
         })
 }
 
-fn re_resolve_rust_dependents(
-    tx: &Transaction<'_>,
-    declaring_path: &str,
-    declaring_file_id: i64,
-    dependents: &mut BTreeSet<i64>,
-    context: &EdgeContext<'_>,
-) -> Result<(), rusqlite::Error> {
-    let declared = context
-        .rust_parents
-        .iter()
-        .filter(|(_, parent)| parent.declaring_file == declaring_path)
-        .map(|(child_path, _)| child_path.as_str());
-    collect_rust_ids(tx, declared, Some(declaring_file_id), dependents)?;
-    re_resolve_ids(tx, dependents, context)
-}
-
 fn load_rust_module_parents(tx: &Transaction<'_>) -> Result<RustModuleParents, rusqlite::Error> {
     let mut statement = tx.prepare_cached(
         "SELECT f.path, json_extract(e.payload, '$.rust_mod_path.path_attr'), \
-                COALESCE(json_extract(e.payload, '$.rust_mod_path.inline_dir'), '') \
+                COALESCE(json_extract(e.payload, '$.rust_mod_path.inline_dir'), ''), \
+                json_extract(e.payload, '$.rust_mod_path.inline_segments') \
          FROM evidence e JOIN files f ON f.id = e.file_id \
          WHERE f.language = 'rust' AND e.kind = 'Structure' \
            AND instr(e.payload, 'rust_mod_path') > 0 \
            AND json_extract(e.payload, '$.rust_mod_path.path_attr') IS NOT NULL \
          ORDER BY f.path, e.start_byte",
     )?;
-    let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+    })?;
     let mut parents = RustModuleParents::new();
     for row in rows {
-        let (declaring_file, path_attr, inline_dir): (String, String, String) = row?;
-        crate::graph::insert_rust_mod_parent(
-            &mut parents,
-            &declaring_file,
-            &path_attr,
-            &inline_dir,
-        );
+        let (declaring_file, path_attr, inline_dir, inline_segments_json): (
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = row?;
+        if let Some(raw_segments) = inline_segments_json
+            && let Ok(segments) = serde_json::from_str::<Vec<String>>(&raw_segments)
+        {
+            crate::graph::insert_rust_mod_parent_segments(
+                &mut parents,
+                &declaring_file,
+                &path_attr,
+                segments,
+            );
+        } else {
+            crate::graph::insert_rust_mod_parent(
+                &mut parents,
+                &declaring_file,
+                &path_attr,
+                &inline_dir,
+            );
+        }
     }
     Ok(parents)
 }
@@ -212,12 +247,14 @@ fn re_resolve_ids(
     tx: &Transaction<'_>,
     file_ids: &BTreeSet<i64>,
     context: &EdgeContext<'_>,
-) -> Result<(), rusqlite::Error> {
+    deadline: Option<&Deadline>,
+) -> Result<(), RevisionError> {
     let mut file_stmt = tx.prepare_cached("SELECT path, language FROM files WHERE id = ?1")?;
     let mut src_stmt = tx.prepare_cached(
         "SELECT json_extract(payload, '$.source') FROM evidence WHERE file_id = ?1 AND kind = 'Import' ORDER BY id",
     )?;
     for &file_id in file_ids {
+        check_deadline(deadline)?;
         let Some((path, Some(language))) = file_stmt
             .query_row(params![file_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))

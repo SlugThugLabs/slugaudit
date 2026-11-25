@@ -4,6 +4,10 @@
 /// number or `y`/`n`, so anything longer is already an invalid answer.
 const MAX_PROMPT_LINE_BYTES: u64 = 256;
 
+/// Maximum tail bytes drained past `MAX_PROMPT_LINE_BYTES` while looking for
+/// the end of an over-long line so non-newline streams cannot stall forever.
+const MAX_DRAIN_BYTES: u64 = 64 * 1024;
+
 /// Reads one line of interactive input, keeping at most
 /// `MAX_PROMPT_LINE_BYTES`; the rest of an over-long line is discarded so it
 /// cannot be read as the next answer. `None` at end of input. Piped stdin is
@@ -92,8 +96,14 @@ fn read_capped_line(input: &mut impl std::io::BufRead) -> std::io::Result<Option
     if read == 0 {
         return Ok(None);
     }
-    if bytes.last() != Some(&b'\n') {
-        input.skip_until(b'\n')?;
+    if bytes.last() != Some(&b'\n') && (read as u64) == MAX_PROMPT_LINE_BYTES {
+        let drained = (&mut *input).take(MAX_DRAIN_BYTES).skip_until(b'\n')?;
+        if drained > 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("prompt input exceeded {MAX_PROMPT_LINE_BYTES} bytes"),
+            ));
+        }
     }
     Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
 }
