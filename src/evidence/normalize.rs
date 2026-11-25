@@ -58,7 +58,7 @@ pub(crate) fn extract_within(
         process(source, &config)?
     };
 
-    let lines = LineIndex::new(source);
+    let lines = LineIndex::new(source)?;
     let mut items = Vec::new();
     let mut counter = 0usize;
     for item in &result.structure {
@@ -104,20 +104,17 @@ pub(crate) fn extract_within(
     // the pack's parse plus one shared walker parse. A language read by a
     // call query costs one more: the query runs on a raw `tree_sitter::Tree`,
     // which the pack's wrapper does not expose.
-    let mut extraction = Extraction {
-        items,
-        ..Extraction::default()
-    };
     let input = WalkInput {
         source,
         lines: &lines,
         deadline,
     };
-    extraction.absorb(extract_extra_walkers(
-        language,
-        &input,
-        result.imports.is_empty(),
-    )?);
+    let extra = extract_extra_walkers(language, &input, result.imports.is_empty(), &mut items)?;
+    let mut extraction = Extraction {
+        items,
+        ..Extraction::default()
+    };
+    extraction.absorb(extra);
 
     Ok(extraction)
 }
@@ -168,18 +165,20 @@ fn process_on_fresh_thread(
 
 /// Parses the source once and runs, on that one `Tree`, the
 /// variable-binding walker, the generic import walker (when
-/// `pack_imports_was_empty`), and the Rust call walker (Rust only); a
-/// language read by a call query then runs its query (see
-/// [`super::calls::extract`]). The result is truncated when a walker stopped
-/// early at [`crate::evidence::MAX_WALK_DEPTH`], a node range did not slice
-/// the source, or `language` has no parser or the source did not parse (then
-/// no items at all); it is timed out when that parse or a walker loop hit
-/// the deadline. A truncated extraction that a caller cannot tell apart from
-/// a complete one would claim completeness it does not have.
+/// `pack_imports_was_empty`), the Rust `#[path]` module attribute enricher
+/// (Rust only), and the Rust call walker (Rust only); a language read by a
+/// call query then runs its query (see [`super::calls::extract`]). The result
+/// is truncated when a walker stopped early at
+/// [`crate::evidence::MAX_WALK_DEPTH`], a node range did not slice the
+/// source, or `language` has no parser or the source did not parse (then no
+/// items at all); it is timed out when that parse or a walker loop hit the
+/// deadline. A truncated extraction that a caller cannot tell apart from a
+/// complete one would claim completeness it does not have.
 fn extract_extra_walkers(
     language: &str,
     input: &WalkInput<'_>,
     pack_imports_was_empty: bool,
+    pack_items: &mut [EvidenceItem],
 ) -> Result<Extraction, PositionOverflow> {
     let tree = match super::parse_tree(language, input.source, input.deadline) {
         Ok(tree) => tree,
@@ -192,6 +191,9 @@ fn extract_extra_walkers(
     super::bindings::walk_bindings(&root, input, &mut out, &mut counter)?;
     if pack_imports_was_empty {
         super::generic_imports::walk_imports(&root, input, &mut out, &mut counter)?;
+    }
+    if language == "rust" {
+        super::rust_mod_paths::enrich_rust_mod_paths(&tree, input, pack_items, &mut out);
     }
     out.absorb(super::calls::extract(language, &tree, input)?);
     Ok(out)

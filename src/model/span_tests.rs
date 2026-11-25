@@ -108,7 +108,7 @@ fn legacy_position(source: &str, byte: usize) -> TestResult<Position> {
 }
 
 fn assert_index_matches_legacy(source: &str) -> TestResult {
-    let index = LineIndex::new(source);
+    let index = LineIndex::new(source).check("index source")?;
     let end = source
         .len()
         .checked_add(2)
@@ -188,7 +188,7 @@ fn a_multi_megabyte_single_line_answers_every_column_query_quickly() -> TestResu
     // 6 MB on one line, mostly multibyte. The per-call `char_column`
     // walk costs ~3e6 steps per query; 200k queries is ~6e11 steps.
     let text = "aé日".repeat(1_000_000);
-    let index = LineIndex::new(&text);
+    let index = LineIndex::new(&text).check("index source")?;
     let started = std::time::Instant::now();
 
     let mut last = 0;

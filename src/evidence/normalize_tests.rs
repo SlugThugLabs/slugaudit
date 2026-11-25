@@ -389,15 +389,16 @@ fn binding_extraction_gracefully_degrades_for_an_unsupported_language() -> TestR
 
 #[test]
 fn a_walker_parser_failure_marks_the_extraction_truncated() -> TestResult {
-    let lines = LineIndex::new("x");
+    let lines = LineIndex::new("x").check("index source")?;
     let input = WalkInput {
         source: "x",
         lines: &lines,
         deadline: None,
     };
 
-    let extraction = extract_extra_walkers("no-such-language-for-walker-test", &input, true)
-        .check("run the walkers")?;
+    let extraction =
+        extract_extra_walkers("no-such-language-for-walker-test", &input, true, &mut [])
+            .check("run the walkers")?;
 
     ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
     ensure(!extraction.timed_out, "no deadline, so no timeout")?;
@@ -430,7 +431,7 @@ fn wide_node_source() -> String {
 #[test]
 fn a_wide_rust_node_is_walked_in_linear_time() -> TestResult {
     let source = wide_node_source();
-    let lines = LineIndex::new(&source);
+    let lines = LineIndex::new(&source).check("index source")?;
     let deadline = Deadline::after(std::time::Duration::from_secs(10));
     let input = WalkInput {
         source: &source,
@@ -439,7 +440,8 @@ fn a_wide_rust_node_is_walked_in_linear_time() -> TestResult {
     };
     let started = std::time::Instant::now();
 
-    let extraction = extract_extra_walkers("rust", &input, true).check("run the walkers")?;
+    let extraction =
+        extract_extra_walkers("rust", &input, true, &mut []).check("run the walkers")?;
 
     let elapsed = started.elapsed();
     ensure(
@@ -484,7 +486,7 @@ fn a_wide_rust_node_is_walked_in_linear_time() -> TestResult {
 #[test]
 fn a_walk_past_its_deadline_is_timed_out_not_truncated() -> TestResult {
     let source = "fn run() { let a = helper(); }\n";
-    let lines = LineIndex::new(source);
+    let lines = LineIndex::new(source).check("index source")?;
     let tree = crate::evidence::parse_tree("rust", source, None)
         .map_err(|failure| format!("{failure:?}"))
         .check("parse the source")?;

@@ -16,6 +16,7 @@ use super::path_helpers::{
 use super::python::resolve_python_relative;
 use crate::graph::reference::ImportReference;
 use crate::graph::resolver::types::{Resolution, external};
+use crate::graph::rust_mod_parents::RustModuleParents;
 
 /// A language-specific import resolver.
 ///
@@ -33,6 +34,20 @@ pub(crate) trait LanguageResolver: Send + Sync {
     /// import, not an error.
     fn extract_reference(&self, raw: &str) -> Option<ImportReference>;
 
+    /// Extract all module/path references from raw import statement text.
+    ///
+    /// Languages with grouped import syntax override this to emit multiple
+    /// references; all other resolvers fall back to [`Self::extract_reference`].
+    fn extract_references(&self, raw: &str) -> Vec<ImportReference> {
+        self.extract_reference(raw).into_iter().collect()
+    }
+
+    /// Returns `true` when `raw` matches modeled import syntax for this
+    /// language, even if it yields zero targets (e.g. `use foo::{};`).
+    fn is_modeled_syntax(&self, raw: &str) -> bool {
+        !self.extract_references(raw).is_empty()
+    }
+
     /// Resolve a reference to a project file.
     ///
     /// Returns `Resolution::External` for third-party/standard library
@@ -44,6 +59,17 @@ pub(crate) trait LanguageResolver: Send + Sync {
         importing_relative_path: &str,
         known_paths: &HashSet<&str>,
     ) -> Resolution;
+
+    /// Resolve a reference with optional Rust `#[path]` parent metadata.
+    fn resolve_with_rust_parents(
+        &self,
+        reference: &ImportReference,
+        importing_relative_path: &str,
+        known_paths: &HashSet<&str>,
+        _rust_parents: &RustModuleParents,
+    ) -> Resolution {
+        self.resolve(reference, importing_relative_path, known_paths)
+    }
 }
 
 /// Configuration for the generic import resolver.

@@ -55,6 +55,38 @@ files) on a normal laptop. Nothing else gets built until that is true.
 
 ## Shipped Milestones [built]
 
+### 2026-11-25 — Rust Import Resolution, Metadata Error Propagation, and Fallible LineIndex [built]
+
+- **Grouped `use` declarations and `#[path]` `super::` resolution:**
+  - `src/evidence/rust_mod_paths.rs` (`enrich_rust_mod_paths`) and
+    `src/evidence/rust_path_attr.rs` (`parse_attribute_item`) attach
+    `rust_mod_path` (`path_attr`, `inline_dir`, `inline_depth`) payloads onto
+    external Rust `Structure` `Module` items declared with `#[path = "..."]` or
+    `#[cfg_attr(..., path = "...")]`.
+  - `src/graph/rust_use_tree.rs` (`parse_rust_import`) expands grouped/nested
+    Rust `use` trees (such as `use crate::{a, b};`) into multiple targets
+    instead of truncating at `{`, and `src/graph/resolver/registry.rs`
+    (`resolve_many`) / `src/graph/mod.rs` (`resolve_imports_with_rust_parents`)
+    deduplicate identical edges per statement.
+  - `src/graph/rust_mod_parents.rs` (`RustModuleParents`,
+    `resolve_super_with_parents`) and `src/sync/revision_edges.rs`
+    (`load_rust_module_parents`, `re_resolve_rust_dependents`,
+    `collect_rust_dependents`) resolve `super::` imports inside `#[path]` files
+    and incrementally re-resolve affected `#[path]` children and unchanged
+    Rust files with `super::` or `Low`-confidence edges.
+- **Sync metadata `SELECT` error propagation and corrupt-DB rebuild:**
+  `ensure_project_row` (`src/sync/manager_meta.rs`) propagates metadata
+  `SELECT` errors via `map_metadata_sql_error` (`ProjectMetaError::Corrupt` for
+  SQLite corruption, `ProjectMetaError::Other` otherwise) and runs
+  `INSERT OR IGNORE` + verification only on `Ok(None)`;
+  `verify_metadata_or_rebuild` (`src/sync/manager_orchestration.rs`) triggers
+  `rebuild_and_finish` on `ProjectMetaError::Corrupt` and fails the call on
+  `ProjectMetaError::Other`.
+- **Fallible `LineIndex::new`:** `LineIndex::new` (`src/model/span.rs`)
+  returns `Result<Self, PositionOverflow>` directly instead of storing a
+  deferred `Result` inside `block_chars`, with callers updated in
+  `src/evidence/normalize.rs` and `src/tools/structure_exec.rs`.
+
 ### 2026-11-25 — Startup Benchmark Framing and Planning Split [built]
 
 - **Startup benchmark request framing:** Added the trailing `\n` delimiter to
@@ -170,34 +202,6 @@ files) on a normal laptop. Nothing else gets built until that is true.
   omitting that Tree-sitter ASTs, normalized evidence vectors, and SQLite
   buffers are not bounded by that setting.
 
-### Rust Import Resolver and Source Span Constructors [approved]
-
-- **Grouped `use` declarations:** `RustResolver::extract_reference`
-  (`src/graph/resolve_rust.rs:41-56`) truncates at `{`, collapsing
-  `use crate::{a, b}` to `"crate"` and emitting a single dependency edge to
-  `src/lib.rs` (or `src/main.rs`) rather than resolving `a` and `b`.
-- **`#[path]` test files:** `rust_module_dir` and `resolve`
-  (`src/graph/resolve_rust.rs:99-109,193-212`) derive module hierarchy solely
-  from filesystem paths without `#[path = "..."]` module attributes, so
-  `use super::*` in a sibling `#[path = "foo_tests.rs"] mod tests;` file
-  resolves to the parent directory module (`src/lib.rs` or `mod.rs`) instead of
-  `foo.rs`.
-- **Fallible `LineIndex::new`:** `LineIndex::new`
-  (`src/model/span.rs:112,118-145,203-207`) is infallible and stores
-  `Result<Vec<usize>, PositionOverflow>` inside `block_chars`, returning the
-  stored error on every position lookup; change `LineIndex::new` to return
-  `Result<Self, PositionOverflow>` and update callers
-  (`src/evidence/normalize.rs`, `src/tools/structure_exec.rs`).
-
-### Sync Metadata Error Propagation [approved]
-
-- **Metadata `SELECT` error collapsed into `INSERT`:** `ensure_project_row`
-  (`src/sync/manager_meta.rs:126-135`) uses
-  `if let Ok(Some(row)) = connection.query_row(...).optional()`, routing any
-  SQLite `SELECT` `Err` into the `else` branch (`INSERT OR IGNORE` + second
-  `SELECT`) instead of propagating the read error and inserting only on
-  `Ok(None)`.
-
 ### Limits, Caching, Paging, Error Contracts, and Gates [approved]
 
 - **C5 slimming:** Delete the in-memory mechanic scan cache
@@ -234,6 +238,8 @@ files) on a normal laptop. Nothing else gets built until that is true.
 
 - **Test cleanup:** Remove obsolete tests covering deleted security guards,
   superseded designs, and wording-only checks.
+- **Unreferenced `ignore_rules` source file:** `src/ignore_rules/build.rs`
+  exists on disk without a `mod build` declaration in `src/ignore_rules.rs`.
 - **Real-path sync invariant coverage:** Add real-path sync tests for
   edit/add/rename sequences, file-becomes-directory transitions, and FIFO paths
   to match existing deleted-DB, non-UTF-8 path, and deleted-file tests.

@@ -11,7 +11,7 @@ fn extract_generic_imports(language: &str, source: &str) -> TestResult<Vec<Evide
     let tree = crate::evidence::parse_tree(language, source, None)
         .map_err(|failure| format!("{failure:?}"))
         .check("parse the source")?;
-    let lines = LineIndex::new(source);
+    let lines = LineIndex::new(source).check("index source")?;
     let input = WalkInput {
         source,
         lines: &lines,

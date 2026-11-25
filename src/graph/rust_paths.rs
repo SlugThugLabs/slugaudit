@@ -3,31 +3,68 @@
 //!
 //! These helpers are mutually recursive on the same `known_paths` contract
 //! (module file → segment chain → module file), so they live together; the
-//! resolver entry point and crate-anchor discovery stay in `resolve_rust`.
+//! resolver entry point and crate-anchor discovery stay in `resolve_rust`,
+//! and `#[path]` parent tracking lives in `rust_mod_parents`.
 
-use super::resolve::normalize_join;
+use super::resolve::{normalize_join, parent_dir};
 use super::resolver::{Resolution, ResolutionKind, pick, unresolved};
 use std::collections::HashSet;
+use std::path::Path;
+
+/// File stems that mean "this file *is* its module" rather than "this file
+/// *defines* a child module named after itself".
+const RUST_MODULE_ROOT_STEMS: [&str; 3] = ["mod", "lib", "main"];
+
+/// The file stem, or the empty string for a path with none (`..`, `/`).
+fn file_stem(relative_path: &str) -> String {
+    match Path::new(relative_path).file_stem() {
+        Some(stem) => stem.to_string_lossy().into_owned(),
+        None => String::new(),
+    }
+}
+
+/// The directory that a Rust file's *own* module owns — i.e. where its
+/// child modules live. `src/a/mod.rs` owns `src/a`; `src/a/b.rs` owns
+/// `src/a/b`.
+pub(super) fn rust_module_dir(relative_path: &str) -> String {
+    let parent = parent_dir(relative_path);
+    let stem = file_stem(relative_path);
+    if RUST_MODULE_ROOT_STEMS.contains(&stem.as_str()) {
+        parent
+    } else if parent.is_empty() {
+        stem
+    } else {
+        format!("{parent}/{stem}")
+    }
+}
+
+/// Strips a trailing Rust glob (`*` or `::*`) off `specifier`, returning
+/// `Some(prefix)` when a glob suffix was present or `None` otherwise.
+fn split_glob_suffix(specifier: &str) -> Option<&str> {
+    let trimmed = specifier.trim();
+    trimmed
+        .strip_suffix("::*")
+        .or_else(|| (trimmed == "*").then_some(""))
+}
+
+/// Returns whether `specifier` ends with a Rust glob (`*` or `::*`).
+pub(super) fn has_glob_suffix(specifier: &str) -> bool {
+    split_glob_suffix(specifier).is_some()
+}
 
 /// Strips a trailing glob (`::*`) off a use path, leaving the module path
-/// it globs over. `use super::*;` imports every item of the parent module,
-/// so the edge it produces points at that module's own file — searching for
-/// a file literally named `*.rs` finds nothing, which would leave glob
-/// imports (the single most common form in real Rust code) unresolved.
+/// it globs over.
 pub(super) fn strip_trailing_glob(rest: &str) -> &str {
-    let trimmed = rest.trim();
-    let without_star = match trimmed.strip_suffix('*') {
-        Some(rest) => rest,
-        None => trimmed,
+    let base = match split_glob_suffix(rest) {
+        Some(prefix) => prefix,
+        None => rest.trim(),
     };
-    without_star.trim_end_matches(':')
+    base.trim_end_matches(':')
 }
 
 /// The file that *defines* the module owning `dir` — `dir.rs` or
 /// `dir/mod.rs` for an ordinary module, or the crate root (`lib.rs`/
-/// `main.rs`) when `dir` is a crate's `src`. The crate-root forms matter
-/// because `use super::*;` in a top-level module (`src/foo.rs`) refers to
-/// the crate root itself, which has no `src.rs`/`src/mod.rs`.
+/// `main.rs`) when `dir` is a crate's `src`.
 pub(super) fn resolve_rust_module_file(
     dir: &str,
     known_paths: &HashSet<&str>,
@@ -68,13 +105,7 @@ pub(super) fn resolve_rust_from_base(
 }
 
 /// Tries each candidate base directory in order and returns the first that
-/// actually resolves, so a strict module-tree interpretation wins when it
-/// is real and the looser directory heuristic still catches the rest.
-///
-/// Falls back to the base module's *own* file once no segment chain
-/// matches: `use super::AnthropicClient;` names an item re-exported from
-/// `client/mod.rs`, not a `client/AnthropicClient.rs` module, so the edge
-/// belongs on the parent module's file.
+/// actually resolves, falling back to the base module's *own* file.
 pub(super) fn first_resolved(
     rest: &str,
     bases: &[String],
@@ -95,14 +126,6 @@ pub(super) fn first_resolved(
     unresolved()
 }
 
-/// A `use` path's trailing segments may name an item (a function, type, or
-/// const) defined inside a module, not a further nested module — `use
-/// crate::helper::greet;` targets `src/helper.rs`, where `greet` is an
-/// item, not `src/helper/greet.rs`. With no semantic information about
-/// which segments are modules vs. items, the full segment chain is tried
-/// as a directory chain first, then progressively shorter prefixes (each
-/// dropped trailing segment treated as an item name), stopping at the
-/// first real file found.
 fn resolve_rust_path(
     segments: &str,
     base_dir: &str,

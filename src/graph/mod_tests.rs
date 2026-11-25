@@ -131,3 +131,175 @@ fn an_aliased_import_resolves_on_the_module_not_the_alias() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn grouped_rust_use_expands_distinct_files_and_deduplicates_same_file() -> TestResult {
+    let known = paths(&[
+        "src/main.rs",
+        "src/a.rs",
+        "src/b.rs",
+        "src/model/mod.rs",
+        "src/foo/mod.rs",
+        "src/foo/bar.rs",
+        "src/foo/baz.rs",
+    ]);
+    let edges = resolve_imports(
+        "rust",
+        "src/main.rs",
+        &[
+            "use crate::{a, b};".to_owned(),
+            "use crate::model::{Span, LineIndex};".to_owned(),
+            "use crate::foo::{self, bar, baz::qux as q, *};".to_owned(),
+        ],
+        &known,
+    );
+
+    let targets: Vec<Option<&str>> = edges
+        .iter()
+        .map(|edge| edge.to_relative_path.as_deref())
+        .collect();
+    ensure_eq(
+        &targets,
+        &vec![
+            Some("src/a.rs"),
+            Some("src/b.rs"),
+            Some("src/model/mod.rs"),
+            Some("src/foo/mod.rs"),
+            Some("src/foo/bar.rs"),
+            Some("src/foo/baz.rs"),
+        ],
+        "grouped use emits distinct files and deduplicates Span+LineIndex and self+* to mod.rs",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn grouped_rust_use_deduplicates_unresolved_leaves_but_keeps_resolved_ones() -> TestResult {
+    let known = paths(&["src/caller.rs", "src/caller/existing.rs"]);
+    let missing_group = resolve_imports(
+        "rust",
+        "src/caller.rs",
+        &["use crate::missing::{A, B};".to_owned()],
+        &known,
+    );
+    ensure_eq(
+        &missing_group.len(),
+        &1,
+        "identical unresolved leaves collapse to one edge",
+    )?;
+    let only_missing = missing_group
+        .first()
+        .check("first unresolved edge for missing group exists")?;
+    ensure_eq(
+        &only_missing.resolution_kind,
+        &"Unresolved",
+        "collapsed missing group resolves as Unresolved",
+    )?;
+    ensure_eq(
+        &only_missing.syntax_unmodeled,
+        &false,
+        "modeled missing group is not flagged as unmodeled syntax",
+    )?;
+
+    let mixed = resolve_imports(
+        "rust",
+        "src/caller.rs",
+        &["use crate::{caller::existing, missing::{A, B}};".to_owned()],
+        &known,
+    );
+    ensure_eq(
+        &mixed.len(),
+        &2,
+        "mixed group emits one resolved edge plus one unresolved edge",
+    )?;
+    ensure_eq(
+        &mixed
+            .first()
+            .check("first edge in mixed group exists")?
+            .to_relative_path
+            .as_deref(),
+        &Some("src/caller/existing.rs"),
+        "first edge in mixed group resolves to src/caller/existing.rs",
+    )?;
+    ensure_eq(
+        &mixed
+            .get(1)
+            .check("second edge in mixed group exists")?
+            .resolution_kind,
+        &"Unresolved",
+        "second edge in mixed group is Unresolved",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn empty_brace_use_emits_no_edges_while_unmodeled_syntax_is_flagged() -> TestResult {
+    let known = paths(&["src/main.rs", "src/a.rs", "src/b.rs"]);
+    let empty = resolve_imports(
+        "rust",
+        "src/main.rs",
+        &["use crate::foo::{};".to_owned()],
+        &known,
+    );
+    ensure_eq(&empty.len(), &0, "empty brace group emits zero edges")?;
+
+    let unmodeled = resolve_imports("rust", "src/main.rs", &["pubfn use x;".to_owned()], &known);
+    ensure_eq(
+        &unmodeled.len(),
+        &1,
+        "malformed use emits one Unresolved edge",
+    )?;
+    ensure_eq(
+        &unmodeled
+            .first()
+            .check("first edge for malformed use exists")?
+            .syntax_unmodeled,
+        &true,
+        "malformed use is flagged as unmodeled syntax",
+    )?;
+
+    let root_group = resolve_imports(
+        "rust",
+        "src/sub/mod.rs",
+        &["use {crate::a, super::b};".to_owned()],
+        &known,
+    );
+    let root_targets: Vec<Option<&str>> = root_group
+        .iter()
+        .map(|edge| edge.to_relative_path.as_deref())
+        .collect();
+    ensure_eq(
+        &root_targets,
+        &vec![Some("src/a.rs"), Some("src/b.rs")],
+        "root brace group resolves both crate and super branches",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn same_file_dedup_prefers_higher_confidence() -> TestResult {
+    let known = paths(&["src/lib.rs", "src/other.rs"]);
+    let edges = resolve_imports(
+        "rust",
+        "src/other.rs",
+        &["use crate::{Item, self};".to_owned()],
+        &known,
+    );
+    ensure_eq(
+        &edges.len(),
+        &1,
+        "duplicate targets for the crate root collapse to one edge",
+    )?;
+    let only = edges.first().check("deduplicated edge exists")?;
+    ensure_eq(
+        &only.to_relative_path.as_deref(),
+        &Some("src/lib.rs"),
+        "collapsed edge points to src/lib.rs",
+    )?;
+    ensure_eq(
+        &only.confidence,
+        &Some("High"),
+        "deduplication prefers High confidence over Low confidence",
+    )?;
+    Ok(())
+}

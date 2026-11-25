@@ -10,7 +10,7 @@ fn walk_rust(source: &str, deadline: Option<&Deadline>) -> TestResult<Extraction
     let tree = crate::evidence::parse_tree("rust", source, None)
         .map_err(|failure| format!("{failure:?}"))
         .check("parse the Rust source")?;
-    let lines = LineIndex::new(source);
+    let lines = LineIndex::new(source).check("index source")?;
     let input = WalkInput {
         source,
         lines: &lines,
@@ -331,7 +331,7 @@ fn a_call_reports_the_innermost_enclosing_function() -> TestResult {
 #[test]
 fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
     let source = "fn run() { println!(\"{}\", helper()); }\n";
-    let lines = LineIndex::new(source);
+    let lines = LineIndex::new(source).check("index source")?;
     let tree = crate::evidence::parse_tree("rust", source, None)
         .map_err(|failure| format!("{failure:?}"))
         .check("a tree")?;

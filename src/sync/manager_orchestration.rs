@@ -218,39 +218,54 @@ impl SourceSyncManager {
         sink: &dyn ProgressSink,
     ) -> Result<Result<rusqlite::Connection, SyncedProject>, ErrorData> {
         if let Err(metadata_error) = ensure_project_row(&mut connection, root.as_path()) {
-            let cause = match &metadata_error {
-                ProjectMetaError::RootMismatch { .. } => {
-                    "the project database was built for a different project root".to_owned()
+            let (cause, what) = match &metadata_error {
+                ProjectMetaError::RootMismatch { stored_root } => {
+                    log_database_recovery(
+                        database_path,
+                        &DatabaseRecovery::RootMismatch { stored_root },
+                    );
+                    (
+                        "the project database was built for a different project root".to_owned(),
+                        "stale",
+                    )
                 }
                 ProjectMetaError::IncompatibleVersion {
                     contract_version,
                     schema_version,
-                } => format!(
-                    "the project database has an incompatible version \
-                     (contract_version {contract_version}, schema_version {schema_version})"
-                ),
+                } => {
+                    log_database_recovery(
+                        database_path,
+                        &DatabaseRecovery::IncompatibleVersion {
+                            contract_version: *contract_version,
+                            schema_version: *schema_version,
+                        },
+                    );
+                    (
+                        format!(
+                            "the project database has an incompatible version \
+                             (contract_version {contract_version}, schema_version {schema_version})"
+                        ),
+                        "stale",
+                    )
+                }
+                ProjectMetaError::Corrupt(error) => {
+                    tracing::warn!(
+                        operation = "verify_project_database",
+                        path = %database_path.display(),
+                        error_kind = "metadata_corrupt",
+                        error = %error,
+                        "database is corrupt while verifying metadata; discarding and re-publishing from scratch",
+                    );
+                    (
+                        format!("the project database is corrupt: {error}"),
+                        "corrupt",
+                    )
+                }
                 ProjectMetaError::Other(_) => {
                     return Err(ErrorData::from(metadata_error));
                 }
             };
             let notice = DatabaseDiscard { cause };
-            match &metadata_error {
-                ProjectMetaError::RootMismatch { stored_root } => log_database_recovery(
-                    database_path,
-                    &DatabaseRecovery::RootMismatch { stored_root },
-                ),
-                ProjectMetaError::IncompatibleVersion {
-                    contract_version,
-                    schema_version,
-                } => log_database_recovery(
-                    database_path,
-                    &DatabaseRecovery::IncompatibleVersion {
-                        contract_version: *contract_version,
-                        schema_version: *schema_version,
-                    },
-                ),
-                ProjectMetaError::Other(_) => {}
-            }
             drop(connection);
             return self
                 .rebuild_and_finish(
@@ -258,10 +273,7 @@ impl SourceSyncManager {
                     database_path.to_path_buf(),
                     start,
                     sink,
-                    Some(Discard {
-                        notice,
-                        what: "stale",
-                    }),
+                    Some(Discard { notice, what }),
                 )
                 .map(Err);
         }

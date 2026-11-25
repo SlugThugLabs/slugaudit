@@ -13,7 +13,7 @@ fn rust_root(source: &str) -> TestResult<tree_sitter::Tree> {
 fn a_capture_without_a_name_is_logged_and_flagged_as_failed_extraction() -> TestResult {
     let source = "fn a() {}";
     let tree = rust_root(source)?;
-    let lines = crate::model::LineIndex::new(source);
+    let lines = crate::model::LineIndex::new(source).check("index source")?;
 
     let (found, logs) = crate::store::test_capture::capture_warns(|| {
         crate::tools::structure_page::node_to_match(
@@ -40,7 +40,7 @@ fn text_that_is_not_valid_utf8_keeps_its_cause_in_the_log() -> TestResult {
     let tree = rust_root("abc")?;
     // Three bytes of a four-byte string end inside the second character.
     let content = "\u{e9}\u{e9}";
-    let lines = crate::model::LineIndex::new(content);
+    let lines = crate::model::LineIndex::new(content).check("index content")?;
 
     let (found, logs) = crate::store::test_capture::capture_warns(|| {
         crate::tools::structure_page::node_to_match(

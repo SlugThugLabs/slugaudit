@@ -176,7 +176,9 @@ impl Run<'_, '_, '_> {
             options,
         );
         // One index per file: columns are O(log lines), not line length.
-        let lines = LineIndex::new(content);
+        let lines = LineIndex::new(content).map_err(|error| {
+            ErrorData::internal_error(format!("structure match position: {error}"), None)
+        })?;
         while let Some((query_match, capture_index)) = captures.next() {
             let capture = capture_at(query_match, *capture_index)?;
             let found = node_to_match(

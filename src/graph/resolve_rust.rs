@@ -1,33 +1,21 @@
 //! Rust-specific import resolution: mapping `crate::`/`super::`/`self::`
 //! use-paths onto real files in the project.
 //!
-//! Rust's module tree does not map one-to-one onto the filesystem, and we
-//! deliberately resolve it without reading `mod` declarations — so every
-//! `super::`/`self::` verdict is `"Low"` confidence. What this module does
-//! model correctly: Cargo workspaces (each crate anchors its own `crate::`),
-//! glob imports (`use super::*;` points at the globbed module's file),
-//! non-`mod.rs` module trees, and trailing item names that live in a
-//! module's own file rather than a nested one.
-//!
-//! The path-shape helpers (module files, segment shortening) live in
-//! `super::rust_paths`; this file owns the import-form dispatch and the
-//! workspace crate anchor.
+//! What this module models: Cargo workspaces (each crate anchors its own
+//! `crate::`), grouped/nested `use` trees (via `rust_use_tree`), `#[path]`
+//! parent hops (via `rust_mod_parents`), glob imports (`use super::*;`),
+//! non-`mod.rs` module trees, and trailing item names.
 
 use super::reference::ImportReference;
 use super::resolve::parent_dir;
 use super::resolver::{LanguageResolver, Resolution, ResolutionKind, external, pick};
+use super::rust_mod_parents::{RustModuleParents, resolve_super_with_parents};
 use super::rust_paths::{
-    first_resolved, resolve_rust_from_base, resolve_rust_module_file, strip_trailing_glob,
+    first_resolved, resolve_rust_from_base, resolve_rust_module_file, rust_module_dir,
+    strip_trailing_glob,
 };
+use super::rust_use_tree::parse_rust_import;
 use std::collections::HashSet;
-use std::path::Path;
-
-/// File stems that mean "this file *is* its module" rather than "this file
-/// *defines* a child module named after itself". For `src/a/mod.rs` the
-/// module is `a`; for `src/a/b.rs` the module is `a::b`. Getting this
-/// distinction right is what makes `super::`/`self::` resolve correctly in
-/// ordinary (non-`mod.rs`) module trees.
-const RUST_MODULE_ROOT_STEMS: [&str; 3] = ["mod", "lib", "main"];
 
 /// Rust-specific import resolver. Handles `crate::`/`super::`/`self::`
 /// semantics that the generic resolver can't model.
@@ -39,21 +27,21 @@ impl LanguageResolver for RustResolver {
     }
 
     fn extract_reference(&self, raw: &str) -> Option<ImportReference> {
-        let without_visibility = strip_visibility(raw.trim());
-        let rest = without_visibility.strip_prefix("use ")?;
-        let end = match rest.find([';', '{', ' ']) {
-            Some(index) => index,
-            // No terminator: the path runs to the end of the text.
-            None => rest.len(),
+        self.extract_references(raw).into_iter().next()
+    }
+
+    fn extract_references(&self, raw: &str) -> Vec<ImportReference> {
+        let Some(targets) = parse_rust_import(raw) else {
+            return Vec::new();
         };
-        let path = rest[..end].trim_end_matches("::");
-        if path.is_empty() {
-            None
-        } else {
-            Some(ImportReference {
-                text: path.to_owned(),
-            })
-        }
+        targets
+            .into_iter()
+            .map(|text| ImportReference { text })
+            .collect()
+    }
+
+    fn is_modeled_syntax(&self, raw: &str) -> bool {
+        parse_rust_import(raw).is_some()
     }
 
     fn resolve(
@@ -62,58 +50,32 @@ impl LanguageResolver for RustResolver {
         importing_relative_path: &str,
         known_paths: &HashSet<&str>,
     ) -> Resolution {
-        resolve(reference, importing_relative_path, known_paths)
+        resolve_with_parents(
+            reference,
+            importing_relative_path,
+            known_paths,
+            &RustModuleParents::new(),
+        )
     }
-}
 
-/// Strips a leading `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
-/// `pub(in path)` visibility qualifier.
-fn strip_visibility(text: &str) -> &str {
-    let Some(after_pub) = text.strip_prefix("pub") else {
-        return text;
-    };
-    if let Some(rest) = after_pub.strip_prefix(' ') {
-        return rest.trim_start();
-    }
-    match after_pub
-        .strip_prefix('(')
-        .and_then(|inner| inner.split_once(')'))
-    {
-        Some((_, rest)) => rest.trim_start(),
-        None => text,
-    }
-}
-
-/// The file stem, or the empty string for a path with none (`..`, `/`): such
-/// a path owns no module, which is the correct answer, not a lost error.
-fn file_stem(relative_path: &str) -> String {
-    match Path::new(relative_path).file_stem() {
-        Some(stem) => stem.to_string_lossy().into_owned(),
-        None => String::new(),
-    }
-}
-
-/// The directory that a Rust file's *own* module owns — i.e. where its
-/// child modules live. `src/a/mod.rs` owns `src/a`; `src/a/b.rs` owns
-/// `src/a/b`.
-fn rust_module_dir(relative_path: &str) -> String {
-    let parent = parent_dir(relative_path);
-    let stem = file_stem(relative_path);
-    if RUST_MODULE_ROOT_STEMS.contains(&stem.as_str()) {
-        parent
-    } else if parent.is_empty() {
-        stem
-    } else {
-        format!("{parent}/{stem}")
+    fn resolve_with_rust_parents(
+        &self,
+        reference: &ImportReference,
+        importing_relative_path: &str,
+        known_paths: &HashSet<&str>,
+        rust_parents: &RustModuleParents,
+    ) -> Resolution {
+        resolve_with_parents(
+            reference,
+            importing_relative_path,
+            known_paths,
+            rust_parents,
+        )
     }
 }
 
 /// Finds the `src` directory of the crate that owns `importing_relative_path`
-/// by walking up to the nearest ancestor holding a `Cargo.toml`. A Cargo
-/// workspace puts each crate under its own directory (`crates/api/src/…`),
-/// so assuming a single top-level `src` makes every `crate::` import in
-/// every non-root crate unresolvable. Falls back to `"src"` when no manifest
-/// is indexed, which is the correct answer for a plain single-crate project.
+/// by walking up to the nearest ancestor holding a `Cargo.toml`.
 fn crate_src_dir(importing_relative_path: &str, known_paths: &HashSet<&str>) -> String {
     let mut dir = parent_dir(importing_relative_path);
     loop {
@@ -136,22 +98,11 @@ fn crate_src_dir(importing_relative_path: &str, known_paths: &HashSet<&str>) -> 
     }
 }
 
-/// `crate::`/`super::`/`self::` paths and paths starting with a module of the
-/// importing file are project-internal; anything else (`std::`, a
-/// third-party crate name) is external.
-///
-/// `crate::` is anchored at the owning crate's `src` (workspace-aware, see
-/// [`crate_src_dir`]). `super::`/`self::` are resolved against the real
-/// module tree first — `super::` from `src/a/b.rs` means module `a`, not
-/// `src` — and fall back to the looser parent-directory heuristic when the
-/// strict interpretation finds nothing, so trees that genuinely are
-/// `mod.rs`-shaped still resolve. Both remain `"Low"` confidence: without
-/// reading `mod` declarations we cannot prove which interpretation the
-/// compiler would pick.
-fn resolve(
+fn resolve_with_parents(
     reference: &ImportReference,
     importing_relative_path: &str,
     known_paths: &HashSet<&str>,
+    rust_parents: &RustModuleParents,
 ) -> Resolution {
     let text = reference.text.trim();
 
@@ -174,13 +125,10 @@ fn resolve(
         if resolved.kind == ResolutionKind::Resolved {
             return resolved;
         }
-        // `use crate::Item;` names an item defined in the crate root file
-        // itself, not a module file.
         return resolve_rust_module_file(&base, known_paths, Some("Low"));
     }
 
     if text == "self" || text.starts_with("self::") {
-        // `text` is `self` or `self::<rest>`; bare `self` has no remaining path.
         let rest = match text.split_once("::") {
             Some((_, rest)) => rest,
             None => "",
@@ -191,29 +139,14 @@ fn resolve(
     }
 
     if text == "super" || text.starts_with("super::") {
-        // `text` is `super` or `super::<rest>`; bare `super` has no remaining path.
-        let mut rest = match text.split_once("::") {
-            Some((_, rest)) => rest,
-            None => "",
-        };
-        let mut strict = parent_dir(&rust_module_dir(importing_relative_path));
-        let mut legacy = parent_dir(&parent_dir(importing_relative_path));
-        while let Some(next) = rest.strip_prefix("super::") {
-            rest = next;
-            strict = parent_dir(&strict);
-            legacy = parent_dir(&legacy);
-        }
-        if rest == "super" {
-            rest = "";
-            strict = parent_dir(&strict);
-            legacy = parent_dir(&legacy);
-        }
-        return first_resolved(rest, &[strict, legacy], known_paths);
+        return resolve_super_with_parents(
+            text,
+            importing_relative_path,
+            known_paths,
+            rust_parents,
+        );
     }
 
-    // Rust 2018: a path may start with a module declared in the importing
-    // file (`mod cli; use cli::Args;`), whose file lives under the file's own
-    // module directory. Anything that matches no such file is external.
     let local = resolve_rust_from_base(
         text,
         &rust_module_dir(importing_relative_path),
@@ -229,3 +162,7 @@ fn resolve(
 #[cfg(test)]
 #[path = "resolve_rust_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "resolve_rust_path_attr_tests.rs"]
+mod path_attr_tests;

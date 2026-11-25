@@ -7,11 +7,14 @@ mod reference;
 mod resolve;
 mod resolve_rust;
 pub(crate) mod resolver;
+pub(crate) mod rust_mod_parents;
 mod rust_paths;
+mod rust_use_tree;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub(crate) use rust_mod_parents::{RustModuleParents, insert_rust_mod_parent};
 use std::collections::HashSet;
 
 /// One import evidence item's resolution outcome, ready to become a
@@ -28,19 +31,13 @@ pub struct ResolvedEdge {
     /// Project-relative target path; `None` unless `resolution_kind` is
     /// `Resolved`.
     pub to_relative_path: Option<String>,
+    /// Whether the statement syntax was not modeled by the language resolver.
+    pub syntax_unmodeled: bool,
 }
 
-/// Resolves every raw import source captured for one file. `language` is
-/// the file's detected language (as stored in `files.language`);
-/// `import_sources` are the verbatim `source` strings from that file's
-/// `Import` evidence payloads — the *entire raw statement text* the pack
-/// captures, not a clean path (see `reference` for why that matters).
-/// `known_paths` is every path that will exist in the project once this
-/// revision commits, so a same-revision addition resolves correctly.
-///
-/// Every source produces exactly one `ResolvedEdge` — nothing is dropped
-/// because it couldn't be parsed or resolved; it becomes `"Unresolved"`
-/// instead, preserving the raw text for the AI to inspect.
+/// Resolves every raw import source captured for one file using empty Rust
+/// `#[path]` parent metadata.
+#[cfg(test)]
 #[must_use]
 pub(crate) fn resolve_imports(
     language: &str,
@@ -48,25 +45,50 @@ pub(crate) fn resolve_imports(
     import_sources: &[String],
     known_paths: &HashSet<&str>,
 ) -> Vec<ResolvedEdge> {
-    import_sources
-        .iter()
-        .map(|raw| resolve_one(language, importing_relative_path, raw, known_paths))
-        .collect()
+    resolve_imports_with_rust_parents(
+        language,
+        importing_relative_path,
+        import_sources,
+        known_paths,
+        &RustModuleParents::new(),
+    )
 }
 
-fn resolve_one(
+/// Resolves every raw import source captured for one file, using `rust_parents`
+/// to resolve `super::` imports inside `#[path = "..."]` files.
+///
+/// Grouped imports (such as Rust `use crate::{a, b};`) expand into one
+/// deduplicated `ResolvedEdge` per distinct target; valid empty-brace `use`
+/// statements emit zero edges, while unmodeled statements emit one
+/// `"Unresolved"` edge with `syntax_unmodeled = true`.
+#[must_use]
+pub(crate) fn resolve_imports_with_rust_parents(
     language: &str,
     importing_relative_path: &str,
-    raw: &str,
+    import_sources: &[String],
     known_paths: &HashSet<&str>,
-) -> ResolvedEdge {
-    let resolution = resolver::resolve_one(language, importing_relative_path, raw, known_paths);
-    ResolvedEdge {
-        raw_import_text: raw.to_owned(),
-        resolution_kind: resolution.kind.as_sql_text(),
-        confidence: resolution.confidence,
-        to_relative_path: resolution.to_relative_path,
+    rust_parents: &RustModuleParents,
+) -> Vec<ResolvedEdge> {
+    let mut edges = Vec::new();
+    for raw in import_sources {
+        let resolved = resolver::resolve_many(
+            language,
+            importing_relative_path,
+            raw,
+            known_paths,
+            rust_parents,
+        );
+        for outcome in resolved {
+            edges.push(ResolvedEdge {
+                raw_import_text: raw.to_owned(),
+                resolution_kind: outcome.resolution.kind.as_sql_text(),
+                confidence: outcome.resolution.confidence,
+                to_relative_path: outcome.resolution.to_relative_path,
+                syntax_unmodeled: outcome.syntax_unmodeled,
+            });
+        }
     }
+    edges
 }
 
 #[cfg(test)]

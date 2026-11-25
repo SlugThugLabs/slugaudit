@@ -344,9 +344,9 @@ fn every_call_and_caller_node_kind_exists_in_its_grammar() -> TestResult {
 #[test]
 fn a_language_without_a_call_query_yields_no_calls_and_stays_complete() -> TestResult {
     let source = "x.expect()\n";
+    let lines = LineIndex::new(source).check("index source")?;
 
-    let extraction =
-        extract("ruby", source, &LineIndex::new(source), None).check("extract ruby calls")?;
+    let extraction = extract("ruby", source, &lines, None).check("extract ruby calls")?;
 
     ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
     ensure(!extraction.truncated, "!extraction.truncated")?;
@@ -358,9 +358,10 @@ fn a_language_without_a_call_query_yields_no_calls_and_stays_complete() -> TestR
 fn a_call_query_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResult {
     require_grammar("python")?;
     let spent = crate::util::Deadline::after(std::time::Duration::ZERO);
+    let lines = LineIndex::new(PYTHON).check("index source")?;
 
-    let extraction = extract("python", PYTHON, &LineIndex::new(PYTHON), Some(&spent))
-        .check("extract python calls")?;
+    let extraction =
+        extract("python", PYTHON, &lines, Some(&spent)).check("extract python calls")?;
 
     ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
     ensure(extraction.timed_out, "extraction.timed_out")?;

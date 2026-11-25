@@ -20,7 +20,10 @@ fn open_temp_db() -> TestResult<(TempDir, rusqlite::Connection)> {
 fn current_revision_id_returns_none_when_no_revision_has_been_published() -> TestResult {
     let (_dir, connection) = open_temp_db()?;
     let revision = current_revision_id(&connection).check("query")?;
-    ensure(revision.is_none(), "revision.is_none()")?;
+    ensure(
+        revision.is_none(),
+        "an empty database has no current revision",
+    )?;
     Ok(())
 }
 
@@ -124,7 +127,7 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
     ensure_eq(
         data.get("code").check("the budget payload has a code")?,
         &"sync_budget_exhausted",
-        "data[\"code\"] == \"sync_budget_exhausted\"",
+        "spent sync budget carries the sync_budget_exhausted code",
     )?;
     let remedy = data
         .get("remedy")
@@ -150,7 +153,7 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
             .get("code")
             .check("the wrapped budget payload has a code")?,
         &"sync_budget_exhausted",
-        "wrapped.data.check(\"wrapped budget\")?[\"code\"] == \"sync_budget_exhausted\"",
+        "wrapped discovery budget failure carries the sync_budget_exhausted code",
     )?;
 
     let raced = map_publish_error(
@@ -167,7 +170,7 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
             .get("code")
             .check("the CAS race payload has a code")?,
         &"stale_revision",
-        "raced.data.check(\"the CAS race carries a payload\")?[\"code\"] == \"stale_revision\"",
+        "CAS race failure carries the stale_revision code",
     )?;
 
     let other = map_publish_error(
@@ -182,40 +185,69 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
     Ok(())
 }
 
-/// A failed metadata INSERT must be reported as the recording arm, not
-/// misattributed to the verification read.
+/// Asserts that `ensure_project_row` returned `ProjectMetaError::Other`
+/// with the expected context prefix and underlying cause substring.
+fn assert_other_meta_error(
+    result: Result<(), super::ProjectMetaError>,
+    expected_prefix: &str,
+    expected_substring: &str,
+) -> TestResult {
+    let error = result.check_err("ensure_project_row must fail")?;
+    let super::ProjectMetaError::Other(error) = error else {
+        return Err(format!("expected ProjectMetaError::Other, got {error:?}"))
+            .check("unexpected outcome");
+    };
+    ensure(
+        error.message.starts_with(expected_prefix),
+        format!("got: {}", error.message),
+    )?;
+    ensure(
+        error.message.contains(expected_substring),
+        format!("the source error must be preserved: {}", error.message),
+    )?;
+    Ok(())
+}
+
+/// A missing `project` table causes the initial `SELECT` to fail closed
+/// immediately and report the reading arm, rather than swallowing the error
+/// into `INSERT`.
 #[test]
-fn a_failed_metadata_write_surfaces_the_recording_error() -> TestResult {
+fn a_missing_project_table_surfaces_the_reading_error() -> TestResult {
     let (_dir, mut connection) = open_temp_db()?;
     connection
         .execute_batch("DROP TABLE project")
         .check("drop the project table")?;
 
-    let error = ensure_project_row(&mut connection, Path::new("/tmp/example-project"))
-        .check_err("the metadata insert must fail")?;
-
-    match error {
-        super::ProjectMetaError::Other(error) => {
-            ensure(
-                error.message.starts_with("recording project metadata: "),
-                format!("got: {}", error.message),
-            )?;
-            ensure(
-                error.message.contains("no such table: project"),
-                format!("the source error must be preserved: {}", error.message),
-            )?;
-        }
-        other => {
-            return Err(format!("expected ProjectMetaError::Other, got {other:?}"))
-                .check("unexpected outcome");
-        }
-    }
-    Ok(())
+    assert_other_meta_error(
+        ensure_project_row(&mut connection, Path::new("/tmp/example-project")),
+        "reading project metadata: ",
+        "no such table: project",
+    )
 }
 
-/// A failed metadata SELECT must be reported as the reading arm. The
-/// INSERT succeeds; the authorizer denies only the `project.root_path`
-/// read the verification query performs.
+/// When the `project` table exists and is empty (`Ok(None)` on initial
+/// `SELECT`), a denied `INSERT` is reported as the recording arm.
+#[test]
+fn a_failed_metadata_write_surfaces_the_recording_error() -> TestResult {
+    let (_dir, mut connection) = open_temp_db()?;
+    connection.authorizer(Some(
+        |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+            rusqlite::hooks::AuthAction::Insert {
+                table_name: "project",
+            } => rusqlite::hooks::Authorization::Deny,
+            _ => rusqlite::hooks::Authorization::Allow,
+        },
+    ));
+
+    assert_other_meta_error(
+        ensure_project_row(&mut connection, Path::new("/tmp/example-project")),
+        "recording project metadata: ",
+        "not authorized",
+    )
+}
+
+/// A failed metadata `SELECT` must be reported as the reading arm when the
+/// authorizer denies reading `project.root_path`.
 #[test]
 fn a_failed_metadata_read_surfaces_the_reading_error() -> TestResult {
     let (_dir, mut connection) = open_temp_db()?;
@@ -231,27 +263,33 @@ fn a_failed_metadata_read_surfaces_the_reading_error() -> TestResult {
         },
     ));
 
-    let error = ensure_project_row(&mut connection, Path::new("/tmp/example-project"))
-        .check_err("the metadata read must be denied")?;
+    assert_other_meta_error(
+        ensure_project_row(&mut connection, Path::new("/tmp/example-project")),
+        "reading project metadata: ",
+        "access to project.root_path is prohibited",
+    )
+}
 
-    match error {
-        super::ProjectMetaError::Other(error) => {
-            ensure(
-                error.message.starts_with("reading project metadata: "),
-                format!("got: {}", error.message),
-            )?;
-            ensure(
-                error
-                    .message
-                    .contains("access to project.root_path is prohibited"),
-                format!("the source error must be preserved: {}", error.message),
-            )?;
-        }
-        other => {
-            return Err(format!("expected ProjectMetaError::Other, got {other:?}"))
-                .check("unexpected outcome");
-        }
-    }
+/// A corrupt SQLite database surfaces `ProjectMetaError::Corrupt` from
+/// `ensure_project_row` so the orchestrator can discard and rebuild it.
+#[test]
+fn a_corrupt_database_surfaces_the_corrupt_variant() -> TestResult {
+    let dir = tempfile::tempdir().check("temp dir")?;
+    let db_path = dir.path().join("corrupt.db");
+    std::fs::write(&db_path, b"this is not a sqlite database").check("write corrupt db")?;
+    let mut connection = rusqlite::Connection::open(&db_path).check("open corrupt db")?;
+
+    let error = ensure_project_row(&mut connection, Path::new("/tmp/example-project"))
+        .check_err("a corrupt database must fail ensure_project_row")?;
+
+    let super::ProjectMetaError::Corrupt(sqlite_error) = error else {
+        return Err(format!("expected ProjectMetaError::Corrupt, got {error:?}"))
+            .check("unexpected outcome");
+    };
+    ensure(
+        store::is_rusqlite_corruption(&sqlite_error),
+        format!("expected SQLite corruption error, got {sqlite_error:?}"),
+    )?;
     Ok(())
 }
 

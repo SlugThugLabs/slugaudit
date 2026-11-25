@@ -6,6 +6,8 @@ mod calls;
 mod generic_imports;
 mod normalize;
 mod normalize_builders;
+mod rust_mod_paths;
+mod rust_path_attr;
 mod sql;
 
 /// How deep SlugAudit's own tree walkers descend before they stop.
@@ -91,7 +93,13 @@ pub(super) fn push_children<T>(
 ) {
     let first = pending.len();
     pending.extend(named_children(node).map(entry));
-    if let Some(added) = pending.get_mut(first..) {
+    reverse_from(pending, first);
+}
+
+/// Reverses the newly pushed tail `stack[start..]` in place so popping from a
+/// LIFO walker stack visits items in their original push order.
+pub(super) fn reverse_from<T>(stack: &mut [T], start: usize) {
+    if let Some(added) = stack.get_mut(start..) {
         added.reverse();
     }
 }

@@ -106,16 +106,18 @@ pub struct LineIndex<'a> {
     later_line_starts: Vec<usize>,
     /// `block_chars[i]` is the number of characters before byte
     /// `i * BLOCK_BYTES`. Empty when the source is pure ASCII, where a
-    /// character count equals a byte count. An error when the count
-    /// overflowed `usize` while building (not reachable for a real file);
-    /// every position query then returns that error.
-    block_chars: Result<Vec<usize>, PositionOverflow>,
+    /// character count equals a byte count.
+    block_chars: Vec<usize>,
 }
 
 impl<'a> LineIndex<'a> {
     /// Indexes `source` once.
-    #[must_use]
-    pub fn new(source: &'a str) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PositionOverflow`] when counting characters in `source`
+    /// overflows `usize`.
+    pub fn new(source: &'a str) -> Result<Self, PositionOverflow> {
         let bytes = source.as_bytes();
         // Pairing each byte with the position of the byte after it gives the
         // start of the next line (`len` for a trailing newline) without
@@ -133,15 +135,15 @@ impl<'a> LineIndex<'a> {
             .map(|(_, (next_position, _))| next_position)
             .collect();
         let block_chars = if source.is_ascii() {
-            Ok(Vec::new())
+            Vec::new()
         } else {
-            block_char_table(bytes)
+            block_char_table(bytes)?
         };
-        Self {
+        Ok(Self {
             source,
             later_line_starts,
             block_chars,
-        }
+        })
     }
 
     /// Zero-based line of `byte_offset` (clamped to the source length).
@@ -201,16 +203,12 @@ impl<'a> LineIndex<'a> {
 
     /// Characters in `source[..offset]`; `offset` must be a char boundary.
     fn chars_before(&self, offset: usize) -> Result<usize, PositionOverflow> {
-        let block_chars = match &self.block_chars {
-            Ok(table) => table,
-            Err(error) => return Err(*error),
-        };
-        if block_chars.is_empty() {
+        if self.block_chars.is_empty() {
             return Ok(offset);
         }
         let bytes = self.source.as_bytes();
         let block = offset / BLOCK_BYTES;
-        match block_chars.get(block) {
+        match self.block_chars.get(block) {
             Some(before) => {
                 // The block's own bytes, cut at `offset`; an offset at the
                 // very end of a source that fills its last block exactly has

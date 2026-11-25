@@ -43,5 +43,7 @@ mod gate_tests;
 // are used by callers of this module, not directly inside `mod.rs`,
 // so the unused-import lint would otherwise flag every name here.
 pub(crate) use generic::LanguageResolver;
+pub(crate) use registry::resolve_many;
+#[cfg(test)]
 pub(crate) use registry::{get_resolver, resolve_one};
 pub(crate) use types::{Resolution, ResolutionKind, external, pick, unresolved};

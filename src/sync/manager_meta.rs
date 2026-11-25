@@ -66,14 +66,46 @@ pub(crate) enum ProjectMetaError {
     /// archive. The derived database is stale, so the caller should discard
     /// and rebuild it from source rather than failing the tool call.
     RootMismatch { stored_root: String },
+    /// The database returned a SQLite corruption error while reading or
+    /// recording the project metadata row. The derived database is damaged,
+    /// so the caller should discard and rebuild it from source rather than
+    /// failing the tool call.
+    Corrupt(rusqlite::Error),
     /// Any other metadata failure, surfaced to the tool call as-is.
     Other(ErrorData),
+}
+
+impl std::fmt::Display for ProjectMetaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IncompatibleVersion {
+                contract_version,
+                schema_version,
+            } => write!(
+                f,
+                "database has an unsupported contract/schema version \
+                 ({contract_version}/{schema_version})"
+            ),
+            Self::RootMismatch { stored_root } => {
+                write!(
+                    f,
+                    "database was built for a different project root ({stored_root})"
+                )
+            }
+            Self::Corrupt(error) => write!(f, "project database is corrupt: {error}"),
+            Self::Other(error) => write!(f, "{}", error.message),
+        }
+    }
 }
 
 impl From<ProjectMetaError> for ErrorData {
     fn from(value: ProjectMetaError) -> Self {
         match value {
             ProjectMetaError::Other(error) => error,
+            ProjectMetaError::Corrupt(error) => ErrorData::internal_error(
+                format!("project database is corrupt while verifying metadata: {error}"),
+                None,
+            ),
             // A standalone surface for stale-database variants, used where
             // the caller chose not to auto-recover. The recovery path in
             // `SourceSyncManager::ensure_current` never produces these, so
@@ -102,6 +134,43 @@ impl From<ProjectMetaError> for ErrorData {
     }
 }
 
+const PROJECT_CONTRACT_VERSION: i64 = 1;
+const PROJECT_SCHEMA_VERSION: i64 = 1;
+const PROJECT_META_SELECT_SQL: &str =
+    "SELECT contract_version, schema_version, root_path FROM project WHERE id = 1";
+
+/// Verifies the stored metadata row matches the current contract/schema
+/// versions and canonical project root.
+fn verify_project_row(
+    contract_version: i64,
+    schema_version: i64,
+    stored_root: String,
+    expected_root: &str,
+) -> Result<(), ProjectMetaError> {
+    if contract_version != PROJECT_CONTRACT_VERSION || schema_version != PROJECT_SCHEMA_VERSION {
+        return Err(ProjectMetaError::IncompatibleVersion {
+            contract_version,
+            schema_version,
+        });
+    }
+    if stored_root != expected_root {
+        return Err(ProjectMetaError::RootMismatch { stored_root });
+    }
+    Ok(())
+}
+
+/// Maps a SQLite failure from reading or recording project metadata into
+/// [`ProjectMetaError::Corrupt`] or [`ProjectMetaError::Other`].
+fn map_metadata_sql_error(error: rusqlite::Error, context: &str) -> ProjectMetaError {
+    if store::is_rusqlite_corruption(&error) {
+        return ProjectMetaError::Corrupt(error);
+    }
+    ProjectMetaError::Other(ErrorData::internal_error(
+        format!("{context}: {error}"),
+        None,
+    ))
+}
+
 /// Creates the project's singleton metadata row on first sync if it
 /// doesn't already exist, then verifies the stored `root_path` still
 /// matches the canonical root this process resolved on later syncs.
@@ -119,66 +188,49 @@ pub(crate) fn ensure_project_row(
     connection: &mut Connection,
     root: &Path,
 ) -> Result<(), ProjectMetaError> {
-    const CONTRACT_VERSION: i64 = 1;
-    const SCHEMA_VERSION: i64 = 1;
-
-    let root_path = root.to_string_lossy();
-    let (stored_root_path, contract_version, schema_version) = if let Ok(Some(row)) = connection
-        .query_row(
-            "SELECT root_path, contract_version, schema_version FROM project WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
+    let expected_root = root.to_string_lossy();
+    match connection
+        .query_row(PROJECT_META_SELECT_SQL, [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .optional()
     {
-        row
-    } else {
-        let created_at =
-            crate::util::now_unix().map_err(|error| ProjectMetaError::Other(error.into()))?;
-        connection
+        Ok(Some((contract_version, schema_version, stored_root))) => verify_project_row(
+            contract_version,
+            schema_version,
+            stored_root,
+            expected_root.as_ref(),
+        ),
+        Ok(None) => {
+            let created_at =
+                crate::util::now_unix().map_err(|error| ProjectMetaError::Other(error.into()))?;
+            connection
                 .execute(
                     "INSERT OR IGNORE INTO project (\
                         id, project_id, root_path, contract_version, schema_version, created_at_unix\
                      ) VALUES (1, 'default', ?1, ?2, ?3, ?4)",
                     rusqlite::params![
-                        root_path.as_ref(),
-                        CONTRACT_VERSION,
-                        SCHEMA_VERSION,
+                        expected_root.as_ref(),
+                        PROJECT_CONTRACT_VERSION,
+                        PROJECT_SCHEMA_VERSION,
                         created_at
                     ],
                 )
-                .map_err(|error| {
-                    ProjectMetaError::Other(ErrorData::internal_error(
-                        format!("recording project metadata: {error}"),
-                        None,
-                    ))
-                })?;
-        connection
-            .query_row(
-                "SELECT root_path, contract_version, schema_version FROM project WHERE id = 1",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                .map_err(|error| map_metadata_sql_error(error, "recording project metadata"))?;
+            let (contract_version, schema_version, stored_root) = connection
+                .query_row(PROJECT_META_SELECT_SQL, [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .map_err(|error| map_metadata_sql_error(error, "reading project metadata"))?;
+            verify_project_row(
+                contract_version,
+                schema_version,
+                stored_root,
+                expected_root.as_ref(),
             )
-            .map_err(|error| {
-                ProjectMetaError::Other(ErrorData::internal_error(
-                    format!("reading project metadata: {error}"),
-                    None,
-                ))
-            })?
-    };
-
-    if contract_version != CONTRACT_VERSION || schema_version != SCHEMA_VERSION {
-        return Err(ProjectMetaError::IncompatibleVersion {
-            contract_version,
-            schema_version,
-        });
+        }
+        Err(error) => Err(map_metadata_sql_error(error, "reading project metadata")),
     }
-    if stored_root_path != root_path {
-        return Err(ProjectMetaError::RootMismatch {
-            stored_root: stored_root_path,
-        });
-    }
-    Ok(())
 }
 
 /// Single source of truth for "publish returned `Err` -> attach the

@@ -8,6 +8,7 @@
 //! defaulting to `util`. This file should not become a dumping ground.
 
 mod capped_read;
+mod rust_comments;
 mod style;
 mod time;
 
@@ -18,6 +19,7 @@ pub(crate) use crate::clock::mtime_unix_seconds;
 pub(crate) use capped_read::{
     CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped, read_file_capped_bytes,
 };
+pub(crate) use rust_comments::{skip_ws_and_comments, strip_comments};
 pub(crate) use style::Style;
 pub(crate) use time::{BudgetBound, Deadline, at_least_timestamp, now_unix};
 
