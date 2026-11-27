@@ -1,58 +1,23 @@
 #![forbid(unsafe_code)]
 
-//! End-to-end test for the `connect` subcommand.
+//! End-to-end test for the `connect` and `disconnect` subcommands.
 //!
-//! This spawns the real `slugaudit` binary as a subprocess and runs
-//! `connect <agent>` against a fake client CLI, then asserts the exact argv
-//! slugaudit emitted. Nothing outside a temporary directory is read or
-//! written: `HOME`, `SLUGTHUG_HOME` and `SLUGTHUG_CONFIG_HOME` all point into
-//! the temp dir, and `PATH` is *replaced* (not prepended to) by a directory of
-//! fake clients — one shell script per agent name that appends its own argv,
-//! one line per invocation, to a log file and exits 0. The installed binary is
-//! the one `install` just copied into the temp home, so the asserted argument
-//! is a temp path too.
-//!
-//! The test drives fake CLIs, never the *real* client binaries (`bob`,
-//! `claude`, `grok`, `codex`): a real client would make the result depend on
-//! which clients happen to be on the machine, and executing one can rewrite
-//! the user's live config (for example `~/.codex/config.toml`). The fake CLI
-//! runs deterministically everywhere, with no skip, and the test asserts the
-//! registration argv itself rather than a client's interpretation of it.
-//!
-//! The `install` step deliberately runs into the temp `SLUGTHUG_HOME`, never
-//! `~/.slugthug`, so it leaves the machine exactly as it found it.
+//! Spawns the real `slugaudit` binary as a subprocess against hermetic temp
+//! homes and fake client CLIs on a replaced `PATH`.
 
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-/// One client whose registration is exercised end to end.
 struct Case {
-    /// The agent id passed to `connect` (also the fake CLI's file name, when
-    /// the agent is CLI-driven).
     agent: &'static str,
-    /// Whether a fake CLI is put on `PATH` for this agent.
     cli: bool,
-    /// The invocations the fake CLI must record, in order. Each entry is one
-    /// invocation with its argv space-joined; `{bin}` stands for the installed
-    /// slugaudit binary and is substituted at run time.
     invocations: &'static [&'static str],
-    /// Home-relative config file `connect` must write for a client that has no
-    /// add command.
     written: Option<&'static str>,
 }
 
-/// The dialects the registry actually emits. `codex` is the plain `--`
-/// separator, `claude`/`gemini` the `-s user` scope forms (with and without
-/// the separator), `grok` a `--scope user` positional, `bob` transport *and*
-/// scope, `droid` `--type`, `openhands` `--transport`, `hermes` and `q` the
-/// `--command` positional spellings. The two `written` rows are the clients
-/// with no `mcp add` at all.
-///
-/// Each CLI-driven case records exactly one invocation, the `mcp add`:
-/// `connect` decides "already registered" from the config file alone and never
-/// spawns the client to list.
 const CASES: &[Case] = &[
     Case {
         agent: "codex",
@@ -72,8 +37,6 @@ const CASES: &[Case] = &[
         invocations: &["mcp add slugaudit --scope user -- {bin}"],
         written: None,
     },
-    // Gemini's `--scope` defaults to project, so a global registration passes
-    // `-s user` and no `--` separator (probed against gemini 0.64.0).
     Case {
         agent: "gemini",
         cli: true,
@@ -110,8 +73,6 @@ const CASES: &[Case] = &[
         invocations: &["mcp add --name slugaudit --command {bin}"],
         written: None,
     },
-    // cursor's only executable is `agent`, a verify-only CLI that cannot
-    // register; omp has no CLI at all. Both must fall through to the file.
     Case {
         agent: "cursor",
         cli: false,
@@ -126,15 +87,17 @@ const CASES: &[Case] = &[
     },
 ];
 
-/// Writes a fake client CLI named `name` into `bin_dir`: a shell script that
-/// records its argv — one line per invocation, arguments space-separated — to
-/// `log` and exits 0.
 fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) -> TestResult {
     let script = bin_dir.join(name);
+    let probe_guard = if name == "q" {
+        "if [ \"$*\" = \"mcp --help\" ]; then\n  printf 'Usage: q mcp <COMMAND>\\nCommands:\\n  add   Add a server\\n'\n  exit 0\nfi\n"
+    } else {
+        ""
+    };
     fs::write(
         &script,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+            "#!/bin/sh\n{probe_guard}printf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
             log.display()
         ),
     )
@@ -149,9 +112,6 @@ fn write_fake_cli(bin_dir: &Path, name: &str, log: &Path) -> TestResult {
     Ok(())
 }
 
-/// Spawns the slugaudit binary with every home pointed at `home` and `PATH`
-/// reduced to `bin_dir`, so the child cannot reach a real client CLI or a real
-/// client config.
 fn hermetic_output(
     binary: &Path,
     home: &Path,
@@ -188,8 +148,6 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() -> TestResult {
         format!("test binary not found: {}", binary.display()),
     )?;
 
-    // Run `install` so the binary lands at the stable home path `connect`
-    // prefers, mirroring the real flow: install once, then connect.
     let install = hermetic_output(&binary, &home, &bin_dir, &["install"])?;
     ensure(
         install.status.success(),
@@ -259,9 +217,6 @@ fn connect_emits_the_documented_argv_for_every_client_dialect() -> TestResult {
     Ok(())
 }
 
-/// A disconnect that removes nothing must not report "Done.": goose has no
-/// writable section and no client CLI, so there is nothing this tool can take
-/// out.
 #[test]
 fn disconnecting_an_entry_with_nothing_to_remove_says_so() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
@@ -292,8 +247,6 @@ fn disconnecting_an_entry_with_nothing_to_remove_says_so() -> TestResult {
     Ok(())
 }
 
-/// An existing client config with no slugaudit entry is a no-op: the tool must
-/// say so and must not rewrite (or reformat) the user's file.
 #[test]
 fn disconnecting_a_config_without_an_entry_leaves_it_untouched() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
@@ -332,8 +285,6 @@ fn disconnecting_a_config_without_an_entry_leaves_it_untouched() -> TestResult {
     Ok(())
 }
 
-/// A malformed client config fails the connect: the probe cannot tell
-/// whether the client is connected and names the JSON cause.
 #[test]
 fn connect_fails_a_malformed_client_config_and_names_the_json_cause() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
@@ -370,14 +321,11 @@ fn connect_fails_a_malformed_client_config_and_names_the_json_cause() -> TestRes
     Ok(())
 }
 
-/// A closed stdin during the interactive agent choice is "input ended", not an
-/// empty answer that surfaces as "invalid agent choice".
 #[test]
 fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
     let home = temp.path().join("home");
     let bin_dir = temp.path().join("bin");
-    // A `.cursor` directory is enough for Cursor to be detected as installed.
     fs::create_dir_all(home.join(".cursor")).check("mkdir cursor")?;
     fs::create_dir_all(&bin_dir).check("mkdir bin")?;
 
@@ -387,7 +335,7 @@ fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() -> Te
         .env("SLUGTHUG_HOME", home.join(".slugthug"))
         .env("SLUGTHUG_CONFIG_HOME", &home)
         .env("PATH", &bin_dir)
-        .stdin(std::process::Stdio::null())
+        .stdin(Stdio::null())
         .output()
         .check("spawn slugaudit")?;
 
@@ -400,6 +348,103 @@ fn interactive_connect_reports_end_of_input_instead_of_an_invalid_choice() -> Te
     ensure(
         !stderr.contains("invalid agent choice"),
         format!("stderr: {stderr}"),
+    )?;
+    Ok(())
+}
+
+/// Interactive `slugaudit disconnect` lists connected JSON/JSONC configs and
+/// removes the selected entry while reporting manual-only configs explicitly.
+#[test]
+fn interactive_disconnect_removes_chosen_opencode_jsonc_and_notes_manual_goose() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(home.join(".config/opencode")).check("mkdir opencode")?;
+    fs::create_dir_all(home.join(".config/goose")).check("mkdir goose")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
+
+    let opencode_cfg = home.join(".config/opencode/opencode.jsonc");
+    fs::write(
+        &opencode_cfg,
+        "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {\n    \"slugaudit\": {\n      \"type\": \"local\",\n      \"command\": [\"/bin/slugaudit\",],\n      \"enabled\": true,\n    },\n  },\n}\n",
+    )
+    .check("write opencode.jsonc")?;
+
+    let goose_cfg = home.join(".config/goose/config.yaml");
+    fs::write(
+        &goose_cfg,
+        "extensions:\n  slugaudit:\n    type: stdio\n    cmd: /bin/slugaudit\n",
+    )
+    .check("write goose config")?;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_slugaudit"))
+        .arg("disconnect")
+        .env("HOME", &home)
+        .env("SLUGTHUG_HOME", home.join(".slugthug"))
+        .env("SLUGTHUG_CONFIG_HOME", &home)
+        .env("PATH", &bin_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .check("spawn slugaudit disconnect")?;
+
+    {
+        let mut stdin = child.stdin.take().check("take stdin")?;
+        writeln!(stdin, "1").check("select option 1")?;
+    }
+    let output = child.wait_with_output().check("wait for disconnect")?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    ensure(
+        output.status.success(),
+        format!(
+            "interactive disconnect failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    ensure(
+        stdout.contains("Goose CLI is configured manually"),
+        format!("manual goose removal note expected: {stdout}"),
+    )?;
+    ensure(
+        stdout.contains("1) OpenCode") && stdout.contains("Done."),
+        format!("OpenCode must be selectable and removed: {stdout}"),
+    )?;
+    ensure(
+        !fs::read_to_string(&opencode_cfg)
+            .check("read opencode.jsonc")?
+            .contains("slugaudit"),
+        "slugaudit entry removed from opencode.jsonc",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn connect_and_disconnect_refuse_to_destroy_comments_in_jsonc_config() -> TestResult {
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let home = temp.path().join("home");
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(home.join(".config/opencode")).check("mkdir opencode")?;
+    fs::create_dir_all(&bin_dir).check("mkdir bin")?;
+    let binary = PathBuf::from(env!("CARGO_BIN_EXE_slugaudit"));
+
+    let opencode_cfg = home.join(".config/opencode/opencode.jsonc");
+    let original = "{\n  // Keep user comments intact\n  \"mcp\": {\n    \"slugaudit\": {\n      \"type\": \"local\",\n      \"command\": [\"/bin/slugaudit\"]\n    }\n  }\n}\n";
+    fs::write(&opencode_cfg, original).check("write commented opencode.jsonc")?;
+
+    let disconnect_out = hermetic_output(&binary, &home, &bin_dir, &["disconnect", "opencode"])?;
+    ensure(
+        !disconnect_out.status.success(),
+        "disconnect must refuse to erase comments in opencode.jsonc",
+    )?;
+    ensure(
+        String::from_utf8_lossy(&disconnect_out.stderr).contains("slugaudit"),
+        "error message names the slugaudit entry to edit manually",
+    )?;
+    ensure_eq(
+        &fs::read_to_string(&opencode_cfg).check("read preserved opencode.jsonc")?,
+        &original,
+        "commented opencode.jsonc must remain byte-for-byte untouched",
     )?;
     Ok(())
 }

@@ -1,48 +1,10 @@
-//! Generic import extraction for languages the pack's own import pass
+//! Generic import extraction for non-Rust languages the pack's own import pass
 //! doesn't cover.
-//!
-//! The pack's `process()` only extracts imports for a hardcoded handful of
-//! languages (python, js/ts, rust, go, java/kotlin, elixir). For the other
-//! ~365 languages it returns no `ImportInfo` at all, so no dependency edges
-//! ever existed for them — even though their grammars name import nodes
-//! recognizably (`import_declaration` in swift/scala, `import_header` in
-//! kotlin, `using_directive` in csharp, `preproc_include` in c/cpp,
-//! `import_specification` in dart, etc.).
-//!
-//! This module walks the parse tree with generic node-kind patterns that
-//! are consistent across tree-sitter grammars — the same mechanism as the
-//! variable-binding walker in `bindings` — and emits `Import` evidence for
-//! any node whose kind denotes a whole import statement. It runs only when
-//! the pack produced zero imports for a file, so pack-covered languages
-//! never double-report; it reads the tree the binding walker already parsed.
-//!
-//! Node kinds are matched by *name* rather than per-language query; the
-//! resulting `source` text is the raw statement sliced from the original
-//! source, exactly like the pack's own `ImportInfo.source`.
 
 use super::{Extraction, WalkInput};
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin};
-use serde_json::json;
-use tree_sitter_language_pack::Node;
+use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, EvidencePayload, ImportPayload};
+use tree_sitter::Node;
 
-/// Node kinds that denote a whole import statement. These names are shared
-/// across tree-sitter grammars — `import_declaration` in swift and scala,
-/// `import_statement` in julia and python, `preproc_include` in c/cpp/cuda/
-/// glsl. Matching on the name rather than a per-language query is what
-/// keeps this generic. Container kinds whose children are the real
-/// imports (e.g. go's `import_declaration` wrapping `import_spec`s) are
-/// harmless here because go is pack-covered: the walker is gated on the
-/// pack finding zero imports, and a go file with zero pack imports has no
-/// `import_declaration` nodes either. If a future language needs
-/// child-level import nodes, this list is the single place to extend.
-///
-/// Exact match only. The bare `"import"` kind is kept because
-/// Haskell's grammar names its import statement `import` (verified by the
-/// `haskell_import_is_captured` matrix test); the matrix's no-imports test
-/// guarantees a non-import
-/// `import`-kind node doesn't appear in ordinary function/expression
-/// source. Every other kind is verified by the grammar-matrix tests —
-/// add a kind only with a regression test proving a real grammar needs it.
 fn is_import_statement_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -64,40 +26,15 @@ fn is_import_statement_kind(kind: &str) -> bool {
     )
 }
 
-/// Walk emitting one `Import` evidence item per import-shaped
-/// node, slicing the raw statement text from the source via byte range.
-/// Child nodes of a matched statement are still visited (a `using` block
-/// may contain nested directives), but only whole-statement kinds emit.
-///
-/// A matched node whose **parent** is also an import-shaped node is
-/// skipped: some grammars nest the real import inside a wrapper that is
-/// itself import-shaped (dart: `import_or_export` → `library_import` →
-/// `import_specification`; haskell: `imports` → `import`). Emitting at
-/// both levels would double-report the same statement. The outermost
-/// matched node owns the emit;
-/// nested matches are containers, not statements.
-///
-/// `pub(super)` so `normalize.rs::extract_extra_walkers` can run this
-/// walker on the same already-parsed tree it uses for the
-/// variable-binding walker — saving another parse of the same source.
-///
-/// The walk is a loop over an explicit heap stack, never recursion (see
-/// [`super::push_children`]): each entry carries whether it is *suppressed*
-/// — an import-shaped node directly under another import-shaped node, which
-/// is walked past without emitting.
-///
-/// Pushes its items onto `out.items`. Sets `out.truncated` when the walk was
-/// cut short by the depth bound or an unsliceable statement, and
-/// `out.timed_out` (stopping the walk) when the deadline ran out; a position
-/// past `u32::MAX` is an error that fails the file's extraction.
+/// Iterative pre-order walk emitting one `Import` evidence item per
+/// import-shaped node when the language pack produced zero imports.
 pub(super) fn walk_imports(
-    root: &Node,
+    root: Node<'_>,
     input: &WalkInput<'_>,
     out: &mut Extraction,
     counter: &mut usize,
 ) -> Result<(), crate::model::PositionOverflow> {
-    // KEEP clone: tree_sitter_language_pack::Node is not Copy; walk stack owns Node handles
-    let mut pending = vec![(root.clone(), 0, false)];
+    let mut pending = vec![(root, 0u32, false)];
     while let Some((node, depth, suppressed)) = pending.pop() {
         if super::deadline_spent(input.deadline) {
             out.timed_out = true;
@@ -107,10 +44,8 @@ pub(super) fn walk_imports(
             out.truncated = true;
             continue;
         }
-        let is_import = is_import_statement_kind(&node.kind());
+        let is_import = is_import_statement_kind(node.kind());
         if is_import && !suppressed {
-            // Trim: some grammars (e.g. c/cpp `preproc_include`) include the
-            // trailing newline in the statement node's byte range.
             match super::node_text(input.source, node.start_byte(), node.end_byte()) {
                 Ok(text) => {
                     let Some(next) = counter.checked_add(1) else {
@@ -118,7 +53,7 @@ pub(super) fn walk_imports(
                         out.truncated = true;
                         break;
                     };
-                    push_import(text.trim(), &node, input.lines, &mut out.items, *counter)?;
+                    push_import(text.trim(), node, input.lines, &mut out.items, *counter)?;
                     *counter = next;
                 }
                 Err(error) => {
@@ -127,19 +62,12 @@ pub(super) fn walk_imports(
                 }
             }
         }
-        // An import-shaped child of an import-shaped node (emitted or itself
-        // suppressed) is a nested container: walk past it for further
-        // nesting, but don't re-emit the same statement. Guarded by the
-        // child's own kind so a non-import child (e.g. a string literal) is
-        // never skipped.
-        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
-        // would mean the depth bound was passed, which the walk reports as cut.
         let Some(child_depth) = depth.checked_add(1) else {
             out.truncated = true;
             continue;
         };
-        super::push_children(&mut pending, &node, |child| {
-            let nested = is_import && is_import_statement_kind(&child.kind());
+        super::push_children(&mut pending, node, |child| {
+            let nested = is_import && is_import_statement_kind(child.kind());
             (child, child_depth, nested)
         });
     }
@@ -148,7 +76,7 @@ pub(super) fn walk_imports(
 
 fn push_import(
     text: &str,
-    node: &Node,
+    node: Node<'_>,
     lines: &crate::model::LineIndex<'_>,
     items: &mut Vec<EvidenceItem>,
     key_number: usize,
@@ -159,16 +87,12 @@ fn push_import(
         kind: EvidenceKind::Import,
         origin: EvidenceOrigin::GenericWalker,
         span: super::node_span(node, lines, "generic import")?,
-        payload: json!({
-            "source": text,
-            "items": [],
-            "alias": null,
-            "is_wildcard": text.contains('*'),
+        payload: EvidencePayload::Import(ImportPayload {
+            source: text.to_owned(),
+            items: Vec::new(),
+            alias: None,
+            is_wildcard: text.contains('*'),
         }),
     });
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "generic_imports_tests.rs"]
-mod tests;

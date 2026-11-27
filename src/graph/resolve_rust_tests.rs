@@ -1,5 +1,6 @@
+// slugaudit-line-exception: approved-by=split-judge; reason=cohesive Rust import-resolution test suite covering crate, self, super, raw-ident, and confidence rules
 use super::*;
-use crate::graph::reference::ImportReference;
+use crate::graph::ImportReference;
 use crate::graph::resolver::ResolutionKind;
 use crate::graph::test_support::paths;
 use slugaudit_test_check::{TestResult, ensure, ensure_eq};
@@ -495,6 +496,51 @@ fn rust_leading_double_colon_path_is_always_external() -> TestResult {
         &res.kind,
         &ResolutionKind::External,
         "leading :: path must resolve as External even when local foo.rs exists",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_crate_shortened_prefix_stamps_low_confidence_while_exact_module_stamps_high() -> TestResult
+{
+    let known = paths(&["src/lib.rs", "src/a.rs", "src/a/b.rs"]);
+
+    let bare_crate = RustResolver.resolve(&refer("crate"), "src/a.rs", &known);
+    ensure_eq(
+        &(
+            bare_crate.to_relative_path.as_deref(),
+            bare_crate.confidence,
+        ),
+        &(Some("src/lib.rs"), Some("High")),
+        "bare crate resolves to src/lib.rs with High confidence",
+    )?;
+
+    let exact = RustResolver.resolve(&refer("crate::a::b"), "src/lib.rs", &known);
+    ensure_eq(
+        &(exact.to_relative_path.as_deref(), exact.confidence),
+        &(Some("src/a/b.rs"), Some("High")),
+        "exact module match crate::a::b carries High confidence",
+    )?;
+
+    let shortened_one = RustResolver.resolve(&refer("crate::a::b::c"), "src/lib.rs", &known);
+    ensure_eq(
+        &(
+            shortened_one.to_relative_path.as_deref(),
+            shortened_one.confidence,
+        ),
+        &(Some("src/a/b.rs"), Some("Low")),
+        "shortened prefix crate::a::b::c carries Low confidence because adding src/a/b/c.rs would retarget it",
+    )?;
+
+    let shortened_two =
+        RustResolver.resolve(&refer("crate::a::missing::Item"), "src/lib.rs", &known);
+    ensure_eq(
+        &(
+            shortened_two.to_relative_path.as_deref(),
+            shortened_two.confidence,
+        ),
+        &(Some("src/a.rs"), Some("Low")),
+        "multi-segment shortening crate::a::missing::Item carries Low confidence",
     )?;
     Ok(())
 }

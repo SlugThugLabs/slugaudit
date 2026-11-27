@@ -192,27 +192,14 @@ impl Fixture {
         )?;
         let root = project.path().to_path_buf();
 
-        // A project is active only when `project.db` exists as a regular file
-        // (mode 0600) in the activation directory, which `find_project_root`
-        // walks ancestors for; without it every tool call fails before
-        // reaching the code under test.
+        // A project is active when `.planning/slugaudit` exists as a directory,
+        // which `find_project_root` walks ancestors for; without it every tool
+        // call returns `project_not_enabled` before reaching the code under test.
         let activation = root.join(".planning").join("slugaudit");
         step(
             std::fs::create_dir_all(&activation),
             "create activation dir",
         )?;
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            step(
-                std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(activation.join("project.db")),
-                "create database marker",
-            )?;
-        }
         for (relative, content) in FILES {
             let path = root.join(relative);
             let Some(parent) = path.parent() else {

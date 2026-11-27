@@ -1,28 +1,16 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=the one paging contract: Page, PageLimit, Completeness and the legacy-paging refusal are one wire contract and must stay together
-//! The one paging contract every paged tool returns: `leads` (and the
-//! `mechanic add` first count, which is a `leads` response), `query`,
-//! `structure`, `finding_read` and `mechanic list` each embed a [`Page`] as
-//! their `page` field, so a caller learns one set of names once.
-//!
-//! The struct is nested rather than flattened so the shared contract is one
-//! visible `$defs` entry in every output schema instead of ten properties
-//! repeated (and free to drift) per tool. Tool-specific extras that carry
-//! real information (`query`'s `clipped_cells`, `leads`' `files_covered`,
-//! `structure`'s second cursor `next_start_after_file`) stay beside it on the
-//! tool's own response.
+//! Shared paging wire contract (`Page`, `PageLimit`, `Completeness`,
+//! `LegacyPaging`) and effective page-size resolution (`PageSize`) across
+//! `leads`, `query`, `structure`, `finding_read`, and `mechanic list`.
 
+use crate::error_codes::{ErrorCode, invalid_params_with_code};
+use crate::model::ResourceLimits;
 use rmcp::ErrorData;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::error_codes::{ErrorCode, payload};
-
-/// The `offset` and `expected_revision` paging parameters, accepted only so a request that sends
-/// them is refused with a message instead of the parameters being silently
-/// dropped. A request embeds it as
-/// `#[serde(flatten, default)] #[schemars(skip)] pub legacy_paging: LegacyPaging`,
-/// so the fields are accepted on input and absent from the tool schema. The
-/// values are kept as raw JSON: only their presence matters.
+/// The removed `offset` and `expected_revision` paging parameters, accepted
+/// only so a request that sends them is refused with `paging_parameter_removed`
+/// instead of silently ignored.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LegacyPaging {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,21 +24,68 @@ impl LegacyPaging {
     ///
     /// # Errors
     ///
-    /// `invalid_params` with the `paging_parameter_removed` code when either
-    /// field is present (including an explicit JSON null).
+    /// `invalid_params` with `paging_parameter_removed` when either field is present.
     pub fn refuse(&self) -> Result<(), ErrorData> {
         if self.offset.is_none() && self.expected_revision.is_none() {
             return Ok(());
         }
-        Err(ErrorData::invalid_params(
+        Err(invalid_params_with_code(
             "offset and expected_revision were removed from this tool; page with the cursor",
-            payload(ErrorCode::PagingParameterRemoved),
+            ErrorCode::PagingParameterRemoved,
         ))
     }
 }
 
-/// What cut a page. It reports the bound that acted, never a judgment about
-/// whether the page was the right size.
+/// Effective page byte budget resolved for a paged tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tools) struct PageSize {
+    /// Effective page size in serialized JSON bytes.
+    pub(in crate::tools) bytes: usize,
+    /// True when the requested (or default) page size was clamped to the ceiling.
+    pub(in crate::tools) at_ceiling: bool,
+}
+
+impl PageSize {
+    /// What a page cut by this byte budget reports as its `limited_by`.
+    #[cfg(test)]
+    pub(super) fn byte_cut(self) -> PageLimit {
+        if self.at_ceiling {
+            PageLimit::Ceiling
+        } else {
+            PageLimit::PageBytes
+        }
+    }
+
+    /// Refuses `page_bytes: 0`.
+    pub(in crate::tools) fn refuse_zero(requested: Option<usize>) -> Result<(), ErrorData> {
+        if requested == Some(0) {
+            return Err(invalid_params_with_code(
+                "page_bytes must be at least 1; omit it for the default page size",
+                ErrorCode::InvalidInput,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Resolves the effective page byte budget against `limits`.
+    pub(in crate::tools) fn resolve(
+        requested: Option<usize>,
+        limits: &ResourceLimits,
+    ) -> Result<Self, ErrorData> {
+        Self::refuse_zero(requested)?;
+        let wanted = match requested {
+            Some(bytes) => bytes,
+            None => limits.default_page_bytes,
+        };
+        let ceiling = limits.max_query_response_bytes;
+        Ok(Self {
+            bytes: wanted.min(ceiling),
+            at_ceiling: wanted >= ceiling,
+        })
+    }
+}
+
+/// What cut a page or stopped an underlying scan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PageLimit {
@@ -62,46 +97,44 @@ pub enum PageLimit {
     /// `page_bytes` (up to the server ceiling) returns a larger page.
     PageBytes,
     /// The byte budget was reached and that budget is the server ceiling
-    /// `max_query_response_bytes`: the requested (or configured default)
-    /// `page_bytes` was at or above it and was clamped. A larger `page_bytes`
-    /// returns nothing more; page on with `cursor`.
+    /// `max_query_response_bytes`. Page on with `cursor`.
     Ceiling,
-    /// `structure` only: the per-page match cap `max_structure_matches` was
-    /// reached; more matches exist and `cursor` continues. A larger
-    /// `page_bytes` does not lift it.
+    /// `structure` only: the per-page match cap `max_structure_matches` cut
+    /// this page; repeat the call with `page.cursor` to read the next page of
+    /// stored matches.
     MatchCap,
     /// `structure` only: the multi-file scan window ended before the
     /// matching files did (`files_not_scanned` > 0). Read the stored result to
     /// its end with `cursor`, then make a new request with `start_after_file`
     /// = `next_start_after_file`.
     ScanWindow,
-    /// `structure` only: the execution time budget cancelled the parse of
-    /// `parse_timed_out_file`. Read the stored result to its end with
-    /// `cursor`, then make a new request with `start_after_file` =
-    /// `next_start_after_file` (that file).
+    /// `structure` or custom-mechanic scan: the execution time budget stopped
+    /// the scan before every file finished. Read the stored result with
+    /// `cursor`, then resume after `resume_after_file` (or `next_start_after_file`).
     TimeBudget,
+    /// `structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`
+    /// match-state limit (`65,536` states) was exceeded on a file, so some
+    /// matches were dropped (`completeness` is `partial`). Narrow the Tree-sitter
+    /// pattern so no match states overflow.
+    QueryMatchLimit,
 }
 
 /// Whether the scan behind a stored result covered everything it set out to.
-/// It is written once with the result, so every page of that result reports
-/// the same value, however many calls the caller takes to read it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Completeness {
-    /// Every file or row the request selects was scanned.
+    /// Every file or row the request selects was scanned without overflow.
     Complete,
-    /// The scan stopped early (`structure` and custom-mechanic scans, which
-    /// run under a file window and the call deadline). Continuing is a new
-    /// request that syncs, starting after `resume_after_file`.
+    /// The scan stopped early or hit a pattern-state limit (`structure` and
+    /// custom-mechanic scans). Continuing is a new request that syncs, starting
+    /// after `resume_after_file`.
     Partial {
-        /// The bound that stopped the scan (`scan_window` or `time_budget`).
+        /// The bound that made the scan partial (`scan_window`, `time_budget`,
+        /// or `query_match_limit`).
         limited_by: PageLimit,
-        /// The last file fully scanned; the new request resumes after it. For
-        /// a `leads` scan of registered mechanics, which scans one language
-        /// after another, it is the last file of the language the deadline
-        /// stopped in: earlier languages were finished, later ones not started.
+        /// The last file fully scanned without overflow; the new request resumes after it.
         resume_after_file: Option<String>,
-        /// Files scanned before the scan stopped.
+        /// Files scanned cleanly before the scan stopped or overflowed.
         files_scanned: u64,
         /// Files the request selects.
         files_total: u64,
@@ -109,248 +142,42 @@ pub enum Completeness {
 }
 
 /// One page of a paged result; every paged tool carries these fields under
-/// `page` with the same meaning. To page: while `cursor` is present, repeat
-/// the call with only that `cursor` (plus `page_bytes`, and `limit` on
-/// `leads`, to resize the page); it names a result stored when the first call
-/// ran, so the rows do not move, `revision_id` is that of the first call, and
-/// no `path` is needed. `cursor` is absent exactly when `complete` is true.
-/// `structure` alone has a second step after the last page: when `completeness`
-/// is `partial`, make a new request with `start_after_file` =
-/// `next_start_after_file`.
+/// `page` with the same meaning.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct Page {
     /// Items in this page: rows (`leads`, `query`), matches (`structure`),
     /// findings (`finding_read`) or mechanics (`mechanic list`).
     pub returned: usize,
     /// Items the whole request selects, ignoring the page cut;
-    /// never an estimate. Always present; null when the tool cannot count it
-    /// (always on `structure`; on `query` when counting ran out of budget).
-    /// What it counts is on each tool's `page` property.
+    /// never an estimate. Null when the tool cannot count it (`structure`).
     pub total: Option<u64>,
-    /// True when nothing remains to page. For `structure` it also means no
-    /// scan window remains (no `next_start_after_file`).
+    /// True when nothing remains to page and no underlying scan is partial.
     pub complete: bool,
-    /// The token for the next page, copied exactly into the next call's
-    /// `cursor`. Omitted when nothing remains (`complete`). A cursor does not
-    /// survive a server restart.
+    /// The token for the next page, copied into the next call's `cursor`.
+    /// Omitted when nothing remains in this stored result.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
     /// Whether the scan behind the stored result covered everything; omitted
     /// when the tool reports no scan.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completeness: Option<Completeness>,
-    /// The byte budget that applied to this page's items, in serialized JSON
-    /// bytes: the request's `page_bytes` or the server default
-    /// (`default_page_bytes`, 64 KiB unless configured), after the clamp to
-    /// the ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says
-    /// the clamp acted on a cut page.
+    /// Effective byte budget that applied to this page's items.
     pub page_bytes: usize,
-    /// Serialized JSON bytes of this page's items. The first item is always
-    /// returned so paging advances, so this exceeds `page_bytes` only when
-    /// that item alone is larger: `leads` sets `oversized_row`, `query` clips
-    /// cells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the
-    /// row's `detail_clipped`; `structure` has no flag.
+    /// Serialized JSON bytes of this page's items.
     pub bytes_used: usize,
-    /// What cut this page; `none` exactly when the result ended.
+    /// What cut this page (or, on the final page of `structure`, what made the scan partial).
     pub limited_by: PageLimit,
-    /// The index revision every part of this response was read from: that of
-    /// the call that made the result, on every page.
+    /// Index revision every part of this response was read from.
     pub revision_id: String,
-    /// Present only when this call discarded and rebuilt the project
-    /// database (corruption, version bump, root mismatch), and why. Session
-    /// findings live in their own database and are not affected.
+    /// Continuation calls only (`cursor` supplied): the `revision_id`
+    /// currently on disk in `project.db` when this page was served, if readable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_disk_revision_id: Option<String>,
+    /// Present only when this call discarded and rebuilt the project database.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_discard: Option<crate::sync::DatabaseDiscard>,
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
-
-    #[test]
-    fn legacy_paging_refuses_an_offset_with_the_cursor_remedy() -> TestResult {
-        let legacy: LegacyPaging =
-            serde_json::from_value(serde_json::json!({ "offset": 5 })).check("parses")?;
-
-        let error = legacy.refuse().check_err("offset is removed")?;
-
-        ensure_eq(
-            &error.code,
-            &rmcp::model::ErrorCode::INVALID_PARAMS,
-            "error.code == rmcp::model::ErrorCode::INVALID_PARAMS",
-        )?;
-        let data = error.data.check("a payload")?;
-        ensure_eq(
-            data.get("code").check("data[\"code\"]")?,
-            &"paging_parameter_removed",
-            "data[\"code\"] == \"paging_parameter_removed\"",
-        )?;
-        ensure(
-            data.get("remedy")
-                .check("data[\"remedy\"]")?
-                .as_str()
-                .check("remedy")?
-                .contains("cursor"),
-            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_paging_refuses_an_expected_revision_with_the_cursor_remedy() -> TestResult {
-        let legacy: LegacyPaging =
-            serde_json::from_value(serde_json::json!({ "expected_revision": "r1" }))
-                .check("parses")?;
-
-        let error = legacy.refuse().check_err("expected_revision is removed")?;
-
-        let data = error.data.check("a payload")?;
-        ensure_eq(
-            data.get("code").check("data[\"code\"]")?,
-            &"paging_parameter_removed",
-            "data[\"code\"] == \"paging_parameter_removed\"",
-        )?;
-        ensure(
-            data.get("remedy")
-                .check("data[\"remedy\"]")?
-                .as_str()
-                .check("remedy")?
-                .contains("cursor"),
-            "data[\"remedy\"].as_str().check(\"remedy\")?.contains(\"cursor\")",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_paging_accepts_a_request_with_neither_field() -> TestResult {
-        let legacy: LegacyPaging = serde_json::from_value(serde_json::json!({})).check("parses")?;
-
-        legacy.refuse().check("nothing to refuse")?;
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_paging_flattened_into_a_request_is_read_but_not_in_its_schema() -> TestResult {
-        #[derive(Deserialize, JsonSchema)]
-        struct Probe {
-            #[serde(default)]
-            path: Option<String>,
-            #[serde(flatten, default)]
-            #[schemars(skip)]
-            legacy_paging: LegacyPaging,
-        }
-
-        let probe: Probe = serde_json::from_value(serde_json::json!({ "path": "p", "offset": 1 }))
-            .check("parses")?;
-        let schema = serde_json::to_string(&schemars::schema_for!(Probe)).check("schema")?;
-
-        ensure_eq(
-            &probe.path.as_deref(),
-            &Some("p"),
-            "probe.path.as_deref() == Some(\"p\")",
-        )?;
-        probe.legacy_paging.refuse().check_err("offset was sent")?;
-        ensure(!schema.contains("offset"), &schema)?;
-        ensure(!schema.contains("expected_revision"), &schema)?;
-        ensure(!schema.contains("legacy_paging"), &schema)?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_page_serializes_exactly_the_seven_shared_field_names() -> TestResult {
-        let page = Page {
-            database_discard: None,
-            returned: 2,
-            total: Some(5),
-            complete: false,
-            cursor: None,
-            completeness: None,
-            page_bytes: 100,
-            bytes_used: 90,
-            limited_by: PageLimit::Ceiling,
-            revision_id: "rev-1".to_owned(),
-        };
-
-        let value = serde_json::to_value(&page).check("a page serializes")?;
-
-        ensure_eq(
-            &value,
-            &serde_json::json!({
-                "returned": 2,
-                "total": 5,
-                "complete": false,
-                "page_bytes": 100,
-                "bytes_used": 90,
-                "limited_by": "ceiling",
-                "revision_id": "rev-1",
-            }),
-            "value == serde_json::json!({ \"returned\": 2, \"total\": 5, \"complete\": false, \"page_bytes\": 100, \"bytes_used\": 90, \"limited_by\": \"ceiling\", \"revision_id\": \"rev-1\", })",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn a_last_page_serializes_unknown_total_as_json_null_and_has_no_next_offset() -> TestResult {
-        let page = Page {
-            database_discard: None,
-            returned: 1,
-            total: None,
-            complete: true,
-            cursor: None,
-            completeness: None,
-            page_bytes: 100,
-            bytes_used: 10,
-            limited_by: PageLimit::None,
-            revision_id: "rev-1".to_owned(),
-        };
-
-        let value = serde_json::to_value(&page).check("a page serializes")?;
-
-        ensure_eq(
-            value.get("total").check("value[\"total\"]")?,
-            &serde_json::Value::Null,
-            "value[\"total\"] == serde_json::Value::Null",
-        )?;
-        ensure(
-            !value
-                .as_object()
-                .check("an object")?
-                .contains_key("next_offset"),
-            "the pre-cursor field is gone from the wire",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn every_page_limit_serializes_as_its_snake_case_name() -> TestResult {
-        let names = [
-            PageLimit::None,
-            PageLimit::Limit,
-            PageLimit::PageBytes,
-            PageLimit::Ceiling,
-            PageLimit::MatchCap,
-            PageLimit::ScanWindow,
-            PageLimit::TimeBudget,
-        ]
-        .into_iter()
-        .map(|limit| serde_json::to_value(limit).check("a limit serializes"))
-        .collect::<TestResult<Vec<_>>>()?;
-
-        ensure_eq(
-            &names,
-            &[
-                "none",
-                "limit",
-                "page_bytes",
-                "ceiling",
-                "match_cap",
-                "scan_window",
-                "time_budget",
-            ]
-            .map(serde_json::Value::from),
-            "names == [ \"none\", \"limit\", \"page_bytes\", \"ceiling\", \"match_cap\", \"scan_window\", \"time_budget\" ] .map(serde_json::Value::from)",
-        )?;
-        Ok(())
-    }
-}
+#[path = "page_tests.rs"]
+mod tests;

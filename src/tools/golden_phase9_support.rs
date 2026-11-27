@@ -1,9 +1,11 @@
 //! Shared support for the Phase 9 golden tests. Each test runs real tool calls over a small
 //! project and compares the serialized response with a fixture under
 //! `tests/golden/phase9/`, after normalising volatile values (the revision
-//! id, absolute paths) and masking the paging fields that differ
-//! by design. With `GOLDEN_PHASE9_RECORD=1` in the environment (read only)
-//! the same tests write the fixtures instead; see `tests/golden/phase9/README.md`.
+//! id, absolute paths) and masking random cursor UUIDs while asserting cursor
+//! presence versus absence and preserving `completeness` and
+//! `current_disk_revision_id`. With `GOLDEN_PHASE9_RECORD=1` in the environment
+//! (read only) the same tests write the fixtures instead; see
+//! `tests/golden/phase9/README.md`.
 use serde::Serialize;
 use serde_json::{Value, json};
 use slugaudit_test_check::{Check, TestResult, ensure_eq};
@@ -13,15 +15,12 @@ use std::path::{Path, PathBuf};
 const RECORD_ENV: &str = "GOLDEN_PHASE9_RECORD";
 const REVISION: &str = "<REVISION_ID>";
 const PROJECT: &str = "<PROJECT>";
-/// Paging fields removed at comparison (see [`mask_paging`] for where), so a
-/// response with or without them compares equal.
-const PAGING_KEYS: [&str; 6] = [
+const CURSOR_PLACEHOLDER: &str = "<CURSOR>";
+/// Legacy paging fields removed at comparison (see [`mask_paging`]).
+const PAGING_KEYS: [&str; 4] = [
     "offset",
     "next_offset",
     "expected_revision",
-    "cursor",
-    "completeness",
-    // Not a `query` response field; the fixtures recorded it as null.
     "total_unavailable",
 ];
 
@@ -52,7 +51,7 @@ pub(super) fn normalise(value: &mut Value, project: &str) {
         Value::Array(items) => items.iter_mut().for_each(|item| normalise(item, project)),
         Value::Object(map) => {
             for (key, item) in map.iter_mut() {
-                if key == "revision_id" && item.is_string() {
+                if (key == "revision_id" || key == "current_disk_revision_id") && item.is_string() {
                     *item = Value::String(REVISION.to_owned());
                 } else {
                     normalise(item, project);
@@ -63,10 +62,11 @@ pub(super) fn normalise(value: &mut Value, project: &str) {
     }
 }
 
-/// Removes the paging fields so a comparison ignores them: at the top level
-/// of the response and inside every `page` object, found by walking nested
-/// objects only. Arrays are never entered, so a result row whose column is
-/// aliased `cursor` or `offset` keeps its data.
+/// Masks random UUID cursor tokens inside `page` objects (preserving cursor
+/// string presence vs `null`/omission, `completeness`, and
+/// `current_disk_revision_id`!) while stripping removed legacy paging keys.
+/// Arrays are never entered, so a result row whose column is aliased `cursor`
+/// or `offset` keeps its data.
 pub(super) fn mask_paging(value: &mut Value) {
     mask_object(value, true);
 }
@@ -77,6 +77,11 @@ fn mask_object(value: &mut Value, paging_scope: bool) {
     };
     if paging_scope {
         map.retain(|key, _| !PAGING_KEYS.contains(&key.as_str()));
+        if let Some(cursor) = map.get_mut("cursor")
+            && cursor.is_string()
+        {
+            *cursor = Value::String(CURSOR_PLACEHOLDER.to_owned());
+        }
     }
     for (key, item) in map.iter_mut() {
         mask_object(item, key == "page");
@@ -146,7 +151,6 @@ pub(super) fn rust_project() -> TestResult<tempfile::TempDir> {
         .collect();
     let refs: Vec<(&str, String)> = files
         .iter()
-        // KEEP clone: project_with takes &[(&str, String)] while files keeps ownership of name strings
         .map(|(name, body)| (name.as_str(), body.clone()))
         .collect();
     project_with(&refs)

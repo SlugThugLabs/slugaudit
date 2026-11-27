@@ -1,7 +1,7 @@
 //! Paginate: cursors that expire and the result store limits.
-use super::*;
+use super::tests::*;
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
-/// Bytes one 20-row demo result takes in the store.
 fn one_result_bytes() -> TestResult<u64> {
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
@@ -19,8 +19,10 @@ fn one_result_bytes() -> TestResult<u64> {
 #[test]
 fn paginate_reclaimed_result_continues_as_result_expired() -> TestResult {
     let one = one_result_bytes()?;
+    let half = one.checked_div(2).check("one / 2")?;
+    let cap = one.checked_add(half).check("one + half")?;
     let (_project, path) = project()?;
-    let manager = manager(one + one / 2);
+    let manager = manager(cap);
     let first = fresh(&manager, &path, 20, 10).check("page one")?;
     let stale = cursor_of(&first)?;
     next(&manager, TOOL, &stale, 10).check("delivers the result")?;
@@ -36,7 +38,7 @@ fn paginate_reclaimed_result_continues_as_result_expired() -> TestResult {
     ensure_eq(
         &error.data.as_ref().check("payload")?["remedy"],
         &crate::error_codes::ErrorCode::ResultExpired.remedy(),
-        "error.data.as_ref().check(\"payload\")?[\"remedy\"] == crate::error_codes::ErrorCode::ResultExpired.remedy()",
+        "remedy matches ResultExpired",
     )?;
     Ok(())
 }
@@ -44,8 +46,10 @@ fn paginate_reclaimed_result_continues_as_result_expired() -> TestResult {
 #[test]
 fn paginate_full_store_refuses_a_new_result_and_keeps_active_ones_readable() -> TestResult {
     let one = one_result_bytes()?;
+    let half = one.checked_div(2).check("one / 2")?;
+    let cap = one.checked_add(half).check("one + half")?;
     let (_project, path) = project()?;
-    let manager = manager(one + one / 2);
+    let manager = manager(cap);
     let first = fresh(&manager, &path, 20, 10).check("page one")?;
 
     let error = fresh(&manager, &path, 20, 10)
@@ -63,9 +67,9 @@ fn paginate_full_store_refuses_a_new_result_and_keeps_active_ones_readable() -> 
     )?;
     let second = next(&manager, TOOL, &cursor_of(&first)?, 10).check("still readable")?;
     ensure_eq(
-        &numbers(&second)?,
+        &numbers(&second),
         &((10..20).collect::<Vec<_>>()),
-        "numbers(&second)? == (10..20).collect::<Vec<_>>()",
+        "numbers(&second) == (10..20)",
     )?;
     Ok(())
 }
@@ -104,7 +108,7 @@ fn paginate_unusable_store_is_result_store_unavailable() -> TestResult {
     .check("block the results directory")?;
     let manager = manager(ROOMY);
 
-    let error = fresh(&manager, &path, 5, 10).err().check("unavailable")?;
+    let error = fresh(&manager, &path, 25, 10).err().check("unavailable")?;
 
     ensure_eq(
         &code_of(&error)?,
@@ -119,7 +123,61 @@ fn paginate_unusable_store_is_result_store_unavailable() -> TestResult {
     ensure_eq(
         &error.data.as_ref().check("payload")?["remedy"],
         &crate::error_codes::ErrorCode::ResultStoreUnavailable.remedy(),
-        "error.data.as_ref().check(\"payload\")?[\"remedy\"] == crate::error_codes::ErrorCode::ResultStoreUnavailable.remedy()",
+        "remedy matches ResultStoreUnavailable",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn paginate_single_page_fast_path_skips_result_store_io() -> TestResult {
+    let (project, path) = project()?;
+    std::fs::write(
+        project.path().join(".planning/slugaudit/results"),
+        b"blocked",
+    )
+    .check("block results path to prove zero ResultStore disk I/O")?;
+    let manager = manager(ROOMY);
+
+    let served = fresh(&manager, &path, 5, 10).check("single-page result succeeds in memory")?;
+
+    ensure(served.page.complete, "single page is complete")?;
+    ensure_eq(&served.page.cursor, &None, "single page has no cursor")?;
+    ensure_eq(
+        &numbers(&served),
+        &vec![0, 1, 2, 3, 4],
+        "returns all five rows from memory",
+    )?;
+    ensure(
+        manager
+            .result_stores()
+            .current()
+            .check("store slot")?
+            .is_none(),
+        "ResultStore was never opened for a single-page result",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn paginate_continuation_serves_page_when_project_db_is_missing() -> TestResult {
+    let (project, path) = project()?;
+    let manager = manager(ROOMY);
+    let first = fresh(&manager, &path, 20, 10).check("page one")?;
+    let token = cursor_of(&first)?;
+    crate::store::remove_database_files(&project.path().join(".planning/slugaudit/project.db"))
+        .check("remove project.db")?;
+
+    let second = next(&manager, TOOL, &token, 10).check("continuation still succeeds")?;
+
+    ensure_eq(
+        &second.page.revision_id,
+        &first.page.revision_id,
+        "keeps page one's stored revision_id",
+    )?;
+    ensure_eq(
+        &second.page.current_disk_revision_id,
+        &None,
+        "missing project.db omits current_disk_revision_id without failing",
     )?;
     Ok(())
 }

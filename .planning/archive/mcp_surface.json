@@ -60,7 +60,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -82,7 +82,7 @@
         "type": "object",
         "properties": {
           "id": {
-            "description": "Row id of the stored finding in this session's findings; a restated\nfinding keeps the id of the row it refreshed.",
+            "description": "Row id of the stored finding in this session's findings.",
             "type": "integer",
             "format": "int64"
           },
@@ -91,15 +91,15 @@
             "type": "string"
           },
           "source_hash": {
-            "description": "Content hash of the indexed file the finding was attached to; a later\nhash change reads the finding as `stale`.",
+            "description": "Content hash of the indexed file the finding was attached to.",
             "type": "string"
           },
           "status": {
-            "description": "`current` for every successful write: the file's hash was verified\nwhile the write ran.",
+            "description": "`current` for every successful write.",
             "type": "string"
           },
           "database_discard": {
-            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+            "description": "Present only when this call discarded and rebuilt the project database.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseDiscard"
@@ -137,7 +137,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -162,7 +162,7 @@
             "minimum": 0
           },
           "database_discard": {
-            "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+            "description": "Present only when this call discarded and rebuilt the project database.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseDiscard"
@@ -195,7 +195,7 @@
             "default": null
           },
           "file": {
-            "description": "Optional project-relative file path. When supplied, only findings\nfor that file are returned. Omit to return all of this session's\nfindings for the project.",
+            "description": "Optional project-relative file path filter.",
             "type": [
               "string",
               "null"
@@ -209,6 +209,16 @@
               "null"
             ],
             "default": null
+          },
+          "page_bytes": {
+            "description": "Page size in serialized JSON bytes of `findings`.",
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "uint",
+            "minimum": 0,
+            "default": null
           }
         },
         "type": "object"
@@ -217,7 +227,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning.",
             "type": "object",
             "properties": {
               "returned": {
@@ -227,7 +237,7 @@
                 "minimum": 0
               },
               "total": {
-                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Null when the tool cannot count it (`structure`).",
                 "type": [
                   "integer",
                   "null"
@@ -236,11 +246,11 @@
                 "minimum": 0
               },
               "complete": {
-                "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
+                "description": "True when nothing remains to page and no underlying scan is partial.",
                 "type": "boolean"
               },
               "cursor": {
-                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "description": "The token for the next page, copied into the next call's `cursor`.\nOmitted when nothing remains in this stored result.",
                 "type": [
                   "string",
                   "null"
@@ -258,27 +268,34 @@
                 ]
               },
               "page_bytes": {
-                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "description": "Effective byte budget that applied to this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "bytes_used": {
-                "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
+                "description": "Serialized JSON bytes of this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "limited_by": {
-                "description": "What cut this page; `none` exactly when the result ended.",
+                "description": "What cut this page (or, on the final page of `structure`, what made the scan partial).",
                 "$ref": "#/$defs/PageLimit"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
+                "description": "Index revision every part of this response was read from.",
                 "type": "string"
               },
+              "current_disk_revision_id": {
+                "description": "Continuation calls only (`cursor` supplied): the `revision_id`\ncurrently on disk in `project.db` when this page was served, if readable.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+                "description": "Present only when this call discarded and rebuilt the project database.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -300,33 +317,33 @@
             ]
           },
           "Completeness": {
-            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "description": "Whether the scan behind a stored result covered everything it set out to.",
             "oneOf": [
               {
-                "description": "Every file or row the request selects was scanned.",
+                "description": "Every file or row the request selects was scanned without overflow.",
                 "type": "string",
                 "const": "complete"
               },
               {
-                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "description": "The scan stopped early or hit a pattern-state limit (`structure` and\ncustom-mechanic scans). Continuing is a new request that syncs, starting\nafter `resume_after_file`.",
                 "type": "object",
                 "properties": {
                   "partial": {
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
+                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
                         "type": [
                           "string",
                           "null"
                         ]
                       },
                       "files_scanned": {
-                        "description": "Files scanned before the scan stopped.",
+                        "description": "Files scanned cleanly before the scan stopped or overflowed.",
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
@@ -354,7 +371,7 @@
             ]
           },
           "PageLimit": {
-            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page or stopped an underlying scan.",
             "oneOf": [
               {
                 "description": "Nothing: the result ended on this page and `complete` is true.",
@@ -372,12 +389,12 @@
                 "const": "page_bytes"
               },
               {
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`. Page on with `cursor`.",
                 "type": "string",
                 "const": "ceiling"
               },
               {
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` cut\nthis page; repeat the call with `page.cursor` to read the next page of\nstored matches.",
                 "type": "string",
                 "const": "match_cap"
               },
@@ -387,14 +404,19 @@
                 "const": "scan_window"
               },
               {
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
+                "description": "`structure` or custom-mechanic scan: the execution time budget stopped\nthe scan before every file finished. Read the stored result with\n`cursor`, then resume after `resume_after_file` (or `next_start_after_file`).",
                 "type": "string",
                 "const": "time_budget"
+              },
+              {
+                "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
+                "type": "string",
+                "const": "query_match_limit"
               }
             ]
           },
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -407,11 +429,11 @@
             ]
           },
           "FindingReadEntry": {
-            "description": "One finding row of this session. Every field is exactly what the\n`finding` tool stored — SlugAudit never generates any of this text.",
+            "description": "One finding row of this session.",
             "type": "object",
             "properties": {
               "id": {
-                "description": "Row id of the finding in this session's findings; a restated finding\nkeeps its id.",
+                "description": "Row id of the finding in this session's findings.",
                 "type": "integer",
                 "format": "int64"
               },
@@ -432,31 +454,31 @@
                 "minimum": 0
               },
               "severity": {
-                "description": "Severity text exactly as the calling agent supplied it; SlugAudit\ndefines no scale and adds no judgment.",
+                "description": "Severity text as supplied by the calling agent.",
                 "type": "string"
               },
               "category": {
-                "description": "Category text exactly as the calling agent supplied it; SlugAudit\ndefines no taxonomy.",
+                "description": "Category text as supplied by the calling agent.",
                 "type": "string"
               },
               "title": {
-                "description": "One-line title exactly as the calling agent supplied it.",
+                "description": "One-line title as supplied by the calling agent.",
                 "type": "string"
               },
               "description": {
-                "description": "Description text exactly as the calling agent supplied it; possibly\nclipped — see `detail_clipped`.",
+                "description": "Description text as supplied by the calling agent; possibly clipped.",
                 "type": "string"
               },
               "detail_clipped": {
-                "description": "True when `description` was clipped to fit this page's byte budget:\nthe returned text is then a character-boundary prefix of the stored\ndescription. False means the whole stored text is present.",
+                "description": "True when `description` was clipped on row 0 to fit `page_bytes`.",
                 "type": "boolean"
               },
               "status": {
-                "description": "`current` while the file's content hash still equals `source_hash`;\n`stale` once the file has a different hash or is gone.",
+                "description": "`current` while the file's hash matches `source_hash`; `stale` otherwise.",
                 "type": "string"
               },
               "source_hash": {
-                "description": "Content hash of the file at the revision the finding was written\nagainst; a different hash now makes the finding `stale`.",
+                "description": "Content hash of the file at the revision the finding was written against.",
                 "type": "string"
               }
             },
@@ -482,7 +504,7 @@
         "type": "object",
         "properties": {
           "page": {
-            "description": "Paging for `findings`; `total` counts this session's findings under\nthe `file` filter, as they were when the first page was read.\n`page_bytes` is `default_page_bytes` clamped to the ceiling (no request\noverride). Page on by repeating the call with `page.cursor`.",
+            "description": "Shared paging metadata for `findings`.",
             "$ref": "#/$defs/Page"
           },
           "findings": {
@@ -502,12 +524,12 @@
     {
       "name": "health",
       "title": "Operational health",
-      "description": "What state the server is in and what to do next: `phase`, `remedy` (the call to make when no project is served), and `database.revision_id` / `database.file_count`. Read-only: never syncs, never mutates, and answers a path that is not an enabled project with `phase: disabled` instead of an error. Pass `path` for a project's database state; without it no project is selected. `verbose: true` adds `detail`, the operator view (parser pack version, skipped files, process counters, host memory, the mechanic scan cache).",
+      "description": "What state the server is in and what to do next: `phase`, `remedy` (the call to make when no project is served), and `database.revision_id` / `database.file_count`. Read-only: never syncs, never mutates, and answers a path that is not an enabled project with `phase: disabled` instead of an error. Pass `path` for a project's database state; without it no project is selected. `verbose: true` adds `detail`, the operator view (parser pack version, skipped files, process counters, host memory, result store).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
           "path": {
-            "description": "Optional project root. When supplied, returns the database state for\nthat project. When omitted, reports that no project is selected and\nnames the call that enables one. Reading is strictly read-only — this\ntool never syncs, never mutates, and never writes, so a health check\ncan never perturb the state it is reporting on.",
+            "description": "Optional project root. When supplied, returns the database state for\nthat project. When omitted, reports that no project is selected and\nnames the call that enables one. Read-only: never syncs or mutates.",
             "type": [
               "string",
               "null"
@@ -515,7 +537,7 @@
             "default": null
           },
           "verbose": {
-            "description": "Also return `detail`: the operator view (parser pack version, skipped\nfiles, whether the database read failed, process counters, host\nmemory, the mechanic scan cache). Defaults to false.",
+            "description": "Also return `detail`: the operator view (parser pack version, skipped\nfiles, whether the database read failed, process counters, host\nmemory, result store). Defaults to false.",
             "type": "boolean",
             "default": false
           }
@@ -526,14 +548,33 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "HealthPhase": {
-            "description": "Coarse-grained operational phase. Derived from existing state rather\nthan tracked separately so it can't drift.\n\n- `Importing`: no current revision — the first sync has never succeeded.\n- `SteadyState`: a current revision exists and the database is readable.\n- `NoActiveProject`: no `path` was supplied, so no project is selected\n  for this answer.\n- `Unknown`: the project database exists but could not be read, so the\n  revision is unknowable (`database_read_failed` is true).\n- `Disabled`: `request.path` resolved to no enabled project — the\n  `.planning/slugaudit` directory is absent — so nothing can serve that path until\n  `project_control` enables it. `remedy` names that call. This is a\n  state, not an error: a diagnostic tool that fails when there is\n  nothing to diagnose is useless.",
-            "type": "string",
-            "enum": [
-              "importing",
-              "steady_state",
-              "no_active_project",
-              "unknown",
-              "disabled"
+            "description": "Coarse-grained operational phase.",
+            "oneOf": [
+              {
+                "description": "Enabled project exists, no revision published yet.",
+                "type": "string",
+                "const": "importing"
+              },
+              {
+                "description": "Published revision is readable on disk.",
+                "type": "string",
+                "const": "steady_state"
+              },
+              {
+                "description": "`path` was omitted.",
+                "type": "string",
+                "const": "no_active_project"
+              },
+              {
+                "description": "Enabled project's database exists on disk but failed to read.",
+                "type": "string",
+                "const": "unknown"
+              },
+              {
+                "description": "Supplied `path` is not inside an enabled project.",
+                "type": "string",
+                "const": "disabled"
+              }
             ]
           },
           "DatabaseSummary": {
@@ -541,14 +582,14 @@
             "type": "object",
             "properties": {
               "revision_id": {
-                "description": "`revision_id` of the current revision; null if nothing has been\npublished yet.",
+                "description": "`revision_id` of the current revision; null if nothing has been published yet.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "file_count": {
-                "description": "Files in the database, including discovered files that were skipped\n(oversize, unreadable, non-UTF-8) and hold no content.",
+                "description": "Files in the database, including discovered files that were skipped.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -564,18 +605,21 @@
             "properties": {
               "database": {
                 "description": "The rest of the database group; null exactly when `database` is.",
-                "type": [
-                  "object",
-                  "null"
-                ],
-                "additionalProperties": true
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/DatabaseDetail"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "database_read_failed": {
-                "description": "True when the database exists but could not be read; `database` is\nthen null and `phase` is `unknown`.",
+                "description": "True when the database exists but could not be read.",
                 "type": "boolean"
               },
               "database_read_error": {
-                "description": "Why the database could not be read: the failing step and its error.\nPresent exactly when `database_read_failed` is true; absent otherwise.",
+                "description": "Why the database could not be read; present iff `database_read_failed` is true.",
                 "type": [
                   "string",
                   "null"
@@ -583,16 +627,18 @@
               },
               "server": {
                 "description": "Server process counters since start.",
-                "type": "object",
-                "additionalProperties": true
+                "$ref": "#/$defs/ServerCounters"
               },
               "system_memory": {
-                "description": "Host physical and available memory as detected; null when detection\nfailed (`system_memory_error` says why), in which case the limits come\nfrom an explicitly chosen profile, not from the host.",
-                "type": [
-                  "object",
-                  "null"
-                ],
-                "additionalProperties": true
+                "description": "Host physical and available memory as detected.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/SystemMemoryInfo"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "system_memory_error": {
                 "description": "Why host memory could not be detected; null when it was.",
@@ -601,18 +647,16 @@
                   "null"
                 ]
               },
-              "mechanic_cache": {
-                "description": "Mechanic scan cache counters.",
-                "type": "object",
-                "additionalProperties": true
-              },
               "result_store": {
-                "description": "Paged-result store: results and bytes by class, budget, reclaims,\nrefusals, refused cursors and the startup sweep. Null until the first\npaged result is made in this process.",
-                "type": [
-                  "object",
-                  "null"
-                ],
-                "additionalProperties": true
+                "description": "Paged-result store for the selected active project; null when no project\nis selected or until a multi-page result is stored for that project.",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/ResultStoreState"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -621,8 +665,236 @@
               "server",
               "system_memory",
               "system_memory_error",
-              "mechanic_cache",
               "result_store"
+            ]
+          },
+          "DatabaseDetail": {
+            "description": "The parser pack and skipped-file count of the current revision.",
+            "type": "object",
+            "properties": {
+              "parser_pack_version": {
+                "description": "Parser pack version stored on the current revision; null if none published yet.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "skipped_file_count": {
+                "description": "Rows discovered but never read (`file_kind = 'skipped'`).",
+                "type": "integer",
+                "format": "int64"
+              }
+            },
+            "required": [
+              "parser_pack_version",
+              "skipped_file_count"
+            ]
+          },
+          "ServerCounters": {
+            "description": "Counters for this server process since it started.",
+            "type": "object",
+            "properties": {
+              "tool_call_count": {
+                "description": "Total tool calls served since process start.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "tool_call_error_count": {
+                "description": "Total tool calls that returned any `ErrorData` since process start.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "tool_call_total_ms": {
+                "description": "Sum of every tool call's work duration, in milliseconds.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "last_sync_unix_seconds": {
+                "description": "Unix-epoch seconds of the most recent successful `ensure_current`.",
+                "type": "integer",
+                "format": "int64"
+              },
+              "last_sync_duration_ms": {
+                "description": "Duration of the most recent successful `ensure_current`, in milliseconds.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "tool_call_count",
+              "tool_call_error_count",
+              "tool_call_total_ms",
+              "last_sync_unix_seconds",
+              "last_sync_duration_ms"
+            ]
+          },
+          "SystemMemoryInfo": {
+            "description": "Host memory as measured by `detect_system_memory`. Surfaced in the `health` response because it sizes the Adaptive\nprofile's import budget.",
+            "type": "object",
+            "properties": {
+              "total_bytes": {
+                "description": "Total physical memory in bytes.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "available_bytes": {
+                "description": "Memory available to this process for import budgets, in bytes. Read\nfrom `MemAvailable` on Linux; on macOS, where no such figure is read,\nit is half of the total (an estimate).",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "total_bytes",
+              "available_bytes"
+            ]
+          },
+          "ResultStoreState": {
+            "description": "The result store for one active project, as `health` reports it.",
+            "type": "object",
+            "properties": {
+              "active": {
+                "description": "Unfinished results served within the grace period; never reclaimed.",
+                "$ref": "#/$defs/ResultClassState"
+              },
+              "idle": {
+                "description": "Unfinished results older than the grace period; reclaimed second.",
+                "$ref": "#/$defs/ResultClassState"
+              },
+              "delivered": {
+                "description": "Fully read results kept for a final-page retry; reclaimed first.",
+                "$ref": "#/$defs/ResultClassState"
+              },
+              "budget_bytes": {
+                "description": "`max_result_store_bytes`: the most the store admits.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "admitted_bytes": {
+                "description": "Bytes of all admitted results; never above the budget.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "reclaimed_delivered": {
+                "description": "Delivered results reclaimed since the server started.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "reclaimed_idle": {
+                "description": "Idle results reclaimed since the server started.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "refused_full": {
+                "description": "New results refused with `result_store_full`.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "refused_too_large": {
+                "description": "New results refused with `result_too_large`.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "unknown_cursors": {
+                "description": "Cursors refused as `unknown_cursor`.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "expired_cursors": {
+                "description": "Cursors refused as `result_expired`.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "sweep": {
+                "description": "What the startup sweep did.",
+                "$ref": "#/$defs/ResultSweepState"
+              }
+            },
+            "required": [
+              "active",
+              "idle",
+              "delivered",
+              "budget_bytes",
+              "admitted_bytes",
+              "reclaimed_delivered",
+              "reclaimed_idle",
+              "refused_full",
+              "refused_too_large",
+              "unknown_cursors",
+              "expired_cursors",
+              "sweep"
+            ]
+          },
+          "ResultClassState": {
+            "description": "Results and bytes held in one retention class.",
+            "type": "object",
+            "properties": {
+              "results": {
+                "description": "Number of results in the class.",
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "bytes": {
+                "description": "Their measured bytes.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "results",
+              "bytes"
+            ]
+          },
+          "ResultSweepState": {
+            "description": "What the startup sweep of leftover result files did.",
+            "type": "object",
+            "properties": {
+              "removed_files": {
+                "description": "Files removed (dead owners' databases and lock files, orphans).",
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "live_owners_skipped": {
+                "description": "Sessions another live process holds; their files were left.",
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "errors": {
+                "description": "Operations that failed while the sweep carried on.",
+                "type": "integer",
+                "format": "uint",
+                "minimum": 0
+              },
+              "first_error": {
+                "description": "The first failure's message; null when none failed.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "removed_files",
+              "live_owners_skipped",
+              "errors",
+              "first_error"
             ]
           }
         },
@@ -638,14 +910,14 @@
             "$ref": "#/$defs/HealthPhase"
           },
           "remedy": {
-            "description": "The next action when no project is being served by this answer: the\nsame sentence the `project_not_enabled` error carries as its remedy.\nPresent exactly when `phase` is `disabled` or `no_active_project`;\nnull whenever a project is served.",
+            "description": "The next action when no project is being served by this answer.",
             "type": [
               "string",
               "null"
             ]
           },
           "database": {
-            "description": "What the project database holds; null when the project has never been\nsynced or its database could not be read\n(`detail.database_read_failed` says which).",
+            "description": "What the project database holds; null when never synced or unreadable.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseSummary"
@@ -674,15 +946,15 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "LeadMode": {
-            "description": "How a response renders its rows. See [`LeadsResponse::rows`].",
+            "description": "How a response renders its rows.",
             "oneOf": [
               {
-                "description": "Each row carries its `detail` text (clipped; see [`LeadRow`]).",
+                "description": "Each row carries its clipped `detail` text.",
                 "type": "string",
                 "const": "full"
               },
               {
-                "description": "Each row is a [`CompactLeadRow`]: no per-row text at all.",
+                "description": "Each row is a [`CompactLeadRow`] triple with no `detail` text.",
                 "type": "string",
                 "const": "compact"
               }
@@ -753,7 +1025,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning.",
             "type": "object",
             "properties": {
               "returned": {
@@ -763,7 +1035,7 @@
                 "minimum": 0
               },
               "total": {
-                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Null when the tool cannot count it (`structure`).",
                 "type": [
                   "integer",
                   "null"
@@ -772,11 +1044,11 @@
                 "minimum": 0
               },
               "complete": {
-                "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
+                "description": "True when nothing remains to page and no underlying scan is partial.",
                 "type": "boolean"
               },
               "cursor": {
-                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "description": "The token for the next page, copied into the next call's `cursor`.\nOmitted when nothing remains in this stored result.",
                 "type": [
                   "string",
                   "null"
@@ -794,27 +1066,34 @@
                 ]
               },
               "page_bytes": {
-                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "description": "Effective byte budget that applied to this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "bytes_used": {
-                "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
+                "description": "Serialized JSON bytes of this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "limited_by": {
-                "description": "What cut this page; `none` exactly when the result ended.",
+                "description": "What cut this page (or, on the final page of `structure`, what made the scan partial).",
                 "$ref": "#/$defs/PageLimit"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
+                "description": "Index revision every part of this response was read from.",
                 "type": "string"
               },
+              "current_disk_revision_id": {
+                "description": "Continuation calls only (`cursor` supplied): the `revision_id`\ncurrently on disk in `project.db` when this page was served, if readable.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+                "description": "Present only when this call discarded and rebuilt the project database.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -836,33 +1115,33 @@
             ]
           },
           "Completeness": {
-            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "description": "Whether the scan behind a stored result covered everything it set out to.",
             "oneOf": [
               {
-                "description": "Every file or row the request selects was scanned.",
+                "description": "Every file or row the request selects was scanned without overflow.",
                 "type": "string",
                 "const": "complete"
               },
               {
-                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "description": "The scan stopped early or hit a pattern-state limit (`structure` and\ncustom-mechanic scans). Continuing is a new request that syncs, starting\nafter `resume_after_file`.",
                 "type": "object",
                 "properties": {
                   "partial": {
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
+                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
                         "type": [
                           "string",
                           "null"
                         ]
                       },
                       "files_scanned": {
-                        "description": "Files scanned before the scan stopped.",
+                        "description": "Files scanned cleanly before the scan stopped or overflowed.",
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
@@ -890,7 +1169,7 @@
             ]
           },
           "PageLimit": {
-            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page or stopped an underlying scan.",
             "oneOf": [
               {
                 "description": "Nothing: the result ended on this page and `complete` is true.",
@@ -908,12 +1187,12 @@
                 "const": "page_bytes"
               },
               {
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`. Page on with `cursor`.",
                 "type": "string",
                 "const": "ceiling"
               },
               {
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` cut\nthis page; repeat the call with `page.cursor` to read the next page of\nstored matches.",
                 "type": "string",
                 "const": "match_cap"
               },
@@ -923,14 +1202,19 @@
                 "const": "scan_window"
               },
               {
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
+                "description": "`structure` or custom-mechanic scan: the execution time budget stopped\nthe scan before every file finished. Read the stored result with\n`cursor`, then resume after `resume_after_file` (or `next_start_after_file`).",
                 "type": "string",
                 "const": "time_budget"
+              },
+              {
+                "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
+                "type": "string",
+                "const": "query_match_limit"
               }
             ]
           },
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -943,36 +1227,36 @@
             ]
           },
           "MechanicCount": {
-            "description": "One mechanic's complete counts under the request's pattern — complete\nregardless of paging, with no ordering by importance.",
+            "description": "One mechanic's complete counts under the request's pattern.",
             "type": "object",
             "properties": {
               "mechanic": {
-                "description": "Stable id — pass it back as `mechanic` to get this mechanic's rows.",
+                "description": "Stable mechanic id.",
                 "type": "string"
               },
               "source": {
-                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), or `builtin`.",
+                "description": "`session` or `builtin`.",
                 "$ref": "#/$defs/MechanicSource"
               },
               "note": {
-                "description": "The author's note for a registered mechanic; `null` for a built-in.",
+                "description": "Author's note for a session mechanic; `null` for a built-in.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "count": {
-                "description": "How many observations this mechanic has in the current revision\nunder the same `pattern`. Complete, never paged.",
+                "description": "Total observations under `pattern`.",
                 "type": "integer",
                 "format": "int64"
               },
               "files": {
-                "description": "Distinct files containing at least one observation. This is the\ndenominator to enumerate: a 50,000-row mechanic is usually far fewer\nfiles, and a file is the unit a sweep can finish.",
+                "description": "Distinct files containing at least one observation.",
                 "type": "integer",
                 "format": "int64"
               },
               "covers": {
-                "description": "The languages this count was measured over: every language of the\nfiles under `pattern` this mechanic read, sorted. Call-site mechanics\nread the files whose grammar ran in a language with call extraction\n(rust, python, javascript, typescript, tsx, go, java, c); diagnostics\nand comment markers read every file whose grammar ran; path mechanics\nread every file; a registered mechanic reads the parsed files of its\none language. A language of this project missing here was not\nchecked by this mechanic, so its zero there means unchecked, not absent.",
+                "description": "Sorted languages covered by this mechanic under `pattern`.",
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -1004,17 +1288,17 @@
             ]
           },
           "LeadRows": {
-            "description": "The rows of a page, shaped by the request's `mode`; one response carries\none variant, never a mix. `full` (the default) is [`LeadRow`] with its\n`detail` text; `compact` is [`CompactLeadRow`] with no per-row text. All\nthe envelope's completeness fields mean the same thing either way.",
+            "description": "The rows of a page, shaped by `mode`.",
             "anyOf": [
               {
-                "description": "Each row is a [`LeadRow`] carrying the mechanic's clipped `detail`\ntext.",
+                "description": "Full rows carrying `detail`.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/LeadRow"
                 }
               },
               {
-                "description": "Each row is a [`CompactLeadRow`] carrying no per-row text.",
+                "description": "Compact triples without `detail`.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/CompactLeadRow"
@@ -1023,11 +1307,11 @@
             ]
           },
           "LeadRow": {
-            "description": "One lead observation: file, line (0 when the evidence carries no span),\nand the mechanic's own clipped detail text.",
+            "description": "One full-mode lead observation.",
             "type": "object",
             "properties": {
               "file": {
-                "description": "Project-relative path of the file the observation is in.",
+                "description": "Project-relative file path.",
                 "type": "string"
               },
               "line": {
@@ -1036,11 +1320,11 @@
                 "format": "int64"
               },
               "detail": {
-                "description": "The mechanic's own text: callee text, diagnostic message, or comment\ntext. Empty for path-shaped mechanics. Clipped to `MAX_DETAIL_CHARS`\ncharacters when longer — check `detail_clipped`.",
+                "description": "Clipped observation text.",
                 "type": "string"
               },
               "detail_clipped": {
-                "description": "True when `detail` was clipped to `MAX_DETAIL_CHARS`; the text is then\na prefix of the stored evidence and the remainder exists only in the\nfile itself. False means the whole stored text is present.",
+                "description": "True when `detail` was clipped to `MAX_DETAIL_CHARS`.",
                 "type": "boolean"
               }
             },
@@ -1052,19 +1336,19 @@
             ]
           },
           "CompactLeadRow": {
-            "description": "One row of a compact page: which mechanic observed what, at a path and\nline. No text is carried — read the file, or ask for `mode: full` — which\nis what makes a whole-surface sweep affordable.",
+            "description": "One compact-mode lead triple.",
             "type": "object",
             "properties": {
               "mechanic": {
-                "description": "The mechanic this row belongs to — an id from `mechanic_counts`, and\nthe id to pass as `mechanic` for that mechanic's `detail` text.",
+                "description": "Mechanic id.",
                 "type": "string"
               },
               "file": {
-                "description": "Project-relative path of the file the observation is in.",
+                "description": "Project-relative file path.",
                 "type": "string"
               },
               "line": {
-                "description": "One-based start line, or `0` when the evidence carries no span.",
+                "description": "One-based start line, or `0`.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -1076,7 +1360,7 @@
             ]
           },
           "FileCount": {
-            "description": "One file's share of a page, in first-appearance order.",
+            "description": "One file's row count on this page.",
             "type": "object",
             "properties": {
               "file": {
@@ -1084,7 +1368,7 @@
                 "type": "string"
               },
               "count": {
-                "description": "Rows of this mechanic in *this page* that belong to this file — not\nthe file's total, which is what `files_total` / `files_covered`\ntrack across pages.",
+                "description": "Rows on this page belonging to `file`.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -1098,7 +1382,6 @@
         "required": [
           "page",
           "mechanic_counts",
-          "mechanics_invalid",
           "notices",
           "files_not_parsed",
           "rows",
@@ -1110,57 +1393,51 @@
         "type": "object",
         "properties": {
           "page": {
-            "description": "Paging for `rows`. `total` is the rows of the requested mechanic (every\nmechanic in a `compact` call without one) under `pattern`; `0` for a\n`full` call naming no mechanic. A page is cut by `limit` or by bytes,\nso raising `limit` past a byte cut returns nothing more.",
+            "description": "Paging metadata for `rows`.",
             "$ref": "#/$defs/Page"
           },
           "mechanic_counts": {
-            "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nthe built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
+            "description": "Per-mechanic counts (session entries for this project first, then built-ins).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/MechanicCount"
             }
           },
-          "mechanics_invalid": {
-            "description": "Registered mechanics that failed to load (an id collision, a query\nthat no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
-            "type": "integer",
-            "format": "uint",
-            "minimum": 0
-          },
           "notices": {
-            "description": "One line per untested code language in the `covers` of the counted\nmechanics (for a call naming one `mechanic`, that mechanic's `covers`):\nonly Rust is tested; other grammars are downloaded on first use and\ntheir counts are best-effort. Empty when there is nothing to say.",
+            "description": "Untested-language notices for languages covered by this answer.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "files_not_parsed": {
-            "description": "Indexed files under the request's `pattern` with a detected language\nwhose grammar did not run or did not finish, so the mechanics that\nread evidence saw them partly or not at all: content over\n`max_parse_bytes` (`oversize_for_parse`), a parse cut at the sync\ndeadline (`parse_timeout`), a grammar that failed to load, a detected\nlanguage the pack has no grammar for, or a failed parse. Every count\nin `mechanic_counts` is a floor while this is above 0. Not counted:\nprose, and files with no detected language (`.gitignore`, `LICENSE`):\nno mechanic reads either. `report`'s parser failures list all of\nthese files with reasons.",
+            "description": "Indexed code files under `pattern` whose grammar did not run or failed.",
             "type": "integer",
             "format": "int64"
           },
           "rows": {
-            "description": "The page's rows, shaped by the request's `mode`. Empty when a `full`\ncall supplied no `mechanic`; a `compact` call with no `mechanic`\nenumerates every mechanic instead, one triple per row.",
+            "description": "This page's rows.",
             "$ref": "#/$defs/LeadRows"
           },
           "files_total": {
-            "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
+            "description": "Distinct files holding at least one observation in scope.",
             "type": "integer",
             "format": "int64"
           },
           "files_covered": {
-            "description": "Distinct files represented in the rows of the scope up to the end of\nthis page. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+            "description": "Distinct files covered through the end of this page.",
             "type": "integer",
             "format": "int64"
           },
           "page_file_counts": {
-            "description": "Rows grouped per file for this page only.",
+            "description": "Per-file histogram for this page only.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FileCount"
             }
           },
           "oversized_row": {
-            "description": "True when `page.bytes_used` exceeds `page.page_bytes` because the\nfirst row alone is larger than the page. It is returned whole so\npaging makes progress and nothing is lost.",
+            "description": "True when row 0 alone exceeded `page.page_bytes`.",
             "type": "boolean"
           }
         }
@@ -1173,7 +1450,7 @@
     {
       "name": "mechanic",
       "title": "Register auditor mechanics",
-      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile is refused with the compiler's message. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `page`, `files_total`, `files_covered`, `files_not_parsed`). Entries live until this server exits. `leads` and `report` list every entry with `source` (`session`, `builtin`) and its note, session first. `action: remove` deletes a registered entry by `id`; built-ins can never be removed or overridden. `action: list` returns every mechanic plus `invalid`: registered entries that failed to load, each with its error.",
+      "description": "Register, remove, or list your own mechanics. The built-in `leads` mechanics are counting primitives, not a checklist: what counts as a signal in this codebase is your decision, and this is where you record it. `action: add` takes `id` (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a Tree-sitter S-expression with exactly one capture; each distinct captured node is one row) and `note` (what it counts, in your words); a query that does not compile or whose trial scan ends `partial` is refused. It returns `first_count`: the `leads` response for that id (counts with `covers`, the first page of rows, `page`, `files_total`, `files_covered`, `files_not_parsed`). Entries are scoped to the project and live until this server exits or `project_control` `off` runs. `leads` and `report` list every entry with `source` (`session`, `builtin`) and its note, session first. `action: remove` deletes a registered entry by `id`; built-ins can never be removed or overridden. `action: list` returns every session and built-in mechanic, paged by cursor.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
@@ -1191,7 +1468,7 @@
                 "const": "remove"
               },
               {
-                "description": "List every mechanic and every entry that failed to load.",
+                "description": "List every mechanic for this project.",
                 "type": "string",
                 "const": "list"
               }
@@ -1244,7 +1521,7 @@
             "default": null
           },
           "query": {
-            "description": "`add`: a Tree-sitter S-expression with exactly one capture, e.g.\n`(call function: (identifier) @callee (#eq? @callee \"eval\"))`. Each\ndistinct captured node is one row. At most `max_structure_query_bytes`\nbytes (16384 by default). A query that does not compile is refused\nwith the compiler's message.",
+            "description": "`add`: a Tree-sitter S-expression with exactly one capture, e.g.\n`(call function: (identifier) @callee (#eq? @callee \"eval\"))`. Each\ndistinct captured node is one row. At most `max_structure_query_bytes`\nbytes (16384 by default). A query that does not compile or whose trial\nscan is incomplete is refused.",
             "type": [
               "string",
               "null"
@@ -1299,7 +1576,7 @@
                 "const": "remove"
               },
               {
-                "description": "List every mechanic and every entry that failed to load.",
+                "description": "List every mechanic for this project.",
                 "type": "string",
                 "const": "list"
               }
@@ -1362,99 +1639,62 @@
               "query"
             ]
           },
-          "InvalidMechanic": {
-            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is removed, and it is never dropped from this\nlist.",
-            "type": "object",
-            "properties": {
-              "source": {
-                "description": "`session`: the entry was registered on this server.",
-                "$ref": "#/$defs/MechanicSource"
-              },
-              "index": {
-                "description": "Position in the session list (oldest first).",
-                "type": "integer",
-                "format": "uint",
-                "minimum": 0
-              },
-              "id": {
-                "description": "The entry's id; every entry has one.",
-                "type": "string"
-              },
-              "error": {
-                "description": "Why it was not loaded: a compile error, a broken field rule, or an id\ncollision.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "source",
-              "index",
-              "id",
-              "error"
-            ]
-          },
           "LeadsResponse": {
-            "description": "One leads call: complete counts, the page's rows, and the paging/budget\ntruth that makes them quotable as-is.",
+            "description": "One `leads` response: complete counts, paged rows, and coverage denominators.",
             "type": "object",
             "properties": {
               "page": {
-                "description": "Paging for `rows`. `total` is the rows of the requested mechanic (every\nmechanic in a `compact` call without one) under `pattern`; `0` for a\n`full` call naming no mechanic. A page is cut by `limit` or by bytes,\nso raising `limit` past a byte cut returns nothing more.",
+                "description": "Paging metadata for `rows`.",
                 "$ref": "#/$defs/Page"
               },
               "mechanic_counts": {
-                "description": "Every mechanic this revision can answer under the request's\n`pattern`, with its row and distinct-file counts and what it covers.\nCounts are complete regardless of `limit` (unless `page.completeness`\nis `partial`: a registered mechanic's scan the call deadline stopped\ncounts only the files it read), and carry no\nordering by importance: session entries first (oldest first), then\nthe built-ins in their fixed\ndeclaration order. A call naming one `mechanic` scans only that\nregistered entry (none for a built-in), so the other registered\nentries are not listed then; call with no `mechanic` to count them all.",
+                "description": "Per-mechanic counts (session entries for this project first, then built-ins).",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/MechanicCount"
                 }
               },
-              "mechanics_invalid": {
-                "description": "Registered mechanics that failed to load (an id collision, a query\nthat no longer compiles) and are therefore not\nin `mechanic_counts`. `report`'s `mechanics.invalid` and `mechanic`\naction `list` name each one with its error.",
-                "type": "integer",
-                "format": "uint",
-                "minimum": 0
-              },
               "notices": {
-                "description": "One line per untested code language in the `covers` of the counted\nmechanics (for a call naming one `mechanic`, that mechanic's `covers`):\nonly Rust is tested; other grammars are downloaded on first use and\ntheir counts are best-effort. Empty when there is nothing to say.",
+                "description": "Untested-language notices for languages covered by this answer.",
                 "type": "array",
                 "items": {
                   "type": "string"
                 }
               },
               "files_not_parsed": {
-                "description": "Indexed files under the request's `pattern` with a detected language\nwhose grammar did not run or did not finish, so the mechanics that\nread evidence saw them partly or not at all: content over\n`max_parse_bytes` (`oversize_for_parse`), a parse cut at the sync\ndeadline (`parse_timeout`), a grammar that failed to load, a detected\nlanguage the pack has no grammar for, or a failed parse. Every count\nin `mechanic_counts` is a floor while this is above 0. Not counted:\nprose, and files with no detected language (`.gitignore`, `LICENSE`):\nno mechanic reads either. `report`'s parser failures list all of\nthese files with reasons.",
+                "description": "Indexed code files under `pattern` whose grammar did not run or failed.",
                 "type": "integer",
                 "format": "int64"
               },
               "rows": {
-                "description": "The page's rows, shaped by the request's `mode`. Empty when a `full`\ncall supplied no `mechanic`; a `compact` call with no `mechanic`\nenumerates every mechanic instead, one triple per row.",
+                "description": "This page's rows.",
                 "$ref": "#/$defs/LeadRows"
               },
               "files_total": {
-                "description": "Distinct files holding at least one observation of any mechanic in\nscope — the denominator a sweep can exhaust. `0` when a `full` call\nrequested no mechanic. For a single mechanic it equals that\n`mechanic_counts` entry's `files`.",
+                "description": "Distinct files holding at least one observation in scope.",
                 "type": "integer",
                 "format": "int64"
               },
               "files_covered": {
-                "description": "Distinct files represented in the rows of the scope up to the end of\nthis page. Cumulative for a sweep at one revision: rows are read in a\nfixed order — within a single mechanic, by path then line; for a\ncompact call with no mechanic, by the `mechanic_counts` order then\npath then line — so a file's rows for one mechanic are contiguous,\nbut a file with rows under several mechanics appears in several\ngroups and can span several compact pages. It is still counted once.\n`files_total - files_covered` is what is left.",
+                "description": "Distinct files covered through the end of this page.",
                 "type": "integer",
                 "format": "int64"
               },
               "page_file_counts": {
-                "description": "Rows grouped per file for this page only.",
+                "description": "Per-file histogram for this page only.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/FileCount"
                 }
               },
               "oversized_row": {
-                "description": "True when `page.bytes_used` exceeds `page.page_bytes` because the\nfirst row alone is larger than the page. It is returned whole so\npaging makes progress and nothing is lost.",
+                "description": "True when row 0 alone exceeded `page.page_bytes`.",
                 "type": "boolean"
               }
             },
             "required": [
               "page",
               "mechanic_counts",
-              "mechanics_invalid",
               "notices",
               "files_not_parsed",
               "rows",
@@ -1465,7 +1705,7 @@
             ]
           },
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning.",
             "type": "object",
             "properties": {
               "returned": {
@@ -1475,7 +1715,7 @@
                 "minimum": 0
               },
               "total": {
-                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Null when the tool cannot count it (`structure`).",
                 "type": [
                   "integer",
                   "null"
@@ -1484,11 +1724,11 @@
                 "minimum": 0
               },
               "complete": {
-                "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
+                "description": "True when nothing remains to page and no underlying scan is partial.",
                 "type": "boolean"
               },
               "cursor": {
-                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "description": "The token for the next page, copied into the next call's `cursor`.\nOmitted when nothing remains in this stored result.",
                 "type": [
                   "string",
                   "null"
@@ -1506,27 +1746,34 @@
                 ]
               },
               "page_bytes": {
-                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "description": "Effective byte budget that applied to this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "bytes_used": {
-                "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
+                "description": "Serialized JSON bytes of this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "limited_by": {
-                "description": "What cut this page; `none` exactly when the result ended.",
+                "description": "What cut this page (or, on the final page of `structure`, what made the scan partial).",
                 "$ref": "#/$defs/PageLimit"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
+                "description": "Index revision every part of this response was read from.",
                 "type": "string"
               },
+              "current_disk_revision_id": {
+                "description": "Continuation calls only (`cursor` supplied): the `revision_id`\ncurrently on disk in `project.db` when this page was served, if readable.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+                "description": "Present only when this call discarded and rebuilt the project database.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -1548,33 +1795,33 @@
             ]
           },
           "Completeness": {
-            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "description": "Whether the scan behind a stored result covered everything it set out to.",
             "oneOf": [
               {
-                "description": "Every file or row the request selects was scanned.",
+                "description": "Every file or row the request selects was scanned without overflow.",
                 "type": "string",
                 "const": "complete"
               },
               {
-                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "description": "The scan stopped early or hit a pattern-state limit (`structure` and\ncustom-mechanic scans). Continuing is a new request that syncs, starting\nafter `resume_after_file`.",
                 "type": "object",
                 "properties": {
                   "partial": {
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
+                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
                         "type": [
                           "string",
                           "null"
                         ]
                       },
                       "files_scanned": {
-                        "description": "Files scanned before the scan stopped.",
+                        "description": "Files scanned cleanly before the scan stopped or overflowed.",
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
@@ -1602,7 +1849,7 @@
             ]
           },
           "PageLimit": {
-            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page or stopped an underlying scan.",
             "oneOf": [
               {
                 "description": "Nothing: the result ended on this page and `complete` is true.",
@@ -1620,12 +1867,12 @@
                 "const": "page_bytes"
               },
               {
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`. Page on with `cursor`.",
                 "type": "string",
                 "const": "ceiling"
               },
               {
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` cut\nthis page; repeat the call with `page.cursor` to read the next page of\nstored matches.",
                 "type": "string",
                 "const": "match_cap"
               },
@@ -1635,14 +1882,19 @@
                 "const": "scan_window"
               },
               {
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
+                "description": "`structure` or custom-mechanic scan: the execution time budget stopped\nthe scan before every file finished. Read the stored result with\n`cursor`, then resume after `resume_after_file` (or `next_start_after_file`).",
                 "type": "string",
                 "const": "time_budget"
+              },
+              {
+                "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
+                "type": "string",
+                "const": "query_match_limit"
               }
             ]
           },
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -1655,36 +1907,36 @@
             ]
           },
           "MechanicCount": {
-            "description": "One mechanic's complete counts under the request's pattern — complete\nregardless of paging, with no ordering by importance.",
+            "description": "One mechanic's complete counts under the request's pattern.",
             "type": "object",
             "properties": {
               "mechanic": {
-                "description": "Stable id — pass it back as `mechanic` to get this mechanic's rows.",
+                "description": "Stable mechanic id.",
                 "type": "string"
               },
               "source": {
-                "description": "Where the mechanic comes from: `session` (registered with `mechanic\nadd` on this server), or `builtin`.",
+                "description": "`session` or `builtin`.",
                 "$ref": "#/$defs/MechanicSource"
               },
               "note": {
-                "description": "The author's note for a registered mechanic; `null` for a built-in.",
+                "description": "Author's note for a session mechanic; `null` for a built-in.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "count": {
-                "description": "How many observations this mechanic has in the current revision\nunder the same `pattern`. Complete, never paged.",
+                "description": "Total observations under `pattern`.",
                 "type": "integer",
                 "format": "int64"
               },
               "files": {
-                "description": "Distinct files containing at least one observation. This is the\ndenominator to enumerate: a 50,000-row mechanic is usually far fewer\nfiles, and a file is the unit a sweep can finish.",
+                "description": "Distinct files containing at least one observation.",
                 "type": "integer",
                 "format": "int64"
               },
               "covers": {
-                "description": "The languages this count was measured over: every language of the\nfiles under `pattern` this mechanic read, sorted. Call-site mechanics\nread the files whose grammar ran in a language with call extraction\n(rust, python, javascript, typescript, tsx, go, java, c); diagnostics\nand comment markers read every file whose grammar ran; path mechanics\nread every file; a registered mechanic reads the parsed files of its\none language. A language of this project missing here was not\nchecked by this mechanic, so its zero there means unchecked, not absent.",
+                "description": "Sorted languages covered by this mechanic under `pattern`.",
                 "type": "array",
                 "items": {
                   "type": "string"
@@ -1701,17 +1953,17 @@
             ]
           },
           "LeadRows": {
-            "description": "The rows of a page, shaped by the request's `mode`; one response carries\none variant, never a mix. `full` (the default) is [`LeadRow`] with its\n`detail` text; `compact` is [`CompactLeadRow`] with no per-row text. All\nthe envelope's completeness fields mean the same thing either way.",
+            "description": "The rows of a page, shaped by `mode`.",
             "anyOf": [
               {
-                "description": "Each row is a [`LeadRow`] carrying the mechanic's clipped `detail`\ntext.",
+                "description": "Full rows carrying `detail`.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/LeadRow"
                 }
               },
               {
-                "description": "Each row is a [`CompactLeadRow`] carrying no per-row text.",
+                "description": "Compact triples without `detail`.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/CompactLeadRow"
@@ -1720,11 +1972,11 @@
             ]
           },
           "LeadRow": {
-            "description": "One lead observation: file, line (0 when the evidence carries no span),\nand the mechanic's own clipped detail text.",
+            "description": "One full-mode lead observation.",
             "type": "object",
             "properties": {
               "file": {
-                "description": "Project-relative path of the file the observation is in.",
+                "description": "Project-relative file path.",
                 "type": "string"
               },
               "line": {
@@ -1733,11 +1985,11 @@
                 "format": "int64"
               },
               "detail": {
-                "description": "The mechanic's own text: callee text, diagnostic message, or comment\ntext. Empty for path-shaped mechanics. Clipped to `MAX_DETAIL_CHARS`\ncharacters when longer — check `detail_clipped`.",
+                "description": "Clipped observation text.",
                 "type": "string"
               },
               "detail_clipped": {
-                "description": "True when `detail` was clipped to `MAX_DETAIL_CHARS`; the text is then\na prefix of the stored evidence and the remainder exists only in the\nfile itself. False means the whole stored text is present.",
+                "description": "True when `detail` was clipped to `MAX_DETAIL_CHARS`.",
                 "type": "boolean"
               }
             },
@@ -1749,19 +2001,19 @@
             ]
           },
           "CompactLeadRow": {
-            "description": "One row of a compact page: which mechanic observed what, at a path and\nline. No text is carried — read the file, or ask for `mode: full` — which\nis what makes a whole-surface sweep affordable.",
+            "description": "One compact-mode lead triple.",
             "type": "object",
             "properties": {
               "mechanic": {
-                "description": "The mechanic this row belongs to — an id from `mechanic_counts`, and\nthe id to pass as `mechanic` for that mechanic's `detail` text.",
+                "description": "Mechanic id.",
                 "type": "string"
               },
               "file": {
-                "description": "Project-relative path of the file the observation is in.",
+                "description": "Project-relative file path.",
                 "type": "string"
               },
               "line": {
-                "description": "One-based start line, or `0` when the evidence carries no span.",
+                "description": "One-based start line, or `0`.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -1773,7 +2025,7 @@
             ]
           },
           "FileCount": {
-            "description": "One file's share of a page, in first-appearance order.",
+            "description": "One file's row count on this page.",
             "type": "object",
             "properties": {
               "file": {
@@ -1781,7 +2033,7 @@
                 "type": "string"
               },
               "count": {
-                "description": "Rows of this mechanic in *this page* that belong to this file — not\nthe file's total, which is what `files_total` / `files_covered`\ntrack across pages.",
+                "description": "Rows on this page belonging to `file`.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -1797,8 +2049,6 @@
           "id",
           "source",
           "mechanics",
-          "invalid",
-          "mechanics_invalid",
           "first_count"
         ],
         "type": "object",
@@ -1826,27 +2076,14 @@
             ]
           },
           "mechanics": {
-            "description": "Every mechanic after the call: session entries (oldest first), then\nthe built-ins.",
+            "description": "Every mechanic after the call: session entries for this project (oldest\nfirst), then the built-ins.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/MechanicListing"
             }
           },
-          "invalid": {
-            "description": "Registered entries that failed to load, with the reason.",
-            "type": "array",
-            "items": {
-              "$ref": "#/$defs/InvalidMechanic"
-            }
-          },
-          "mechanics_invalid": {
-            "description": "`invalid.len()`.",
-            "type": "integer",
-            "format": "uint",
-            "minimum": 0
-          },
           "first_count": {
-            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows` under the shared `page` contract (`page.total`,\n`page.cursor`, `page.revision_id`), `files_total`,\n`files_covered` and `files_not_parsed`. As in `leads`, `files_total`\nis the number of files holding at least one row, not the files read\n(those are `covers` and the index): a query with no match has\n`page.total`, `files_total` and `files_covered` all `0`. Page on with\n`leads`, passing `page.cursor`.",
+            "description": "`add` only: the response `leads` returns for `mechanic` = `id` at the\ncurrent revision — complete counts (`mechanic_counts`: the built-ins\nand the new entry with its `count`, `files` and `covers`), the first\npage of `rows` under the shared `page` contract (`page.total`,\n`page.cursor`, `page.revision_id`), `files_total`, `files_covered` and\n`files_not_parsed`. Page on with `leads`, passing `page.cursor`.",
             "anyOf": [
               {
                 "$ref": "#/$defs/LeadsResponse"
@@ -1857,7 +2094,7 @@
             ]
           },
           "page": {
-            "description": "`list` only: the shared paging block for `mechanics`. While\n`page.cursor` is present, repeat the call with only that `cursor`;\nevery page reports the `revision_id`, `invalid` and `mechanics`\norder of page one. `add` and `remove` return the whole catalogue and\nno `page`.",
+            "description": "`list` only: the shared paging block for `mechanics`. While\n`page.cursor` is present, repeat the call with only that `cursor`;\nevery page reports the `revision_id` and `mechanics` order of page one.\n`add` and `remove` return the whole catalogue and no `page`.",
             "anyOf": [
               {
                 "$ref": "#/$defs/Page"
@@ -1882,15 +2119,15 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "ProjectControlAction": {
-            "description": "The action to take — on enables, off disables.",
+            "description": "The action to take — `on` enables, `off` disables.",
             "oneOf": [
               {
-                "description": "Create the directory `.planning/slugaudit` (the on switch), then the\nproject database, and run the initial import, so the first evidence\ncall finds a fresh index.",
+                "description": "Create `.planning/slugaudit`, build the database, and run the initial import.",
                 "type": "string",
                 "const": "on"
               },
               {
-                "description": "Delete the whole `.planning/slugaudit` directory, then `.planning` if\nthat left it empty. Tool calls on the\npath then return not-enabled until `on` runs again. A project with no\nsuch directory is a no-op reported as `\"already_disabled\"`.",
+                "description": "Delete `.planning/slugaudit` (and `.planning` when empty), clearing session state.",
                 "type": "string",
                 "const": "off"
               }
@@ -1948,11 +2185,11 @@
             ]
           },
           "ImportReport": {
-            "description": "Summary of an initial import that ran on enable.\n\nThe counts describe the project's discovered file set, not only the\nfiles that produced indexed content: a file skipped as oversize or\nunreadable still counts in `added`, and `skipped` reports how many such\nfiles the import could not include.",
+            "description": "Summary of an initial import that ran on enable.",
             "type": "object",
             "properties": {
               "added": {
-                "description": "Files discovered on disk that had no row in the previous revision —\nincluding files the import then skipped (they are counted again in\n`skipped`). `added + modified + unchanged` is the size of the\ncurrent discovered file set.",
+                "description": "Files discovered on disk that had no row in the previous revision.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -1964,7 +2201,7 @@
                 "minimum": 0
               },
               "deleted": {
-                "description": "Files the previous revision indexed but that are no longer on disk.",
+                "description": "Files the previous revision indexed that are no longer on disk.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -1976,7 +2213,7 @@
                 "minimum": 0
               },
               "skipped": {
-                "description": "Files discovery found but could not include — oversize, unreadable,\nor a path that is not valid UTF-8 — so this import holds no content\nfor them. A non-zero value means the import is incomplete; `report`'s\n`completeness` carries the per-reason breakdown after the import.",
+                "description": "Files discovery found but could not include (oversize, unreadable, non-UTF-8).",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
@@ -2000,7 +2237,7 @@
             "type": "object",
             "properties": {
               "status": {
-                "description": "One of `\"added\"` (the ignore rule was appended), `\"already_ignored\"`\n(an equivalent rule was present; file untouched), or `\"not_written\"`\n(the file was left untouched and the project is enabled anyway).",
+                "description": "One of `\"added\"`, `\"already_ignored\"`, or `\"not_written\"`.",
                 "$ref": "#/$defs/GitignoreStatus"
               },
               "path": {
@@ -2008,7 +2245,7 @@
                 "type": "string"
               },
               "error": {
-                "description": "Why nothing was written. Present only for `\"not_written\"`.",
+                "description": "Why nothing was written (`\"not_written\"` only).",
                 "type": [
                   "string",
                   "null"
@@ -2034,14 +2271,14 @@
                 "const": "already_ignored"
               },
               {
-                "description": "Nothing was written and the project is enabled anyway; the\nreport's `error` field says why.",
+                "description": "Nothing was written and the project is enabled anyway.",
                 "type": "string",
                 "const": "not_written"
               }
             ]
           },
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -2087,7 +2324,7 @@
             ]
           },
           "gitignore": {
-            "description": "What `\"on\"` did about the project-root `.gitignore`. Absent for\n`\"off\"`, which never touches that file.",
+            "description": "What `\"on\"` did about the project-root `.gitignore`. Absent for `\"off\"`.",
             "anyOf": [
               {
                 "$ref": "#/$defs/GitignoreReport"
@@ -2098,7 +2335,7 @@
             ]
           },
           "database_discard": {
-            "description": "Present only when `\"on\"` found a corrupt or outdated project database\nand discarded it, and why. Session findings live in their own database\nand are not affected.",
+            "description": "Present only when `\"on\"` found a corrupt or outdated project database\nand discarded it.",
             "anyOf": [
               {
                 "$ref": "#/$defs/DatabaseDiscard"
@@ -2144,7 +2381,7 @@
             "default": null
           },
           "page_bytes": {
-            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page.page_bytes`\nsays what applied). A larger value returns a larger page, up to the\nhard ceiling `max_query_response_bytes`: a value above the ceiling is\nclamped, and a page the ceiling cut reports `page.limited_by` =\n`ceiling`. Pages are\ncut on a row boundary; when the first row alone is larger than the page,\nits TEXT/BLOB cells are clipped to fit and listed in `clipped_cells`\nwith the `substr` expression that continues each one. Raise\n`page_bytes` to avoid clipping. May change between pages.",
+            "description": "Page size in serialized JSON bytes. Omit it for the server default\n(64 KiB unless configured otherwise; the response's `page.page_bytes`\nsays what applied). A larger value returns a larger page, up to the\nhard ceiling `max_query_response_bytes`. Pages are cut on a row\nboundary; when the first row alone is larger than the page, its\nTEXT/BLOB cells are clipped to fit and listed in `clipped_cells` with\nthe `substr` expression that continues each one. May change between\npages.",
             "type": [
               "integer",
               "null"
@@ -2160,7 +2397,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning.",
             "type": "object",
             "properties": {
               "returned": {
@@ -2170,7 +2407,7 @@
                 "minimum": 0
               },
               "total": {
-                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Null when the tool cannot count it (`structure`).",
                 "type": [
                   "integer",
                   "null"
@@ -2179,11 +2416,11 @@
                 "minimum": 0
               },
               "complete": {
-                "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
+                "description": "True when nothing remains to page and no underlying scan is partial.",
                 "type": "boolean"
               },
               "cursor": {
-                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "description": "The token for the next page, copied into the next call's `cursor`.\nOmitted when nothing remains in this stored result.",
                 "type": [
                   "string",
                   "null"
@@ -2201,27 +2438,34 @@
                 ]
               },
               "page_bytes": {
-                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "description": "Effective byte budget that applied to this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "bytes_used": {
-                "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
+                "description": "Serialized JSON bytes of this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "limited_by": {
-                "description": "What cut this page; `none` exactly when the result ended.",
+                "description": "What cut this page (or, on the final page of `structure`, what made the scan partial).",
                 "$ref": "#/$defs/PageLimit"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
+                "description": "Index revision every part of this response was read from.",
                 "type": "string"
               },
+              "current_disk_revision_id": {
+                "description": "Continuation calls only (`cursor` supplied): the `revision_id`\ncurrently on disk in `project.db` when this page was served, if readable.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+                "description": "Present only when this call discarded and rebuilt the project database.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -2243,33 +2487,33 @@
             ]
           },
           "Completeness": {
-            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "description": "Whether the scan behind a stored result covered everything it set out to.",
             "oneOf": [
               {
-                "description": "Every file or row the request selects was scanned.",
+                "description": "Every file or row the request selects was scanned without overflow.",
                 "type": "string",
                 "const": "complete"
               },
               {
-                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "description": "The scan stopped early or hit a pattern-state limit (`structure` and\ncustom-mechanic scans). Continuing is a new request that syncs, starting\nafter `resume_after_file`.",
                 "type": "object",
                 "properties": {
                   "partial": {
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
+                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
                         "type": [
                           "string",
                           "null"
                         ]
                       },
                       "files_scanned": {
-                        "description": "Files scanned before the scan stopped.",
+                        "description": "Files scanned cleanly before the scan stopped or overflowed.",
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
@@ -2297,7 +2541,7 @@
             ]
           },
           "PageLimit": {
-            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page or stopped an underlying scan.",
             "oneOf": [
               {
                 "description": "Nothing: the result ended on this page and `complete` is true.",
@@ -2315,12 +2559,12 @@
                 "const": "page_bytes"
               },
               {
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`. Page on with `cursor`.",
                 "type": "string",
                 "const": "ceiling"
               },
               {
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` cut\nthis page; repeat the call with `page.cursor` to read the next page of\nstored matches.",
                 "type": "string",
                 "const": "match_cap"
               },
@@ -2330,14 +2574,19 @@
                 "const": "scan_window"
               },
               {
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
+                "description": "`structure` or custom-mechanic scan: the execution time budget stopped\nthe scan before every file finished. Read the stored result with\n`cursor`, then resume after `resume_after_file` (or `next_start_after_file`).",
                 "type": "string",
                 "const": "time_budget"
+              },
+              {
+                "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
+                "type": "string",
+                "const": "query_match_limit"
               }
             ]
           },
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -2368,29 +2617,29 @@
                 "type": "string"
               },
               "unit": {
-                "description": "What `returned`, `total` and `next_start` count, in `substr`'s own\nunits: `\"characters\"` for text, `\"bytes\"` for a blob, and `\"bytes\"` for\na text containing a NUL (SQLite's text functions stop at a NUL, so such\na value is continued as bytes: `continue_with` casts it to a blob and\nthe rest comes back hex-encoded).",
+                "description": "`\"characters\"` for text, `\"bytes\"` for a blob or NUL-containing text.",
                 "type": "string"
               },
               "returned": {
-                "description": "How many units of the value the response carries (from the start).",
+                "description": "Units of the value carried in this response.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "total": {
-                "description": "How many units the whole value has: SQLite's `length(value)`.",
+                "description": "Total units in the full value.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "next_start": {
-                "description": "1-based position of the first unit not returned, ready for `substr`.",
+                "description": "1-based position of the first unreturned unit.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "continue_with": {
-                "description": "A ready-to-use expression for the rest of the value,\n`substr(\"<column>\", start, length)`: running it returns every remaining\nunit, not another page-sized chunk. The column name is quoted as an\nidentifier; apply the same `substr` to the expression that produced the\ncolumn. If that continuation row is itself larger than the page, its\nresponse's `clipped_cells` entry carries the next expression, and so on\nuntil the value is complete.",
+                "description": "Ready-to-use `substr(...)` continuation expression.",
                 "type": "string"
               }
             },
@@ -2406,7 +2655,7 @@
             ]
           },
           "NonFiniteCell": {
-            "description": "One REAL cell whose value JSON cannot carry (an infinity or a NaN). JSON\nhas no such number, so the cell is `null` in `rows`; this entry says it was\nnot SQL NULL and what it really was. A NaN is stored as NULL with a mark,\nand the mark restores it here.",
+            "description": "One REAL cell whose value JSON cannot carry (`Infinity`, `-Infinity`, `NaN`).",
             "type": "object",
             "properties": {
               "row": {
@@ -2449,14 +2698,14 @@
             "items": true
           },
           "clipped_cells": {
-            "description": "The TEXT/BLOB cells cut from the first row because the row alone was\nlarger than `page_bytes`; empty when nothing was cut. Each entry gives\nthe absolute `row` index, `column`, `returned` and `total` length in\n`substr` units (characters for text, bytes for a blob), `next_start`\n(1-based) and a ready `continue_with` expression. No data is lost: the\nrest of every clipped cell is one `substr` away. If this is empty,\nevery cell is complete. Only a row whose non-text cells alone exceed\nthe page (or a page smaller than one character per cell) can leave\n`page.bytes_used` above `page.page_bytes`.",
+            "description": "The TEXT/BLOB cells cut from the first row because the row alone was\nlarger than `page_bytes`; empty when nothing was cut.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/ClippedCell"
             }
           },
           "non_finite_cells": {
-            "description": "REAL cells that are `null` in `rows` only because JSON cannot carry an\ninfinity: each entry gives the absolute `row`, the `column` and the real\n`value` (`\"Infinity\"`, `\"-Infinity\"` or `\"NaN\"`). A `null` that is not\nlisted here is SQL NULL. Empty when every REAL is finite.",
+            "description": "REAL cells that are `null` in `rows` only because JSON cannot carry an\ninfinity or NaN. Empty when every REAL is finite.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/NonFiniteCell"
@@ -2490,7 +2739,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -2544,7 +2793,7 @@
                 "type": "boolean"
               },
               "unrepresentable_path_count": {
-                "description": "Discovered files whose project-relative path is not valid UTF-8, so\nno `files` row can represent them and they cannot be stored, skipped\nor named in this report. Sync persists this set during every full\ndiscovery, so the count is read from the index rather than from a\nwalk run for this report. It is project-level — describing the tree\nas of the sync that\nproduced this report, not a particular revision — and is included in\n`index_partial`.",
+                "description": "Discovered files whose project-relative path is not valid UTF-8, so\nno `files` row can represent them and they cannot be stored, skipped\nor named in this report. Sync persists this set during every full\ndiscovery, so the count is read from the index rather than from a\nwalk run for this report. It is project-level — describing the tree\nas of the sync that produced this report, not a particular revision —\nand is included in `index_partial`.",
                 "type": "integer",
                 "format": "int64"
               },
@@ -2670,9 +2919,11 @@
             "type": "object",
             "properties": {
               "language": {
+                "description": "Detected language name stored in `files.language`.",
                 "type": "string"
               },
               "file_count": {
+                "description": "Number of `files` rows attributed to `language`.",
                 "type": "integer",
                 "format": "int64"
               },
@@ -2692,9 +2943,11 @@
             "type": "object",
             "properties": {
               "kind": {
+                "description": "Evidence kind stored in `evidence.kind`.",
                 "type": "string"
               },
               "count": {
+                "description": "Number of `evidence` rows of this `kind`.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -2709,9 +2962,11 @@
             "type": "object",
             "properties": {
               "path": {
+                "description": "Project-relative file path.",
                 "type": "string"
               },
               "parse_outcome": {
+                "description": "Recorded `files.parse_outcome`.",
                 "type": "string"
               },
               "parse_error_reason": {
@@ -2747,6 +3002,7 @@
                 "type": "string"
               },
               "count": {
+                "description": "Number of `dependency_edges` rows with this `resolution_kind`.",
                 "type": "integer",
                 "format": "int64"
               }
@@ -2793,31 +3049,23 @@
             "type": "object",
             "properties": {
               "note": {
-                "description": "Present on the first `report` of this server only; `null` after.",
+                "description": "Present on the first `report` for this project on this server only; `null` after.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "entries": {
-                "description": "Every loaded mechanic: session, then builtin.",
+                "description": "Every loaded mechanic for this project: session, then builtin.",
                 "type": "array",
                 "items": {
                   "$ref": "#/$defs/MechanicListing"
-                }
-              },
-              "invalid": {
-                "description": "Registered entries that failed to load, each with its error. Never\ndropped: a compile error or an id collision stays listed here.",
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/InvalidMechanic"
                 }
               }
             },
             "required": [
               "note",
-              "entries",
-              "invalid"
+              "entries"
             ]
           },
           "MechanicListing": {
@@ -2876,36 +3124,6 @@
                 "const": "builtin"
               }
             ]
-          },
-          "InvalidMechanic": {
-            "description": "A registered entry that could not be loaded, with the reason. It is not\ncounted by `leads` until it is removed, and it is never dropped from this\nlist.",
-            "type": "object",
-            "properties": {
-              "source": {
-                "description": "`session`: the entry was registered on this server.",
-                "$ref": "#/$defs/MechanicSource"
-              },
-              "index": {
-                "description": "Position in the session list (oldest first).",
-                "type": "integer",
-                "format": "uint",
-                "minimum": 0
-              },
-              "id": {
-                "description": "The entry's id; every entry has one.",
-                "type": "string"
-              },
-              "error": {
-                "description": "Why it was not loaded: a compile error, a broken field rule, or an id\ncollision.",
-                "type": "string"
-              }
-            },
-            "required": [
-              "source",
-              "index",
-              "id",
-              "error"
-            ]
           }
         },
         "required": [
@@ -2923,8 +3141,7 @@
           "diagnostic_count",
           "unsupported_language_unresolved_count",
           "credential_pattern_file_count",
-          "mechanics",
-          "mechanics_invalid"
+          "mechanics"
         ],
         "type": "object",
         "properties": {
@@ -3017,14 +3234,8 @@
             "format": "int64"
           },
           "mechanics": {
-            "description": "Every mechanic `leads` counts — session entries, then the built-ins —\nwith its source and the author's note,\nplus the registered entries that failed to load. On the first\n`report` of this server only, `note` also explains how mechanics\nwork.",
+            "description": "Every mechanic `leads` counts — session entries for this project, then\nthe built-ins — with its source and the author's note. On the first\n`report` for this project on this server only, `note` also explains how\nmechanics work.",
             "$ref": "#/$defs/ReportMechanics"
-          },
-          "mechanics_invalid": {
-            "description": "`mechanics.invalid.len()`: registered entries that failed to load and\nare not counted by `leads` until fixed or removed.",
-            "type": "integer",
-            "format": "uint",
-            "minimum": 0
           }
         }
       },
@@ -3078,7 +3289,7 @@
             "default": null
           },
           "query": {
-            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nFor patterns normalized evidence and `query` can't easily express.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default); a\nlonger query is refused with `invalid_params` before it is compiled.\nRequired without `cursor`; ignored with one.",
+            "description": "A tree-sitter S-expression query, e.g. `(function_item name: (identifier) @name)`.\nAt most `max_structure_query_bytes` UTF-8 bytes (16384 by default).\nRequired without `cursor`; ignored with one.",
             "type": "string",
             "default": ""
           },
@@ -3091,7 +3302,7 @@
             "default": null
           },
           "page_bytes": {
-            "description": "Page size in serialized JSON bytes of `matches`. Omit it for the server\ndefault (64 KiB unless configured otherwise; the response's\n`page.page_bytes` says what applied). A value above the hard ceiling\n`max_query_response_bytes` is clamped, and a page the ceiling cut\nreports `page.limited_by` = `ceiling`. Pages are cut on a match\nboundary; the first\nmatch is always returned, so a single match larger than the page\narrives whole (its own `text_truncated` flag covers the 1 MB text cap).",
+            "description": "Page size in serialized JSON bytes of `matches`. Omit it for the server\ndefault (64 KiB unless configured otherwise; `page.page_bytes` says\nwhat applied). Clamped to `max_query_response_bytes`. Pages are cut on\nexact match boundaries at `min(page_bytes, max_structure_matches)`.",
             "type": [
               "integer",
               "null"
@@ -3101,7 +3312,7 @@
             "default": null
           },
           "start_after_file": {
-            "description": "Multi-file queries only: scan only files whose path sorts strictly\nafter this one. To scan the files a window-limited result did not\nreach, make a new request with `start_after_file` set to the result's\n`resume_after_file` (also reported as `next_start_after_file`); it\nsyncs and describes the current tree.",
+            "description": "Multi-file queries only: scan only files whose path sorts strictly\nafter this one.",
             "type": [
               "string",
               "null"
@@ -3115,7 +3326,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$defs": {
           "Page": {
-            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning. To page: while `cursor` is present, repeat\nthe call with only that `cursor` (plus `page_bytes`, and `limit` on\n`leads`, to resize the page); it names a result stored when the first call\nran, so the rows do not move, `revision_id` is that of the first call, and\nno `path` is needed. `cursor` is absent exactly when `complete` is true.\n`structure` alone has a second step after the last page: when `completeness`\nis `partial`, make a new request with `start_after_file` =\n`next_start_after_file`.",
+            "description": "One page of a paged result; every paged tool carries these fields under\n`page` with the same meaning.",
             "type": "object",
             "properties": {
               "returned": {
@@ -3125,7 +3336,7 @@
                 "minimum": 0
               },
               "total": {
-                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Always present; null when the tool cannot count it\n(always on `structure`; on `query` when counting ran out of budget).\nWhat it counts is on each tool's `page` property.",
+                "description": "Items the whole request selects, ignoring the page cut;\nnever an estimate. Null when the tool cannot count it (`structure`).",
                 "type": [
                   "integer",
                   "null"
@@ -3134,11 +3345,11 @@
                 "minimum": 0
               },
               "complete": {
-                "description": "True when nothing remains to page. For `structure` it also means no\nscan window remains (no `next_start_after_file`).",
+                "description": "True when nothing remains to page and no underlying scan is partial.",
                 "type": "boolean"
               },
               "cursor": {
-                "description": "The token for the next page, copied exactly into the next call's\n`cursor`. Omitted when nothing remains (`complete`). A cursor does not\nsurvive a server restart.",
+                "description": "The token for the next page, copied into the next call's `cursor`.\nOmitted when nothing remains in this stored result.",
                 "type": [
                   "string",
                   "null"
@@ -3156,27 +3367,34 @@
                 ]
               },
               "page_bytes": {
-                "description": "The byte budget that applied to this page's items, in serialized JSON\nbytes: the request's `page_bytes` or the server default\n(`default_page_bytes`, 64 KiB unless configured), after the clamp to\nthe ceiling `max_query_response_bytes`. `limited_by` = `ceiling` says\nthe clamp acted on a cut page.",
+                "description": "Effective byte budget that applied to this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "bytes_used": {
-                "description": "Serialized JSON bytes of this page's items. The first item is always\nreturned so paging advances, so this exceeds `page_bytes` only when\nthat item alone is larger: `leads` sets `oversized_row`, `query` clips\ncells (`clipped_cells`, `non_finite_cells`), `finding_read` sets the\nrow's `detail_clipped`; `structure` has no flag.",
+                "description": "Serialized JSON bytes of this page's items.",
                 "type": "integer",
                 "format": "uint",
                 "minimum": 0
               },
               "limited_by": {
-                "description": "What cut this page; `none` exactly when the result ended.",
+                "description": "What cut this page (or, on the final page of `structure`, what made the scan partial).",
                 "$ref": "#/$defs/PageLimit"
               },
               "revision_id": {
-                "description": "The index revision every part of this response was read from: that of\nthe call that made the result, on every page.",
+                "description": "Index revision every part of this response was read from.",
                 "type": "string"
               },
+              "current_disk_revision_id": {
+                "description": "Continuation calls only (`cursor` supplied): the `revision_id`\ncurrently on disk in `project.db` when this page was served, if readable.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "database_discard": {
-                "description": "Present only when this call discarded and rebuilt the project\ndatabase (corruption, version bump, root mismatch), and why. Session\nfindings live in their own database and are not affected.",
+                "description": "Present only when this call discarded and rebuilt the project database.",
                 "anyOf": [
                   {
                     "$ref": "#/$defs/DatabaseDiscard"
@@ -3198,33 +3416,33 @@
             ]
           },
           "Completeness": {
-            "description": "Whether the scan behind a stored result covered everything it set out to.\nIt is written once with the result, so every page of that result reports\nthe same value, however many calls the caller takes to read it.",
+            "description": "Whether the scan behind a stored result covered everything it set out to.",
             "oneOf": [
               {
-                "description": "Every file or row the request selects was scanned.",
+                "description": "Every file or row the request selects was scanned without overflow.",
                 "type": "string",
                 "const": "complete"
               },
               {
-                "description": "The scan stopped early (`structure` and custom-mechanic scans, which\nrun under a file window and the call deadline). Continuing is a new\nrequest that syncs, starting after `resume_after_file`.",
+                "description": "The scan stopped early or hit a pattern-state limit (`structure` and\ncustom-mechanic scans). Continuing is a new request that syncs, starting\nafter `resume_after_file`.",
                 "type": "object",
                 "properties": {
                   "partial": {
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that stopped the scan (`scan_window` or `time_budget`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned; the new request resumes after it. For\na `leads` scan of registered mechanics, which scans one language\nafter another, it is the last file of the language the deadline\nstopped in: earlier languages were finished, later ones not started.",
+                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
                         "type": [
                           "string",
                           "null"
                         ]
                       },
                       "files_scanned": {
-                        "description": "Files scanned before the scan stopped.",
+                        "description": "Files scanned cleanly before the scan stopped or overflowed.",
                         "type": "integer",
                         "format": "uint64",
                         "minimum": 0
@@ -3252,7 +3470,7 @@
             ]
           },
           "PageLimit": {
-            "description": "What cut a page. It reports the bound that acted, never a judgment about\nwhether the page was the right size.",
+            "description": "What cut a page or stopped an underlying scan.",
             "oneOf": [
               {
                 "description": "Nothing: the result ended on this page and `complete` is true.",
@@ -3270,12 +3488,12 @@
                 "const": "page_bytes"
               },
               {
-                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`: the requested (or configured default)\n`page_bytes` was at or above it and was clamped. A larger `page_bytes`\nreturns nothing more; page on with `cursor`.",
+                "description": "The byte budget was reached and that budget is the server ceiling\n`max_query_response_bytes`. Page on with `cursor`.",
                 "type": "string",
                 "const": "ceiling"
               },
               {
-                "description": "`structure` only: the per-page match cap `max_structure_matches` was\nreached; more matches exist and `cursor` continues. A larger\n`page_bytes` does not lift it.",
+                "description": "`structure` only: the per-page match cap `max_structure_matches` cut\nthis page; repeat the call with `page.cursor` to read the next page of\nstored matches.",
                 "type": "string",
                 "const": "match_cap"
               },
@@ -3285,14 +3503,19 @@
                 "const": "scan_window"
               },
               {
-                "description": "`structure` only: the execution time budget cancelled the parse of\n`parse_timed_out_file`. Read the stored result to its end with\n`cursor`, then make a new request with `start_after_file` =\n`next_start_after_file` (that file).",
+                "description": "`structure` or custom-mechanic scan: the execution time budget stopped\nthe scan before every file finished. Read the stored result with\n`cursor`, then resume after `resume_after_file` (or `next_start_after_file`).",
                 "type": "string",
                 "const": "time_budget"
+              },
+              {
+                "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
+                "type": "string",
+                "const": "query_match_limit"
               }
             ]
           },
           "DatabaseDiscard": {
-            "description": "A project database was discarded and rebuilt from source during this\ncall. Present only on the call that discarded it.",
+            "description": "Caller-facing record reported on the single call that discarded and rebuilt\na corrupt or stale `project.db`.",
             "type": "object",
             "properties": {
               "cause": {
@@ -3309,20 +3532,25 @@
             "type": "object",
             "properties": {
               "file": {
+                "description": "Project-relative file path.",
                 "type": "string"
               },
               "capture_name": {
+                "description": "Capture name without `@`.",
                 "type": "string"
               },
               "node_kind": {
+                "description": "Tree-sitter node kind.",
                 "type": "string"
               },
               "start_byte": {
+                "description": "Zero-based inclusive start byte offset.",
                 "type": "integer",
                 "format": "uint64",
                 "minimum": 0
               },
               "end_byte": {
+                "description": "Zero-based exclusive end byte offset.",
                 "type": "integer",
                 "format": "uint64",
                 "minimum": 0
@@ -3334,6 +3562,7 @@
                 "minimum": 0
               },
               "start_column": {
+                "description": "Zero-based character column on `start_line`.",
                 "type": "integer",
                 "format": "uint32",
                 "minimum": 0
@@ -3345,17 +3574,21 @@
                 "minimum": 0
               },
               "end_column": {
+                "description": "Zero-based character column on `end_line`.",
                 "type": "integer",
                 "format": "uint32",
                 "minimum": 0
               },
               "text": {
+                "description": "Matched text or 1-line snippet.",
                 "type": "string"
               },
               "text_truncated": {
+                "description": "True when `text` was truncated to fit the text/snippet cap or spans multiple lines in snippet mode.",
                 "type": "boolean"
               },
               "extraction_failed": {
+                "description": "True when UTF-8 decoding or capture naming failed.",
                 "type": "boolean"
               }
             },
@@ -3390,7 +3623,7 @@
         "type": "object",
         "properties": {
           "page": {
-            "description": "Paging for `matches`. `cursor` pages through the stored result;\n`completeness` says whether the scan behind it covered everything\n(`partial` names `resume_after_file`). `complete` means no page and no\nscan window remains. `total` is always null (counting needs the whole\nscan).",
+            "description": "Paging for `matches`. `cursor` pages through the stored result;\n`completeness` says whether the scan behind it covered everything.",
             "$ref": "#/$defs/Page"
           },
           "language": {
@@ -3398,21 +3631,21 @@
             "type": "string"
           },
           "notices": {
-            "description": "One line when `language` is untested (only Rust is tested; other\ngrammars are downloaded on first use and their results are\nbest-effort); empty otherwise.",
+            "description": "One line when `language` is untested; empty otherwise.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "matches": {
-            "description": "This page's matches in scan order. The first match is always returned,\nso paging always advances.",
+            "description": "This page's matches in scan order.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/StructureMatch"
             }
           },
           "files_not_scanned": {
-            "description": "Multi-file only: matching files past the memory window that were not\nloaded into this call's scan window, so certainly not scanned. Zero\nmeans every matching file after `start_after_file` was loaded into the\nwindow. When above 0 the stored result is `partial` and\n`page.complete` is false: read it to the end with `page.cursor`, then\nmake a new request with `start_after_file` = `next_start_after_file`.",
+            "description": "Multi-file only: matching files past the memory window not loaded in this call.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -3424,27 +3657,27 @@
             "minimum": 0
           },
           "next_start_after_file": {
-            "description": "The `start_after_file` for the new request that scans past this\nresult (the result's `resume_after_file`). Present when\n`files_not_scanned` > 0 (`completeness.limited_by` = `scan_window`),\nor when `parse_timed_out_file` is set (then it is that file, so the\nnew request skips it; `completeness.limited_by` = `time_budget`).",
+            "description": "The `start_after_file` for the new request that scans past this partial result.",
             "type": [
               "string",
               "null"
             ]
           },
           "unparsed_files": {
-            "description": "Multi-file only: files the parser produced no syntax tree for, so they\ncontributed no matches. Empty when none.",
+            "description": "Multi-file only: files the parser produced no syntax tree for.",
             "type": "array",
             "items": {
               "type": "string"
             }
           },
           "files_over_parse_limit": {
-            "description": "Multi-file only: matching files in this window's path range larger\nthan `max_parse_bytes` (or the 64 MiB scan window, if smaller). They\nwere skipped without being loaded and contributed no matches; their\ncontent is still searchable via `query`. When above 0 the result does\nnot cover every matching file.",
+            "description": "Multi-file only: matching files larger than `max_parse_bytes` (or the scan window).",
             "type": "integer",
             "format": "uint",
             "minimum": 0
           },
           "parse_timed_out_file": {
-            "description": "Multi-file only: set when the execution time budget ran out while this\nfile was being parsed. The parse was cancelled, the scan stopped, and\n`matches` holds only what earlier files produced: the result is\npartial. Make a new request with `start_after_file` =\n`next_start_after_file` (this file) to continue past it. A single-file\nquery whose parse runs out of time is refused with the\nexecution-budget error instead.",
+            "description": "Multi-file only: set when the execution time budget ran out while this file was parsed.",
             "type": [
               "string",
               "null"

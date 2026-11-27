@@ -139,7 +139,7 @@ fn a_database_open_failure_warn_logs_real_path() -> TestResult {
 /// error text reach the WARN.
 #[test]
 fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() -> TestResult {
-    use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
+    use super::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let error = crate::store::StoreError::Missing;
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
@@ -184,12 +184,13 @@ fn an_open_corrupt_recovery_warn_logs_real_path_and_source_error() -> TestResult
 /// and both versions.
 #[test]
 fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() -> TestResult {
-    use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
+    use super::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         log_database_recovery(
             database,
             &DatabaseRecovery::IncompatibleVersion {
+                operation: "verify_project_database",
                 contract_version: 7,
                 schema_version: 9,
             },
@@ -237,7 +238,7 @@ fn an_incompatible_version_recovery_warn_logs_real_path_and_versions() -> TestRe
 /// The open-failure (non-discarding) record also carries the source error.
 #[test]
 fn an_open_failed_recovery_warn_logs_the_source_error() -> TestResult {
-    use crate::sync::recovery_log::{DatabaseRecovery, log_database_recovery};
+    use super::{DatabaseRecovery, log_database_recovery};
     let database = std::path::Path::new("/home/private-user/secret-repo/project.db");
     let error = crate::store::StoreError::Missing;
 
@@ -271,7 +272,7 @@ fn a_missing_revision_error_names_the_real_database_path() -> TestResult {
     let connection = crate::store::open_read_write(&database).check("open db")?;
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::sync::manager_meta::revision_after_sync(&connection, &database)
+        crate::sync::project_meta::revision_after_sync(&connection, &database)
     })?;
 
     let error = result.err().check("no revision must surface as an error")?;
@@ -310,7 +311,7 @@ fn a_failed_revision_read_error_names_the_database_path_and_cause() -> TestResul
         .check("drop the revisions table")?;
 
     let (result, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::sync::manager_meta::revision_after_sync(&connection, &database)
+        crate::sync::project_meta::revision_after_sync(&connection, &database)
     })?;
 
     let error = result

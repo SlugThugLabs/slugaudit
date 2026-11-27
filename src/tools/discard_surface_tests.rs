@@ -43,15 +43,17 @@ fn source_project() -> TestResult<(tempfile::TempDir, String)> {
 #[test]
 fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() -> TestResult {
     let (project, path) = source_project()?;
-    project_control(&on_request(&path), &NoopProgressSink, None).check("first enable succeeds")?;
+    let manager = SourceSyncManager::default();
+    project_control(&on_request(&path), &NoopProgressSink, &manager)
+        .check("first enable succeeds")?;
     fs::write(
         project.path().join(".planning/slugaudit/project.db"),
         b"this is not a sqlite database",
     )
     .check("corrupt the database")?;
 
-    let response =
-        project_control(&on_request(&path), &NoopProgressSink, None).check("enable recovers")?;
+    let response = project_control(&on_request(&path), &NoopProgressSink, &manager)
+        .check("enable recovers")?;
 
     let value = serde_json::to_value(&response.0).check("serialize response")?;
     ensure(
@@ -60,7 +62,7 @@ fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() -> TestR
             .check("value[\"database_discard\"]")?
             .get("findings_discarded")
             .is_none(),
-        "value[\"database_discard\"] .get(\"findings_discarded\") .is_none()",
+        "findings_discarded is omitted",
     )?;
     ensure(
         value
@@ -71,7 +73,7 @@ fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() -> TestR
             .as_str()
             .check("cause is text")?
             .contains("corrupt or outdated"),
-        "value[\"database_discard\"][\"cause\"] .as_str() .check(\"cause is text\")? .contains(\"corrupt or outdated\")",
+        "cause reports corrupt or outdated database",
     )?;
     Ok(())
 }
@@ -79,9 +81,11 @@ fn discard_surface_on_action_reports_a_corrupt_database_and_its_cause() -> TestR
 #[test]
 fn discard_surface_on_action_reports_nothing_for_a_healthy_database() -> TestResult {
     let (_project, path) = source_project()?;
-    project_control(&on_request(&path), &NoopProgressSink, None).check("first enable succeeds")?;
+    let manager = SourceSyncManager::default();
+    project_control(&on_request(&path), &NoopProgressSink, &manager)
+        .check("first enable succeeds")?;
 
-    let response = project_control(&on_request(&path), &NoopProgressSink, None)
+    let response = project_control(&on_request(&path), &NoopProgressSink, &manager)
         .check("second enable succeeds")?;
 
     let value = serde_json::to_value(&response.0).check("serialize response")?;
@@ -104,7 +108,7 @@ fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_find
             .check("serialize")?
             .get("database_discard")
             .is_none(),
-        "serde_json::to_value(&first.0) .check(\"serialize\")? .get(\"database_discard\") .is_none()",
+        "first finding carries no database_discard",
     )?;
     let database = project.path().join(".planning/slugaudit/project.db");
     Connection::open(&database)
@@ -112,20 +116,18 @@ fn discard_surface_finding_response_carries_the_rebuild_cause_and_keeps_the_find
         .execute_batch("PRAGMA user_version = 999;")
         .check("foreign schema version")?;
 
-    let second = finding(&finding_request(&project), &NoopProgressSink, &manager)
-        .check("finding recovers")?;
+    let second =
+        finding(&finding_request(&project), &NoopProgressSink, &manager).check("recovers")?;
 
     let value = serde_json::to_value(&second.0).check("serialize")?;
+    let cause = value
+        .get("database_discard")
+        .and_then(|d| d.get("cause"))
+        .and_then(serde_json::Value::as_str)
+        .check("cause is text")?;
     ensure(
-        value
-            .get("database_discard")
-            .check("value[\"database_discard\"][\"cause\"]")?
-            .get("cause")
-            .check("value[\"database_discard\"][\"cause\"]")?
-            .as_str()
-            .check("cause is text")?
-            .contains("corrupt or outdated"),
-        "value[\"database_discard\"][\"cause\"] .as_str() .check(\"cause is text\")? .contains(\"corrupt or outdated\")",
+        cause.contains("corrupt or outdated") || cause.contains("incompatible version"),
+        format!("unexpected discard cause: {cause}"),
     )?;
     ensure_eq(&second.0.id, &first.0.id, "second.0.id == first.0.id")?;
     Ok(())

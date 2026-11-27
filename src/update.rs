@@ -7,43 +7,26 @@
 //! (`SourceSyncManager::ensure_current`). So "upgrade" really is just
 //! replacing the executable at the same path: agent configs point at the
 //! stable path and keep working, and project indexes are disposable.
-//!
-//! Design notes:
-//! - We shell out to `curl` rather than pulling in an HTTP client
-//!   dependency. The repo deliberately keeps its dependency graph lean and
-//!   hand-reviews every direct dependency (see `deny.toml` + the README's
-//!   dependency policy), so an HTTP stack for one subcommand isn't worth
-//!   the tree.
-//! - The download is verified against the release's `SHA256SUMS` before the
-//!   old binary is touched. If verification fails, nothing is replaced and
-//!   the current binary stays intact.
-//! - Replacement is atomic: the new binary is written to a temp file in the
-//!   target directory, then `rename`d over the old one, so a crash mid-copy
-//!   never leaves a truncated executable behind. On the same filesystem,
-//!   `std::fs::rename` is atomic.
-//! - The displaced binary is retained as `slugaudit.prev` beside the new one
-//!   (copied before the rename, so the atomicity above still holds and the copy
-//!   comes from a complete file). An update that turns out to be worse than the
-//!   version it replaced can therefore be undone without a download. The copy
-//!   is overwritten by the next install or
-//!   update, and nothing else reads it.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 use update_fetch::{
-    ASSET, ASSET_ARCH, ASSET_OS, CHECKSUMS_MAX_BYTES, LatestRelease, UpdateDecision, download,
-    download_capped, fetch_latest_release, platform_supported, update_decision,
+    ASSET, ASSET_ARCH, ASSET_OS, CHECKSUMS_MAX_BYTES, LatestRelease, download, download_capped,
+    fetch_latest_release, platform_supported,
 };
-
-#[cfg(test)]
-use update_proc::parse_binary_version;
-use update_proc::{installed_version, parse_expected_digest};
+use update_verify::{UpdateDecision, installed_version, update_decision, verify_checksum};
 
 #[path = "update_fetch.rs"]
 mod update_fetch;
 
 #[path = "update_proc.rs"]
 mod update_proc;
+
+#[path = "update_verify.rs"]
+mod update_verify;
+
+static UPDATE_STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Error)]
 /// Self-update failures. Each names the real cause (spawn, network, checksum,
@@ -127,9 +110,22 @@ fn resolve_binaries() -> Result<(PathBuf, PathBuf), UpdateError> {
     Ok((running, target))
 }
 
-#[cfg(test)]
-fn target_binary() -> Result<PathBuf, UpdateError> {
-    resolve_binaries().map(|(_, target)| target)
+/// Atomically reserves a brand-new staging file inside `dir` with `O_EXCL`
+/// (`create_new(true)`) so `curl -o` never follows a pre-existing symlink or
+/// clobbers an existing file.
+fn create_staging_file(dir: &Path, filename: &str) -> Result<PathBuf, UpdateError> {
+    let path = dir.join(filename);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map(drop)
+        .map_err(|source| UpdateError::Stage {
+            action: "create staging file",
+            path: path.clone(),
+            source,
+        })?;
+    Ok(path)
 }
 
 /// Downloads the release, verifies its checksum, and atomically replaces the
@@ -144,13 +140,19 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
         ),
     })?;
 
-    // Unique temp names: checksum verification compares digests directly
-    // (see `verify_checksum`), not by `sha256sum -c` filename matching, so
-    // the temp binary need not be named exactly `ASSET` — which
-    // would otherwise overwrite a same-named file a user had placed in the
-    // directory before verification had a chance to run.
-    let temp_exe = dir.join(format!(".slugaudit-update-{}-{ASSET}", std::process::id()));
-    let temp_sums = dir.join(format!("{ASSET}-{}-SHA256SUMS", std::process::id()));
+    let seq = UPDATE_STAGING_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let temp_exe = create_staging_file(dir, &format!(".slugaudit-update-{pid}-{seq}-{ASSET}.tmp"))?;
+    let temp_sums = match create_staging_file(
+        dir,
+        &format!(".slugaudit-update-{pid}-{seq}-SHA256SUMS.tmp"),
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            crate::install::remove_leftover(&temp_exe, "could not remove update temporary file");
+            return Err(error);
+        }
+    };
 
     let result = (|| -> Result<(), UpdateError> {
         download(&latest.asset_url, &temp_exe, "download binary to")?;
@@ -161,63 +163,17 @@ fn apply_update(latest: &LatestRelease, target: &Path) -> Result<(), UpdateError
             CHECKSUMS_MAX_BYTES,
         )?;
         verify_checksum(&temp_exe, &temp_sums)?;
-        crate::install_place::place_staged_binary(&temp_exe, target).map_err(|e| {
-            UpdateError::Stage {
-                action: e.action,
-                path: e.path,
-                source: e.source,
-            }
+        crate::install::place_staged_binary(&temp_exe, target).map_err(|e| UpdateError::Stage {
+            action: e.action,
+            path: e.path,
+            source: e.source,
         })
     })();
 
     // Best-effort cleanup of temp files whether or not we succeeded.
-    crate::install_place::remove_leftover(&temp_exe, "could not remove update temporary file");
-    crate::install_place::remove_leftover(&temp_sums, "could not remove update temporary file");
+    crate::install::remove_leftover(&temp_exe, "could not remove update temporary file");
+    crate::install::remove_leftover(&temp_sums, "could not remove update temporary file");
     result
-}
-
-/// Verifies `binary_path` against the `ASSET` entry in the SHA256SUMS text
-/// in `sums_path` by comparing SHA-256 hex digests directly. Unlike
-/// `sha256sum -c` (which matches entries by filename relative to the working
-/// directory), this needs no filename agreement, so the temp binary can carry
-/// a unique name instead of the exact asset filename. Fails if the sums file
-/// has no `ASSET` entry, or if the digests differ — the old binary is never
-/// touched on failure.
-fn verify_checksum(binary_path: &Path, sums_path: &Path) -> Result<(), UpdateError> {
-    let sums = crate::util::read_file_capped(sums_path, CHECKSUMS_MAX_BYTES)
-        .map_err(|error| UpdateError::Checksum(format!("reading checksums: {error}")))?;
-    let expected = parse_expected_digest(&sums)?;
-
-    let output = std::process::Command::new("sha256sum")
-        .arg("--")
-        .arg(binary_path)
-        .output()
-        .map_err(|error| UpdateError::ToolSpawn {
-            tool: "sha256sum",
-            source: error,
-        })?;
-    if !output.status.success() {
-        return Err(UpdateError::Checksum(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    let actual = parse_digest(&String::from_utf8_lossy(&output.stdout))?;
-    if actual != expected {
-        return Err(UpdateError::Checksum(format!(
-            "checksum mismatch for {ASSET}: expected {expected}, got {actual}"
-        )));
-    }
-    Ok(())
-}
-
-/// The lowercase digest `sha256sum` printed (its first token). Output with no
-/// token is a parse failure, named as such rather than compared as `""`.
-fn parse_digest(stdout: &str) -> Result<String, UpdateError> {
-    stdout
-        .split_whitespace()
-        .next()
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| UpdateError::Checksum("sha256sum printed no digest".to_owned()))
 }
 
 /// Refuses a platform the single published asset cannot run on. Takes the
@@ -248,9 +204,6 @@ pub fn run_update() -> Result<(), UpdateError> {
     let current = installed_version(&running, &target);
     let latest = fetch_latest_release()?;
 
-    // Compare by version when the target build carries a numeric version; if
-    // it doesn't parse (e.g. a dev build) and the published latest is a valid
-    // numeric release, assume the published latest is what we want and proceed.
     match update_decision(&current, &latest.version)? {
         UpdateDecision::UpToDate => {
             crate::cli::out(format_args!(
@@ -265,11 +218,6 @@ pub fn run_update() -> Result<(), UpdateError> {
             ))?;
         }
         UpdateDecision::Incomparable => {
-            // The comparison could not be made — one side is not a plain
-            // dotted number, which a dev build is not. Falling back to
-            // fetching is deliberate (the comment above records that), but
-            // saying "a newer release is available" would assert a comparison
-            // that never happened.
             crate::cli::out(format_args!(
                 "This build's version ({current}) could not be compared with the \
                  published {tag}; fetching it as though it were newer.\n",

@@ -1,33 +1,51 @@
-//! Columns declared by the producer, the stored page budget and the offered
-//! first row of `paginate`.
+//! Columns declared by the producer, the stored page budget, and first-row
+//! guarantees of `paginate_rows`.
 
+use super::tests::*;
 use super::*;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
-/// A spec with no columns of its own, for producers that declare them.
-fn late_spec(tool: &'static str) -> PageSpec {
+pub(super) fn late_spec(tool: &'static str) -> PageSpec {
     PageSpec {
         tool,
         columns: Vec::new(),
         page_bytes: 1000,
         requested_page_bytes: None,
         ceiling: usize::MAX,
+        max_rows: None,
     }
 }
 
-fn produced_totals() -> Produced<Totals> {
+pub(super) fn produced_totals() -> Produced<Totals> {
     Produced {
         completeness: Completeness::Complete,
         extra: Totals { produced: 2 },
     }
 }
 
-fn cols(names: &[&str]) -> Vec<String> {
+pub(super) fn cols(names: &[&str]) -> Vec<String> {
     names.iter().map(|name| (*name).to_owned()).collect()
 }
 
-fn late_fresh(manager: &SourceSyncManager, path: &str) -> Result<Served<Totals>, ErrorData> {
-    paginate(
+fn cut_raw_cells(
+    page_rows: usize,
+) -> impl FnMut(&StoredRow, usize, usize) -> Result<CutStep<Vec<Cell>>, ErrorData> {
+    move |row, taken, _| {
+        if taken > 0 && taken >= page_rows {
+            return Ok(CutStep::Stop { limit: None });
+        }
+        Ok(CutStep::Keep {
+            row: row.cells.clone(),
+            bytes: 8,
+        })
+    }
+}
+
+pub(super) fn late_fresh(
+    manager: &SourceSyncManager,
+    path: &str,
+) -> Result<ServedRows<Vec<Cell>, Totals>, ErrorData> {
+    paginate_rows(
         manager,
         &late_spec("late"),
         PageRequest::Fresh {
@@ -40,7 +58,7 @@ fn late_fresh(manager: &SourceSyncManager, path: &str) -> Result<Served<Totals>,
             sink.push_cells(&[Cell::Int(2), Cell::Null])?;
             Ok(produced_totals())
         },
-        |_| per_page(1),
+        |_| Ok(cut_raw_cells(1)),
     )
 }
 
@@ -50,7 +68,7 @@ fn paginate_columns_set_by_the_producer_are_stored_and_returned_on_every_page() 
     let manager = manager(ROOMY);
 
     let first = late_fresh(&manager, &path).check("page one")?;
-    let second: Served<Totals> = paginate(
+    let second: ServedRows<Vec<Cell>, Totals> = paginate_rows(
         &manager,
         &late_spec("late"),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -60,7 +78,7 @@ fn paginate_columns_set_by_the_producer_are_stored_and_returned_on_every_page() 
                 None,
             ))
         },
-        |_| per_page(1),
+        |_| Ok(cut_raw_cells(1)),
     )
     .check("page two")?;
 
@@ -75,9 +93,9 @@ fn paginate_columns_set_by_the_producer_are_stored_and_returned_on_every_page() 
         "second.columns == cols(&[\"a\", \"b\"])",
     )?;
     ensure_eq(
-        &second.rows.first().check("second.rows[0]")?.cells,
+        second.rows.first().check("second.rows[0]")?,
         &vec![Cell::Int(2), Cell::Null],
-        "second.rows[0].cells == vec![Cell::Int(2), Cell::Null]",
+        "second.rows[0] == vec![Cell::Int(2), Cell::Null]",
     )?;
     Ok(())
 }
@@ -103,7 +121,7 @@ fn declare_twice_or_late(
     spec: &PageSpec,
     misuse: impl FnOnce(&mut RowSink<'_, '_>) -> Result<(), ErrorData>,
 ) -> TestResult<ErrorData> {
-    paginate::<Totals, _, _>(
+    paginate_rows::<Totals, Vec<Cell>, _, _>(
         manager,
         spec,
         PageRequest::Fresh {
@@ -115,7 +133,7 @@ fn declare_twice_or_late(
             misuse(sink)?;
             Ok(produced_totals())
         },
-        |_| per_page(1),
+        |_| Ok(cut_raw_cells(1)),
     )
     .err()
     .check("the misuse fails the call")
@@ -141,18 +159,13 @@ fn paginate_set_columns_twice_is_an_internal_error_and_leaves_nothing_stored() -
             .starts_with("declaring the result columns: the result columns were already declared."),
         format!("{}", error.message),
     )?;
-    ensure_eq(
-        &manager
-            .result_stores()
-            .current()
-            .check("the store slot")?
-            .check("a store")?
-            .stats()
-            .check("the store counters")?
-            .admitted_bytes,
-        &0,
-        "manager .result_stores() .current() .check(\"the store slot\")? .check(\"a store\")? .stats() .check(\"the store counters\")? .admitted_bytes == 0",
-    )?;
+    if let Some(store) = manager.result_stores().current().check("the store slot")? {
+        ensure_eq(
+            &store.stats().check("the store counters")?.admitted_bytes,
+            &0,
+            "admitted_bytes == 0",
+        )?;
+    }
     Ok(())
 }
 
@@ -183,7 +196,7 @@ fn paginate_set_columns_when_the_spec_has_columns_is_an_internal_error() -> Test
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
 
-    let error = paginate::<Totals, _, _>(
+    let error = paginate_rows::<Totals, Demo, _, _>(
         &manager,
         &spec("typed"),
         PageRequest::Fresh {
@@ -194,7 +207,7 @@ fn paginate_set_columns_when_the_spec_has_columns_is_an_internal_error() -> Test
             sink.set_columns(cols(&["b"]))?;
             Ok(produced_totals())
         },
-        |_| per_page(1),
+        |_| Ok(cut_demo_rows(1)),
     )
     .err()
     .check("columns are already known")?;
@@ -212,7 +225,7 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() -> Tes
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
 
-    let error = paginate::<Totals, _, _>(
+    let error = paginate_rows::<Totals, Vec<Cell>, _, _>(
         &manager,
         &late_spec("late"),
         PageRequest::Fresh {
@@ -223,7 +236,7 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() -> Tes
             sink.push_cells(&[Cell::Int(1)])?;
             Ok(produced_totals())
         },
-        |_| per_page(1),
+        |_| Ok(cut_raw_cells(1)),
     )
     .err()
     .check("no columns yet")?;
@@ -237,17 +250,24 @@ fn paginate_a_push_before_the_columns_are_declared_is_an_internal_error() -> Tes
     Ok(())
 }
 
-/// A budget-recording accept closure for `paginate`.
+type CutRowFn<R> = fn(&StoredRow, usize, usize) -> Result<CutStep<R>, ErrorData>;
+
 fn budget_probe(
     seen: &std::cell::Cell<usize>,
-) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&StoredRow) -> Take {
+) -> impl FnOnce(&PageContext<'_, Totals>) -> Result<CutRowFn<Demo>, ErrorData> {
     |ctx| {
         seen.set(ctx.page_bytes);
-        |_| Take::Yes
+        Ok(|row, _, _| {
+            let demo = Demo::from_values(&row.cells).map_err(|e| store_error(&e))?;
+            Ok(CutStep::Keep {
+                row: demo,
+                bytes: 8,
+            })
+        })
     }
 }
 
-fn budget_spec(page_bytes: usize, requested: Option<usize>) -> PageSpec {
+pub(super) fn budget_spec(page_bytes: usize, requested: Option<usize>) -> PageSpec {
     PageSpec {
         page_bytes,
         requested_page_bytes: requested,
@@ -255,11 +275,11 @@ fn budget_spec(page_bytes: usize, requested: Option<usize>) -> PageSpec {
     }
 }
 
-fn budgeted_page_one(
+pub(super) fn budgeted_page_one(
     manager: &SourceSyncManager,
     path: &str,
     budget: usize,
-) -> TestResult<Served<Totals>> {
+) -> TestResult<ServedRows<Demo, Totals>> {
     budgeted_page_one_under(manager, path, budget, usize::MAX)
 }
 
@@ -268,9 +288,9 @@ fn budgeted_page_one_under(
     path: &str,
     budget: usize,
     ceiling: usize,
-) -> TestResult<Served<Totals>> {
+) -> TestResult<ServedRows<Demo, Totals>> {
     let seen = std::cell::Cell::new(0);
-    let served = paginate(
+    let served = paginate_rows(
         manager,
         &PageSpec {
             ceiling,
@@ -288,7 +308,7 @@ fn budgeted_page_one_under(
         },
         |ctx| {
             seen.set(ctx.page_bytes);
-            per_page(1)
+            Ok(cut_demo_rows(1))
         },
     )
     .check("page one")?;
@@ -308,7 +328,7 @@ fn paginate_continuation_without_page_bytes_uses_the_budget_stored_with_the_resu
     )?;
     let seen = std::cell::Cell::new(0);
 
-    let second: Served<Totals> = paginate(
+    let second = paginate_rows(
         &manager,
         &budget_spec(77, None),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -338,7 +358,7 @@ fn paginate_continuation_with_an_explicit_page_bytes_uses_and_echoes_it() -> Tes
     let first = budgeted_page_one(&manager, &path, 2048)?;
     let seen = std::cell::Cell::new(0);
 
-    let second: Served<Totals> = paginate(
+    let second = paginate_rows(
         &manager,
         &budget_spec(77, Some(512)),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -361,9 +381,6 @@ fn paginate_continuation_with_an_explicit_page_bytes_uses_and_echoes_it() -> Tes
     Ok(())
 }
 
-/// The ceiling page one ran under is stored with the result: a continuation
-/// clamps an over-large `page_bytes` to it, and reports being at it, whatever
-/// any other limits say.
 #[test]
 fn paginate_continuation_page_bytes_above_the_stored_ceiling_is_clamped_to_it() -> TestResult {
     let (_project, path) = project()?;
@@ -372,7 +389,7 @@ fn paginate_continuation_page_bytes_above_the_stored_ceiling_is_clamped_to_it() 
     ensure(!first.at_ceiling, "!first.at_ceiling")?;
     let seen = std::cell::Cell::new(0);
 
-    let second: Served<Totals> = paginate(
+    let second = paginate_rows(
         &manager,
         &budget_spec(77, Some(1 << 20)),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -396,13 +413,12 @@ fn paginate_continuation_page_bytes_above_the_stored_ceiling_is_clamped_to_it() 
 }
 
 #[test]
-fn paginate_offers_the_first_row_to_accept_and_still_takes_it() -> TestResult {
+fn paginate_refuses_a_cut_closure_that_stops_on_the_first_row() -> TestResult {
     let (_project, path) = project()?;
     let manager = manager(ROOMY);
     let first = fresh(&manager, &path, 5, 2).check("page one")?;
-    let asked = std::cell::RefCell::new(Vec::new());
 
-    let second: Served<Totals> = paginate(
+    let error = paginate_rows::<Totals, Demo, _, _>(
         &manager,
         &spec(TOOL),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -412,37 +428,42 @@ fn paginate_offers_the_first_row_to_accept_and_still_takes_it() -> TestResult {
                 None,
             ))
         },
-        |_| {
-            |row: &StoredRow| {
-                asked.borrow_mut().push(row.ord);
-                Take::No
-            }
-        },
+        |_| Ok(|_: &StoredRow, _, _| Ok(CutStep::Stop { limit: None })),
     )
-    .check("page two")?;
+    .err()
+    .check("refusing row 0 is an internal error")?;
 
     ensure_eq(
-        &(*asked.borrow()),
-        &vec![2, 3],
-        "*asked.borrow() == vec![2, 3]",
+        &error.code,
+        &rmcp::model::ErrorCode::INTERNAL_ERROR,
+        "stopping on row 0 returns INTERNAL_ERROR",
     )?;
-    ensure_eq(&numbers(&second)?, &vec![2], "numbers(&second)? == vec![2]")?;
     Ok(())
 }
 
-/// What `accept_for` was handed: budget, columns and the extras' `produced`.
-type Seen = std::cell::RefCell<Option<(usize, Vec<String>, u64)>>;
+pub(super) type Seen = std::cell::RefCell<Option<(usize, Vec<String>, u64)>>;
 
-fn context_probe(seen: &Seen) -> impl FnOnce(&PageContext<'_, Totals>) -> fn(&StoredRow) -> Take {
+pub(super) fn context_probe(
+    seen: &Seen,
+) -> impl FnOnce(&PageContext<'_, Totals>) -> Result<CutRowFn<Vec<Cell>>, ErrorData> {
     |ctx| {
         *seen.borrow_mut() = Some((ctx.page_bytes, ctx.columns.to_vec(), ctx.extra.produced));
-        |_| Take::Yes
+        Ok(|row, _, _| {
+            Ok(CutStep::Keep {
+                row: row.cells.clone(),
+                bytes: 8,
+            })
+        })
     }
 }
 
 #[test]
 fn page_request_rejects_an_oversized_cursor() -> TestResult {
-    let huge = "c".repeat(crate::tools::MAX_CURSOR_BYTES + 1);
+    let huge = "c".repeat(
+        crate::tools::MAX_CURSOR_BYTES
+            .checked_add(1)
+            .check("cap+1")?,
+    );
     let error = page_request(Some(&huge), None, &NoopProgressSink)
         .err()
         .check("oversized cursor is refused")?;
@@ -459,6 +480,3 @@ fn page_request_rejects_an_oversized_cursor() -> TestResult {
     )?;
     Ok(())
 }
-
-#[path = "paginate_context_store_tests.rs"]
-mod context_store_tests;

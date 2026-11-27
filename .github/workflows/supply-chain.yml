@@ -106,11 +106,13 @@ jobs:
           # Release with the SHA256 checksum verified.
           fallback: none
 
-      # Non-zero exit when the lockfile resolves to a known advisory; that exit
-      # code is the gate. `--recursive` finds `Cargo.lock` without naming it, so
-      # the step keeps working if the workspace ever gains a crate.
+      # Non-zero exit when the lockfile resolves to an unignored advisory; that
+      # exit code is the gate. `osv-scanner.toml` mirrors the reviewed
+      # `[advisories] ignore` entries in `deny.toml` so both gates enforce one
+      # policy. `--recursive` finds `Cargo.lock` without naming it, so the step
+      # keeps working if the workspace ever gains a crate.
       - name: Scan the dependency graph against OSV.dev
-        run: osv-scanner scan source --recursive --format table --verbosity error .
+        run: osv-scanner scan source --config=osv-scanner.toml --recursive --format table --verbosity error .
 
   secret-scan:
     name: Secret scan (working tree)

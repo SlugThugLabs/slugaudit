@@ -132,7 +132,7 @@ mod tests {
         ensure_eq(
             &unix_seconds(at).check("convert")?,
             &42,
-            "unix_seconds(at).check(\"convert\")? == 42",
+            "sub-second milliseconds truncate down to 42 whole seconds",
         )?;
         Ok(())
     }
@@ -147,7 +147,7 @@ mod tests {
         ensure_eq(
             &error.code,
             &rmcp::model::ErrorCode::INTERNAL_ERROR,
-            "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+            "a clock failure maps to an internal MCP error code",
         )?;
         ensure(
             error.message.ends_with("; fix the system clock"),
@@ -160,9 +160,9 @@ mod tests {
     fn a_pre_epoch_mtime_is_none_and_warns() -> TestResult {
         let before = before_epoch()?;
         let (mtime, logs) =
-            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Ok(before)))?;
+            crate::util::test_capture::capture_warns(|| mtime_seconds_from(Ok(before)))?;
 
-        ensure_eq(&mtime, &None, "mtime == None")?;
+        ensure_eq(&mtime, &None, "a pre-epoch mtime is recorded as unknown")?;
         ensure(logs.contains("mtime unusable"), &logs)?;
         Ok(())
     }
@@ -172,9 +172,9 @@ mod tests {
         let unsupported = std::io::Error::new(std::io::ErrorKind::Unsupported, "no mtime here");
 
         let (mtime, logs) =
-            crate::store::test_capture::capture_warns(|| mtime_seconds_from(Err(unsupported)))?;
+            crate::util::test_capture::capture_warns(|| mtime_seconds_from(Err(unsupported)))?;
 
-        ensure_eq(&mtime, &None, "mtime == None")?;
+        ensure_eq(&mtime, &None, "an unavailable mtime is recorded as unknown")?;
         ensure(logs.contains("no mtime here"), &logs)?;
         Ok(())
     }
@@ -186,7 +186,7 @@ mod tests {
         ensure_eq(
             &mtime_seconds_from(Ok(at)),
             &Some(42),
-            "mtime_seconds_from(Ok(at)) == Some(42)",
+            "a valid mtime converts to Unix epoch seconds",
         )?;
         Ok(())
     }
@@ -197,7 +197,7 @@ mod tests {
         ensure_eq(
             &duration_millis(Duration::from_millis(1_234)).check("1_234 ms fits")?,
             &1_234,
-            "duration_millis(Duration::from_millis(1_234)) == 1_234",
+            "whole milliseconds round-trip accurately",
         )?;
         let error = duration_millis(Duration::MAX).check_err("Duration::MAX overflows u64 ms")?;
         ensure(

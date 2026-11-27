@@ -1,19 +1,24 @@
-//! The human's global defaults (`~/.slugthug/slugaudit/config.json`) and the
-//! one function that turns defaults, that file, the `SLUGAUDIT_*` environment
-//! and the model's session profile into the limits a call runs under.
+//! Human global defaults (`~/.slugthug/slugaudit/config.json`): path lookup,
+//! capped disk I/O, and load-time validation over [`crate::model::LimitOverrides`].
 //!
-//! The file is optional and read only: the tools never write it. There is no
-//! per-repo config.
+//! Optional and read-only: tools never write it, and model-facing instructions
+//! do not mention it.
 
-use crate::model::{
-    AuditProfile, EnvConfigError, EnvOverrides, MemoryDetectError, ResourceLimits,
-    clamp_sqlite_value, env_overrides, limits_for_profile,
-};
-use serde::{Deserialize, Serialize};
+use crate::model::LimitOverrides;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// Errors encountered while loading or parsing the global `config.json`.
+/// Human-configured global limit and profile defaults (`~/.slugthug/slugaudit/config.json`).
+pub type GlobalConfig = LimitOverrides;
+
+fn format_zero_location(path: Option<&Path>) -> String {
+    match path {
+        Some(path) => format!(" at '{}'", path.display()),
+        None => String::new(),
+    }
+}
+
+/// Errors encountered while loading or validating the global `config.json`.
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// Failed to read the config file from disk.
@@ -24,8 +29,7 @@ pub enum ConfigError {
         /// Underlying I/O error.
         source: std::io::Error,
     },
-    /// Failed to deserialize configuration JSON, or the file names a key
-    /// this build does not know.
+    /// Failed to deserialize configuration JSON or encountered an unknown key.
     #[error("failed to parse config JSON at '{path}': {source}")]
     Parse {
         /// Path to the configuration file.
@@ -33,279 +37,116 @@ pub enum ConfigError {
         /// Underlying JSON parse error.
         source: serde_json::Error,
     },
+    /// A limit key in `config.json` is set to `0`, which is not a usable limit.
+    #[error(
+        "config limit `{key}`{} is set to 0, which is not a usable limit; set a positive value or remove it",
+        format_zero_location(path.as_deref())
+    )]
+    Zero {
+        /// Name of the offending JSON key.
+        key: &'static str,
+        /// Path to the configuration file when loaded from disk.
+        path: Option<PathBuf>,
+    },
 }
 
-/// Why the limits for a project could not be derived.
-#[derive(Debug, Error)]
-pub enum ProjectLimitsError {
-    /// The global config is present but unreadable or malformed.
-    #[error(transparent)]
-    Config(#[from] ConfigError),
-    /// A `SLUGAUDIT_*` environment variable is set but invalid.
-    #[error(transparent)]
-    Env(#[from] EnvConfigError),
-    /// The `adaptive` profile needs host memory that could not be detected;
-    /// choose `lean` or `audit`.
-    #[error("profile 'adaptive' cannot be sized ({0}); choose the profile 'lean' or 'audit'")]
-    Memory(#[from] MemoryDetectError),
-    /// Process state the limits are derived from (the session profiles or
-    /// the warning ledger) was poisoned by a panic.
-    #[error(transparent)]
-    Lock(#[from] crate::util::LockPoisoned),
-}
-
-/// The human's global defaults. An unknown key is a parse error, so a
-/// misspelled limit is reported instead of silently ignored.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GlobalConfig {
-    /// Desired audit resource profile (`lean`, `audit`, or `adaptive`).
-    #[serde(default)]
-    pub profile: Option<AuditProfile>,
-    /// Maximum individual file size in bytes to index. `0` is refused with a
-    /// warning.
-    #[serde(default)]
-    pub max_file_bytes: Option<u64>,
-    /// Largest file content in bytes a grammar is run on; larger files are
-    /// stored but not parsed (`oversize_for_parse`). Clamped to the
-    /// effective `max_file_bytes`. `0` is refused with a warning.
-    #[serde(default)]
-    pub max_parse_bytes: Option<u64>,
-    /// Wall-clock allowance in milliseconds for every parse of one file; a
-    /// file whose parse outlives it is stored without structure
-    /// (`parse_timeout`) and the sync goes on. Capped by the sync budget.
-    /// `0` is refused with a warning.
-    #[serde(default)]
-    pub max_parse_wall_clock_ms: Option<u64>,
-    /// Longest `structure` query text in bytes; a longer query is refused
-    /// before it is compiled. `0` is refused with a warning.
-    #[serde(default)]
-    pub max_structure_query_bytes: Option<usize>,
-    /// Maximum cumulative size in bytes across all imported files. `0` is
-    /// refused with a warning.
-    #[serde(default)]
-    pub max_total_import_bytes: Option<u64>,
-    /// Default `query`/`leads` page size in serialized JSON bytes; a request's
-    /// `page_bytes` still overrides it, and the ceiling still clamps it. `0` is
-    /// refused with a warning.
-    #[serde(default)]
-    pub default_page_bytes: Option<usize>,
-    /// Total bytes the result store keeps for paged results; `0` is refused
-    /// with a warning.
-    #[serde(default)]
-    pub max_result_store_bytes: Option<u64>,
-    /// Seconds an unfinished paged result stays protected from reclaim after
-    /// its last page; `0` is refused with a warning.
-    #[serde(default)]
-    pub result_active_grace_secs: Option<u64>,
-}
-
-/// Where the global config lives: `<slugthug home>/slugaudit/config.json`,
-/// resolved the way `install` resolves it. `None` when no home is known.
 #[cfg(not(test))]
 fn global_config_path() -> Option<PathBuf> {
     crate::install::slugaudit_dir().map(|dir| dir.join("config.json"))
 }
 
-// In tests the path comes from a per-thread seam and is absent by default, so
-// no test reads the real home directory.
 #[cfg(test)]
 thread_local! {
     static TEST_CONFIG_PATH: std::cell::RefCell<Option<PathBuf>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Where the global config lives in tests: the path the calling thread set,
-/// or none.
 #[cfg(test)]
 fn global_config_path() -> Option<PathBuf> {
     TEST_CONFIG_PATH.with_borrow(Clone::clone)
 }
 
-/// Points the calling test thread's global config at `path` (`None`: no
-/// global config).
 #[cfg(test)]
 pub(crate) fn set_global_config_path_for_test(path: Option<PathBuf>) {
     TEST_CONFIG_PATH.with_borrow_mut(|slot| *slot = path);
 }
 
-impl GlobalConfig {
+/// RAII test guard resetting the calling thread's `config.json` path on drop.
+#[cfg(test)]
+pub(crate) struct GlobalConfigGuardForTest;
+
+#[cfg(test)]
+impl GlobalConfigGuardForTest {
+    pub(crate) fn none() -> Self {
+        set_global_config_path_for_test(None);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for GlobalConfigGuardForTest {
+    fn drop(&mut self) {
+        set_global_config_path_for_test(None);
+    }
+}
+
+impl LimitOverrides {
+    /// Validates that no configured limit field in `self` is `0`.
+    pub(crate) fn validate_nonzero(&self, path: Option<&Path>) -> Result<(), ConfigError> {
+        if let Some(key) = self.first_zero_key() {
+            return Err(ConfigError::Zero {
+                key,
+                path: path.map(Path::to_path_buf),
+            });
+        }
+        Ok(())
+    }
+
     // Owner decision (2026-10-31): the human can set base defaults; the model sets its own session settings through the tools and never needs to know this file exists.
-    /// Loads the global config; an absent file (or no known home) is the
-    /// default config.
+    /// Loads `~/.slugthug/slugaudit/config.json`; returns [`Self::default`] when
+    /// the file is absent or no home directory is resolved.
     ///
     /// # Errors
     ///
-    /// A file that is present but unreadable (including a directory at the
-    /// path or the size cap), malformed, or carrying an unknown key is an
-    /// error carrying its path and cause, so the call fails instead of
-    /// running with limits the file did not say.
+    /// Returns [`ConfigError`] if the file exists but cannot be read, parsed,
+    /// or sets any limit to `0`.
     pub fn load() -> Result<Self, ConfigError> {
         let Some(path) = global_config_path() else {
             return Ok(Self::default());
         };
-        match Self::load_from(&path)? {
-            Some(config) => Ok(config),
-            None => Ok(Self::default()),
-        }
+        let Some(cfg) = Self::load_from(&path)? else {
+            return Ok(Self::default());
+        };
+        Ok(cfg)
     }
 
-    /// Attempts to load and parse the config at `config_path`; `None` when
-    /// no file is there.
+    /// Loads, parses, and validates the global config at `config_path`; returns
+    /// `Ok(None)` when no file exists there.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError` if the file exists but cannot be read or parsed.
+    /// Returns [`ConfigError`] if reading or parsing `config_path` fails, or if
+    /// any configured limit is `0`.
     pub fn load_from(config_path: &Path) -> Result<Option<Self>, ConfigError> {
-        let exists = config_path.try_exists().map_err(|source| ConfigError::Io {
+        let io_err = |source| ConfigError::Io {
             path: config_path.to_path_buf(),
             source,
-        })?;
-        if !exists {
+        };
+        if !config_path.try_exists().map_err(io_err)? {
             return Ok(None);
         }
         let content =
             crate::util::read_file_capped(config_path, crate::util::MAX_FOREIGN_TEXT_BYTES)
-                .map_err(|source| ConfigError::Io {
-                    path: config_path.to_path_buf(),
-                    source,
-                })?;
+                .map_err(io_err)?;
         let cfg = serde_json::from_str::<Self>(&content).map_err(|source| ConfigError::Parse {
             path: config_path.to_path_buf(),
             source,
         })?;
+        cfg.validate_nonzero(Some(config_path))?;
         Ok(Some(cfg))
     }
-
-    /// Overrides fields in `limits` with the limit keys this config sets.
-    /// The `profile` key is not applied here: it only chooses the base
-    /// limits, which `resolve_limits` does before calling this.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::util::LockPoisoned`] when the ledger of limit
-    /// warnings already logged was poisoned.
-    pub fn apply_limit_keys(
-        &self,
-        limits: ResourceLimits,
-    ) -> Result<ResourceLimits, crate::util::LockPoisoned> {
-        let mut limits = self.apply_limit_keys_unclamped(limits)?;
-        limits.clamp_parse_to_file_bytes()?;
-        Ok(limits)
-    }
-
-    /// Applies the config's limit keys without clamping `max_parse_bytes` to
-    /// `max_file_bytes`, so higher-precedence `SLUGAUDIT_MAX_FILE_BYTES` can
-    /// raise `max_file_bytes` before `resolve_limits` runs the clamp once.
-    fn apply_limit_keys_unclamped(
-        &self,
-        mut limits: ResourceLimits,
-    ) -> Result<ResourceLimits, crate::util::LockPoisoned> {
-        if let Some(file_bytes) =
-            ResourceLimits::config_nonzero("config max_file_bytes", self.max_file_bytes)?
-        {
-            limits.max_file_bytes = clamp_sqlite_value("config max_file_bytes", file_bytes)?;
-        }
-        if let Some(parse_bytes) =
-            ResourceLimits::config_nonzero("config max_parse_bytes", self.max_parse_bytes)?
-        {
-            limits.max_parse_bytes = parse_bytes;
-        }
-        if let Some(wall_clock_ms) = ResourceLimits::config_nonzero(
-            "config max_parse_wall_clock_ms",
-            self.max_parse_wall_clock_ms,
-        )? {
-            limits.max_parse_wall_clock_ms = wall_clock_ms;
-        }
-        if let Some(query_bytes) = ResourceLimits::config_nonzero(
-            "config max_structure_query_bytes",
-            self.max_structure_query_bytes,
-        )? {
-            limits.max_structure_query_bytes = query_bytes;
-        }
-        if let Some(import_bytes) = ResourceLimits::config_nonzero(
-            "config max_total_import_bytes",
-            self.max_total_import_bytes,
-        )? {
-            limits.max_total_import_bytes = import_bytes;
-        }
-        if let Some(page_bytes) =
-            ResourceLimits::config_nonzero("config default_page_bytes", self.default_page_bytes)?
-        {
-            limits.default_page_bytes = page_bytes;
-        }
-        if let Some(store_bytes) = ResourceLimits::config_nonzero(
-            "config max_result_store_bytes",
-            self.max_result_store_bytes,
-        )? {
-            limits.max_result_store_bytes = store_bytes;
-        }
-        if let Some(grace_secs) = ResourceLimits::config_nonzero(
-            "config result_active_grace_secs",
-            self.result_active_grace_secs,
-        )? {
-            limits.result_active_grace_secs = grace_secs;
-        }
-        Ok(limits)
-    }
-}
-
-/// The limits every tool call and sync for the project at `project_root`
-/// runs under: the global file, the validated `SLUGAUDIT_*` environment and
-/// this project's session profile, combined by `resolve_limits`, which
-/// documents the precedence.
-///
-/// # Errors
-///
-/// Returns [`ProjectLimitsError`] when the global file is present but
-/// unreadable, malformed or carries an unknown key, a `SLUGAUDIT_*` variable
-/// is set but invalid, or the `adaptive` profile cannot be sized.
-pub fn effective_limits(project_root: &Path) -> Result<ResourceLimits, ProjectLimitsError> {
-    let global = GlobalConfig::load()?;
-    let session = super::session_profile::session_profile(project_root)?;
-    resolve_limits(&global, env_overrides()?, session)
-}
-
-/// Combines every source of limits.
-///
-/// Precedence, lowest to highest:
-///
-/// 1. built-in defaults: the limit table of the base profile (`adaptive`
-///    unless a profile is chosen below);
-/// 2. the global file (`~/.slugthug/slugaudit/config.json`): its limit keys;
-/// 3. `SLUGAUDIT_*` environment variables: their limit overrides;
-/// 4. the model's session profile (`project_control on` with `profile`),
-///    held in memory for the project until the process exits.
-///
-/// The profile picks the base limit table, and the session profile beats
-/// `SLUGAUDIT_PROFILE`, which beats the global file's `profile`. The global
-/// file's limit keys are applied on that base, and the environment's limit
-/// variables last, so choosing a profile never discards a limit a human set
-/// in the file or the environment.
-///
-/// # Errors
-///
-/// Returns [`ProjectLimitsError::Memory`] when the chosen profile is
-/// `adaptive` and the host memory cannot be detected, and
-/// [`ProjectLimitsError::Lock`] when the warning ledger was poisoned.
-pub(crate) fn resolve_limits(
-    global: &GlobalConfig,
-    env: &EnvOverrides,
-    session_profile: Option<AuditProfile>,
-) -> Result<ResourceLimits, ProjectLimitsError> {
-    let profile = match session_profile.or(env.profile).or(global.profile) {
-        Some(profile) => profile,
-        None => AuditProfile::Adaptive,
-    };
-    let base = limits_for_profile(profile)?;
-    let mut limits = global.apply_limit_keys_unclamped(base)?;
-    env.apply(
-        &mut limits,
-        global.max_result_store_bytes.is_some_and(|v| v > 0),
-    )?;
-    Ok(limits)
 }
 
 #[cfg(test)]
 #[path = "global_config_tests.rs"]
-mod tests;
+pub(super) mod tests;

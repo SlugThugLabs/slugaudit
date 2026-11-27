@@ -17,7 +17,7 @@ static PROFILES: Mutex<Option<HashMap<PathBuf, AuditProfile>>> = Mutex::new(None
 ///
 /// # Errors
 ///
-/// Returns [`LockPoisoned`] when the profile table was poisoned.
+/// Returns `LockPoisoned` when the profile table was poisoned.
 pub fn set_session_profile(root: &Path, profile: AuditProfile) -> Result<(), LockPoisoned> {
     crate::util::lock(&PROFILES, "session_profiles")?
         .get_or_insert_with(HashMap::new)
@@ -29,7 +29,7 @@ pub fn set_session_profile(root: &Path, profile: AuditProfile) -> Result<(), Loc
 ///
 /// # Errors
 ///
-/// Returns [`LockPoisoned`] when the profile table was poisoned.
+/// Returns `LockPoisoned` when the profile table was poisoned.
 pub fn clear_session_profile(root: &Path) -> Result<(), LockPoisoned> {
     if let Some(profiles) = crate::util::lock(&PROFILES, "session_profiles")?.as_mut() {
         profiles.remove(root);
@@ -42,7 +42,7 @@ pub fn clear_session_profile(root: &Path) -> Result<(), LockPoisoned> {
 ///
 /// # Errors
 ///
-/// Returns [`LockPoisoned`] when the profile table was poisoned.
+/// Returns `LockPoisoned` when the profile table was poisoned.
 pub fn session_profile(root: &Path) -> Result<Option<AuditProfile>, LockPoisoned> {
     Ok(crate::util::lock(&PROFILES, "session_profiles")?
         .as_ref()
@@ -50,34 +50,5 @@ pub fn session_profile(root: &Path) -> Result<Option<AuditProfile>, LockPoisoned
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    use slugaudit_test_check::{Check, TestResult, ensure_eq};
-
-    #[test]
-    fn a_session_profile_is_per_project_and_the_last_choice_wins() -> TestResult {
-        let first = Path::new("/session-profile-test/first");
-        let second = Path::new("/session-profile-test/second");
-        ensure_eq(
-            &session_profile(first).check("read first")?,
-            &None,
-            "session_profile(first).check(\"read first\")? == None",
-        )?;
-
-        set_session_profile(first, AuditProfile::Lean).check("choose lean")?;
-        set_session_profile(first, AuditProfile::Audit).check("choose audit")?;
-
-        ensure_eq(
-            &session_profile(first).check("read first")?,
-            &Some(AuditProfile::Audit),
-            "session_profile(first).check(\"read first\")? == Some(AuditProfile::Audit)",
-        )?;
-        ensure_eq(
-            &session_profile(second).check("read second")?,
-            &None,
-            "session_profile(second).check(\"read second\")? == None",
-        )?;
-        Ok(())
-    }
-}
+#[path = "session_profile_tests.rs"]
+mod tests;

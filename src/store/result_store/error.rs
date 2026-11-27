@@ -13,7 +13,6 @@
 //! `?` without logging again.
 
 use std::error::Error;
-use std::io;
 
 /// Why a result store operation failed.
 #[derive(Debug, thiserror::Error)]
@@ -21,8 +20,7 @@ pub enum ResultStoreError {
     /// The store cannot hold or serve results: an I/O or SQLite resource
     /// failure (disk full, I/O error, cannot open, cannot create or unlink a
     /// result file), a directory or owner lock that cannot be prepared or
-    /// taken, a pragma that did not take, a platform without
-    /// unlink-while-open semantics, or process limits that cannot be read.
+    /// taken, or a pragma that did not take.
     #[error("the result store is unavailable: {context}")]
     Unavailable {
         /// What the store was doing.
@@ -61,15 +59,6 @@ pub enum ResultStoreError {
         /// Static explanation.
         reason: &'static str,
     },
-    /// A file operation outside the open/write path failed (the startup sweep).
-    #[error("result store file operation failed: {context}")]
-    Io {
-        /// What the store was doing.
-        context: &'static str,
-        /// The underlying cause.
-        #[source]
-        source: io::Error,
-    },
     /// A SQLite failure that is not a resource failure.
     #[error("result store query failed: {context}")]
     Sqlite {
@@ -104,11 +93,6 @@ pub(super) struct PragmaMismatch {
     pub(super) expected: &'static str,
     pub(super) actual: String,
 }
-
-/// The platform cannot keep an unlinked open file readable.
-#[derive(Debug, thiserror::Error)]
-#[error("this platform is not supported by the result store")]
-pub(super) struct UnsupportedPlatform;
 
 impl ResultStoreError {
     /// An `Unavailable`, logged once here with its cause.

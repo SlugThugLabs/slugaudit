@@ -1,10 +1,13 @@
-//! Tests for the metadata helpers in `manager_meta.rs`.
+//! Tests for project metadata SQL helpers (`project_meta.rs`) and manager
+//! publish-error / rebuild helpers (`manager.rs`).
 
-use super::{current_revision_id, ensure_project_row, map_publish_error, publish_from_scratch};
+use super::ensure_project_row;
 use crate::progress::NoopProgressSink;
 use crate::store;
 use crate::store::test_capture::capture_warns;
-use crate::sync::publish::publish;
+use crate::sync::manager::{map_publish_error, publish_from_scratch};
+use crate::sync::publish::{self, publish};
+use crate::sync::revision::current_revision_id;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::Path;
 use tempfile::TempDir;
@@ -107,18 +110,20 @@ fn incompatible_version_is_a_stale_database_labelled_for_recovery() -> TestResul
 
 /// The publish half of the machine-readable failure contract. A spent sync
 /// budget is not "often transient — retry": on a repo too big for the limit,
-/// retrying unchanged fails identically, so the payload has to name the knob
-/// instead. The CAS race is the opposite and
-/// must stay distinguishable. A publish failure that is neither carries no
-/// code at all — an over-attached code is as useless as a missing one.
+/// retrying unchanged fails identically, so the payload has to tell the model
+/// how to switch to the audit profile instead (without leaking env/config).
+/// The CAS race is the opposite and must stay distinguishable. A publish
+/// failure that is neither carries no code at all — an over-attached code is as
+/// useless as a missing one.
 #[test]
 fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
     let root = Path::new("/tmp/example-project");
 
     let budget = map_publish_error(
         root,
-        &super::publish::PublishError::TimeBudgetExceeded {
-            path: String::new(),
+        &publish::PublishError::TimeBudgetExceeded {
+            activity: "diffing",
+            path: None,
             elapsed_ms: 4_500,
         },
         "test",
@@ -134,14 +139,16 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
         .and_then(serde_json::Value::as_str)
         .check("remedy is a string")?;
     ensure(
-        remedy.contains("SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS"),
-        format!("the remedy must name the knob: {remedy}"),
+        remedy.contains("audit profile")
+            && remedy.contains("project_control")
+            && !remedy.contains("SLUGAUDIT_"),
+        format!("the remedy must name the audit profile switch and never SLUGAUDIT_*: {remedy}"),
     )?;
     // The same budget raised by discovery inside the publish arrives
     // wrapped, and must classify identically.
     let wrapped = map_publish_error(
         root,
-        &super::publish::PublishError::Discovery(
+        &publish::PublishError::Discovery(
             crate::sync::discovery::DiscoveryError::TimeBudgetExceeded { elapsed_ms: 4_500 },
         ),
         "test",
@@ -158,7 +165,7 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
 
     let raced = map_publish_error(
         root,
-        &super::publish::PublishError::ChangedDuringSample {
+        &publish::PublishError::ChangedDuringSample {
             path: "src/lib.rs".to_owned(),
         },
         "test",
@@ -175,7 +182,7 @@ fn publish_failures_classify_into_the_documented_error_codes() -> TestResult {
 
     let other = map_publish_error(
         root,
-        &super::publish::PublishError::InvalidParserPackVersion("nope".to_owned()),
+        &publish::PublishError::InvalidParserPackVersion("nope".to_owned()),
         "test",
     );
     ensure(
@@ -423,7 +430,9 @@ fn map_publish_error_attaches_stale_revision_for_stale_baseline() -> TestResult 
     let mapped = map_publish_error(Path::new("/tmp/project"), &error, "sync");
     ensure_eq(
         &mapped.data,
-        &crate::error_codes::payload(crate::error_codes::ErrorCode::StaleRevision),
+        &Some(crate::error_codes::payload(
+            crate::error_codes::ErrorCode::StaleRevision,
+        )),
         "StaleBaseline maps to StaleRevision error code",
     )?;
     Ok(())

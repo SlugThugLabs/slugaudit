@@ -441,7 +441,7 @@ fn honest_log_a_failed_publish_error_carries_the_real_path_and_io_cause() -> Tes
     });
 
     let (mapped, logs) =
-        capture_warns(|| crate::sync::manager_meta::map_publish_error(root, &error, "sync"))?;
+        capture_warns(|| crate::sync::manager::map_publish_error(root, &error, "sync"))?;
 
     let message = mapped.message.as_ref();
     ensure(
@@ -486,7 +486,7 @@ fn honest_log_a_failed_publish_error_carries_the_sqlite_cause() -> TestResult {
     ));
 
     let (mapped, logs) =
-        capture_warns(|| crate::sync::manager_meta::map_publish_error(root, &error, "sync"))?;
+        capture_warns(|| crate::sync::manager::map_publish_error(root, &error, "sync"))?;
 
     let message = mapped.message.as_ref();
     ensure(

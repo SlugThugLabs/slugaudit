@@ -1,10 +1,10 @@
-//! Network + version helpers for self-update, kept in their own module so
-//! `update.rs` stays under the small-file rule cap. It builds URLs, parses the GitHub releases API, and
-//! compares versions — all unit-testable without a network call. The one
-//! file it touches is a partial download it removes on failure.
+//! Network helpers for self-update: builds GitHub release URLs, parses the
+//! GitHub releases API response, and runs bounded HTTPS-only `curl` fetches.
+//! The one file it touches is a partial download it removes on failure.
 
 use super::UpdateError;
 use std::path::Path;
+use std::time::Duration;
 
 /// Default repo owner/name and the single published Linux `x86_64` asset.
 const OWNER: &str = "SlugThugLabs";
@@ -19,12 +19,16 @@ pub(crate) const ASSET_ARCH: &str = "x86_64";
 pub(crate) const HTTPS_ONLY: [&str; 5] =
     ["--proto", "=https", "--proto-redir", "=https", "--tlsv1.2"];
 
-/// Wall-clock limit, in seconds, for fetching release metadata.
+/// Wall-clock limit, in seconds, passed to curl for release metadata.
 const METADATA_MAX_TIME_SECS: u64 = 30;
+/// Process-level wall-clock limit enforced in Rust for metadata fetches.
+const METADATA_PROC_TIMEOUT: Duration = Duration::from_secs(35);
 /// Largest release-metadata body curl accepts, in bytes.
 const METADATA_MAX_BYTES: u64 = 10_000_000;
-/// Wall-clock limit, in seconds, for downloading a release asset.
+/// Wall-clock limit, in seconds, passed to curl for downloading a release asset.
 const DOWNLOAD_MAX_TIME_SECS: u64 = 300;
+/// Process-level wall-clock limit enforced in Rust for asset downloads.
+const DOWNLOAD_PROC_TIMEOUT: Duration = Duration::from_secs(305);
 /// Largest asset download curl accepts, in bytes.
 const DOWNLOAD_MAX_BYTES: u64 = 150_000_000;
 /// Largest `SHA256SUMS` manifest download/read accepted, in bytes.
@@ -33,7 +37,7 @@ pub(crate) const CHECKSUMS_MAX_BYTES: u64 = 64 * 1024;
 const GITHUB_API: &str = "https://api.github.com";
 const GITHUB_DL: &str = "https://github.com";
 
-/// Result of inspecting the latest release, separated from the fetch so the
+/// Result of inspecting the latest release, separated from the fetch so
 /// version comparison can be unit-tested without a network call.
 pub(crate) struct LatestRelease {
     pub tag: String,
@@ -93,10 +97,11 @@ pub(crate) fn fetch_latest_release() -> Result<LatestRelease, UpdateError> {
     LatestRelease::from_json(&json)
 }
 
-/// A `curl -fsSL` command bounded to `max_time_secs` and `max_bytes`, HTTPS
-/// only, for `url`. `-f` fails on HTTP errors (404 etc.), `-sS` keeps errors
-/// visible but suppresses the progress meter, `--globoff` disables URL glob
-/// expansion, and `--` terminates option parsing before `url`.
+/// A `curl -q -fsSL` command bounded to `max_time_secs` and `max_bytes`, HTTPS
+/// only, for `url`. `-q` as the very first flag disables `~/.curlrc` so user
+/// defaults cannot weaken TLS or redirect settings; `-f` fails on HTTP errors,
+/// `-sS` keeps errors visible while suppressing the progress meter, `--globoff`
+/// disables URL glob expansion, and `--` terminates option parsing before `url`.
 fn curl_command(
     url: &str,
     max_time_secs: u64,
@@ -105,6 +110,7 @@ fn curl_command(
 ) -> std::process::Command {
     let mut command = std::process::Command::new("curl");
     command
+        .arg("-q")
         .arg("-fsSL")
         .arg("--globoff")
         .args(["--max-time", &max_time_secs.to_string()])
@@ -117,16 +123,15 @@ fn curl_command(
     command
 }
 
-/// Runs `curl -fsSL <url>` and returns stdout capped at `max_bytes`.
+/// Runs `curl -q -fsSL <url>` and returns stdout capped at `max_bytes`.
 fn curl_get_capped(url: &str, max_bytes: u64) -> Result<String, UpdateError> {
     let mut cmd = curl_command(url, METADATA_MAX_TIME_SECS, max_bytes, None);
-    let stdout = super::update_proc::run_bounded(&mut cmd, "curl", Some(max_bytes))?;
+    let stdout =
+        super::update_proc::run_bounded(&mut cmd, "curl", Some(max_bytes), METADATA_PROC_TIMEOUT)?;
     Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
-/// Runs a single `curl -fsSL <url>` and returns stdout. `-f` fails on HTTP
-/// errors (404 etc.), `-sS` keeps errors visible but suppresses the progress
-/// meter so the download body or error text is clean to read.
+/// Runs a single `curl -q -fsSL <url>` and returns stdout.
 fn curl_get(url: &str) -> Result<String, UpdateError> {
     curl_get_capped(url, METADATA_MAX_BYTES)
 }
@@ -146,19 +151,20 @@ pub(crate) fn download_capped(
         source: Box::new(cause),
     };
     let mut cmd = curl_command(url, DOWNLOAD_MAX_TIME_SECS, max_bytes, Some(dest));
-    if let Err(cause) = super::update_proc::run_bounded(&mut cmd, "curl", None) {
-        // curl may have left a partial file at `dest`.
-        crate::install_place::remove_leftover(dest, "could not remove partial download");
+    if let Err(cause) =
+        super::update_proc::run_bounded(&mut cmd, "curl", None, DOWNLOAD_PROC_TIMEOUT)
+    {
+        crate::install::remove_leftover(dest, "could not remove partial download");
         return Err(wrap(cause));
     }
     let size = std::fs::metadata(dest)
         .map_err(|error| {
-            crate::install_place::remove_leftover(dest, "could not remove partial download");
+            crate::install::remove_leftover(dest, "could not remove partial download");
             wrap(UpdateError::Io(error))
         })?
         .len();
     if size > max_bytes {
-        crate::install_place::remove_leftover(dest, "could not remove partial download");
+        crate::install::remove_leftover(dest, "could not remove partial download");
         return Err(wrap(UpdateError::Network(format!(
             "downloaded file exceeded {max_bytes} bytes ({size} bytes)"
         ))));
@@ -175,84 +181,6 @@ pub(crate) fn download(url: &str, dest: &Path, action: &'static str) -> Result<(
 /// Whether the one published asset can run on `os`/`arch`.
 pub(crate) fn platform_supported(os: &str, arch: &str) -> bool {
     os == ASSET_OS && arch == ASSET_ARCH
-}
-
-/// A version string that is not a plain dot-separated numeric version
-/// (a dev build or a pre-release such as `1.0.0-rc1`).
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-#[error("version {version:?} is not a dot-separated numeric version: {source}")]
-pub(crate) struct VersionParseError {
-    version: String,
-    #[source]
-    source: std::num::ParseIntError,
-}
-
-/// Parses a dot-separated numeric version (with an optional leading `v`) into
-/// its numeric components.
-pub(crate) fn parse_version(v: &str) -> Result<Vec<u64>, VersionParseError> {
-    v.trim_start_matches('v')
-        .split('.')
-        .map(|part| {
-            part.parse::<u64>().map_err(|source| VersionParseError {
-                version: v.to_owned(),
-                source,
-            })
-        })
-        .collect()
-}
-
-/// What `update` does after comparing this build with the published release.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum UpdateDecision {
-    /// This build is the published version or newer: nothing to fetch.
-    UpToDate,
-    /// The published release is newer: fetch it.
-    Newer,
-    /// This build is not a plain dotted version (a dev build) while the
-    /// published release is numeric: fetch it anyway without claiming newer.
-    Incomparable,
-}
-
-/// Decides whether `latest` should replace `current`. Refuses any non-numeric
-/// published `latest` tag; allows an incomparable fallback only when `current`
-/// itself is a non-numeric dev build.
-pub(crate) fn update_decision(current: &str, latest: &str) -> Result<UpdateDecision, UpdateError> {
-    let mut latest_parts = parse_version(latest)
-        .map_err(|error| UpdateError::InvalidReleaseVersion(error.to_string()))?;
-    let Ok(mut current_parts) = parse_version(current) else {
-        tracing::info!(
-            current,
-            latest,
-            "local version is not numeric; fetching release anyway"
-        );
-        return Ok(UpdateDecision::Incomparable);
-    };
-    let width = current_parts.len().max(latest_parts.len());
-    current_parts.resize(width, 0);
-    latest_parts.resize(width, 0);
-    Ok(if current_parts < latest_parts {
-        UpdateDecision::Newer
-    } else {
-        UpdateDecision::UpToDate
-    })
-}
-
-/// Compares two dot-separated numeric versions; `v1.0.3` == `1.0.3` and a
-/// missing trailing component counts as 0, so `1.0` == `1.0.0`. Returns
-/// `Ok(Ordering)` when both parse as sequences of numeric components, and
-/// a [`VersionParseError`] naming the offending string otherwise (so a
-/// pre-release suffix is incomparable rather than guessed at).
-#[cfg(test)]
-pub(crate) fn compare_versions(
-    current: &str,
-    latest: &str,
-) -> Result<std::cmp::Ordering, VersionParseError> {
-    let mut current = parse_version(current)?;
-    let mut latest = parse_version(latest)?;
-    let width = current.len().max(latest.len());
-    current.resize(width, 0);
-    latest.resize(width, 0);
-    Ok(current.cmp(&latest))
 }
 
 #[cfg(test)]

@@ -6,17 +6,16 @@ Every tool answer matches the code on disk at the moment of the call.
 
 To keep that rule, SlugAudit does this before it answers a call:
 
-1. Walks the project and lists the files it indexes.
-2. Reads and hashes every one of them (BLAKE3).
-3. Compares each hash with the stored one. Files that changed are re-parsed and rewritten. New files are added. Missing files are removed.
-4. Re-checks that the text stored in the database still hashes to its stored hash. A row edited behind SlugAudit's back is repaired from the file.
-5. Answers from the updated database.
+1. Walks the project and lists the regular files it indexes.
+2. Reads and BLAKE3-hashes every one of them on disk.
+3. Compares each disk hash against `files.content_hash` in SQLite. Files whose hash differs are re-parsed and updated; new files are added; deleted files are removed. Stored `files.content` is never re-read or re-hashed out of SQLite.
+4. Answers from the updated database.
 
-There is no file watcher and no timestamp shortcut. There is no cached answer that can go stale. If nothing changed, nothing is rewritten and no new revision is made.
+There is no file watcher and no timestamp shortcut for indexed files. If nothing changed on disk, nothing is rewritten and no new revision is created.
 
 Two exceptions to know:
 
-- A call that continues a paged answer (`cursor`) reads from the stored copy of the first call. It does not sync. Its `revision_id` is the first call's.
+- A call that continues a paged answer (`cursor`) reads from the stored copy of the first call. It does not sync. Its `page.revision_id` is the first call's, and `page.current_disk_revision_id` reports the revision currently recorded in `project.db`.
 - `health` never syncs.
 
 Files that are skipped (see below) are identified by size and modification time, not by content. If such a file changes without changing its size or modification time, the change is not noticed.
@@ -88,7 +87,7 @@ Indexed with a row, but treated specially:
 
 So on a machine with 16 GiB of RAM or more, the default cap is 1,000,000,000 bytes. Nothing larger than 1,000,000,000 bytes can be stored, whatever you configure. Change the cap in [configuration](configuration.md).
 
-There is also a cap on the total size of all files read in one call, `max_total_import_bytes` (2 GiB on `lean`, 32 GiB on `audit`, on `adaptive` half of the available RAM but at least 4 GiB). If a project is bigger than that, the call fails with a message that says how many bytes it would load and what the limit is.
+There is also a cap on the cumulative byte length of all files sampled in one call, `max_total_import_bytes` (2 GiB on `lean`, 32 GiB on `audit`, on `adaptive` half of the available RAM but at least 4 GiB). If a sync would sample more than that, the call fails with a message stating how many bytes it would load and what the limit is. Changed files are parsed and written in bounded chunks so Tree-sitter ASTs and normalized evidence records do not accumulate across the whole repository in memory at once.
 
 ### What a skipped file looks like in answers
 
@@ -117,13 +116,13 @@ For each indexed text file:
 - `evidence`: Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic and Call rows with line spans.
 - `dependency_edges`: import edges between files, marked `Resolved`, `Unresolved` or `External`.
 
-Rust has its own import resolver. Other languages go through a generic one, and `syntax_unmodeled = 1` on an edge marks import syntax that was not parsed. `report.import_resolution` shows the Resolved / Unresolved / External split, so check it before you trust dependency traversal.
+Rust's Tree-sitter grammar is compiled into the binary and Rust has its own import resolver. Other languages download their grammars on first use and go through a generic import resolver, where `syntax_unmodeled = 1` on an edge marks import syntax that was not parsed. `report.import_resolution` shows the Resolved / Unresolved / External split, so check it before you trust dependency traversal.
 
 ## Limits and failures
 
 Every limit is bounded and every failure is reported, not hidden:
 
-- A sync that runs too long fails with `sync_budget_exhausted` (120 s on `lean`, 1200 s otherwise).
+- A sync that runs too long fails with `sync_budget_exhausted` (30 s on `lean`, 90 s on `audit` and `adaptive`).
 - A query that runs too long fails and returns nothing.
 - Pages say when an answer is incomplete (`page.complete`, `page.completeness`, `limited_by`).
 - Counts say when they are a floor (`files_not_parsed`, `index_partial`, `evidence_capped_file_count`).

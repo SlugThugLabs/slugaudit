@@ -17,6 +17,35 @@ fn enabled_with_files(names: &[&str]) -> TestResult<(tempfile::TempDir, ProjectR
 }
 
 #[test]
+fn project_off_after_enable_deletes_slugaudit_and_leaves_slugplan_readme_intact() -> TestResult {
+    let (directory, root, activation) = enabled_with_files(&["project.db", "findings-1.db"])?;
+    let planning = directory.path().join(PLANNING_DIR);
+    let readme = planning.join(slugplan::README_NAME);
+    ensure(readme.is_file(), "enable creates .planning/README.md")?;
+
+    let report = disable(&root).check("disable succeeds")?;
+
+    ensure_eq(
+        &report.removed,
+        &vec![activation.clone()],
+        "disable removes only .planning/slugaudit when .planning/README.md is present",
+    )?;
+    ensure(!activation.exists(), "activation directory was deleted")?;
+    ensure(
+        readme.is_file(),
+        "slugplan's .planning/README.md remains intact after disable",
+    )?;
+    ensure(
+        matches!(
+            find_project_root(directory.path()),
+            Err(ActivationError::NotActive)
+        ),
+        "project is no longer active once .planning/slugaudit is gone",
+    )?;
+    Ok(())
+}
+
+#[test]
 fn project_off_deletes_the_directory_with_everything_in_it_and_then_an_empty_planning_dir()
 -> TestResult {
     let (directory, root, activation) =
@@ -40,18 +69,18 @@ fn project_off_deletes_the_directory_with_everything_in_it_and_then_an_empty_pla
             activation.clone(),
             activation.parent().check("planning")?.to_path_buf(),
         ],
-        "report.removed == vec![ activation.clone(), activation.parent().check(\"planning\")?.to_path_buf() ]",
+        "disable removes both .planning/slugaudit and the empty .planning directory",
     )?;
     ensure(
         !directory.path().join(PLANNING_DIR).exists(),
-        "!directory.path().join(PLANNING_DIR).exists()",
+        "empty .planning directory is deleted",
     )?;
     ensure(
         matches!(
             find_project_root(directory.path()),
             Err(ActivationError::NotActive)
         ),
-        "matches!( find_project_root(directory.path()), Err(ActivationError::NotActive) )",
+        "project resolves as inactive after disable",
     )?;
     Ok(())
 }
@@ -67,13 +96,13 @@ fn project_off_keeps_a_planning_dir_that_holds_other_files() -> TestResult {
     ensure_eq(
         &report.removed,
         &vec![activation.clone()],
-        "report.removed == vec![activation.clone()]",
+        "disable removes only .planning/slugaudit when user files exist in .planning",
     )?;
-    ensure(!activation.exists(), "!activation.exists()")?;
+    ensure(!activation.exists(), "activation directory was deleted")?;
     ensure_eq(
         &fs::read(planning.join("PLAN.md")).check("kept")?,
         &b"mine",
-        "fs::read(planning.join(\"PLAN.md\")).check(\"kept\")? == b\"mine\"",
+        "user file inside .planning is preserved untouched",
     )?;
     Ok(())
 }
@@ -88,7 +117,7 @@ fn project_off_on_a_never_enabled_project_removes_nothing() -> TestResult {
     ensure_eq(
         &report,
         &DisableReport::default(),
-        "report == DisableReport::default()",
+        "disabling a never-enabled project reports an empty removal list",
     )?;
     Ok(())
 }
@@ -115,11 +144,11 @@ fn project_off_does_not_follow_a_symlink_inside_the_directory() -> TestResult {
 
     disable(&root).check("disable succeeds")?;
 
-    ensure(!activation.exists(), "!activation.exists()")?;
+    ensure(!activation.exists(), "activation directory was deleted")?;
     ensure_eq(
         &fs::read(outside.join("victim.txt")).check("target untouched")?,
         &b"keep",
-        "fs::read(outside.join(\"victim.txt\")).check(\"target untouched\")? == b\"keep\"",
+        "symlink target outside .planning/slugaudit is left untouched",
     )?;
     Ok(())
 }
@@ -142,16 +171,16 @@ fn project_off_on_a_symlinked_activation_directory_removes_only_the_link() -> Te
     ensure_eq(
         &report.removed,
         &vec![link.clone(), planning.clone()],
-        "report.removed == vec![link.clone(), planning.clone()]",
+        "symlinked activation link and empty .planning directory are removed",
     )?;
     ensure(
         !link.exists() && link.symlink_metadata().is_err(),
-        "!link.exists() && link.symlink_metadata().is_err()",
+        "activation symlink itself was removed",
     )?;
     ensure_eq(
         &fs::read(target.join("keep.txt")).check("target untouched")?,
         &b"keep",
-        "fs::read(target.join(\"keep.txt\")).check(\"target untouched\")? == b\"keep\"",
+        "files inside symlink target directory remain intact",
     )?;
     Ok(())
 }

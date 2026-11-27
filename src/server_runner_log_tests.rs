@@ -10,23 +10,6 @@ use rmcp::handler::server::wrapper::Parameters;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use tracing::Level;
 
-// The run_blocking instrument is a log line, so it is pinned like one. These
-// tests capture through `store::test_capture`, the same harness
-// `tools::redaction_tests` uses: `capture_at_level` installs a
-// thread-local subscriber, so only events emitted on the test thread are
-// captured. That covers `run_blocking`'s own start and completion lines
-// (the call id/session live on the span both are emitted under), not the
-// internals a tool logs from inside `spawn_blocking` — which is exactly
-// the boundary these tests pin.
-//
-// Each capturing test below names its tool with a literal only that test
-// uses and counts only the lines carrying it, so "exactly one start and
-// one completion per call" is a property of this test's own calls and can
-// never be satisfied by a line another test's call produced.
-
-/// The runtime the capture closures block on. Using the current-thread
-/// flavor keeps every `run_blocking` line the tests assert on on the test
-/// thread, under the capture subscriber.
 fn current_thread_runtime() -> TestResult<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -34,10 +17,6 @@ fn current_thread_runtime() -> TestResult<tokio::runtime::Runtime> {
         .check("test runtime")
 }
 
-/// Reads one `key=value` field out of a captured log line, accepting the
-/// span-prefix form (`call_id=7}`), the event form (`call_id=7 `), and
-/// quoted values (`session_id="…"`). Fails with the offending line when
-/// the field is absent, so a regression names the line it lost the field on.
 fn logged_field(line: &str, key: &str) -> TestResult<String> {
     let needle = format!("{key}=");
     let (_, rest) = line
@@ -50,7 +29,6 @@ fn logged_field(line: &str, key: &str) -> TestResult<String> {
     Ok(value.trim_matches('"').to_owned())
 }
 
-/// The two lines of a two-call test, or an error naming how many were captured.
 fn line_pair<'a>(lines: &[&'a str], what: &str) -> TestResult<(&'a str, &'a str)> {
     let &[first, second] = lines else {
         return Err(format!(
@@ -62,17 +40,11 @@ fn line_pair<'a>(lines: &[&'a str], what: &str) -> TestResult<(&'a str, &'a str)
     Ok((first, second))
 }
 
-/// The captured lines belonging to one tool literal. Each capturing test
-/// names its tool with a literal unique to itself, so a line another test's
-/// call produced can never be counted here: the assertions below then count
-/// exactly the lines the test's own calls emitted.
 fn lines_for_tool<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
     let needle = format!("tool=\"{tool}\"");
     logs.lines().filter(|line| line.contains(&needle)).collect()
 }
 
-/// The completion lines of a capture for one tool literal: the single marker
-/// both outcomes use, so "exactly one per call" is a countable property.
 fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
     lines_for_tool(logs, tool)
         .into_iter()
@@ -80,13 +52,6 @@ fn completion_lines<'a>(logs: &'a str, tool: &str) -> Vec<&'a str> {
         .collect()
 }
 
-/// Every test below probes a capture with `contains`, so one escape sequence
-/// anywhere in the text silently defeats all of them. The formatter colours
-/// by default and interleaves escapes between a field's name, `=` and value,
-/// so an ambient `NO_COLOR` would otherwise decide whether these tests pass.
-///
-/// The control assertion comes first on purpose: an absence-only check on a
-/// capture that went blind would pass while proving nothing.
 #[test]
 fn captured_text_carries_no_ansi_escapes() -> TestResult {
     let ((), logs) = capture_at_level(
@@ -97,7 +62,7 @@ fn captured_text_carries_no_ansi_escapes() -> TestResult {
         logs.contains("tool=\"probe_ansi_escapes\""),
         format!(
             "the field must be probeable as a plain substring, or every capture \
-         assertion in this file is blind:\n{logs:?}"
+             assertion in this file is blind:\n{logs:?}"
         ),
     )?;
     ensure(
@@ -107,14 +72,8 @@ fn captured_text_carries_no_ansi_escapes() -> TestResult {
     Ok(())
 }
 
-/// Two consecutive calls to the same tool must be distinguishable, and each
-/// must carry the session it belongs to — otherwise a session's call
-/// sequence cannot be recovered from the log at all.
 #[test]
 fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() -> TestResult {
-    // Scoped to this test's own tool name: every capturing test names its
-    // tool with a literal nothing else uses, so these counts can only ever
-    // come from the calls made below.
     const TOOL: &str = "probe_call_sequence";
     let runtime = current_thread_runtime()?;
     let (calls, logs) = capture_at_level(
@@ -126,7 +85,6 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
                         Arc::clone(&semaphore),
                         TOOL,
                         move || Ok::<_, ErrorData>(value),
-                        None,
                         None,
                     )
                     .await
@@ -178,9 +136,6 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
         format!("two consecutive calls to one tool must not share a call id:\n{logs}"),
     )?;
 
-    // The start line of each call carries the same correlation pair as its
-    // completion line, in call order: that is what makes the sequence — not
-    // just the set — readable.
     let started: Vec<&str> = lines_for_tool(&logs, TOOL)
         .into_iter()
         .filter(|line| line.contains("tool call started"))
@@ -204,13 +159,8 @@ fn each_tool_call_logs_one_completion_line_with_a_session_and_its_own_call_id() 
     Ok(())
 }
 
-/// A failed call is still one completion line, and it says so in a field
-/// rather than only in the level — a sequence log grepping one marker must
-/// not silently skip the calls that errored.
 #[test]
 fn a_failed_tool_call_logs_one_completion_line_marked_error() -> TestResult {
-    // Scoped to this test's own tool name, so the single completion line it
-    // counts can only be the one its own call emitted.
     const TOOL: &str = "probe_failed_call";
     let runtime = current_thread_runtime()?;
     let (result, logs) = capture_at_level(
@@ -220,7 +170,6 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() -> TestResult {
                     Arc::new(Semaphore::new(4)),
                     TOOL,
                     || Err::<(), _>(ErrorData::invalid_params("bad request", None)),
-                    None,
                     None,
                 )
                 .await
@@ -254,17 +203,12 @@ fn a_failed_tool_call_logs_one_completion_line_marked_error() -> TestResult {
     Ok(())
 }
 
-/// The hard redaction invariant (`tools/redaction_tests.rs`) holds for the
-/// lines of `run_blocking` too: a call whose argument is a sentinel must not put that
-/// sentinel in any log line, the completion line included. The completion
-/// line is asserted to be present as well, so the absence check cannot pass
-/// vacuously.
+/// Tool-call span logging emits structural call metadata (`tool`, `call_id`,
+/// `session_id`, timing, outcome) rather than echoing full SQL arguments or
+/// result rows into stderr logs.
 #[test]
 fn tool_call_logging_never_emits_the_calls_argument_or_result() -> TestResult {
     const SENTINEL: &str = "SENTINEL_TOOLCALL_9147";
-
-    // Scoped to this test's own tool name, so the completion line it counts
-    // can only be the one its own call emitted.
     const TOOL: &str = "query_tool_call_logging";
     let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let request = QueryRequest {
@@ -289,7 +233,6 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() -> TestResult {
                     )
                 },
                 None,
-                None,
             ))
         },
         Level::INFO,
@@ -303,26 +246,22 @@ fn tool_call_logging_never_emits_the_calls_argument_or_result() -> TestResult {
     )?;
     ensure(
         !logs.contains(SENTINEL),
-        format!("the query text leaked into the tool-call log:\n{logs}"),
+        format!("the query text was echoed into the tool-call log:\n{logs}"),
     )?;
     Ok(())
 }
 
-/// A tool error's message routinely embeds user input — here the identifier
-/// in SQLite's `no such column: <identifier>`. The caller must receive it,
-/// and the completion line also logs it, exactly once, as `error`: error
-/// messages are logged by design (the redaction contract covers tool
-/// arguments, results and file content only).
+/// When a tool fails, `log_completion` logs the error message once as `error`
+/// alongside `error_class` and `code` so failures are diagnosable without
+/// duplicate log lines.
 #[test]
 fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
-    // Scoped to this test's own tool name so the one completion line it
-    // counts can only be the one its own call emitted.
     const TOOL: &str = "query_error_logging_redaction";
-    const SECRET: &str = "SENTINEL_ERROR_LOG_7231";
+    const COLUMN_SENTINEL: &str = "SENTINEL_ERROR_LOG_7231";
     let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let request = QueryRequest {
         path: Some(project.path().to_string_lossy().into_owned()),
-        sql: format!("SELECT {SECRET} FROM files"),
+        sql: format!("SELECT {COLUMN_SENTINEL} FROM files"),
         cursor: None,
         legacy_paging: crate::tools::LegacyPaging::default(),
         page_bytes: None,
@@ -342,7 +281,6 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
                     )
                 },
                 None,
-                None,
             ))
         },
         Level::INFO,
@@ -352,7 +290,7 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
         .err()
         .check("the unknown column must fail the query")?;
     ensure(
-        error.message.contains(SECRET),
+        error.message.contains(COLUMN_SENTINEL),
         format!(
             "control: the caller still receives the full message: {}",
             error.message
@@ -388,20 +326,20 @@ fn honest_log_a_failed_tool_call_logs_the_error_message_once() -> TestResult {
         format!("the SQL error class `sql_error` is logged: {line}"),
     )?;
     ensure(
-        line.contains(SECRET),
+        line.contains(COLUMN_SENTINEL),
         format!("the completion line must carry the error message as the cause: {line}"),
     )?;
     ensure_eq(
-        &logs.lines().filter(|line| line.contains(SECRET)).count(),
+        &logs
+            .lines()
+            .filter(|line| line.contains(COLUMN_SENTINEL))
+            .count(),
         &1,
         format!("the message must be logged on one line, not duplicated:\n{logs}"),
     )?;
     Ok(())
 }
 
-/// The machine-readable code from `ErrorData.data` is the one free-form
-/// failure fact that is safe to log; it must reach the completion line when
-/// the producer attached one, while the message beside it stays out.
 #[test]
 fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() -> TestResult {
     const TOOL: &str = "query_error_logging_machine_code";
@@ -428,7 +366,6 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
                         &crate::sync::SourceSyncManager::default(),
                     )
                 },
-                None,
                 None,
             ))
         },
@@ -470,7 +407,7 @@ fn a_failed_tool_call_logs_the_machine_readable_code_but_not_the_cursor_token() 
     )?;
     ensure(
         !logs.contains(CURSOR_TOKEN),
-        format!("the cursor token leaked into the tool-call log:\n{logs}"),
+        format!("the cursor token was echoed into the tool-call log:\n{logs}"),
     )?;
     Ok(())
 }

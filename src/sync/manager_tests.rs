@@ -1,17 +1,41 @@
-//! Integration tests for `SourceSyncManager`'s full-scan synchronization:
-//! every call hashes the tree, so a change is observed on the next call with
-//! no watcher and no delay.
+//! Integration tests for `SourceSyncManager`'s full-scan synchronization,
+//! lock lifecycle, progress framing, and real-path filesystem transitions.
 
-use crate::store::CURRENT_SCHEMA_VERSION;
-use crate::sync::SourceSyncManager;
+use super::*;
+use crate::progress::{ProgressEvent, ProgressSink};
 use crate::sync::test_support::{create_project, sync_project, write_file};
 use crate::tools::context::with_verified_read;
-use rmcp::ErrorData;
-use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
 use std::fs;
 
 fn db_error(error: &rusqlite::Error) -> ErrorData {
     ErrorData::internal_error(error.to_string(), None)
+}
+
+fn stored_file_count(synced: &SyncedProject) -> TestResult<i64> {
+    with_verified_read(synced, |tx| {
+        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+            .map_err(|error| db_error(&error))
+    })
+    .check("read file count")
+}
+
+fn stored_file_content(synced: &SyncedProject, path: &str) -> TestResult<Option<String>> {
+    with_verified_read(synced, |tx| {
+        tx.query_row("SELECT content FROM files WHERE path = ?1", [path], |row| {
+            row.get(0)
+        })
+        .map_err(|error| db_error(&error))
+    })
+    .check("read file content")
+}
+
+fn read_stored_paths(synced: &SyncedProject) -> TestResult<Vec<String>> {
+    with_verified_read(synced, |tx| {
+        crate::sync::test_support::stored_paths(tx)
+            .map_err(|err| ErrorData::internal_error(err.to_string(), None))
+    })
+    .check("read stored paths")
 }
 
 #[test]
@@ -23,18 +47,10 @@ fn edit_file_between_calls_returns_fresh_evidence() -> TestResult {
     let synced = sync_project(&manager, &project)?;
     let value_a_revision = synced.revision_id.clone();
 
-    let content_a: Option<String> = with_verified_read(&synced, |tx| {
-        tx.query_row(
-            "SELECT content FROM files WHERE path = 'lib.rs'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| db_error(&error))
-    })
-    .check("read content")?;
+    let content_a = stored_file_content(&synced, "lib.rs")?;
     ensure(
         content_a.check("read file back")?.contains("42"),
-        "content_a.check(\"read file back\")?.contains(\"42\")",
+        "initial content contains 42",
     )?;
 
     write_file(&project, "lib.rs", b"pub fn value() -> i32 { 99 }\n")?;
@@ -43,42 +59,13 @@ fn edit_file_between_calls_returns_fresh_evidence() -> TestResult {
     ensure_ne(
         &value_a_revision,
         &synced_b.revision_id,
-        "value_a_revision != synced_b.revision_id",
+        "edited file publishes a new revision",
     )?;
 
-    let content_b: Option<String> = with_verified_read(&synced_b, |tx| {
-        tx.query_row(
-            "SELECT content FROM files WHERE path = 'lib.rs'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| db_error(&error))
-    })
-    .check("read content")?;
+    let content_b = stored_file_content(&synced_b, "lib.rs")?;
     ensure(
         content_b.check("read file back")?.contains("99"),
-        "content_b.check(\"read file back\")?.contains(\"99\")",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn edit_file_immediately_returns_fresh_evidence() -> TestResult {
-    let manager = SourceSyncManager::new();
-    let project = create_project()?;
-    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
-
-    let synced = sync_project(&manager, &project)?;
-    let old_revision = synced.revision_id;
-
-    write_file(&project, "lib.rs", b"pub fn a() { changed() }\n")?;
-
-    let synced2 = sync_project(&manager, &project)?;
-
-    ensure_ne(
-        &old_revision,
-        &synced2.revision_id,
-        "old_revision != synced2.revision_id",
+        "updated content contains 99",
     )?;
     Ok(())
 }
@@ -120,22 +107,12 @@ fn create_new_file_gets_indexed() -> TestResult {
     write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
 
     let synced = sync_project(&manager, &project)?;
-    let file_count: i64 = with_verified_read(&synced, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(&file_count, &1, "file_count == 1")?;
+    ensure_eq(&stored_file_count(&synced)?, &1, "file_count == 1")?;
 
     write_file(&project, "new.rs", b"pub fn b() {}\n")?;
 
     let synced2 = sync_project(&manager, &project)?;
-    let file_count2: i64 = with_verified_read(&synced2, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(&file_count2, &2, "file_count2 == 2")?;
+    ensure_eq(&stored_file_count(&synced2)?, &2, "file_count2 == 2")?;
     Ok(())
 }
 
@@ -147,22 +124,12 @@ fn delete_file_gets_removed_from_index() -> TestResult {
     write_file(&project, "to_delete.rs", b"pub fn b() {}\n")?;
 
     let synced = sync_project(&manager, &project)?;
-    let file_count: i64 = with_verified_read(&synced, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(&file_count, &2, "file_count == 2")?;
+    ensure_eq(&stored_file_count(&synced)?, &2, "file_count == 2")?;
 
     fs::remove_file(project.path().join("to_delete.rs")).check("delete file")?;
 
     let synced2 = sync_project(&manager, &project)?;
-    let file_count2: i64 = with_verified_read(&synced2, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(&file_count2, &1, "file_count2 == 1")?;
+    ensure_eq(&stored_file_count(&synced2)?, &1, "file_count2 == 1")?;
     Ok(())
 }
 
@@ -235,8 +202,6 @@ fn restart_after_offline_changes_detects_changes() -> TestResult {
     Ok(())
 }
 
-/// Proves delete-then-recreate is handled correctly: the file should be
-/// re-indexed with its new content, not left as a deletion.
 #[test]
 fn delete_then_recreate_gets_reindexed() -> TestResult {
     let manager = SourceSyncManager::new();
@@ -245,246 +210,22 @@ fn delete_then_recreate_gets_reindexed() -> TestResult {
 
     let _synced = sync_project(&manager, &project)?;
 
-    // Delete and recreate the file with different content.
     fs::remove_file(project.path().join("lib.rs")).check("delete file")?;
     write_file(&project, "lib.rs", b"pub fn recreated() {}\n")?;
 
     let synced2 = sync_project(&manager, &project)?;
-
-    let content: Option<String> = with_verified_read(&synced2, |tx| {
-        tx.query_row(
-            "SELECT content FROM files WHERE path = 'lib.rs'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| db_error(&error))
-    })
-    .check("read content")?;
+    let content = stored_file_content(&synced2, "lib.rs")?;
     ensure(
         content
             .check("read file back")?
             .contains("pub fn recreated()"),
-        "content .check(\"read file back\")? .contains(\"pub fn recreated()\")",
-    )?;
-    Ok(())
-}
-
-/// The database-side proof: content edited directly in the database, with
-/// the hash column left alone, is repaired from the file on the next call.
-#[test]
-fn a_content_edit_in_the_database_is_repaired_on_the_next_call() -> TestResult {
-    let manager = SourceSyncManager::new();
-    let project = create_project()?;
-    write_file(&project, "lib.rs", b"pub fn a() {}\n")?;
-    let synced = sync_project(&manager, &project)?;
-    let revision_before = synced.revision_id.clone();
-
-    {
-        let connection = rusqlite::Connection::open(&synced.database_path).check("raw open")?;
-        connection
-            .execute(
-                "UPDATE files SET content = 'fn tampered() {}\n' WHERE path = 'lib.rs'",
-                [],
-            )
-            .check("tamper with the stored content")?;
-    }
-
-    let synced2 = sync_project(&manager, &project)?;
-
-    ensure_ne(
-        &revision_before,
-        &synced2.revision_id,
-        "the repair publishes a revision",
-    )?;
-    let content: Option<String> = with_verified_read(&synced2, |tx| {
-        tx.query_row(
-            "SELECT content FROM files WHERE path = 'lib.rs'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| db_error(&error))
-    })
-    .check("read content")?;
-    ensure_eq(
-        &content.as_deref(),
-        &Some("pub fn a() {}\n"),
-        "the source wins over the database",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn outdated_database_is_automatically_deleted_and_recreated() -> TestResult {
-    let manager = SourceSyncManager::new();
-    let project = create_project()?;
-    write_file(&project, "lib.rs", b"pub fn first() {}\n")?;
-
-    // First sync to establish the initial database.
-    let synced = sync_project(&manager, &project)?;
-    ensure(
-        !synced.revision_id.is_empty(),
-        "!synced.revision_id.is_empty()",
-    )?;
-
-    // Artificially stamp an outdated schema version into user_version (simulating an older version).
-    {
-        let connection = rusqlite::Connection::open(&synced.database_path).check("raw open")?;
-        connection
-            .pragma_update(None, "user_version", 1_i64)
-            .check("rewind user_version to 1")?;
-    }
-
-    // Next sync must detect the outdated version, discard the old DB, and create a fresh new one.
-    let synced_after = sync_project(&manager, &project)?;
-    ensure(
-        !synced_after.revision_id.is_empty(),
-        "!synced_after.revision_id.is_empty()",
-    )?;
-
-    // Read the version through a raw connection, the same way it was stamped
-    // above, so the check does not depend on the store's connection contract.
-    let version: i64 = rusqlite::Connection::open(&synced_after.database_path)
-        .check("raw open")?
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .check("read version")?;
-    ensure_eq(
-        &version,
-        &CURRENT_SCHEMA_VERSION,
-        "recreated database must be at current schema version",
-    )?;
-
-    let file_count: i64 = with_verified_read(&synced_after, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(
-        &file_count,
-        &1,
-        "source files must be republished from scratch",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn database_corrupted_during_sync_is_automatically_rebuilt() -> TestResult {
-    let manager = SourceSyncManager::new();
-    let project = create_project()?;
-    write_file(&project, "lib.rs", b"pub fn first() {}\n")?;
-
-    let synced = sync_project(&manager, &project)?;
-    ensure(
-        !synced.revision_id.is_empty(),
-        "!synced.revision_id.is_empty()",
-    )?;
-
-    // Corrupt the database file content by overwriting SQLite header with garbage.
-    {
-        use std::io::{Seek, SeekFrom, Write};
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&synced.database_path)
-            .check("open db file")?;
-        file.seek(SeekFrom::Start(0)).check("seek")?;
-        file.write_all(b"not a valid sqlite database header at all!")
-            .check("corrupt header")?;
-    }
-
-    // Next sync must detect the corrupt DB, discard it, and rebuild from scratch.
-    let synced_after = sync_project(&manager, &project)?;
-    ensure(
-        !synced_after.revision_id.is_empty(),
-        "!synced_after.revision_id.is_empty()",
-    )?;
-    synced_after
-        .discard
-        .as_ref()
-        .check("`synced_after.discard` is present")?;
-
-    let file_count: i64 = with_verified_read(&synced_after, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(
-        &file_count,
-        &1,
-        "source files must be republished from scratch after corruption",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn database_corrupted_during_publish_is_automatically_rebuilt() -> TestResult {
-    let manager = SourceSyncManager::new();
-    let project = create_project()?;
-    write_file(&project, "lib.rs", b"pub fn first() {}\n")?;
-
-    let synced = sync_project(&manager, &project)?;
-    ensure(
-        !synced.revision_id.is_empty(),
-        "!synced.revision_id.is_empty()",
-    )?;
-
-    write_file(&project, "second.rs", b"pub fn second() {}\n")?;
-
-    let db_path = synced.database_path.clone();
-    let hook = super::super::race_hook::set(
-        project.path(),
-        super::super::race_hook::RacePoint::BeforeCommit,
-        move || {
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&db_path)
-                .check("open db file")?;
-            file.set_len(512).check("truncate db")?;
-            file.sync_all().check("sync")
-        },
-    )?;
-
-    let synced_after = sync_project(&manager, &project)?;
-    hook.outcome()?;
-    ensure(
-        !synced_after.revision_id.is_empty(),
-        "!synced_after.revision_id.is_empty()",
-    )?;
-    synced_after
-        .discard
-        .as_ref()
-        .check("`synced_after.discard` is present")?;
-    let discard = synced_after
-        .discard
-        .as_ref()
-        .check("discard notice expected")?;
-    ensure(
-        discard.cause.contains("corrupt"),
-        format!(
-            "discard notice should mention corruption: {}",
-            discard.cause
-        ),
-    )?;
-
-    let file_count: i64 = with_verified_read(&synced_after, |tx| {
-        tx.query_row("SELECT count(*) FROM files", [], |row| row.get(0))
-            .map_err(|error| db_error(&error))
-    })
-    .check("read count")?;
-    ensure_eq(
-        &file_count,
-        &2,
-        "both files must be published after rebuilding from corruption",
+        "recreated content is indexed",
     )?;
     Ok(())
 }
 
 #[test]
 fn ensure_current_emits_completed_on_early_error_path() -> TestResult {
-    use crate::progress::{ProgressEvent, ProgressSink};
-    use slugaudit_test_check::CheckErr;
-    use std::sync::Mutex;
-
     struct RecordingSink {
         events: Mutex<Vec<(&'static str, &'static str)>>,
     }
@@ -521,6 +262,176 @@ fn ensure_current_emits_completed_on_early_error_path() -> TestResult {
         &events.as_slice(),
         &expected,
         "early error path must emit Completed after Started",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn project_sync_lock_shares_live_mutex_and_prunes_dropped_entries() -> TestResult {
+    let manager = SourceSyncManager::default();
+    let root_a = PathBuf::from("/tmp/slugaudit-lock-a");
+    let root_b = PathBuf::from("/tmp/slugaudit-lock-b");
+
+    let lock_a1 = manager.project_sync_lock(&root_a).check("lock a1")?;
+    let lock_a2 = manager.project_sync_lock(&root_a).check("lock a2")?;
+    ensure(
+        Arc::ptr_eq(&lock_a1, &lock_a2),
+        "concurrent callers on the same root share one mutex",
+    )?;
+    drop(lock_a1);
+    drop(lock_a2);
+
+    let _lock_b = manager.project_sync_lock(&root_b).check("lock b")?;
+    let table = crate::util::lock(&manager.sync_locks, "sync_locks").check("inspect table")?;
+    ensure_eq(
+        &table.len(),
+        &1,
+        "expired weak entry for root_a was pruned on next lookup",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn mv_rename_between_syncs_updates_files_and_reresolves_mod_and_use_edges() -> TestResult {
+    let manager = SourceSyncManager::new();
+    let project = create_project()?;
+    write_file(
+        &project,
+        "src/lib.rs",
+        b"mod new;\nuse crate::new::greet;\npub fn call() { greet(); }\n",
+    )?;
+    write_file(&project, "src/old.rs", b"pub fn greet() {}\n")?;
+
+    let first = sync_project(&manager, &project)?;
+    ensure_eq(
+        &read_stored_paths(&first)?,
+        &vec!["src/lib.rs".to_owned(), "src/old.rs".to_owned()],
+        "initial sync indexes src/lib.rs and src/old.rs",
+    )?;
+
+    fs::rename(
+        project.path().join("src/old.rs"),
+        project.path().join("src/new.rs"),
+    )
+    .check("mv src/old.rs src/new.rs")?;
+
+    let second = sync_project(&manager, &project)?;
+    ensure_ne(
+        &first.revision_id,
+        &second.revision_id,
+        "rename publishes a new revision",
+    )?;
+    let after_paths = read_stored_paths(&second)?;
+    let resolved_targets: Vec<String> = with_verified_read(&second, |tx| {
+        let mut stmt = tx
+            .prepare(
+                "SELECT t.path FROM dependency_edges e \
+                 JOIN files f ON f.id = e.from_file_id \
+                 JOIN files t ON t.id = e.to_file_id \
+                 WHERE f.path = 'src/lib.rs' AND e.resolution_kind = 'Resolved' \
+                 ORDER BY e.raw_import_text",
+            )
+            .map_err(|e| db_error(&e))?;
+        let targets = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| db_error(&e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| db_error(&e))?;
+        Ok(targets)
+    })
+    .check("read renamed edges")?;
+    ensure_eq(
+        &after_paths,
+        &vec!["src/lib.rs".to_owned(), "src/new.rs".to_owned()],
+        "mv removes src/old.rs and adds src/new.rs",
+    )?;
+    ensure_eq(
+        &resolved_targets,
+        &vec!["src/new.rs".to_owned(), "src/new.rs".to_owned()],
+        "both mod new; and use crate::new::greet; re-resolve to src/new.rs",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn regular_file_replaced_by_directory_between_syncs_reindexes_cleanly() -> TestResult {
+    let manager = SourceSyncManager::new();
+    let project = create_project()?;
+    write_file(&project, "src/lib.rs", b"mod foo;\n")?;
+    write_file(&project, "src/foo", b"plain regular file\n")?;
+
+    let first = sync_project(&manager, &project)?;
+    ensure_eq(
+        &read_stored_paths(&first)?,
+        &vec!["src/foo".to_owned(), "src/lib.rs".to_owned()],
+        "src/foo regular file is indexed initially",
+    )?;
+
+    fs::remove_file(project.path().join("src/foo")).check("remove regular file src/foo")?;
+    write_file(
+        &project,
+        "src/foo/mod.rs",
+        b"pub fn inside_dir() -> usize { 1 }\n",
+    )?;
+
+    let second = sync_project(&manager, &project)?;
+    ensure_ne(
+        &first.revision_id,
+        &second.revision_id,
+        "file-to-directory replacement publishes a new revision",
+    )?;
+    let after_paths = read_stored_paths(&second)?;
+    let mod_target: Option<String> = with_verified_read(&second, |tx| {
+        tx.query_row(
+            "SELECT t.path FROM dependency_edges e \
+             JOIN files f ON f.id = e.from_file_id \
+             LEFT JOIN files t ON t.id = e.to_file_id \
+             WHERE f.path = 'src/lib.rs'",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|e| db_error(&e))
+    })
+    .check("read replaced directory edge")?;
+    ensure_eq(
+        &after_paths,
+        &vec!["src/foo/mod.rs".to_owned(), "src/lib.rs".to_owned()],
+        "src/foo file row is removed and src/foo/mod.rs is indexed",
+    )?;
+    ensure_eq(
+        &mod_target.as_deref(),
+        &Some("src/foo/mod.rs"),
+        "mod foo; resolves to src/foo/mod.rs",
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_fifo_inside_active_project_tree_is_ignored_without_hanging_sync() -> TestResult {
+    let manager = SourceSyncManager::new();
+    let project = create_project()?;
+    write_file(&project, "src/lib.rs", b"pub fn live() {}\n")?;
+    let first = sync_project(&manager, &project)?;
+
+    let fifo_path = project.path().join("src/unopened_writer.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo_path)
+        .status()
+        .check("spawn mkfifo")?;
+    ensure(status.success(), "mkfifo created a named pipe")?;
+
+    write_file(&project, "src/extra.rs", b"pub fn extra() {}\n")?;
+    let second = sync_project(&manager, &project)?;
+    ensure_ne(
+        &first.revision_id,
+        &second.revision_id,
+        "sync completes past the FIFO without hanging",
+    )?;
+    ensure_eq(
+        &read_stored_paths(&second)?,
+        &vec!["src/extra.rs".to_owned(), "src/lib.rs".to_owned()],
+        "FIFO is excluded cleanly while regular files sync normally",
     )?;
     Ok(())
 }

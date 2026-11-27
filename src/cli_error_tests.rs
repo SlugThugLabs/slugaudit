@@ -1,7 +1,8 @@
 //! Tests for `cli` error conversions and how output write failures are
 //! classified (broken pipe versus a real failure).
+
 use super::*;
-use slugaudit_test_check::{TestResult, ensure, ensure_eq};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
 fn a_serde_failure_converts_to_the_json_error_variant() -> TestResult {
@@ -23,10 +24,10 @@ fn a_serde_failure_converts_to_the_json_error_variant() -> TestResult {
 
 #[test]
 fn a_config_write_without_a_home_reports_the_home_unavailable() -> TestResult {
-    let cursor = crate::connect_agents::find_agent("cursor").check("cursor is registered")?;
+    let cursor = crate::connect::find_agent("cursor").check("cursor is registered")?;
 
     let error =
-        crate::connect_exec::connect_agent(&cursor, std::path::Path::new("/bin/slugaudit"), None)
+        crate::connect::connect_agent(&cursor, std::path::Path::new("/bin/slugaudit"), None)
             .check_err("a config write has nowhere to go without a home")?;
 
     ensure(
@@ -40,9 +41,9 @@ fn a_config_write_without_a_home_reports_the_home_unavailable() -> TestResult {
 fn a_config_parent_that_cannot_be_created_is_an_io_error() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
     std::fs::write(temp.path().join(".cursor"), b"not a directory").check("blocking file")?;
-    let cursor = crate::connect_agents::find_agent("cursor").check("cursor is registered")?;
+    let cursor = crate::connect::find_agent("cursor").check("cursor is registered")?;
 
-    let error = crate::connect_exec::connect_agent(
+    let error = crate::connect::connect_agent(
         &cursor,
         std::path::Path::new("/bin/slugaudit"),
         Some(temp.path()),
@@ -60,9 +61,9 @@ fn a_config_parent_that_cannot_be_created_is_an_io_error() -> TestResult {
 fn a_config_path_that_is_a_directory_is_an_io_error() -> TestResult {
     let temp = tempfile::tempdir().check("temp dir")?;
     std::fs::create_dir_all(temp.path().join(".cursor/mcp.json")).check("config as directory")?;
-    let cursor = crate::connect_agents::find_agent("cursor").check("cursor is registered")?;
+    let cursor = crate::connect::find_agent("cursor").check("cursor is registered")?;
 
-    let error = crate::connect_exec::connect_agent(
+    let error = crate::connect::connect_agent(
         &cursor,
         std::path::Path::new("/bin/slugaudit"),
         Some(temp.path()),
@@ -100,9 +101,12 @@ fn a_closed_pipe_write_is_reported_as_broken_pipe_not_a_panic() -> TestResult {
     ensure_eq(
         &error.kind(),
         &std::io::ErrorKind::BrokenPipe,
-        "error.kind() == std::io::ErrorKind::BrokenPipe",
+        "preserves BrokenPipe error kind",
     )?;
-    ensure(is_broken_pipe(&error), "is_broken_pipe(&error)")?;
+    ensure(
+        is_broken_pipe(&error),
+        "recognizes BrokenPipe as clean pipe close",
+    )?;
     Ok(())
 }
 
@@ -116,14 +120,17 @@ fn a_non_pipe_write_failure_is_reported_and_not_classified_as_a_clean_exit() -> 
     ensure_eq(
         &error.kind(),
         &std::io::ErrorKind::StorageFull,
-        "error.kind() == std::io::ErrorKind::StorageFull",
+        "preserves StorageFull error kind",
     )?;
     ensure_eq(
         &error.to_string(),
         &"injected write failure",
-        "error.to_string() == \"injected write failure\"",
+        "preserves injected failure message",
     )?;
-    ensure(!is_broken_pipe(&error), "!is_broken_pipe(&error)")?;
+    ensure(
+        !is_broken_pipe(&error),
+        "StorageFull is not classified as broken pipe",
+    )?;
     Ok(())
 }
 
@@ -136,7 +143,7 @@ fn a_successful_write_keeps_the_exact_output_text() -> TestResult {
     ensure_eq(
         &writer,
         &b"slugaudit 1.0.10\n",
-        "writer == b\"slugaudit 1.0.10\\n\"",
+        "writes exact formatted output bytes",
     )?;
     Ok(())
 }
@@ -147,15 +154,15 @@ fn a_closed_pipe_is_found_through_every_cli_error_wrapper() -> TestResult {
 
     ensure(
         is_broken_pipe(&ConnectError::Io(broken())),
-        "is_broken_pipe(&ConnectError::Io(broken()))",
+        "ConnectError::Io wraps BrokenPipe",
     )?;
     ensure(
         is_broken_pipe(&crate::install::InstallError::Io(broken())),
-        "is_broken_pipe(&crate::install::InstallError::Io(broken()))",
+        "InstallError::Io wraps BrokenPipe",
     )?;
     ensure(
         is_broken_pipe(&crate::update::UpdateError::Io(broken())),
-        "is_broken_pipe(&crate::update::UpdateError::Io(broken()))",
+        "UpdateError::Io wraps BrokenPipe",
     )?;
     Ok(())
 }
@@ -166,15 +173,15 @@ fn a_non_pipe_io_failure_in_a_wrapper_is_not_a_clean_exit() -> TestResult {
 
     ensure(
         !is_broken_pipe(&ConnectError::Io(refused())),
-        "!is_broken_pipe(&ConnectError::Io(refused()))",
+        "ConnectError::Io PermissionDenied is not BrokenPipe",
     )?;
     ensure(
         !is_broken_pipe(&crate::install::InstallError::Io(refused())),
-        "!is_broken_pipe( &crate::install::InstallError::Io(refused()) )",
+        "InstallError::Io PermissionDenied is not BrokenPipe",
     )?;
     ensure(
         !is_broken_pipe(&crate::update::UpdateError::Io(refused())),
-        "!is_broken_pipe(&crate::update::UpdateError::Io(refused()))",
+        "UpdateError::Io PermissionDenied is not BrokenPipe",
     )?;
     Ok(())
 }
@@ -210,7 +217,7 @@ fn a_rejected_add_with_output_keeps_the_pointer_to_it() -> TestResult {
     let error = result.check_err("expected AddFailed, got Ok")?;
     match &error {
         ConnectError::AddFailed { cli, .. } => {
-            ensure_eq(&cli, &"claude", "cli == \"claude\"")?;
+            ensure_eq(&cli, &"claude", "AddFailed names claude executable")?;
             ensure(
                 error.to_string().contains("see the output above"),
                 format!("captured client output makes the pointer true: {error}"),

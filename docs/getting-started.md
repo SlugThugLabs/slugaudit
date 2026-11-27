@@ -11,8 +11,8 @@ curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install
 What the script does:
 
 - Puts the binary at `~/.slugthug/slugaudit/slugaudit`. Set `SLUGTHUG_HOME` to use another base directory for `slugaudit install` and `connect` (the script itself always uses `~/.slugthug/slugaudit`).
-- On Linux x86_64 it downloads the release binary and checks it against the release `SHA256SUMS`. It fails if the check fails.
-- On other systems it needs `cargo`. It builds from the repository (if you run it inside a checkout) or runs `cargo install --git`.
+- On Linux x86_64 it downloads the release binary and checks it against the release `SHA256SUMS` (pass `--from-source` inside a checkout to compile from source instead). It fails if the check fails.
+- On other systems it needs `cargo`. It builds from the repository (if you run it inside a checkout with `--from-source`) or runs `cargo install --locked --git` with `TSLP_LINK_MODE=static TSLP_LANGUAGES=rust` so the Rust grammar is compiled statically into the binary.
 - If a binary was already there, the old one is kept as `slugaudit.prev` in the same directory. To revert, copy it back.
 
 The script does not edit your `PATH`. Add the directory yourself:
@@ -51,7 +51,7 @@ All supported agent ids:
 
 Aliases: `claude-code`, `antigravity`, `github-copilot`, `oh-my-pi`.
 
-`goose` and `crush` cannot be configured automatically. `connect goose` and `connect crush` refuse and print the lines to paste by hand.
+`goose` and `crush` cannot be configured automatically. `connect goose` and `connect crush` refuse and print the lines to paste by hand. Likewise, if an existing `.jsonc` config file (such as `opencode.jsonc`) contains `//` or `/*` comments, `connect` and `disconnect` refuse to overwrite the file so your comments are never erased and print the `"slugaudit"` snippet to add or remove manually.
 
 Each client command that `connect` runs is stopped after 15 seconds.
 
@@ -108,7 +108,7 @@ A project counts as enabled while the directory `.planning/slugaudit/` exists. E
 
 An optional `profile` (`adaptive`, `audit`, `lean`) applies to this session only. It is held in memory until the server exits and is not saved. See [configuration](configuration.md).
 
-To turn a project off, call `project_control` with `"action": "off"`. This deletes the whole `.planning/slugaudit/` directory and then `.planning` if that leaves it empty. See [tools](tools.md).
+To turn a project off, call `project_control` with `"action": "off"`. This deletes `.planning/slugaudit/` while leaving `.planning/README.md` and any other files in `.planning/` untouched. See [tools](tools.md).
 
 ## `.gitignore`
 

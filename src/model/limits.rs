@@ -1,11 +1,8 @@
-use super::env_error::EnvConfigError;
-use super::env_overrides::EnvOverrides;
-use super::system_ram::{MemoryDetectError, SystemMemoryInfo, detect_system_memory};
+use super::system_ram::SystemMemoryInfo;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Bounds applied when normalizing pack output into evidence rows.
+/// Bounds applied when normalizing AST output into `evidence` rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvidenceLimits {
     /// Largest number of evidence items kept per file; excess items are
@@ -30,275 +27,57 @@ impl Default for EvidenceLimits {
     }
 }
 
-/// Largest TEXT/BLOB the bundled SQLite can store (`SQLITE_MAX_LENGTH`).
-///
-/// `libsqlite3-sys` 0.35.0 compiles SQLite with the default
-/// `SQLITE_MAX_LENGTH` of 1,000,000,000 bytes (`sqlite3.c:14137-14138`).
-/// A content or query value over this cannot be inserted or read, so the
-/// per-file/query limits are clamped here: without the clamp, a file in
-/// (1e9, `max_file`] would fail the whole publish at insert instead of
-/// becoming a reported skipped row. Verified 2026-10-19.
+/// Largest TEXT/BLOB the bundled SQLite can store (`SQLITE_MAX_LENGTH` = 1e9).
 pub(crate) const SQLITE_MAX_VALUE_BYTES: u64 = 1_000_000_000;
 
-/// Process-wide resource ceilings for import, query, and structure work.
-/// Defaults are intentionally conservative for a single-project MCP server.
+/// Resource ceilings for sync, SQL query, Tree-sitter structure, and paging.
 ///
-/// Every field except `evidence` can be overridden at startup via an
-/// environment variable (see [`process_limits`]). When no override is
-/// present, the compile-time default is used. The pattern is
-/// `SLUGAUDIT_<FIELD>` where `<FIELD>` is the `snake_case` name of the field —
-/// e.g. `SLUGAUDIT_MAX_FILE_BYTES=134217728` sets the per-file size cap to
-/// 128 MiB.
-/// Duration fields accept a number of seconds (whole seconds only).
-/// Only explicitly-set variables override; defaults are never altered. A
-/// variable that is set but cannot be read or parsed stops startup with an
-/// error naming the variable. The `max_file_bytes` and
-/// `max_query_value_bytes` overrides (and the global config's
-/// `max_file_bytes`) are clamped to `SQLITE_MAX_VALUE_BYTES` with a warning
-/// logged once per configured value, because SQLite cannot store a larger
-/// value. A `0` for any of these variables is an
-/// error naming the variable and stops startup: no limit here means "off" at
-/// zero.
+/// Every field except `evidence` can be overridden by the human in
+/// `~/.slugthug/slugaudit/config.json` or via `SLUGAUDIT_<FIELD>` environment
+/// variables. Set-but-invalid values or `0` fail closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
-    /// Largest single file that will be fully read into memory for hashing
-    /// and indexing. Larger files are rejected rather than loaded. Clamped
-    /// to `SQLITE_MAX_VALUE_BYTES` so a stored content value cannot exceed
-    /// what the bundled SQLite can hold.
-    /// Env: `SLUGAUDIT_MAX_FILE_BYTES` (u64).
+    /// Largest single file read into memory for hashing and indexing.
     pub max_file_bytes: u64,
-    /// Largest file content, in bytes, a grammar is run on. A file above it
-    /// (and within `max_file_bytes`) is still stored and searchable through
-    /// `query`, but no grammar is fetched, loaded or run over it: it is
-    /// recorded `ContentOnly` with `parse_error_reason = 'oversize_for_parse'`,
-    /// counted in `report.completeness` and in every `leads` response's
-    /// `files_not_parsed`, and `structure` skips it. Bounds the parse's
-    /// memory and time, which grow with input size (an uncapped 50 MB Rust file
-    /// takes 185 s and 7.5 GB RSS). 2 MiB in every profile. Clamped
-    /// to `max_file_bytes`, with a warning, when an override sets it higher.
-    /// A `0` override is an error.
-    /// Env: `SLUGAUDIT_MAX_PARSE_BYTES` (u64); global `config.json` key
-    /// `max_parse_bytes`.
+    /// Largest file content a grammar is run on (`oversize_for_parse` above it).
     pub max_parse_bytes: u64,
-    /// Wall-clock budget, in milliseconds, for every parse of one file (the
-    /// pack's `process()` and each walker, call and macro-body re-parse
-    /// share it). Each file runs under the lesser of this and what is left of
-    /// the sync budget (`max_sync_wall_clock`). When this allowance is what
-    /// runs out, only that file is affected: it is stored `ContentOnly` (or
-    /// `Partial` when only a re-parse was cut) with
-    /// `parse_error_reason = 'parse_timeout'`, counted in
-    /// `report.completeness` and in every `leads` response's
-    /// `files_not_parsed`, and the sync goes on with the next file. When the
-    /// sync budget runs out first, the sync fails. A cut file with
-    /// unchanged content is not re-parsed on later syncs (like any unchanged
-    /// file); editing it parses it again. 5000 (5 s) in every profile; a `0`
-    /// override is an error.
-    /// Env: `SLUGAUDIT_MAX_PARSE_WALL_CLOCK_MS` (milliseconds, u64); global
-    /// `config.json` key `max_parse_wall_clock_ms`.
+    /// Wall-clock budget in milliseconds for parsing one file.
     pub max_parse_wall_clock_ms: u64,
-    /// Cap on the sum of sampled file sizes in one publish. This is a
-    /// **work budget**, not a process memory bound: peak memory also includes
-    /// in-flight samples, evidence payloads, and parse transients, so a tree
-    /// can fit this budget and still exceed available RAM. A separate memory
-    /// bound is not implemented.
-    /// Env: `SLUGAUDIT_MAX_TOTAL_IMPORT_BYTES` (u64).
+    /// Cap on the sum of sampled file sizes in one publish.
     pub max_total_import_bytes: u64,
-    /// Cap on serialized JSON bytes returned by one read call — the rows of
-    /// `query` and the `rows` of `leads`. Enforced per row as the response
-    /// is assembled: the row that would cross the cap stops the page, and
-    /// both tools report the budget and the bytes they spent.
-    /// Env: `SLUGAUDIT_MAX_QUERY_RESPONSE_BYTES` (usize).
+    /// Cap on serialized JSON bytes returned by one `query` or `leads` page.
     pub max_query_response_bytes: usize,
-    /// Default page size, in serialized JSON bytes, for one `query` or
-    /// `leads` call that does not pass its own `page_bytes`. A page is cut at
-    /// this size on a row boundary and resumed with `page.cursor`; a request's
-    /// `page_bytes` overrides it, and the effective page is always clamped to
-    /// `max_query_response_bytes` (the hard ceiling), with the clamp reported
-    /// in the response. An oversized row has its individual cells clipped and
-    /// reported in `clipped_cells`. Env: `SLUGAUDIT_DEFAULT_PAGE_BYTES` (usize); global
-    /// `config.json` key `default_page_bytes`.
+    /// Default page size in serialized JSON bytes when `page_bytes` is omitted.
     pub default_page_bytes: usize,
     /// Maximum SQL text length accepted by `query` (UTF-8 bytes).
-    /// Env: `SLUGAUDIT_MAX_QUERY_SQL_BYTES` (usize).
     pub max_query_sql_bytes: usize,
-    /// Soft cap on SQLite virtual-machine steps per `query` execution.
-    /// Enforced via a progress handler when available.
-    /// Env: `SLUGAUDIT_MAX_QUERY_VM_STEPS` (u32).
+    /// Cap on SQLite virtual-machine steps per `query` execution.
     pub max_query_vm_steps: u32,
-    /// Wall-clock budget for one `query` execution, independent of the VM
-    /// step budget — bounds queries whose individual steps are each slow
-    /// (e.g. disk I/O stalls) rather than merely numerous.
-    /// Env: `SLUGAUDIT_MAX_QUERY_WALL_CLOCK_SECS` (seconds, u64).
+    /// Wall-clock budget for one `query` execution.
     pub max_query_wall_clock: Duration,
-    /// Largest single TEXT or BLOB column value `query` will return, checked
-    /// against the raw value before it is cloned or hex-expanded into JSON.
-    /// Env: `SLUGAUDIT_MAX_QUERY_VALUE_BYTES` (usize).
+    /// Largest single TEXT or BLOB column value `query` returns.
     pub max_query_value_bytes: usize,
-    /// Maximum tree-sitter query text length for `structure` (UTF-8 bytes).
-    /// `Query::new` has no deadline of its own, so a longer query is refused
-    /// with `invalid_params` (stating its size and this limit, never its
-    /// text) before it is compiled. 16 KiB in every profile; a `0` override is
-    /// an error.
-    /// Env: `SLUGAUDIT_MAX_STRUCTURE_QUERY_BYTES` (usize); global
-    /// `config.json` key `max_structure_query_bytes`.
+    /// Maximum Tree-sitter query text length for `structure` (UTF-8 bytes).
     pub max_structure_query_bytes: usize,
-    /// Maximum capture matches returned by one `structure` call.
-    /// Env: `SLUGAUDIT_MAX_STRUCTURE_MATCHES` (usize).
+    /// Maximum capture matches returned on one `structure` page.
     pub max_structure_matches: usize,
-    /// Wall-clock budget for one `structure` query's Tree-sitter execution,
-    /// enforced natively via `QueryCursorOptions::progress_callback` so a
-    /// pathological pattern (deep nesting, wildcard-heavy captures) can be
-    /// aborted mid-query rather than only after it returns.
-    /// Env: `SLUGAUDIT_MAX_STRUCTURE_EXECUTION_TIME_SECS` (seconds, u64).
+    /// Wall-clock budget for one `structure` execution.
     pub max_structure_execution_time: Duration,
-    /// Wall-clock budget for one sync operation — a full publish, including
-    /// every retry. Enforced cooperatively inside the hot loops (per
-    /// discovered file, per sampled file, per verified row), so a
-    /// pathological repo (huge tree, hung network filesystem) fails closed
-    /// with a `TimeBudgetExceeded` error instead of stalling the tool call
-    /// indefinitely. Generous by default — the measured baseline for a
-    /// 200-file import is ~160 ms — because legitimate large imports must
-    /// not be cut off; this bounds hangs, not real work.
-    /// Env: `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS` (seconds, u64).
+    /// Wall-clock budget for one sync operation across discovery, parse, and publish.
     pub max_sync_wall_clock: Duration,
-    /// Total on-disk bytes of paged results the result store keeps. A new
-    /// result that does not fit reclaims delivered results, then idle ones,
-    /// never active ones; one that still does not fit is refused with
-    /// `result_store_full`, and a single result above the whole budget with
-    /// `result_too_large`. Defaults to 4 times the effective
-    /// `max_query_response_bytes`, including its env override (1 GiB on
-    /// `audit`, 128 MiB on `lean`), unless this limit is set itself; a `0`
-    /// override is an error.
-    /// Env: `SLUGAUDIT_MAX_RESULT_STORE_BYTES` (u64); global `config.json`
-    /// key `max_result_store_bytes`.
+    /// Total bytes of paged results retained in the result store.
     pub max_result_store_bytes: u64,
-    /// Seconds after its last served page that an unfinished paged result
-    /// stays protected from reclaim (900 in every profile). The grace never
-    /// deletes anything by itself, and continuing a result renews it. A `0`
-    /// override is an error.
-    /// Env: `SLUGAUDIT_RESULT_ACTIVE_GRACE_SECS` (seconds, u64); global
-    /// `config.json` key `result_active_grace_secs`.
+    /// Seconds an unfinished paged result stays protected from reclaim after its last page.
     pub result_active_grace_secs: u64,
     /// Per-file bounds applied when normalizing evidence into rows.
     pub evidence: EvidenceLimits,
 }
 
-/// Validates the environment and installs the process-wide resource limits.
-/// The server entry point calls this before serving, so a set-but-invalid
-/// `SLUGAUDIT_*` variable (or undetectable memory without an explicit
-/// profile) stops startup instead of running with other limits.
-///
-/// # Errors
-///
-/// Returns [`EnvConfigError`] naming the offending variable.
-pub fn init_process_limits() -> Result<&'static ResourceLimits, EnvConfigError> {
-    install_limits(&LIMITS)
-}
-
-/// Returns what `cell` holds, or validates the environment and installs the
-/// result. An invalid environment installs nothing, so every later call
-/// validates again instead of finding a fallback.
-fn install_limits(cell: &OnceLock<ResourceLimits>) -> Result<&ResourceLimits, EnvConfigError> {
-    if let Some(limits) = cell.get() {
-        return Ok(limits);
-    }
-    let limits = ResourceLimits::from_env()?;
-    Ok(cell.get_or_init(|| limits))
-}
-
-static LIMITS: OnceLock<ResourceLimits> = OnceLock::new();
-
-/// Returns the process-wide resource limits: those [`init_process_limits`]
-/// installed at startup. The shipped binary validates before serving, so it
-/// always finds them installed. Reached without that call (library
-/// embedding, tests) the environment is validated here and, when valid,
-/// installed; when invalid the error is returned and nothing is installed,
-/// so the next call validates again. It never continues with other limits
-/// and never ends the process: the caller decides how the failure reaches
-/// its own caller (tool calls report it as an internal error).
-///
-/// Tests that need deterministic limits build them explicitly (for example
-/// `ResourceLimits::default()`) instead of calling this.
-///
-/// # Errors
-///
-/// Returns [`EnvConfigError`] naming the offending variable when the limits
-/// were not installed and the environment is invalid.
-pub fn process_limits() -> Result<&'static ResourceLimits, EnvConfigError> {
-    init_process_limits()
-}
-
-impl ResourceLimits {
-    /// Creates limits by taking the profile baseline and overriding any
-    /// fields that have a corresponding `SLUGAUDIT_*` env var set. Unset
-    /// variables leave the default unchanged, so a typo in a variable
-    /// *name* is harmless; a variable that is set but cannot be read or
-    /// parsed fails with an error naming it (never its value). Duration
-    /// fields are parsed as whole seconds.
-    ///
-    /// When `SLUGAUDIT_PROFILE` is unset, falls back to the global
-    /// `config.json` `profile` before defaulting to `Adaptive`, so a host
-    /// whose memory cannot be detected can still start when `config.json`
-    /// selects a fixed profile (`lean` or `audit`).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EnvConfigError`] for a set-but-invalid variable or an
-    /// Adaptive profile on a host whose memory cannot be detected.
-    pub(super) fn from_env() -> Result<Self, EnvConfigError> {
-        let global_profile = match crate::project::GlobalConfig::load() {
-            Ok(config) => config.profile,
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "global config could not be loaded while initializing process limits",
-                );
-                None
-            }
-        };
-        Self::from_env_with(global_profile, detect_system_memory)
-    }
-
-    /// Like [`Self::from_env`], taking the fallback profile (from
-    /// `GlobalConfig`) and memory detector explicitly.
-    pub(super) fn from_env_with(
-        global_profile: Option<super::profile::AuditProfile>,
-        detect: impl FnOnce() -> Result<SystemMemoryInfo, MemoryDetectError>,
-    ) -> Result<Self, EnvConfigError> {
-        let env = EnvOverrides::read()?;
-        // `SLUGAUDIT_PROFILE` beats `GlobalConfig.profile`, which beats the
-        // default `Adaptive` profile.
-        let profile = match env.profile.or(global_profile) {
-            Some(profile) => profile,
-            None => super::profile::AuditProfile::Adaptive,
-        };
-        let mut limits = base_limits(profile, detect)?;
-        env.apply(&mut limits, false)?;
-        Ok(limits)
-    }
-}
-
-/// The baseline the overrides are applied to: the chosen profile. Adaptive needs the host memory, so when that
-/// cannot be detected the operator must choose a profile explicitly.
-pub(super) fn base_limits(
-    profile: super::profile::AuditProfile,
-    detect: impl FnOnce() -> Result<SystemMemoryInfo, MemoryDetectError>,
-) -> Result<ResourceLimits, EnvConfigError> {
-    super::profile::limits_for_profile_with(profile, detect)
-        .map_err(|source| EnvConfigError::MemoryUndetectable { source })
-}
-
-/// Host memory the [`Default`] limits are sized for: a fixed 16 GiB host, so
-/// the baseline is the same on every machine and never depends on detection.
 const DEFAULT_BASELINE_MEMORY: SystemMemoryInfo = SystemMemoryInfo {
     total_bytes: 16 * 1024 * 1024 * 1024,
     available_bytes: 16 * 1024 * 1024 * 1024,
 };
 
-/// The deterministic Adaptive-profile baseline for a fixed 16 GiB host,
-/// whatever the machine's real memory or `SLUGAUDIT_*` environment. Production
-/// limits come from [`init_process_limits`]; this is the constant tests and
-/// struct-update syntax build on.
 impl Default for ResourceLimits {
     fn default() -> Self {
         super::profile::adaptive_limits(DEFAULT_BASELINE_MEMORY)

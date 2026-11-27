@@ -6,38 +6,21 @@
 //! The compile-gated refusal in `src/update_tests.rs` never runs on
 //! `Linux/x86_64`, so these tests are what assert the `UpToDate`, `Newer`, and
 //! `Incomparable` branches of `run_update` and their user-visible text.
-//!
-//! These spawn the real binary because the branch text goes to stdout through
-//! `cli::out`; an in-process call cannot capture it without a production seam.
-//! Nothing outside the temp dir is read or written: `HOME`, `SLUGTHUG_HOME`
-//! and `SLUGTHUG_CONFIG_HOME` point into it, the installed binary `update`
-//! replaces is a temp file in it, and `PATH` is *replaced* (not prepended to)
-//! by a directory holding a fake `curl` and `sha256sum`, so no real network
-//! request or checksum process can run.
-//!
-//! The whole file is compiled only where the one published asset runs
-//! (`linux/x86_64`). On any other platform `run_update` refuses before these
-//! branches; that refusal is the compile-gated test in `src/update_tests.rs`.
 
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-/// The single published asset; mirrors `ASSET` in `src/update_fetch.rs`.
 const ASSET: &str = "slugaudit-x86_64-unknown-linux-gnu";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const OLD_BINARY: &str = "the installed binary before the update";
 const NEW_BINARY: &str = "the verified release asset";
-/// The digest the fake `sha256sum` prints and the fake `SHA256SUMS` carries.
 const MATCHING_DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-/// A digest the fake `sha256sum` prints when verification must fail.
 const MISMATCHING_DIGEST: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 const API_URL: &str = "https://api.github.com/repos/SlugThugLabs/slugaudit/releases/latest";
 
-/// A temp home with an installed binary at the stable path `target_binary`
-/// prefers, plus a bin directory that replaces `PATH` for the child.
 struct UpdateSandbox {
     _temp: tempfile::TempDir,
     home: PathBuf,
@@ -68,9 +51,6 @@ impl UpdateSandbox {
         })
     }
 
-    /// Plants a fake `curl` that answers the releases API with `tag`, the
-    /// `SHA256SUMS` URL with a manifest carrying `digest`, and every other URL
-    /// with [`NEW_BINARY`], appending each invocation's argv to a log.
     fn plant_curl(&self, tag: &str, digest: &str) -> TestResult {
         let json = format!(r#"{{"tag_name":"{tag}"}}"#);
         let sums = format!("{digest}  {ASSET}");
@@ -93,8 +73,6 @@ impl UpdateSandbox {
         write_executable(&self.bin_dir.join("curl"), &script)
     }
 
-    /// Plants a fake `sha256sum` that reports `digest` for whatever path it is
-    /// given and records its argv.
     fn plant_sha256sum(&self, digest: &str) -> TestResult {
         let script = format!(
             "#!/bin/sh\n\
@@ -134,8 +112,6 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// The up-to-date branch must print the exact message, fetch nothing beyond
-/// the release metadata, and leave the installed binary untouched.
 #[test]
 fn run_update_reports_the_exact_up_to_date_message_without_fetching() -> TestResult {
     let sandbox = UpdateSandbox::new()?;
@@ -151,7 +127,7 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() -> TestRes
     ensure_eq(
         &text(&output.stdout),
         &format!("slugaudit is already up to date (v{CURRENT_VERSION}).\n"),
-        "text(&output.stdout) == format!(\"slugaudit is already up to date (v{CURRENT_VERSION}).\\n\")",
+        "prints exact up-to-date message",
     )?;
     ensure_eq(
         &fs::read(&sandbox.target).check("read the installed binary")?,
@@ -178,8 +154,6 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() -> TestRes
     Ok(())
 }
 
-/// The newer-release branch must print the exact messages, download and verify
-/// the asset, place it at the target, and retain the displaced binary.
 #[test]
 fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
     let sandbox = UpdateSandbox::new()?;
@@ -200,7 +174,7 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
              Done. Restart any running AI sessions so they launch the new binary.\n",
             sandbox.target.display()
         ),
-        "text(&output.stdout) == format!( \"A newer release (tag v1.2.0) is available; fetching...\\n\\ Updating slugau...",
+        "prints exact newer-release progress output",
     )?;
     ensure_eq(
         &fs::read(&sandbox.target).check("read the updated binary")?,
@@ -225,9 +199,47 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
     Ok(())
 }
 
-/// A non-numeric / pre-release remote tag must be refused when the installed
-/// binary carries a numeric release version: nothing is downloaded beyond the
-/// release metadata and the installed binary is left untouched.
+/// When the installed target binary reports a non-numeric dev version (such as
+/// `1.1.0-dev`) and the published release is numeric, `run_update` takes the
+/// `Incomparable` branch, states honestly that the versions could not be
+/// compared, fetches and verifies the release, and retains the dev binary.
+#[test]
+fn run_update_fetches_release_when_installed_binary_has_incomparable_dev_version() -> TestResult {
+    let sandbox = UpdateSandbox::new()?;
+    let dev_script = "#!/bin/sh\nprintf 'slugaudit 1.1.0-dev\\n'\n";
+    write_executable(&sandbox.target, dev_script)?;
+    sandbox.plant_curl("v1.2.0", MATCHING_DIGEST)?;
+    sandbox.plant_sha256sum(MATCHING_DIGEST)?;
+
+    let output = sandbox.run()?;
+
+    ensure(
+        output.status.success(),
+        format!("incomparable update failed: {}", text(&output.stderr)),
+    )?;
+    ensure_eq(
+        &text(&output.stdout),
+        &format!(
+            "This build's version (1.1.0-dev) could not be compared with the published v1.2.0; fetching it as though it were newer.\n\
+             Updating slugaudit v1.1.0-dev -> 1.2.0 at {}...\n\
+             Done. Restart any running AI sessions so they launch the new binary.\n",
+            sandbox.target.display()
+        ),
+        "prints exact Incomparable branch message without claiming newer",
+    )?;
+    ensure_eq(
+        &fs::read(&sandbox.target).check("read updated target")?,
+        &NEW_BINARY.as_bytes(),
+        "replaces dev target with verified release asset",
+    )?;
+    ensure_eq(
+        &fs::read(sandbox.previous()).check("read retained dev binary")?,
+        &dev_script.as_bytes(),
+        "retains displaced dev binary at slugaudit.prev",
+    )?;
+    Ok(())
+}
+
 #[test]
 fn run_update_refuses_non_numeric_remote_release_without_downloading() -> TestResult {
     let sandbox = UpdateSandbox::new()?;
@@ -266,8 +278,6 @@ fn run_update_refuses_non_numeric_remote_release_without_downloading() -> TestRe
     Ok(())
 }
 
-/// A checksum mismatch on a valid newer release must exit nonzero and leave
-/// the installed binary untouched.
 #[test]
 fn run_update_checksum_mismatch_leaves_target_untouched() -> TestResult {
     let sandbox = UpdateSandbox::new()?;

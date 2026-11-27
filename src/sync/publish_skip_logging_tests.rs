@@ -4,7 +4,7 @@
 use crate::store::test_capture::capture_warns;
 use crate::sync::discovery;
 use crate::sync::publish_diff::collect_skipped;
-use crate::sync::revision_skipped::SKIP_REASON_STAT_FAILED;
+use crate::sync::revision::SKIP_REASON_STAT_FAILED;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::collections::{BTreeMap, HashSet};
 

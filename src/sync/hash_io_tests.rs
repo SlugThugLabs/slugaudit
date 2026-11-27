@@ -3,7 +3,11 @@ use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn hash_chunk_bytes_is_64_kib() -> TestResult {
-    ensure_eq(&HASH_CHUNK_BYTES, &65536, "HASH_CHUNK_BYTES == 65536")?;
+    ensure_eq(
+        &HASH_CHUNK_BYTES,
+        &65536,
+        "hash chunk buffer size is 64 KiB",
+    )?;
     Ok(())
 }
 
@@ -45,7 +49,7 @@ fn hash_reader_retries_on_interrupted() -> TestResult {
     ensure_eq(
         &result.content_hash,
         &crate::sync::hash::hash_bytes("dummy.rs", b"hello world").content_hash,
-        "result.content_hash == crate::sync::hash::hash_bytes(\"dummy.rs\", b\"hello world\").content_hash",
+        "retried reader produces exact BLAKE3 digest",
     )?;
     Ok(())
 }
@@ -78,7 +82,7 @@ fn hash_reader_fails_on_non_interrupted_error() -> TestResult {
     let result = hash_reader(&mut reader, "dummy.rs", dummy_path, 1024);
     ensure(
         matches!(result, Err(HashError::Read { .. })),
-        "matches!(result, Err(HashError::Read { .. }))",
+        "permission denied read fails with HashError::Read",
     )?;
     ensure(!reader.retried, "non-interrupted error must not be retried")?;
     Ok(())
@@ -103,20 +107,21 @@ fn hash_reader_rejects_a_read_count_past_the_buffer() -> TestResult {
         return Err("an over-reported read must fail with HashError::Read".to_owned())
             .check("unexpected outcome");
     };
-    ensure_eq(&path, &dummy_path, "path == dummy_path")?;
+    ensure_eq(
+        &path,
+        &dummy_path,
+        "HashError::Read carries the input file path",
+    )?;
     ensure_eq(
         &source.kind(),
         &std::io::ErrorKind::InvalidData,
-        "source.kind() == std::io::ErrorKind::InvalidData",
+        "overreported byte count maps to InvalidData",
     )?;
+    let over = HASH_CHUNK_BYTES.checked_add(1).check("chunk + 1 fits")?;
     ensure_eq(
         &source.to_string(),
-        &format!(
-            "reader reported {} bytes for a {}-byte buffer",
-            HASH_CHUNK_BYTES + 1,
-            HASH_CHUNK_BYTES
-        ),
-        "source.to_string() == format!( \"reader reported {} bytes for a {}-byte buffer\", HASH_CHUNK_BYTES + 1, HASH_CHUNK_BYTES )",
+        &format!("reader reported {over} bytes for a {HASH_CHUNK_BYTES}-byte buffer"),
+        "InvalidData message reports both read count and buffer capacity",
     )?;
     Ok(())
 }
@@ -132,6 +137,57 @@ fn hash_file_refuses_non_regular_file_with_invalid_input() -> TestResult {
         &source.kind(),
         &std::io::ErrorKind::InvalidInput,
         "non-regular file is rejected with InvalidInput",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn sniff_and_hash_reader_classifies_text_and_binary_in_single_pass() -> TestResult {
+    let dummy_path = std::path::Path::new("probe.dat");
+    let text = vec![b'a'; 10_000];
+    let (kind_text, id_text) =
+        sniff_and_hash_reader(text.as_slice(), "probe.dat", dummy_path, 65_536)
+            .check("text sniff + hash")?;
+    ensure_eq(
+        &kind_text,
+        &FileKind::Indexed,
+        "NUL-free bytes classify as Indexed",
+    )?;
+    ensure_eq(
+        &id_text.content_hash,
+        &crate::sync::hash::hash_bytes("probe.dat", &text).content_hash,
+        "single-pass digest matches standalone BLAKE3 digest",
+    )?;
+
+    let mut with_early_nul = vec![b'a'; 10_000];
+    if let Some(slot) = with_early_nul.get_mut(7_999) {
+        *slot = 0;
+    }
+    let (kind_bin, id_bin) =
+        sniff_and_hash_reader(with_early_nul.as_slice(), "probe.dat", dummy_path, 65_536)
+            .check("binary sniff + hash")?;
+    ensure_eq(
+        &kind_bin,
+        &FileKind::Binary,
+        "NUL within first 8000 bytes classifies as Binary",
+    )?;
+    ensure_eq(
+        &id_bin.content_hash,
+        &crate::sync::hash::hash_bytes("probe.dat", &with_early_nul).content_hash,
+        "binary digest still hashes full file bytes",
+    )?;
+
+    let mut with_late_nul = vec![b'a'; 10_000];
+    if let Some(slot) = with_late_nul.get_mut(8_000) {
+        *slot = 0;
+    }
+    let (kind_late, _) =
+        sniff_and_hash_reader(with_late_nul.as_slice(), "probe.dat", dummy_path, 65_536)
+            .check("late NUL sniff + hash")?;
+    ensure_eq(
+        &kind_late,
+        &FileKind::Indexed,
+        "NUL strictly after the 8000-byte sniff window stays Indexed in Pass 1",
     )?;
     Ok(())
 }

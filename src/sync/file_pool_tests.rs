@@ -1,9 +1,11 @@
-//! Tests for the shared bounded worker pool.
+//! Tests for the shared bounded worker pool and persistent multi-chunk runner.
 
 use super::*;
 use crate::sync::discovery::FileKind;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const TEST_PASS: Pass = Pass {
     operation: "test_pass",
@@ -24,25 +26,32 @@ fn generous() -> Deadline {
     Deadline::after(Duration::from_mins(1))
 }
 
-fn pool<'a, F>(files: &'a [DiscoveredFile], deadline: &'a Deadline, per_file: F) -> Pool<'a, F> {
-    Pool {
-        files,
-        deadline,
-        pass: TEST_PASS,
-        per_file,
-        next_index: AtomicUsize::new(0),
-        error_flag: AtomicBool::new(false),
-        error_slot: Mutex::new(None),
-    }
+fn shared_pool<'a, F>(
+    files: &'a [DiscoveredFile],
+    deadline: &'a Deadline,
+    per_file: F,
+) -> (SharedPool<'a, DiscoveredFile, F>, Batch) {
+    (
+        SharedPool {
+            files,
+            deadline,
+            pass: TEST_PASS,
+            per_file,
+        },
+        Batch::new(0, files.len(), TEST_PASS),
+    )
 }
 
 #[test]
 fn an_empty_file_set_never_calls_the_pass() -> TestResult {
-    let outcomes: Vec<()> = run(&[], &generous(), TEST_PASS, |_, _| {
+    let outcomes: Vec<()> = run::<DiscoveredFile, _, _>(&[], &generous(), TEST_PASS, |_, _| {
         Err(PublishError::InvalidParserPackVersion("called".to_owned()))
     })
     .check("an empty run")?;
-    ensure(outcomes.is_empty(), "outcomes.is_empty()")?;
+    ensure(
+        outcomes.is_empty(),
+        "empty input produces empty outcome list",
+    )?;
     Ok(())
 }
 
@@ -56,7 +65,47 @@ fn outcomes_come_back_in_file_order_whichever_worker_finished_first() -> TestRes
     .check("run the pool")?;
 
     let expected: Vec<(usize, String)> = (0..200).map(|idx| (idx, format!("f{idx}.rs"))).collect();
-    ensure_eq(&outcomes, &expected, "outcomes == expected")?;
+    ensure_eq(
+        &outcomes,
+        &expected,
+        "pool outcomes preserve input slice order",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn with_pool_reuses_persistent_worker_threads_across_chunks() -> TestResult {
+    let files = files(32);
+    let mut all = Vec::new();
+    let mut thread_ids = HashSet::new();
+
+    with_pool(
+        &files,
+        &generous(),
+        TEST_PASS,
+        |idx, file| Ok((idx, file.relative_path.clone(), thread::current().id())),
+        |runner| {
+            while let Some(chunk) = runner.next_chunk(4)? {
+                for (idx, path, tid) in chunk {
+                    thread_ids.insert(tid);
+                    all.push((idx, path));
+                }
+            }
+            Ok(())
+        },
+    )
+    .check("multi-chunk with_pool")?;
+
+    let expected: Vec<(usize, String)> = (0..32).map(|idx| (idx, format!("f{idx}.rs"))).collect();
+    ensure_eq(&all, &expected, "all 8 chunks preserve global file order")?;
+    ensure(
+        thread_ids.len() <= MAX_CONCURRENT_BLOCKING_OPS,
+        format!(
+            "persistent pool spawned {} distinct threads across 8 chunks (cap {})",
+            thread_ids.len(),
+            MAX_CONCURRENT_BLOCKING_OPS
+        ),
+    )?;
     Ok(())
 }
 
@@ -95,23 +144,42 @@ fn a_spent_deadline_names_the_pass_activity_and_the_file() -> TestResult {
     .check_err("the deadline must trip")?;
 
     ensure(
-        matches!(&error, PublishError::TimeBudgetExceeded { path, .. } if path == " while testing f0.rs"),
+        matches!(
+            &error,
+            PublishError::TimeBudgetExceeded {
+                activity: "testing",
+                path: Some(p),
+                ..
+            } if p == "f0.rs"
+        ),
         format!("got {error:?}"),
+    )?;
+    ensure(
+        error.to_string().contains("while testing f0.rs"),
+        format!("display message names activity and file: {error}"),
     )?;
     Ok(())
 }
 
 #[test]
 fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() -> TestResult {
-    let error = time_budget_error("processing", "src/lib.rs", Duration::from_millis(1500));
+    let error =
+        PublishError::time_budget_exceeded("processing", "src/lib.rs", Duration::from_millis(1500));
 
     ensure(
         matches!(
             &error,
-            PublishError::TimeBudgetExceeded { path, elapsed_ms: 1500 }
-                if path == " while processing src/lib.rs"
+            PublishError::TimeBudgetExceeded {
+                activity: "processing",
+                path: Some(p),
+                elapsed_ms: 1500,
+            } if p == "src/lib.rs"
         ),
         format!("got {error:?}"),
+    )?;
+    ensure(
+        error.to_string().contains("while processing src/lib.rs"),
+        format!("display message names processing and src/lib.rs: {error}"),
     )?;
     Ok(())
 }
@@ -120,15 +188,15 @@ fn the_time_budget_error_names_the_file_and_the_elapsed_milliseconds() -> TestRe
 fn an_outcome_that_cannot_be_delivered_fails_the_run_with_the_file_named() -> TestResult {
     let files = files(1);
     let deadline = generous();
-    let pool = pool(&files, &deadline, |_: usize, _: &DiscoveredFile| {
+    let (pool, batch) = shared_pool(&files, &deadline, |_: usize, _: &DiscoveredFile| {
         Ok::<(), PublishError>(())
     });
     let (tx, rx) = mpsc::channel::<(usize, ())>();
     drop(rx);
 
-    pool.run_worker(&tx);
+    pool.run_worker(&batch, &tx);
 
-    let recorded = lock(&pool.error_slot, "test")
+    let recorded = lock(&batch.error_slot, "test")
         .check("lock the error slot")?
         .take();
     ensure(
@@ -142,15 +210,15 @@ fn an_outcome_that_cannot_be_delivered_fails_the_run_with_the_file_named() -> Te
 fn a_channel_outcome_with_an_out_of_range_index_fails_the_run() -> TestResult {
     let files = files(1);
     let deadline = generous();
-    let pool = pool(&files, &deadline, |_: usize, _: &DiscoveredFile| {
+    let (_pool, batch) = shared_pool(&files, &deadline, |_: usize, _: &DiscoveredFile| {
         Ok::<(), PublishError>(())
     });
     let (tx, rx) = mpsc::channel::<(usize, ())>();
     tx.send((1, ())).check("send the out-of-range outcome")?;
     drop(tx);
 
-    let error = pool
-        .collect(&rx)
+    let error = batch
+        .collect(&files, &rx)
         .check_err("an out-of-range index must fail the run")?;
 
     ensure(
@@ -167,15 +235,15 @@ fn a_channel_outcome_with_an_out_of_range_index_fails_the_run() -> TestResult {
 fn a_file_with_no_delivered_outcome_fails_the_run() -> TestResult {
     let files = files(2);
     let deadline = generous();
-    let pool = pool(&files, &deadline, |_: usize, _: &DiscoveredFile| {
+    let (_pool, batch) = shared_pool(&files, &deadline, |_: usize, _: &DiscoveredFile| {
         Ok::<(), PublishError>(())
     });
     let (tx, rx) = mpsc::channel::<(usize, ())>();
     tx.send((0, ())).check("send one outcome")?;
     drop(tx);
 
-    let error = pool
-        .collect(&rx)
+    let error = batch
+        .collect(&files, &rx)
         .check_err("a missing outcome must fail the run")?;
 
     ensure(
@@ -189,24 +257,28 @@ fn a_file_with_no_delivered_outcome_fails_the_run() -> TestResult {
 fn a_later_error_is_logged_once_under_the_pass_and_the_first_is_returned() -> TestResult {
     const SUPERSEDED_PATH: &str = "superseded-second-error-probe.rs";
     let deadline = generous();
-    let pool = pool(&[], &deadline, |_: usize, _: &DiscoveredFile| {
-        Ok::<(), PublishError>(())
-    });
+    let (files, (_pool, batch)) = {
+        let empty = Vec::new();
+        let (_, b) = shared_pool(&empty, &deadline, |_: usize, _: &DiscoveredFile| {
+            Ok::<(), PublishError>(())
+        });
+        (empty, ((), b))
+    };
 
     let ((), logs) = crate::store::test_capture::capture_warns(|| {
         tracing::warn!("control-line-superseded-error-probe");
-        pool.abort(PublishError::ImportTooLarge {
+        batch.abort(PublishError::ImportTooLarge {
             total: 10,
             limit: 9,
         });
-        pool.abort(PublishError::ChangedDuringSample {
+        batch.abort(PublishError::ChangedDuringSample {
             path: SUPERSEDED_PATH.to_owned(),
         });
     })?;
 
     let (tx, rx) = mpsc::channel::<(usize, ())>();
     drop(tx);
-    let returned = pool.collect(&rx).check_err("the run fails")?;
+    let returned = batch.collect(&files, &rx).check_err("the run fails")?;
     ensure(
         matches!(returned, PublishError::ImportTooLarge { .. }),
         format!("the first error must stay the returned one: {returned:?}"),

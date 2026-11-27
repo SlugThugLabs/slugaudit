@@ -1,5 +1,8 @@
 //! Paginate: what the page context carries and the result-store surface.
+use super::late_tests::*;
+use super::tests::*;
 use super::*;
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
 fn paginate_context_on_a_new_request_carries_the_produced_extras_and_columns() -> TestResult {
@@ -7,7 +10,7 @@ fn paginate_context_on_a_new_request_carries_the_produced_extras_and_columns() -
     let manager = manager(ROOMY);
     let seen: Seen = Seen::default();
 
-    paginate(
+    paginate_rows(
         &manager,
         &budget_spec(2048, None),
         PageRequest::Fresh {
@@ -37,7 +40,7 @@ fn paginate_context_on_a_continuation_carries_the_extras_and_columns_of_page_one
     let first = budgeted_page_one(&manager, &path, 2048)?;
     let seen: Seen = Seen::default();
 
-    paginate(
+    paginate_rows(
         &manager,
         &budget_spec(77, None),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -66,7 +69,7 @@ fn paginate_context_columns_declared_by_the_producer_reach_the_continuation() ->
     let first = late_fresh(&manager, &path).check("page one")?;
     let seen: Seen = Seen::default();
 
-    paginate(
+    paginate_rows(
         &manager,
         &late_spec("late"),
         PageRequest::Cursor(&cursor_of(&first)?),
@@ -104,7 +107,7 @@ fn result_store_surface_wrong_tool_cursor_counts_as_an_unknown_cursor() -> TestR
             .check("read the store counters")?
             .unknown_cursors,
         &0,
-        "store .stats() .check(\"read the store counters\")? .unknown_cursors == 0",
+        "unknown_cursors == 0",
     )?;
 
     let error = next(&manager, "other", &cursor_of(&first)?, 10)
@@ -122,7 +125,7 @@ fn result_store_surface_wrong_tool_cursor_counts_as_an_unknown_cursor() -> TestR
             .check("read the store counters")?
             .unknown_cursors,
         &1,
-        "store .stats() .check(\"read the store counters\")? .unknown_cursors == 1",
+        "unknown_cursors == 1",
     )?;
     Ok(())
 }
@@ -159,7 +162,7 @@ fn result_store_surface_verbose_health_reports_the_store_stats() -> TestResult {
     let first = fresh(&manager, &path, 25, 10).check("page one")?;
     ensure(
         next(&manager, "other", &cursor_of(&first)?, 10).is_err(),
-        "next(&manager, \"other\", &cursor_of(&first)?, 10).is_err()",
+        "wrong tool cursor fails",
     )?;
     let request = rmcp::handler::server::wrapper::Parameters(crate::tools::HealthRequest {
         path: Some(path.clone()),
@@ -192,7 +195,7 @@ fn result_store_surface_verbose_health_reports_the_store_stats() -> TestResult {
             .as_u64()
             .check("bytes")?
             > 0,
-        "store[\"active\"][\"bytes\"].as_u64().check(\"bytes\")? > 0",
+        "active bytes > 0",
     )?;
     ensure_eq(
         store
@@ -240,7 +243,7 @@ fn result_store_surface_default_health_omits_the_store_detail() -> TestResult {
     let manager = manager(ROOMY);
     fresh(&manager, &path, 25, 10).check("page one")?;
     let request = rmcp::handler::server::wrapper::Parameters(crate::tools::HealthRequest {
-        path: Some(path.clone()),
+        path: Some(path),
         verbose: false,
     });
 

@@ -1,7 +1,9 @@
-use super::{StoredRow, add_classification_drift_changes, filter_skipped_records, load_failed};
+use super::{
+    StoredRow, add_classification_drift_changes, add_load_failed_retries, filter_skipped_records,
+};
 use crate::model::SourceIdentity;
 use crate::sync::manifest::{ChangeStatus, FileChange};
-use crate::sync::revision_skipped::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE, SkippedRecord};
+use crate::sync::revision::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE, SkippedRecord};
 use slugaudit_test_check::{Check, TestResult, ensure_eq};
 use std::collections::HashMap;
 
@@ -17,7 +19,7 @@ fn skipped_record(path: &str, reason: &str) -> SkippedRecord {
 
 #[test]
 fn add_load_failed_retries_skips_locally_failed_languages() -> TestResult {
-    crate::parse::fetch_gate::record_local_load_failure("rust")
+    crate::parse::local_load_failures::record_local_load_failure("rust")
         .check("record local failure for rust")?;
     let load_failed_map = HashMap::from([
         ("a.rs".to_owned(), Some("rust".to_owned())),
@@ -26,7 +28,7 @@ fn add_load_failed_retries_skips_locally_failed_languages() -> TestResult {
     let current = vec![("a.rs", "h1"), ("b.py", "h2")];
     let mut changes = Vec::new();
 
-    load_failed::add_load_failed_retries(&mut changes, &current, &load_failed_map)
+    add_load_failed_retries(&mut changes, &current, &load_failed_map)
         .check("add load failed retries")?;
 
     ensure_eq(

@@ -37,6 +37,7 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() -> TestResul
         path: Some(path_of(&project)?),
         file: None,
         cursor: None,
+        page_bytes: None,
         legacy_paging: LegacyPaging::default(),
     };
     let list = read(by_path)?;
@@ -54,6 +55,7 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() -> TestResul
         path: Some(path_of(&project)?),
         file: None,
         cursor: None,
+        page_bytes: None,
         legacy_paging: LegacyPaging::default(),
     })?;
     let mut token = first
@@ -67,6 +69,7 @@ fn paged_finding_read_matches_the_golden_apart_from_paging_fields() -> TestResul
             path: None,
             file: None,
             cursor: Some(token),
+            page_bytes: None,
             legacy_paging: LegacyPaging::default(),
         })?;
         let mut body = serde_json::to_value(&page.findings).check("findings serialize")?;

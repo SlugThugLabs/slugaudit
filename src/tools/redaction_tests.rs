@@ -1,19 +1,11 @@
-//! Redaction contract: no tool-call logging path may emit tool
-//! arguments, tool results, or file content (SQL text, finding content,
-//! indexed source) into the logs. Error messages are not covered: they are
-//! logged by design, once, by `server_runner::log_completion`.
+//! Log-conciseness contract: tool-call logging paths emit compact operational
+//! metadata (revision id, row/file counts, ids) rather than full SQL text,
+//! finding prose, or indexed file contents. Error messages are logged once by
+//! `server_runner::log_completion`; structured `ErrorData.data` carries only
+//! static error codes and remedies.
 //!
-//! Every tool handler logs only structural metadata (revision id, counts,
-//! file paths, ids) and never the payloads an AI actually cares about —
-//! query SQL, finding titles/descriptions, or indexed source. This file
-//! pins that contract with the same capture harness `store::test_capture`
-//! provides, so a future `tracing::info!(sql = %sql)` or
-//! `debug!(content = ...)` regression fails the suite instead of silently
-//! shipping source code into the server's stderr log.
-//!
-//! Each test captures at `DEBUG` (so a `debug!` regression is visible) and
-//! emits a control event that it then asserts was captured. An absence-only
-//! check on a blind capture would pass while proving nothing.
+//! Each test captures at `DEBUG` and emits a control event to verify the
+//! subscriber is active before checking that payload text was not logged.
 
 use crate::store::test_capture::capture_at_level;
 use crate::tools::test_support::activated_project;
@@ -22,26 +14,20 @@ use rmcp::handler::server::wrapper::Parameters;
 use slugaudit_test_check::{Check, TestResult, ensure};
 use tracing::Level;
 
-/// Distinctive strings that must never appear in captured logs.
 const SQL_SENTINEL: &str = "SENTINEL_SQL_9147";
 const FINDING_TITLE_SENTINEL: &str = "SENTINEL_TITLE_9147";
 const FINDING_DESC_SENTINEL: &str = "SENTINEL_DESC_9147";
 const SOURCE_SENTINEL: &str = "SENTINEL_SOURCE_9147";
-
-/// Emitted inside every capture below. Asserting it was captured proves the
-/// DEBUG capture is live, so the absence assertions cannot pass blind.
 const CAPTURE_CONTROL: &str = "SENTINEL_CAPTURE_CONTROL_9147";
 
 fn emit_capture_control() {
-    tracing::debug!(control = CAPTURE_CONTROL, "redaction capture control");
+    tracing::debug!(control = CAPTURE_CONTROL, "log capture control");
 }
 
 fn assert_capture_is_live(logs: &str) -> TestResult {
     ensure(
         logs.contains(CAPTURE_CONTROL),
-        format!(
-            "the DEBUG capture went blind; a leaked debug-level event would pass unseen:\n{logs}"
-        ),
+        format!("the DEBUG capture did not record the control event:\n{logs}"),
     )?;
     Ok(())
 }
@@ -51,7 +37,7 @@ fn manager() -> crate::sync::SourceSyncManager {
 }
 
 #[test]
-fn query_logging_never_emits_sql_text() -> TestResult {
+fn query_logging_omits_sql_text() -> TestResult {
     let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let sql = format!("SELECT '{SQL_SENTINEL}' AS marker FROM files");
     let request = QueryRequest {
@@ -76,13 +62,13 @@ fn query_logging_never_emits_sql_text() -> TestResult {
     assert_capture_is_live(&logs)?;
     ensure(
         !logs.contains(SQL_SENTINEL),
-        format!("the query tool leaked SQL text into logs:\n{logs}"),
+        format!("query handler logged full SQL text instead of metadata:\n{logs}"),
     )?;
     Ok(())
 }
 
 #[test]
-fn finding_logging_never_emits_finding_content() -> TestResult {
+fn finding_logging_omits_finding_prose() -> TestResult {
     let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
     let request = FindingRequest {
         path: project.path().to_string_lossy().into_owned(),
@@ -109,16 +95,13 @@ fn finding_logging_never_emits_finding_content() -> TestResult {
     assert_capture_is_live(&logs)?;
     ensure(
         !logs.contains(FINDING_TITLE_SENTINEL) && !logs.contains(FINDING_DESC_SENTINEL),
-        format!("the finding tool leaked AI-authored judgment content into logs:\n{logs}"),
+        format!("finding handler logged finding prose instead of metadata:\n{logs}"),
     )?;
     Ok(())
 }
 
 #[test]
-fn sync_and_report_logging_never_emits_source_content() -> TestResult {
-    // The source file's content is a sentinel; a full publish samples and
-    // indexes it. If any sync/publish/report logging site emitted the
-    // sampled content, the sentinel would appear in the captured logs.
+fn sync_and_report_logging_omits_source_content() -> TestResult {
     let project = activated_project(
         "lib.rs",
         format!("// {SOURCE_SENTINEL}\npub fn a() {{}}\n").as_bytes(),
@@ -141,40 +124,33 @@ fn sync_and_report_logging_never_emits_source_content() -> TestResult {
     assert_capture_is_live(&logs)?;
     ensure(
         !logs.contains(SOURCE_SENTINEL),
-        format!("the sync/report path leaked source content into logs:\n{logs}"),
+        format!("sync/report logged indexed file contents:\n{logs}"),
     )?;
     Ok(())
 }
 
-/// The machine-readable half of an error is a mirrored surface too: a code
-/// and its remedy are static strings, so agent-supplied input may appear in
-/// the human message (it has to, to be useful) but must never reach
-/// `ErrorData.data` — the payload travels to the client and into logs
-/// exactly like the message does, since rmcp's `Display for ErrorData`
-/// renders it. Pinned at two real sites: an unknown mechanic id and an
-/// oversized SQL string.
 #[test]
-fn agent_supplied_input_never_reaches_the_error_payload() -> TestResult {
+fn error_payload_carries_static_code_and_remedy_only() -> TestResult {
     let Err(error) =
-        crate::tools::leads_mechanics::resolve_mechanic(Some("SENTINEL_MECHANIC_9147"))
+        crate::tools::leads::mechanics::resolve_mechanic(Some("SENTINEL_MECHANIC_9147"))
     else {
         return Err("an unknown mechanic must fail".to_owned()).check("unexpected outcome");
     };
     ensure(
         error.message.contains("SENTINEL_MECHANIC_9147"),
         format!(
-            "the message still names what the caller asked for: {}",
+            "the message names what the caller asked for: {}",
             error.message
         ),
     )?;
     let payload = serde_json::to_string(&error.data).check("payload serializes")?;
     ensure(
         !payload.contains("SENTINEL_MECHANIC_9147"),
-        format!("the mechanic id must not reach the payload: {payload}"),
+        format!("caller argument should stay in message, not structured payload: {payload}"),
     )?;
     ensure(
         payload.contains("unknown_mechanic"),
-        format!("and the payload is the machine-readable half instead: {payload}"),
+        format!("payload carries the machine-readable code: {payload}"),
     )?;
     Ok(())
 }

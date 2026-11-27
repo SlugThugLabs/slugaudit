@@ -20,9 +20,9 @@ fn result_store_a_cursor_round_trips_in_the_exact_documented_form() -> TestResul
     ensure_eq(
         &token.split('.').count(),
         &4,
-        "token.split('.').count() == 4",
+        "cursor token has four dot-separated segments",
     )?;
-    ensure_eq(&decoded, &cursor, "decoded == cursor")?;
+    ensure_eq(&decoded, &cursor, "decoded cursor matches original cursor")?;
     Ok(())
 }
 
@@ -37,9 +37,9 @@ fn result_store_a_cursor_reads_the_page_it_names() -> TestResult {
     ensure_eq(
         &page.rows.first().map(|row| row.ord),
         &Some(4),
-        "page.rows.first().map(|row| row.ord) == Some(4)",
+        "page starts at the ordinal named by the cursor",
     )?;
-    ensure_eq(&page.rows.len(), &6, "page.rows.len() == 6")?;
+    ensure_eq(&page.rows.len(), &6, "page returns the remaining six rows")?;
     Ok(())
 }
 
@@ -84,7 +84,7 @@ fn result_store_every_malformed_cursor_is_unknown() -> TestResult {
             .check("read the store counters")?
             .unknown_cursors,
         &(cases.len() as u64),
-        "fx.store .stats() .check(\"read the store counters\")? .unknown_cursors == cases.len() as u64",
+        "every malformed cursor increments unknown_cursors once",
     )?;
     Ok(())
 }
@@ -122,7 +122,7 @@ fn result_store_a_valid_cursor_for_a_reclaimed_result_is_expired() -> TestResult
             .check("read the store counters")?
             .expired_cursors,
         &1,
-        "fx.store .stats() .check(\"read the store counters\")? .expired_cursors == 1",
+        "reclaimed result cursor increments expired_cursors once",
     )?;
     Ok(())
 }

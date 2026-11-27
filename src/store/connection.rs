@@ -1,43 +1,42 @@
-//! Database connection open contract: one writer path and one read-mode path.
+// slugaudit-line-exception: approved-by=split-judge; reason=single SQLite open contract for project.db and session findings-<id>.db: open flags, WAL retry, pragmas, SQL function registration, schema check, and sidecar cleanup
+//! Database connection open contract for `project.db` and `findings-<id>.db`.
 //!
-//! The database is runtime scratch: callers delete and rebuild it on any
-//! doubt, so there is no trust boundary around the file, no authored SQL
-//! authorizer, and no permission or symlink policing. The writer requires WAL.
+//! Both files are disposable local scratch under `.planning/slugaudit/`. Read-write
+//! connections enable WAL, foreign keys, and a bounded busy timeout; read-only
+//! connections open with `SQLITE_OPEN_READ_ONLY` so `query` cannot mutate rows.
 
-use super::connection_config::{BUSY_TIMEOUT, configure, open_flags};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
+use std::time::Duration;
 use thiserror::Error;
+
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(20);
+const FINDINGS_DDL: &str = include_str!("findings_schema.sql");
 
 #[derive(Debug, Error)]
 /// Database-boundary failures. Corruption is recoverable (callers discard and
-/// rebuild).
+/// rebuild from source).
 pub enum StoreError {
     /// Opening or creating the database file failed.
     #[error("failed to open database: {0}")]
     Open(#[source] rusqlite::Error),
-    /// Applying connection pragmas or registering the SQL helper functions
-    /// failed.
+    /// Applying connection pragmas or registering SQL helper functions failed.
     #[error("failed to configure database connection: {0}")]
     Configure(#[source] rusqlite::Error),
-    /// Another process kept the database locked for the whole bounded wait
-    /// (the busy timeout plus the WAL-conversion retry budget) while this
-    /// connection was being set up. Retrying the call is safe.
+    /// Another process kept the database locked for the bounded busy wait.
     #[error("the project database stayed locked by another process: {0}")]
     Busy(#[source] rusqlite::Error),
-    /// Reading or initializing the schema failed; see
-    /// [`MigrationError`](super::migrations::MigrationError).
+    /// Reading or initializing the schema failed.
     #[error(transparent)]
     Migration(#[from] super::migrations::MigrationError),
-    /// The database file does not exist and the caller asked only to open an
-    /// existing one (see [`open_existing_read_write`]).
+    /// The database file does not exist and `MustExist` was requested.
     #[error("the project database does not exist")]
     Missing,
     /// The database path could not be inspected.
     #[error("failed to inspect the database path: {0}")]
     Inspect(#[source] std::io::Error),
-    /// SQLite did not enable WAL journal mode, which every read-write
-    /// connection requires.
+    /// SQLite did not enable WAL journal mode, which read-write connections require.
     #[error(
         "SQLite did not enable WAL journal mode (granted '{granted}'); \
          every read-write connection requires WAL, so the database filesystem is unsupported"
@@ -50,8 +49,8 @@ pub enum StoreError {
 
 impl StoreError {
     #[must_use]
-    /// True for SQLite errors that mean the database file is damaged beyond use —
-    /// the signal to discard and rebuild rather than retry.
+    /// True when the SQLite failure indicates a damaged or incompatible file
+    /// that sync should discard and rebuild from disk.
     pub fn is_corruption(&self) -> bool {
         match self {
             Self::Open(error) | Self::Configure(error) => super::is_rusqlite_corruption(error),
@@ -61,23 +60,79 @@ impl StoreError {
     }
 }
 
+fn open_flags(read_write: bool) -> OpenFlags {
+    let mut flags = OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    if read_write {
+        flags |= OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
+    } else {
+        flags |= OpenFlags::SQLITE_OPEN_READ_ONLY;
+    }
+    flags
+}
+
+fn configure(connection: &Connection) -> Result<(), StoreError> {
+    connection
+        .busy_timeout(BUSY_TIMEOUT)
+        .map_err(StoreError::Configure)?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(StoreError::Configure)?;
+    enable_wal(connection, BUSY_TIMEOUT)?;
+    Ok(())
+}
+
+pub(super) fn enable_wal(connection: &Connection, budget: Duration) -> Result<(), StoreError> {
+    let started = std::time::Instant::now();
+    let granted: String = loop {
+        match connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
+            Ok(granted) => break granted,
+            Err(error) if is_contention(&error) => {
+                if started.elapsed() >= budget {
+                    tracing::warn!(
+                        target: "slugaudit::store",
+                        budget_ms = budget.as_millis(),
+                        "database stayed locked by another process while enabling WAL"
+                    );
+                    return Err(StoreError::Busy(error));
+                }
+                std::thread::sleep(WAL_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(StoreError::Configure(error)),
+        }
+    };
+    if !granted.eq_ignore_ascii_case("wal") {
+        tracing::warn!(
+            target: "slugaudit::store",
+            granted = %granted,
+            "SQLite did not grant WAL journal mode; refusing the connection"
+        );
+        return Err(StoreError::WalUnavailable { granted });
+    }
+    Ok(())
+}
+
+fn is_contention(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
 /// Discards a corrupt derived database and its SQLite journal sidecars.
-/// Callers must recreate the schema and republish from project files.
 ///
 /// # Errors
 ///
-/// Returns the I/O error if the database or a sidecar exists but cannot be
-/// removed.
+/// Propagates any non-`NotFound` I/O error from removing the database or sidecar files.
 pub fn discard_corrupt_database(path: &Path) -> Result<(), std::io::Error> {
     remove_database_files(path)
 }
 
-/// Deletes a database file and its `-wal` / `-shm` sidecars; files that are
-/// already absent are not an error.
+/// Deletes a database file and its `-wal` / `-shm` sidecars; already-absent
+/// files are ignored.
 ///
 /// # Errors
 ///
-/// Returns the I/O error of the first file that exists but cannot be removed.
+/// Propagates any non-`NotFound` I/O error from removing the files.
 pub fn remove_database_files(path: &Path) -> Result<(), std::io::Error> {
     for suffix in ["", "-wal", "-shm"] {
         let candidate = if suffix.is_empty() {
@@ -96,39 +151,27 @@ pub fn remove_database_files(path: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
-/// Whether opening a read-write connection may create the database file.
-/// Only `project_control on` and the corrupt-database rebuild (which recreates
-/// the file inside an already-active project) may create it; every other path
-/// must not resurrect a project that `project_control off` just deactivated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CreateMode {
     MayCreate,
     MustExist,
 }
 
-/// Opens a read-write connection, creating the database file if needed, and
-/// brings its schema up to date. This is the only connection sync/store
-/// repositories write through. Use it only where creating the file is the
-/// intent (`project_control on`, rebuilding a discarded database); everything
-/// else uses [`open_existing_read_write`].
+/// Opens a read-write connection to `project.db`, creating it when absent and
+/// initializing the current schema.
 ///
 /// # Errors
 ///
-/// Returns an error if the file can't be opened/created, if pragmas can't
-/// be applied, or if the schema can't be migrated to the current version
-/// (including when the database is from a newer, unsupported version).
+/// Returns [`StoreError`] if opening, configuring PRAGMAs/functions, or migrating fails.
 pub fn open_read_write(path: &Path) -> Result<Connection, StoreError> {
     open_read_write_with(path, CreateMode::MayCreate)
 }
 
-/// [`open_read_write`] for a database that must already exist: it never
-/// creates the file, so a project deactivated between a caller's activation
-/// check and this open stays deactivated.
+/// Opens an existing `project.db` read-write without creating a missing file.
 ///
 /// # Errors
 ///
-/// Returns [`StoreError::Missing`] if the file does not exist (including when
-/// it vanishes during the open), otherwise the errors of [`open_read_write`].
+/// Returns [`StoreError::Missing`] when absent, or [`StoreError`] on open/schema failure.
 pub fn open_existing_read_write(path: &Path) -> Result<Connection, StoreError> {
     open_read_write_with(path, CreateMode::MustExist)
 }
@@ -156,9 +199,7 @@ fn open_read_write_with(path: &Path, mode: CreateMode) -> Result<Connection, Sto
     Ok(connection)
 }
 
-/// `Missing` when nothing exists at `path`; other `stat` failures are
-/// reported as themselves.
-pub(super) fn ensure_present(path: &Path) -> Result<(), StoreError> {
+fn ensure_present(path: &Path) -> Result<(), StoreError> {
     match path.metadata() {
         Ok(_) => Ok(()),
         Err(error)
@@ -173,29 +214,49 @@ pub(super) fn ensure_present(path: &Path) -> Result<(), StoreError> {
     }
 }
 
-/// Opens an existing database for reading. The connection uses SQLite's
-/// read-only flag so a read path cannot mutate the index or run schema
-/// migrations; the flag is a connection mode, not a trust boundary — the
-/// index is disposable and the caller owns the machine.
+/// Opens an existing database in read-only mode with SQL helpers registered.
 ///
 /// # Errors
 ///
-/// Returns an error if the file doesn't exist or can't be opened read-only,
-/// or if the busy timeout can't be configured.
+/// Returns [`StoreError`] if opening the file or configuring the connection fails.
 pub fn open_existing(path: &Path) -> Result<Connection, StoreError> {
     let connection =
         Connection::open_with_flags(path, open_flags(false)).map_err(StoreError::Open)?;
-    // `sqlite3_busy_timeout` and `sqlite3_create_function_v2` fail only on
-    // SQLITE_NOMEM or SQLITE_MISUSE from a NULL/invalid handle. The safe
-    // rusqlite API above cannot hand either call an invalid handle, and
-    // allocation failure is not a hermetic input, so these arms are
-    // defensive: they keep an allocator or engine failure typed as
-    // `Configure` rather than letting it become a panic.
     connection
         .busy_timeout(BUSY_TIMEOUT)
         .map_err(StoreError::Configure)?;
     super::sql_functions::register(&connection).map_err(StoreError::Configure)?;
     Ok(connection)
+}
+
+/// Opens the session findings database (`findings-<id>.db`) read-write,
+/// creating the file and schema if needed.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] if opening, configuring, or creating the findings schema fails.
+pub fn open_findings(path: &Path) -> Result<Connection, StoreError> {
+    let connection =
+        Connection::open_with_flags(path, open_flags(true)).map_err(StoreError::Open)?;
+    configure(&connection)?;
+    connection
+        .execute_batch(FINDINGS_DDL)
+        .map_err(StoreError::Configure)?;
+    Ok(connection)
+}
+
+/// Opens the session findings database read-only, returning `Ok(None)` when no
+/// finding has been recorded in this session yet.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] on I/O inspect errors or read-only open/setup failures.
+pub fn open_findings_existing(path: &Path) -> Result<Option<Connection>, StoreError> {
+    match ensure_present(path) {
+        Ok(()) => open_existing(path).map(Some),
+        Err(StoreError::Missing) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]

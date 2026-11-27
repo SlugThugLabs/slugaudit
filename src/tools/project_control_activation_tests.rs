@@ -1,8 +1,8 @@
-//! The on/off switch is the directory `.planning/slugaudit/`: `on` creates it,
-//! `off` deletes it, a missing or broken `project.db` inside it is rebuilt by
-//! the next tool call, and no tool call ever creates the directory.
+//! Activation directory lifecycle, WAL snapshot cleanup, and recovery log tests
+//! for `project_control`.
 
 use super::*;
+use crate::store;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
 
@@ -14,6 +14,7 @@ fn project_with_source() -> TestResult<(tempfile::TempDir, String)> {
 }
 
 fn control(path: &str, action: ProjectControlAction) -> TestResult<ProjectControlResponse> {
+    let manager = sync::SourceSyncManager::new();
     Ok(project_control(
         &Parameters(ProjectControlRequest {
             path: Some(path.to_owned()),
@@ -21,7 +22,7 @@ fn control(path: &str, action: ProjectControlAction) -> TestResult<ProjectContro
             profile: None,
         }),
         &crate::progress::NoopProgressSink,
-        None,
+        &manager,
     )
     .check("project_control succeeds")?
     .0)
@@ -45,7 +46,7 @@ fn assert_not_enabled(error: &ErrorData) -> TestResult {
     ensure_eq(
         &error.message,
         &"SlugAudit is not enabled for this project or any parent directory",
-        "error.message == \"SlugAudit is not enabled for this project or any parent directory\"",
+        "not-enabled message matches contract",
     )?;
     ensure_eq(
         &error.data.as_ref().and_then(|data| data.get("code")),
@@ -84,12 +85,10 @@ fn on_creates_the_directory_the_database_and_the_gitignore_entry_and_a_call_work
 }
 
 #[test]
-fn off_deletes_the_directory_with_config_and_extra_files_and_keeps_the_planning_readme()
--> TestResult {
+fn off_deletes_the_directory_with_extra_files_and_keeps_the_planning_readme() -> TestResult {
     let (project, path) = project_with_source()?;
     control(&path, ProjectControlAction::On)?;
     let activation = project.path().join(".planning/slugaudit");
-    fs::write(activation.join("config.json"), b"{}").check("write config")?;
     fs::write(activation.join("extra.txt"), b"x").check("write extra")?;
 
     let off = control(&path, ProjectControlAction::Off)?;
@@ -128,7 +127,7 @@ fn off_keeps_a_planning_dir_that_holds_other_files() -> TestResult {
     ensure_eq(
         &fs::read(planning.join("PLAN.md")).check("kept")?,
         &b"mine",
-        "fs::read(planning.join(\"PLAN.md\")).check(\"kept\")? == b\"mine\"",
+        "PLAN.md kept untouched",
     )?;
     Ok(())
 }
@@ -206,6 +205,106 @@ fn a_directory_removed_between_two_calls_makes_the_second_not_enabled() -> TestR
     ensure(
         !project.path().join(".planning/slugaudit").exists(),
         "!project.path().join(\".planning/slugaudit\").exists()",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn off_removes_the_database_even_while_a_reader_holds_a_wal_snapshot() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::create_dir_all(project.path().join("src")).check("create src dir")?;
+    fs::write(project.path().join("src/lib.rs"), b"pub fn a() {}\n").check("write source")?;
+    let path = project.path().to_string_lossy().into_owned();
+    let manager = sync::SourceSyncManager::new();
+    project_control(
+        &Parameters(ProjectControlRequest {
+            path: Some(path.clone()),
+            action: ProjectControlAction::On,
+            profile: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("on")?;
+    let database = project.path().join(".planning/slugaudit/project.db");
+    let writer = store::open_read_write(&database).check("open writer")?;
+    writer
+        .execute_batch("CREATE TABLE wal_probe(x); INSERT INTO wal_probe VALUES (1);")
+        .check("leave frames in the WAL")?;
+    let reader = store::open_read_write(&database).check("open reader")?;
+    reader.execute_batch("BEGIN").check("begin read")?;
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM wal_probe", [], |row| row.get(0))
+        .check("pin a read snapshot")?;
+
+    project_control(
+        &Parameters(ProjectControlRequest {
+            path: Some(path),
+            action: ProjectControlAction::Off,
+            profile: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("off removes the file regardless of the reader")?;
+
+    ensure(!database.exists(), "the database is removed")?;
+    drop(reader);
+    drop(writer);
+    Ok(())
+}
+
+#[test]
+fn on_action_corrupt_database_discard_warn_logs_the_real_path() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    fs::write(project.path().join("lib.rs"), "pub fn a() {}\n").check("source file")?;
+    let path = project.path().to_string_lossy().into_owned();
+    let activation = project.path().join(".planning").join("slugaudit");
+    let database = activation.join("project.db");
+    fs::create_dir_all(&activation).check("db dir")?;
+    fs::write(&database, vec![0xA5_u8; 4096]).check("write a corrupt database")?;
+    let expected_path = database
+        .canonicalize()
+        .check("canonical database path")?
+        .display()
+        .to_string();
+    let manager = sync::SourceSyncManager::new();
+
+    let (result, logs) = crate::store::test_capture::capture_warns(|| {
+        tracing::warn!("capture liveness control for enable_project_discard");
+        project_control(
+            &Parameters(ProjectControlRequest {
+                action: ProjectControlAction::On,
+                path: Some(path.clone()),
+                profile: None,
+            }),
+            &crate::progress::NoopProgressSink,
+            &manager,
+        )
+    })?;
+
+    let response = result.check("the corrupt database must be discarded and rebuilt")?;
+    ensure_eq(
+        &response.0.status,
+        &ProjectControlStatus::Enabled,
+        "response.0.status == ProjectControlStatus::Enabled",
+    )?;
+    let record = logs
+        .lines()
+        .find(|line| line.contains("operation=\"open_project_database\""))
+        .check(&format!("the discard record must exist:\n{logs}"))?;
+    ensure(
+        record.contains(&format!(" path={expected_path} ")),
+        format!("the discard WARN must carry the real database path:\n{logs}"),
+    )?;
+    ensure(
+        record
+            .contains("database is corrupt or outdated; discarding and re-publishing from scratch"),
+        format!("the record must be the discard WARN:\n{logs}"),
+    )?;
+    ensure(
+        !record.contains("database_id="),
+        format!("the redacted database id is gone:\n{logs}"),
     )?;
     Ok(())
 }

@@ -178,7 +178,6 @@ impl ParserRun {
         match (&self.availability, &self.outcome) {
             (ParserAvailability::LoadFailed { reason }, _)
             | (_, ParseOutcome::Failed { reason } | ParseOutcome::Withheld { reason }) => {
-                // KEEP clone: error_reason borrows &self and returns an owned Option<String> for persistence
                 Some(reason.clone())
             }
             _ => None,

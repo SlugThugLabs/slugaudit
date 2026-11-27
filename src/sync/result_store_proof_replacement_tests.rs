@@ -5,12 +5,13 @@
 //! taken before the replacement. A full publish and a WAL truncate also
 //! succeed with results open. Real manager, real paginate, no mocks.
 
+use crate::error_codes::store_error;
 use crate::progress::NoopProgressSink;
-use crate::store::{Cell, Materialize, ResultStoreError, ResultStoreLimits, StoredRow, Take};
+use crate::store::{Cell, Materialize, ResultStoreError, ResultStoreLimits, StoredRow};
 use crate::sync::SourceSyncManager;
 use crate::tools::{
-    Completeness, PageRequest, PageSpec, Produced, ProjectControlAction, ProjectControlRequest,
-    ProjectControlStatus, Served, decode_rows, paginate, project_control,
+    Completeness, CutStep, PageRequest, PageSpec, Produced, ProjectControlAction,
+    ProjectControlRequest, ProjectControlStatus, ServedRows, paginate_rows, project_control,
 };
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::Parameters;
@@ -57,28 +58,26 @@ struct Seen {
     has_cursor: bool,
 }
 
-fn seen(served: &Served<Totals>) -> TestResult<Seen> {
-    Ok(Seen {
-        rows: decode_rows::<Item>(&served.rows)
-            .check("proof rows decode")?
-            .into_iter()
-            .map(|Item(n)| n)
-            .collect(),
+fn seen(served: &ServedRows<Item, Totals>) -> Seen {
+    Seen {
+        rows: served.rows.iter().map(|Item(n)| *n).collect(),
         returned: served.page.returned,
         total: served.page.total,
         complete: served.page.complete,
         has_cursor: served.page.cursor.is_some(),
-    })
+    }
 }
 
-fn per_page() -> impl FnMut(&StoredRow) -> Take {
-    let mut remaining = PAGE_ROWS;
-    move |_| match remaining.checked_sub(1) {
-        Some(left) => {
-            remaining = left;
-            Take::Yes
+fn cut_items() -> impl FnMut(&StoredRow, usize, usize) -> Result<CutStep<Item>, ErrorData> {
+    |row, taken, _bytes_so_far| {
+        if taken >= PAGE_ROWS {
+            return Ok(CutStep::Stop { limit: None });
         }
-        None => Take::No,
+        let item = Item::from_values(&row.cells).map_err(|error| store_error(&error))?;
+        Ok(CutStep::Keep {
+            row: item,
+            bytes: 8,
+        })
     }
 }
 
@@ -89,8 +88,11 @@ fn manager() -> SourceSyncManager {
     })
 }
 
-fn open_first_page(manager: &SourceSyncManager, path: &str) -> TestResult<Served<Totals>> {
-    paginate(
+fn open_first_page(
+    manager: &SourceSyncManager,
+    path: &str,
+) -> TestResult<ServedRows<Item, Totals>> {
+    paginate_rows(
         manager,
         &PageSpec::typed::<Item>(TOOL, 1000),
         PageRequest::Fresh {
@@ -108,13 +110,16 @@ fn open_first_page(manager: &SourceSyncManager, path: &str) -> TestResult<Served
                 },
             })
         },
-        |_| per_page(),
+        |_| Ok(cut_items()),
     )
     .check("materialise the result and serve page one")
 }
 
-fn continue_with(manager: &SourceSyncManager, token: &str) -> Result<Served<Totals>, ErrorData> {
-    paginate(
+fn continue_with(
+    manager: &SourceSyncManager,
+    token: &str,
+) -> Result<ServedRows<Item, Totals>, ErrorData> {
+    paginate_rows(
         manager,
         &PageSpec::typed::<Item>(TOOL, 1000),
         PageRequest::Cursor(token),
@@ -124,7 +129,7 @@ fn continue_with(manager: &SourceSyncManager, token: &str) -> Result<Served<Tota
                 None,
             ))
         },
-        |_| per_page(),
+        |_| Ok(cut_items()),
     )
 }
 
@@ -135,7 +140,7 @@ fn remaining_pages(manager: &SourceSyncManager, token: &str) -> TestResult<Vec<S
     loop {
         let served = continue_with(manager, &token).check("continuation page")?;
         let next = served.page.cursor.clone();
-        pages.push(seen(&served)?);
+        pages.push(seen(&served));
         match next {
             Some(next) => token = next,
             None => return Ok(pages),
@@ -170,7 +175,7 @@ impl Open {
         ensure_eq(
             &remaining_pages(&self.manager, &self.token)?,
             &self.before,
-            "remaining_pages(&self.manager, &self.token)? == self.before",
+            "continuation pages match pages captured before database replacement",
         )?;
         Ok(())
     }
@@ -183,9 +188,9 @@ fn open_result() -> TestResult<Open> {
     let manager = manager();
     let first = open_first_page(&manager, &path)?;
     ensure_eq(
-        &seen(&first)?.rows,
+        &seen(&first).rows,
         &((0..10).collect::<Vec<_>>()),
-        "seen(&first)?.rows == (0..10).collect::<Vec<_>>()",
+        "first page returns rows 0 through 9",
     )?;
     let token = first.page.cursor.clone().check("more pages remain")?;
     let before = remaining_pages(&manager, &token)?;
@@ -274,8 +279,19 @@ fn result_store_proof_corruption_recovery_keeps_the_open_result_readable() -> Te
 }
 
 #[test]
-fn result_store_proof_project_control_off_keeps_the_open_result_readable() -> TestResult {
+fn result_store_proof_project_control_off_releases_disabled_store_and_deletes_directory()
+-> TestResult {
     let open = open_result()?;
+    let other_project =
+        crate::tools::test_support::activated_project("lib.rs", b"pub fn other() {}\n")?;
+    let other_path = other_project.path().to_string_lossy().into_owned();
+    let other_first = open_first_page(&open.manager, &other_path)?;
+    let other_token = other_first
+        .page
+        .cursor
+        .clone()
+        .check("other project has remaining pages")?;
+
     let activation = open.project.path().join(".planning/slugaudit");
     std::fs::write(activation.join("config.json"), b"{}").check("write config.json")?;
 
@@ -286,14 +302,14 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() -> Te
             profile: None,
         }),
         &NoopProgressSink,
-        Some(&open.manager),
+        &open.manager,
     )
     .check("project_control off succeeds with a result open")?;
 
     ensure_eq(
         &response.0.status,
         &ProjectControlStatus::Disabled,
-        "response.0.status == ProjectControlStatus::Disabled",
+        "project_control off reports Disabled status",
     )?;
     ensure(!open.database().exists(), "project.db is gone")?;
     ensure(
@@ -305,7 +321,18 @@ fn result_store_proof_project_control_off_keeps_the_open_result_readable() -> Te
         "the config lock is gone",
     )?;
     ensure(!activation.exists(), "the whole directory is gone")?;
-    open.assert_continuation_unchanged()?;
+    let disabled_cursor = continue_with(&open.manager, &open.token);
+    ensure(
+        disabled_cursor.is_err(),
+        "disabling a project releases its result store so old cursors fail closed",
+    )?;
+    let other_second = continue_with(&open.manager, &other_token)
+        .check("other active project's cursor continues unaffected")?;
+    ensure_eq(
+        &seen(&other_second).rows,
+        &((10..20).collect::<Vec<_>>()),
+        "other project's open result stays readable after disabling the first project",
+    )?;
     Ok(())
 }
 
@@ -320,33 +347,33 @@ fn result_store_proof_project_control_off_then_on_pages_a_new_result_by_cursor()
                 profile: None,
             }),
             &NoopProgressSink,
-            Some(&open.manager),
+            &open.manager,
         )
         .check("project_control succeeds")
     };
     ensure_eq(
         &control(ProjectControlAction::Off)?.0.status,
         &ProjectControlStatus::Disabled,
-        "control(ProjectControlAction::Off)?.0.status == ProjectControlStatus::Disabled",
+        "project_control off reports Disabled status",
     )?;
     ensure_eq(
         &control(ProjectControlAction::On)?.0.status,
         &ProjectControlStatus::Enabled,
-        "control(ProjectControlAction::On)?.0.status == ProjectControlStatus::Enabled",
+        "project_control on reports Enabled status",
     )?;
 
     let first = open_first_page(&open.manager, &open.path)?;
     ensure_eq(
-        &seen(&first)?.rows,
+        &seen(&first).rows,
         &((0..10).collect::<Vec<_>>()),
-        "seen(&first)?.rows == (0..10).collect::<Vec<_>>()",
+        "first page of re-enabled project returns rows 0 through 9",
     )?;
     let token = first.page.cursor.clone().check("more pages remain")?;
     let second = continue_with(&open.manager, &token).check("page two by cursor")?;
     ensure_eq(
-        &seen(&second)?.rows,
+        &seen(&second).rows,
         &((10..20).collect::<Vec<_>>()),
-        "seen(&second)?.rows == (10..20).collect::<Vec<_>>()",
+        "second page of re-enabled project returns rows 10 through 19",
     )?;
     ensure(
         open.project
@@ -374,7 +401,7 @@ fn result_store_proof_publish_and_wal_checkpoint_truncate_with_results_open() ->
     .check("change a source file")?;
     let mut connection = crate::store::open_read_write(&open.database()).check("open the index")?;
 
-    crate::sync::publish_cas::publish(
+    crate::sync::publish(
         &mut connection,
         open.project.path(),
         "1.0",

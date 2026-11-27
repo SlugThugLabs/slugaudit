@@ -64,6 +64,11 @@ pub(crate) fn sync_project(
         .check("sync succeeds")
 }
 
+/// Returns a generous sync/parse deadline for non-timeout tests.
+pub(crate) fn generous_deadline() -> crate::util::Deadline {
+    crate::util::Deadline::after(std::time::Duration::from_mins(10))
+}
+
 /// Reads every stored path in the `files` table, sorted.
 pub(crate) fn stored_paths(connection: &Connection) -> TestResult<Vec<String>> {
     let mut statement = connection

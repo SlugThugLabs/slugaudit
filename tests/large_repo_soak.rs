@@ -1,20 +1,11 @@
 #![forbid(unsafe_code)]
 
 //! Large-repo soak: a synthetic 10k-file project pushed through the real
-//! sync path (`SourceSyncManager::ensure_current`), asserting that the
-//! import completes *inside* `ResourceLimits::max_sync_wall_clock` and that
-//! the index it leaves behind actually covers the file set.
-//!
-//! Nothing else in this repository exercises an import at this size. The
-//! budget that aborts a too-slow import (`SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`,
-//! default 1200 s for the default `adaptive` profile) is otherwise only
-//! exercised by `src/sync/timeout_tests.rs`, which sets the budget to one
-//! nanosecond to prove the *error path* fires. So the repository can prove a
-//! spent budget is reported, and cannot prove a legitimate large import fits.
-//! This closes that gap: it fails if a change makes a 10k-file publish exceed
-//! the budget (the sync would return `sync_budget_exhausted`), and it fails if
-//! a change makes the publish complete while silently dropping files from the
-//! index.
+//! sync path (`SourceSyncManager::ensure_current` and `sync::publish`),
+//! asserting that the cold import, the warm unchanged-tree pass, and a
+//! single-file incremental edit each complete *inside*
+//! `ResourceLimits::max_sync_wall_clock` with exact delta counts and index
+//! coverage.
 //!
 //! # Two sizes, one pipeline
 //!
@@ -22,77 +13,60 @@
 //! two tests call it:
 //!
 //! - `a_sixty_four_file_project_syncs_inside_the_default_wall_clock_budget`
-//!   runs in the default suite. It is the same pipeline at a size every push
-//!   can afford (a fraction of a second), so a regression in the assertions
-//!   themselves is caught immediately, not only by whoever remembers to run
-//!   the soak. It also keeps the shared runner covered: an `#[ignore]`d body
-//!   is still instrumented, so a soak-only file would land in
-//!   `check_coverage`'s `--all-targets` report as a hundred-odd uncovered
-//!   lines, pressing on a gate whose threshold is deliberately set to the
-//!   measured coverage.
+//!   runs in the default CI suite at 64 files across 8 directories (cold
+//!   import, warm unchanged-tree verification, and single-file incremental
+//!   edit), catching regressions in sync correctness or assertions on every
+//!   push.
 //! - `a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget`
-//!   is the soak itself and is `#[ignore]`d.
-//!
-//! # Why `tests/` with `#[ignore]`, not a bench
-//!
-//! The assertion is a correctness claim (completed + complete), not a
-//! measurement, so it belongs in the test harness where a failure is a red
-//! test rather than a criterion outlier a reader has to interpret.
-//! `#[ignore]` is what keeps the soak off the default suite: CI's
-//! `cargo test --lib --bins --tests` and a plain `cargo test` compile this
-//! crate and skip the soak body, so the only per-push price is the small
-//! companion test above. A `benches/` target would instead have to be
-//! registered in `Cargo.toml`'s `[[bench]]` list, and as a criterion target
-//! it would join the `--all-targets` set the coverage gate drives on every
-//! push — so the 10k sync would either execute inside the coverage step or
-//! land in its report as a large block of uncovered lines, neither of which
-//! belongs in a gate whose job is to compare a commit against a baseline.
-//! It would also sit in the same namespace `check_performance` compares
-//! against `perf_baseline.json`.
-//!
-//! # Running it
+//!   is the 10k-file soak itself and is `#[ignore]`d for on-demand runs:
 //!
 //! ```text
 //! cargo test --test large_repo_soak -- --ignored --nocapture
 //! ```
-//!
-//! Not scheduled in CI. Measured on a 12-core Ryzen 9 5900X, Linux,
-//! unoptimized `test` profile: two runs of the soak
-//! synced all 10k files in 21.3 s and 23.6 s, against the 1200 s default
-//! budget. That is 2 percent of the budget here, but the 10k-file
-//! write/hash/parse/publish work is exactly the kind of thing a shared
-//! GitHub runner would turn into a slow, load-sensitive, occasionally flaky
-//! job — and a soak test that is skipped or flaky is worth less than one a
-//! maintainer runs deliberately. Run it on demand when the discovery,
-//! hashing, parsing, or publish path changes — the same trigger
-//! `check_performance` documents.
 
 use std::fs;
+use std::io::Write;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use slugaudit_mcp_rust::model::{AuditProfile, limits_for_profile, process_limits};
+use slugaudit_mcp_rust::model::{AuditProfile, limits_for_profile};
+use slugaudit_mcp_rust::parse::PACK_VERSION;
 use slugaudit_mcp_rust::progress::NoopProgressSink;
-use slugaudit_mcp_rust::store::open_existing;
-use slugaudit_mcp_rust::sync::SourceSyncManager;
-use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
+use slugaudit_mcp_rust::project::effective_limits;
+use slugaudit_mcp_rust::store::{open_existing, open_read_write};
+use slugaudit_mcp_rust::sync::{SourceSyncManager, SyncedProject, publish};
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 use tempfile::TempDir;
 
-/// Files the soak project contains. The target is "~10k".
+/// Files the soak project contains (~10k).
 const SOAK_FILES: usize = 10_000;
 
 /// Files the default-suite companion project contains: enough to walk,
-/// hash, parse, publish, and verify more than one module directory, without
-/// a soak-sized run.
+/// hash, parse, publish, and verify multiple module directories quickly.
 const COMPANION_FILES: usize = 64;
 
-/// A tempdir with the `.planning/slugaudit` activation marker — the minimum
-/// shape of an enabled project (`project::resolve_project`).
+/// Peak RSS ceiling (`VmHWM` in `/proc/self/status`) across the soak process:
+/// 512 MiB (`524_288` KiB).
+#[cfg(target_os = "linux")]
+const MAX_PEAK_RSS_KIB: u64 = 512 * 1024;
+
+/// Shared parameters across the cold, warm, and incremental soak phases.
+struct SoakFixture<'a> {
+    root: &'a Path,
+    project_path: &'a str,
+    files: usize,
+    budget: Duration,
+    warm_budget: Duration,
+    incremental_budget: Duration,
+    profile_default: Duration,
+}
+
+/// A tempdir with the `.planning/slugaudit` activation directory — the sole
+/// activation marker required by `project::resolve_project`.
 fn activated_project() -> TestResult<TempDir> {
     let project = tempfile::tempdir().check("create project temp dir")?;
     fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .check("create activation dir")?;
-    write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     Ok(project)
 }
 
@@ -171,118 +145,358 @@ fn stored_paths(connection: &rusqlite::Connection) -> TestResult<Vec<String>> {
         .check("collect stored paths")
 }
 
-/// Builds the fixture, syncs it through `SourceSyncManager::ensure_current`,
-/// and asserts three things: the sync completed, it
-/// stayed inside `max_sync_wall_clock`, and the index covers the whole file
-/// set (row count, file kinds, parse outcomes, and the exact path set).
-fn sync_synthetic_project(files: usize, directories: usize) -> TestResult {
-    let project = activated_project()?;
-    let expected = write_synthetic_project(project.path(), files, directories)?;
-    ensure_eq(
-        &expected.len(),
-        &files,
-        "fixture wrote the wrong file count",
-    )?;
-
-    // The budget the sync itself will enforce: whatever `process_limits()`
-    // resolved (env overrides included). The profile default is printed
-    // alongside it so a maintainer can see whether an override was in play.
-    let budget = process_limits()
-        .check("resolve process limits")?
-        .max_sync_wall_clock;
-    let profile_default = limits_for_profile(AuditProfile::default())
-        .check("resolve profile limits")?
-        .max_sync_wall_clock;
-
-    let manager = SourceSyncManager::new();
-    let started = Instant::now();
-    let synced = manager.ensure_current(&project.path().to_string_lossy(), &NoopProgressSink);
-    let elapsed = started.elapsed();
+/// Phase 1: cold initial sync through `SourceSyncManager::ensure_current` and
+/// full index verification.
+fn verify_cold_sync(
+    fixture: &SoakFixture<'_>,
+    manager: &SourceSyncManager,
+    expected: &[String],
+) -> TestResult<(SyncedProject, Duration)> {
+    let cold_started = Instant::now();
+    let synced = manager.ensure_current(fixture.project_path, &NoopProgressSink);
+    let cold_elapsed = cold_started.elapsed();
 
     let synced = match synced {
         Ok(synced) => synced,
         Err(error) => {
             return Err(format!(
-                "sync of {files} files did not complete after {elapsed:?} \
-             (budget {budget:?}, profile default {profile_default:?}): {error}"
+                "cold sync of {} files did not complete after {cold_elapsed:?} \
+                 (budget {:?}, profile default {:?}): {error}",
+                fixture.files, fixture.budget, fixture.profile_default
             ))
-            .check("unexpected outcome");
+            .check("cold sync must succeed");
         }
     };
     ensure(
-        elapsed < budget,
-        format!("sync of {files} files completed in {elapsed:?}, outside the {budget:?} budget"),
+        cold_elapsed < fixture.budget,
+        format!(
+            "cold sync of {} files completed in {cold_elapsed:?}, outside the {:?} budget",
+            fixture.files, fixture.budget
+        ),
     )?;
 
     let connection = open_existing(&synced.database_path).check("open the published database")?;
     ensure_eq(
         &count(&connection, "SELECT COUNT(*) FROM files")?,
-        &files,
-        format!(
-            "the index does not cover the fixture: {files} files were written but the \
-         files table holds a different number of rows"
-        ),
+        &fixture.files,
+        "files table row count matches the fixture file count",
     )?;
     ensure_eq(
         &count(
             &connection,
             "SELECT COUNT(*) FROM files WHERE file_kind = 'indexed'",
         )?,
-        &files,
-        "some fixture files were discovered but not indexed (binary/skipped rows)",
+        &fixture.files,
+        "every synthetic Rust file must be indexed with content",
     )?;
     ensure_eq(
         &count(
             &connection,
             "SELECT COUNT(*) FROM files WHERE parse_outcome = 'Succeeded'",
         )?,
-        &files,
-        "some fixture files were indexed without a successful parse",
+        &fixture.files,
+        "every synthetic Rust file must parse cleanly",
     )?;
     ensure_eq(
-        &stored_paths(&connection)?,
+        &stored_paths(&connection)?.as_slice(),
         &expected,
-        "the stored path set differs from the fixture's file set",
+        "the stored path set matches the fixture's file set",
+    )?;
+    Ok((synced, cold_elapsed))
+}
+
+/// Phase 2: warm unchanged-tree sync (`added == 0, modified == 0, deleted == 0`).
+fn verify_warm_unchanged_sync(
+    fixture: &SoakFixture<'_>,
+    manager: &SourceSyncManager,
+    synced: &SyncedProject,
+) -> TestResult<Duration> {
+    let mut rw_connection =
+        open_read_write(&synced.database_path).check("open database for warm unchanged sync")?;
+    let warm_started = Instant::now();
+    let warm_report = publish(
+        &mut rw_connection,
+        fixture.root,
+        PACK_VERSION,
+        &NoopProgressSink,
+    )
+    .check("warm unchanged publish must succeed")?;
+    let warm_elapsed = warm_started.elapsed();
+    drop(rw_connection);
+
+    ensure(
+        warm_elapsed < fixture.warm_budget,
+        format!(
+            "warm unchanged sync of {} files took {warm_elapsed:?}, outside the {:?} warm budget (sync budget {:?})",
+            fixture.files, fixture.warm_budget, fixture.budget
+        ),
+    )?;
+    ensure_eq(
+        &warm_report.added,
+        &0,
+        "warm unchanged sync must add zero files",
+    )?;
+    ensure_eq(
+        &warm_report.modified,
+        &0,
+        "warm unchanged sync must modify zero files",
+    )?;
+    ensure_eq(
+        &warm_report.deleted,
+        &0,
+        "warm unchanged sync must delete zero files",
+    )?;
+    ensure_eq(
+        &warm_report.unchanged,
+        &fixture.files,
+        "warm unchanged sync must keep every file unchanged",
+    )?;
+    ensure(
+        warm_report.skipped.is_empty(),
+        "warm unchanged sync must skip zero files",
+    )?;
+    ensure_eq(
+        &warm_report.revision_id,
+        &synced.revision_id,
+        "warm unchanged sync must preserve the committed revision id",
     )?;
 
+    let manager_warm_started = Instant::now();
+    let warm_synced = manager
+        .ensure_current(fixture.project_path, &NoopProgressSink)
+        .check("warm manager ensure_current must succeed")?;
+    let manager_warm_elapsed = manager_warm_started.elapsed();
+    ensure(
+        manager_warm_elapsed < fixture.warm_budget,
+        format!(
+            "warm ensure_current of {} files took {manager_warm_elapsed:?}, outside {:?} (sync budget {:?})",
+            fixture.files, fixture.warm_budget, fixture.budget
+        ),
+    )?;
+    ensure_eq(
+        &warm_synced.revision_id,
+        &synced.revision_id,
+        "warm ensure_current keeps the unchanged revision id",
+    )?;
+    Ok(warm_elapsed)
+}
+
+/// Appends one new Rust function to `edited_relative` under `root`.
+fn append_incremental_probe(root: &Path, edited_relative: &str) -> TestResult {
+    let mut edited_file = fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(edited_relative))
+        .check("open first fixture file for incremental edit")?;
+    edited_file
+        .write_all(b"\npub fn incremental_soak_probe() -> u64 {\n    99\n}\n")
+        .check("append new function to edited fixture file")?;
+    edited_file.flush().check("flush edited fixture file")
+}
+
+/// Verifies the SQLite `files` table holds `files` rows and the updated text of
+/// `edited_relative` after an incremental publish.
+fn verify_edited_file_in_store(
+    database_path: &Path,
+    files: usize,
+    edited_relative: &str,
+) -> TestResult {
+    let connection = open_existing(database_path).check("reopen published database after edit")?;
+    ensure_eq(
+        &count(&connection, "SELECT COUNT(*) FROM files")?,
+        &files,
+        "file count remains exact after single-file edit",
+    )?;
+    let stored_edited_content: String = connection
+        .query_row(
+            "SELECT content FROM files WHERE path = ?1",
+            [edited_relative],
+            |row| row.get(0),
+        )
+        .check("read updated content of edited file")?;
+    ensure(
+        stored_edited_content.contains("incremental_soak_probe"),
+        "stored content of edited file reflects the incremental edit",
+    )
+}
+
+/// Phase 3: single-file edit incremental sync (`modified == 1, unchanged == files - 1`).
+fn verify_single_file_edit_sync(
+    fixture: &SoakFixture<'_>,
+    manager: &SourceSyncManager,
+    synced: &SyncedProject,
+    edited_relative: &str,
+) -> TestResult<(String, Duration)> {
+    append_incremental_probe(fixture.root, edited_relative)?;
+
+    let expected_unchanged = fixture
+        .files
+        .checked_sub(1)
+        .check("synthetic fixture has at least one file")?;
+    let mut rw_connection = open_read_write(&synced.database_path)
+        .check("open database for single-file incremental sync")?;
+    let edit_started = Instant::now();
+    let edit_report = publish(
+        &mut rw_connection,
+        fixture.root,
+        PACK_VERSION,
+        &NoopProgressSink,
+    )
+    .check("single-file incremental publish must succeed")?;
+    let edit_elapsed = edit_started.elapsed();
+    drop(rw_connection);
+
+    ensure(
+        edit_elapsed < fixture.incremental_budget,
+        format!(
+            "single-file edit sync of {} files took {edit_elapsed:?}, outside {:?} incremental budget (sync budget {:?})",
+            fixture.files, fixture.incremental_budget, fixture.budget
+        ),
+    )?;
+    ensure_eq(
+        &edit_report.added,
+        &0,
+        "single-file edit sync must add zero files",
+    )?;
+    ensure_eq(
+        &edit_report.modified,
+        &1,
+        "single-file edit sync must modify exactly one file",
+    )?;
+    ensure_eq(
+        &edit_report.deleted,
+        &0,
+        "single-file edit sync must delete zero files",
+    )?;
+    ensure_eq(
+        &edit_report.unchanged,
+        &expected_unchanged,
+        "single-file edit sync must leave all unedited files unchanged",
+    )?;
+    ensure(
+        edit_report.skipped.is_empty(),
+        "single-file edit sync must skip zero files",
+    )?;
+    ensure_ne(
+        &edit_report.revision_id,
+        &synced.revision_id,
+        "single-file edit sync must commit a new revision id",
+    )?;
+
+    let post_edit_synced = manager
+        .ensure_current(fixture.project_path, &NoopProgressSink)
+        .check("ensure_current after incremental publish must succeed")?;
+    ensure_eq(
+        &post_edit_synced.revision_id,
+        &edit_report.revision_id,
+        "ensure_current observes the incremental edit's revision without extra churn",
+    )?;
+    verify_edited_file_in_store(&synced.database_path, fixture.files, edited_relative)?;
+    Ok((edit_report.revision_id, edit_elapsed))
+}
+
+/// Builds the fixture and exercises three consecutive real sync phases:
+/// 1. Cold import through `SourceSyncManager::ensure_current`
+/// 2. Warm unchanged-tree sync (`added == 0, modified == 0, deleted == 0`)
+/// 3. Single-file incremental edit (`modified == 1, unchanged == files - 1`)
+fn sync_synthetic_project(files: usize, directories: usize) -> TestResult {
+    let project = activated_project()?;
+    let expected = write_synthetic_project(project.path(), files, directories)?;
+    ensure_eq(
+        &expected.len(),
+        &files,
+        "fixture wrote the expected number of Rust source files",
+    )?;
+
+    let budget = effective_limits(project.path())
+        .check("resolve effective project limits")?
+        .max_sync_wall_clock;
+    let profile_default = limits_for_profile(AuditProfile::default())
+        .check("resolve profile limits")?
+        .max_sync_wall_clock;
+
+    let (warm_cap, incremental_cap) = if files <= COMPANION_FILES {
+        (Duration::from_secs(5), Duration::from_secs(5))
+    } else {
+        (Duration::from_secs(15), Duration::from_secs(20))
+    };
+    let project_path = project.path().to_string_lossy().into_owned();
+    let fixture = SoakFixture {
+        root: project.path(),
+        project_path: &project_path,
+        files,
+        budget,
+        warm_budget: budget.min(warm_cap),
+        incremental_budget: budget.min(incremental_cap),
+        profile_default,
+    };
+    let manager = SourceSyncManager::new();
+
+    let (synced, cold_elapsed) = verify_cold_sync(&fixture, &manager, &expected)?;
+    let warm_elapsed = verify_warm_unchanged_sync(&fixture, &manager, &synced)?;
+    let edited_relative = expected
+        .first()
+        .check("synthetic fixture contains at least one file")?;
+    let (edit_revision_id, edit_elapsed) =
+        verify_single_file_edit_sync(&fixture, &manager, &synced, edited_relative)?;
+    assert_peak_rss_within_ceiling()?;
+
     eprintln!(
-        "synthetic sync: {files} files published and verified in {:.3}s \
-         (enforced budget {budget:?}; {} profile default {profile_default:?}; revision {})",
-        elapsed.as_secs_f64(),
+        "synthetic sync ({files} files): cold={:.3}s ({}), warm_unchanged={:.3}s [cap {:?}], \
+         single_file_edit={:.3}s ({edit_revision_id}) [cap {:?}; sync budget {budget:?}; {} default {profile_default:?}]",
+        cold_elapsed.as_secs_f64(),
+        synced.revision_id,
+        warm_elapsed.as_secs_f64(),
+        fixture.warm_budget,
+        edit_elapsed.as_secs_f64(),
+        fixture.incremental_budget,
         match AuditProfile::default() {
             AuditProfile::Adaptive => "adaptive",
             AuditProfile::Lean => "lean",
             AuditProfile::Audit => "audit",
         },
-        synced.revision_id,
     );
     Ok(())
 }
 
-/// The default-suite companion: the same pipeline and the same assertions at
-/// a size every push can afford.
+/// Reads `/proc/self/status` on Linux and asserts `VmHWM` stays at or below
+/// `512 MiB` (`524_288` KiB).
+#[cfg(target_os = "linux")]
+fn assert_peak_rss_within_ceiling() -> TestResult {
+    let status = fs::read_to_string("/proc/self/status").check("read /proc/self/status")?;
+    let hwm_line = status
+        .lines()
+        .find(|line| line.starts_with("VmHWM:"))
+        .check("VmHWM entry present in /proc/self/status")?;
+    let kib_token = hwm_line
+        .trim_start_matches("VmHWM:")
+        .split_whitespace()
+        .next()
+        .check("VmHWM numeric KiB field")?;
+    let peak_rss_kib: u64 = kib_token.parse().check("parse VmHWM KiB as u64")?;
+    ensure(
+        peak_rss_kib <= MAX_PEAK_RSS_KIB,
+        format!(
+            "peak RSS VmHWM={peak_rss_kib} KiB exceeded the {MAX_PEAK_RSS_KIB} KiB (512 MiB) ceiling"
+        ),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn assert_peak_rss_within_ceiling() -> TestResult {
+    Ok(())
+}
+
+/// The default-suite companion: cold import, warm unchanged-tree check, and
+/// single-file incremental edit at a size every push can afford.
 #[test]
 fn a_sixty_four_file_project_syncs_inside_the_default_wall_clock_budget() -> TestResult {
     sync_synthetic_project(COMPANION_FILES, 8)
 }
 
-/// The soak. Deliberately `#[ignore]`d so the 10k-file import is a decision a
-/// maintainer makes, not a tax on every push.
+/// The 10k-file soak. Deliberately `#[ignore]`d so the full import runs on
+/// demand rather than on every push.
 #[test]
 #[ignore = "10k-file soak; run on demand with `cargo test --test large_repo_soak -- --ignored --nocapture`"]
 fn a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget() -> TestResult {
     sync_synthetic_project(SOAK_FILES, 100)
-}
-
-/// Creates the empty owner-only `project.db` that marks a project as active.
-fn write_database_marker(activation: &std::path::Path) -> TestResult {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(activation.join("project.db"))
-        .check("create database marker")?;
-    Ok(())
 }

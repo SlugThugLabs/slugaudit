@@ -14,7 +14,7 @@ use slugaudit_mcp_rust::cli::{self, Command};
 use slugaudit_mcp_rust::connect;
 use slugaudit_mcp_rust::install;
 use slugaudit_mcp_rust::menu;
-use slugaudit_mcp_rust::model::{EnvConfigError, init_process_limits};
+use slugaudit_mcp_rust::model::EnvConfigError;
 use slugaudit_mcp_rust::server::SlugAuditServer;
 use slugaudit_mcp_rust::update;
 use tracing_subscriber::EnvFilter;
@@ -62,11 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // A malformed global config, a set-but-invalid SLUGAUDIT_* variable, or an
     // Adaptive profile on a host whose memory cannot be detected stops the
     // server here rather than running with limits the operator did not ask for.
-    if let Err(error) = slugaudit_mcp_rust::project::GlobalConfig::load() {
-        cli::err(format_args!("Error: {error}\n"))?;
-        std::process::exit(1);
-    }
-    if let Err(error) = init_process_limits() {
+    if let Err(error) = slugaudit_mcp_rust::project::validate_startup_config() {
         cli::err(format_args!("Error: {error}\n"))?;
         std::process::exit(1);
     }

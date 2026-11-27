@@ -1,26 +1,40 @@
 use crate::evidence::extract;
-use crate::evidence::tests::field;
-use crate::model::{EvidenceItem, EvidenceKind};
-use serde_json::json;
+use crate::model::{EvidencePayload, RustModPathPayload, StructurePayload};
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
-fn rust_module_items(source: &str) -> TestResult<Vec<EvidenceItem>> {
+fn rust_module_items(source: &str) -> TestResult<Vec<StructurePayload>> {
     let (items, truncated) = extract("rust", source).check("extract rust evidence")?;
     ensure(!truncated, "fixture extraction should not be truncated")?;
     Ok(items
         .into_iter()
-        .filter(|item| {
-            item.kind == EvidenceKind::Structure
-                && field(&item.payload, "kind").as_str() == Some("Module")
+        .filter_map(|item| match item.payload {
+            EvidencePayload::Structure(s) if s.kind == "Module" => Some(s),
+            _ => None,
         })
         .collect())
 }
 
-fn find_module<'a>(modules: &'a [EvidenceItem], name: &str) -> TestResult<&'a EvidenceItem> {
+fn find_module<'a>(
+    modules: &'a [StructurePayload],
+    name: &str,
+) -> TestResult<&'a StructurePayload> {
     modules
         .iter()
-        .find(|item| field(&item.payload, "name").as_str() == Some(name))
+        .find(|s| s.name.as_deref() == Some(name))
         .check(&format!("module `{name}` present"))
+}
+
+fn expected_path(
+    path_attr: Option<&str>,
+    inline_dir: &str,
+    inline_segments: &[&str],
+) -> RustModPathPayload {
+    RustModPathPayload {
+        path_attr: path_attr.map(str::to_owned),
+        inline_dir: inline_dir.to_owned(),
+        inline_depth: inline_segments.len(),
+        inline_segments: inline_segments.iter().map(|s| (*s).to_owned()).collect(),
+    }
 }
 
 #[test]
@@ -29,13 +43,8 @@ fn rust_mod_path_extracts_top_level_external_module_attribute() -> TestResult {
     let modules = rust_module_items(source)?;
     let foo = find_module(&modules, "foo")?;
     ensure_eq(
-        field(&foo.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "custom/foo.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &foo.rust_mod_path,
+        &Some(expected_path(Some("custom/foo.rs"), "", &[])),
         "top-level external mod receives rust_mod_path",
     )?;
     Ok(())
@@ -47,13 +56,8 @@ fn rust_mod_path_extracts_cfg_attr_with_multiple_predicates_and_attrs() -> TestR
     let modules = rust_module_items(source)?;
     let tests_mod = find_module(&modules, "tests")?;
     ensure_eq(
-        field(&tests_mod.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "foo_tests.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &tests_mod.rust_mod_path,
+        &Some(expected_path(Some("foo_tests.rs"), "", &[])),
         "cfg_attr with nested predicate and multiple attrs extracts path",
     )?;
     Ok(())
@@ -65,13 +69,8 @@ fn rust_mod_path_extracts_nested_cfg_attr_and_comment_separated_attr() -> TestRe
     let modules = rust_module_items(source)?;
     let tests_mod = find_module(&modules, "tests")?;
     ensure_eq(
-        field(&tests_mod.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "unix_tests.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &tests_mod.rust_mod_path,
+        &Some(expected_path(Some("unix_tests.rs"), "", &[])),
         "nested cfg_attr and doc comment before mod still attach path",
     )?;
     Ok(())
@@ -86,39 +85,18 @@ fn rust_mod_path_unquotes_escaped_and_raw_string_literals() -> TestResult {
     );
     let modules = rust_module_items(source)?;
     ensure_eq(
-        field(&find_module(&modules, "escaped")?.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "a\\b\"c/d.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &find_module(&modules, "escaped")?.rust_mod_path,
+        &Some(expected_path(Some("a\\b\"c/d.rs"), "", &[])),
         "escaped string literal unquoted",
     )?;
     ensure_eq(
-        field(
-            &find_module(&modules, "raw_plain")?.payload,
-            "rust_mod_path",
-        ),
-        &json!({
-            "path_attr": "raw/sub.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &find_module(&modules, "raw_plain")?.rust_mod_path,
+        &Some(expected_path(Some("raw/sub.rs"), "", &[])),
         "raw string literal unquoted",
     )?;
     ensure_eq(
-        field(
-            &find_module(&modules, "raw_hashed")?.payload,
-            "rust_mod_path",
-        ),
-        &json!({
-            "path_attr": "raw/\"quoted\".rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &find_module(&modules, "raw_hashed")?.rust_mod_path,
+        &Some(expected_path(Some("raw/\"quoted\".rs"), "", &[])),
         "raw hashed string literal unquoted",
     )?;
     Ok(())
@@ -140,40 +118,37 @@ fn rust_mod_path_tracks_inline_ancestors_and_custom_inline_path() -> TestResult 
         "}\n",
     );
     let modules = rust_module_items(source)?;
-    ensure(
-        field(&find_module(&modules, "outer")?.payload, "rust_mod_path").is_null(),
+    ensure_eq(
+        &find_module(&modules, "outer")?.rust_mod_path,
+        &None,
         "inline outer mod itself has no rust_mod_path",
     )?;
-    ensure(
-        field(&find_module(&modules, "r#match")?.payload, "rust_mod_path").is_null(),
+    ensure_eq(
+        &find_module(&modules, "r#match")?.rust_mod_path,
+        &None,
         "inline raw-ident mod itself has no rust_mod_path",
     )?;
-    ensure(
-        field(
-            &find_module(&modules, "custom_inline")?.payload,
-            "rust_mod_path",
-        )
-        .is_null(),
+    ensure_eq(
+        &find_module(&modules, "custom_inline")?.rust_mod_path,
+        &None,
         "inline mod with #[path] itself has no rust_mod_path",
     )?;
     ensure_eq(
-        field(&find_module(&modules, "leaf")?.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "leaf.rs",
-            "inline_dir": "outer/match",
-            "inline_depth": 2,
-            "inline_segments": ["outer", "match"],
-        }),
+        &find_module(&modules, "leaf")?.rust_mod_path,
+        &Some(expected_path(
+            Some("leaf.rs"),
+            "outer/match",
+            &["outer", "match"],
+        )),
         "nested inline ancestors joined with raw prefix stripped",
     )?;
     ensure_eq(
-        field(&find_module(&modules, "inner")?.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "inner.rs",
-            "inline_dir": "custom_root",
-            "inline_depth": 1,
-            "inline_segments": ["custom_root"],
-        }),
+        &find_module(&modules, "inner")?.rust_mod_path,
+        &Some(expected_path(
+            Some("inner.rs"),
+            "custom_root",
+            &["custom_root"],
+        )),
         "inline mod #[path] overrides ancestor directory segment",
     )?;
     Ok(())
@@ -199,11 +174,24 @@ fn rust_mod_path_ignores_plain_mods_non_mods_decoys_and_non_path_attrs() -> Test
     );
     let (items, truncated) = extract("rust", source).check("extract rust evidence")?;
     ensure(!truncated, "decoys fixture should not truncate")?;
-    for item in &items {
-        ensure(
-            field(&item.payload, "rust_mod_path").is_null(),
-            format!("no item should get rust_mod_path, got: {:?}", item.payload),
+    let modules = rust_module_items(source)?;
+    for name in ["plain", "decoys"] {
+        ensure_eq(
+            &find_module(&modules, name)?.rust_mod_path,
+            &Some(expected_path(None, "", &[])),
+            format!("external mod `{name}` gets None path_attr without #[path]"),
         )?;
+    }
+    for item in &items {
+        if let EvidencePayload::Structure(s) = &item.payload
+            && s.kind != "Module"
+        {
+            ensure_eq(
+                &s.rust_mod_path,
+                &None,
+                format!("non-module Structure must not get rust_mod_path: {s:?}"),
+            )?;
+        }
     }
     Ok(())
 }
@@ -220,7 +208,7 @@ fn rust_mod_path_disambiguates_duplicate_module_names_by_span() -> TestResult {
     ensure_eq(&modules.len(), &2, "two modules named dup")?;
     let with_path: Vec<_> = modules
         .iter()
-        .filter(|item| !field(&item.payload, "rust_mod_path").is_null())
+        .filter(|s| s.rust_mod_path.is_some())
         .collect();
     ensure_eq(
         &with_path.len(),
@@ -229,13 +217,8 @@ fn rust_mod_path_disambiguates_duplicate_module_names_by_span() -> TestResult {
     )?;
     let inner = with_path.first().check("inner dup exists")?;
     ensure_eq(
-        field(&inner.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "inner_dup.rs",
-            "inline_dir": "dup",
-            "inline_depth": 1,
-            "inline_segments": ["dup"],
-        }),
+        &inner.rust_mod_path,
+        &Some(expected_path(Some("inner_dup.rs"), "dup", &["dup"])),
         "inner external dup carries outer inline_dir",
     )?;
     Ok(())
@@ -247,13 +230,8 @@ fn rust_mod_path_matches_raw_identifier_external_module() -> TestResult {
     let modules = rust_module_items(source)?;
     let kw = find_module(&modules, "r#type")?;
     ensure_eq(
-        field(&kw.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "kw_type.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
+        &kw.rust_mod_path,
+        &Some(expected_path(Some("kw_type.rs"), "", &[])),
         "external raw identifier module matched",
     )?;
     Ok(())
@@ -266,14 +244,9 @@ fn rust_mod_path_handles_nested_block_comments_inside_cfg_attr() -> TestResult {
     let modules = rust_module_items(source)?;
     let nested = find_module(&modules, "nested")?;
     ensure_eq(
-        field(&nested.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "nested_comment.rs",
-            "inline_dir": "",
-            "inline_depth": 0,
-            "inline_segments": [],
-        }),
-        "nested block comment inside cfg_attr does not terminate attribute parsing early",
+        &nested.rust_mod_path,
+        &Some(expected_path(Some("nested_comment.rs"), "", &[])),
+        "nested block comment inside cfg_attr handled by CST walker",
     )?;
     Ok(())
 }
@@ -290,13 +263,8 @@ fn rust_mod_path_preserves_multi_segment_inline_path_depth() -> TestResult {
     let modules = rust_module_items(source)?;
     let leaf = find_module(&modules, "leaf")?;
     ensure_eq(
-        field(&leaf.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "leaf.rs",
-            "inline_dir": "a/b",
-            "inline_depth": 1,
-            "inline_segments": ["a/b"],
-        }),
+        &leaf.rust_mod_path,
+        &Some(expected_path(Some("leaf.rs"), "a/b", &["a/b"])),
         "multi-segment inline #[path] preserves a single module-nesting segment",
     )?;
     Ok(())
@@ -318,32 +286,28 @@ fn rust_mod_path_emits_metadata_for_plain_external_mod_under_inline_path() -> Te
     );
     let modules = rust_module_items(source)?;
     ensure_eq(
-        field(&find_module(&modules, "child")?.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "child",
-            "inline_dir": "custom_dir",
-            "inline_depth": 1,
-            "inline_segments": ["custom_dir"],
-        }),
+        &find_module(&modules, "child")?.rust_mod_path,
+        &Some(expected_path(Some("child"), "custom_dir", &["custom_dir"])),
         "plain external mod under inline #[path] receives rust_mod_path",
     )?;
     ensure_eq(
-        field(&find_module(&modules, "r#match")?.payload, "rust_mod_path"),
-        &json!({
-            "path_attr": "match",
-            "inline_dir": "custom_dir/nested",
-            "inline_depth": 2,
-            "inline_segments": ["custom_dir", "nested"],
-        }),
+        &find_module(&modules, "r#match")?.rust_mod_path,
+        &Some(expected_path(
+            Some("match"),
+            "custom_dir/nested",
+            &["custom_dir", "nested"],
+        )),
         "nested raw-ident external mod under inline #[path] strips r# in path_attr",
     )?;
-    ensure(
-        field(
-            &find_module(&modules, "plain_child")?.payload,
-            "rust_mod_path",
-        )
-        .is_null(),
-        "plain external mod without any #[path] ancestor does not get rust_mod_path",
+    ensure_eq(
+        &find_module(&modules, "plain_outer")?.rust_mod_path,
+        &None,
+        "inline plain_outer mod has no rust_mod_path",
+    )?;
+    ensure_eq(
+        &find_module(&modules, "plain_child")?.rust_mod_path,
+        &Some(expected_path(None, "plain_outer", &["plain_outer"])),
+        "plain external mod without #[path] ancestor gets rust_mod_path with None path_attr",
     )?;
     Ok(())
 }

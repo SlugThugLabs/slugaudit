@@ -25,11 +25,10 @@
 //! Limits, stated so they are not silently trusted. A producer written in a
 //! style the scanner does not recognize (for example `let kind =
 //! EvidenceKind::X;` used via the variable) reports as *uncovered*: the gate
-//! fails and a human decides, never silently accepting. In the other
-//! direction, comments are stripped but **string literals are not**, so a
-//! variant's name inside a string in a value position would count as a
-//! producer; keeping string state would mean a second scanner for a case no
-//! producer in this repo writes.
+//! fails and a human decides, never silently accepting. Line comments (`//`),
+//! nested block comments (`/* ... */`), string and raw-string literals, and
+//! character literals are blanked before scanning so a variant's name inside a
+//! comment or literal never spoofs coverage.
 //!
 //! Pure-Rust: no Python, no shell. stdlib only.
 

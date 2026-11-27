@@ -1,7 +1,6 @@
 //! Parser for source-limit exception comments.
 
 const NEEDLE: &str = "slugaudit-line-exception:";
-const AGENT: &str = "approved-by=slugthuglabs;";
 const SPLIT_JUDGE: &str = "approved-by=split-judge;";
 const HUMAN: &str = "approved-by=human-user;";
 const HUMAN_APPROVED_PREFIX: &str = "[human-approved ";
@@ -25,8 +24,8 @@ impl Exception {
     }
 }
 
-/// Returns the parsed exception (`split-judge`, `slugthuglabs`, or dated
-/// `human-user`), if any valid annotation is present.
+/// Returns the parsed exception (`split-judge` or dated `human-user`), if any
+/// valid annotation is present.
 pub(super) fn reason(source: &str) -> Option<Exception> {
     for line in source.lines() {
         let Some((_, after_needle)) = line.split_once(NEEDLE) else {
@@ -35,10 +34,7 @@ pub(super) fn reason(source: &str) -> Option<Exception> {
         let text = after_needle.trim_start();
         // A malformed annotation grants nothing; the scan goes on to the next
         // annotation.
-        if let Some(rest) = text
-            .strip_prefix(SPLIT_JUDGE)
-            .or_else(|| text.strip_prefix(AGENT))
-        {
+        if let Some(rest) = text.strip_prefix(SPLIT_JUDGE) {
             let Some(reason) = parse_reason(rest) else {
                 continue;
             };

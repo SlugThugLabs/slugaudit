@@ -4,7 +4,7 @@
 // `Cargo.toml`.
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
-//! MCP surface-snapshot gate.
+//! MCP surface-snapshot and directory-listing gate.
 //!
 //! `tools/list` and `resources/list` are the contract a client sees before it
 //! makes any call: tool names, titles, descriptions, input schemas, output
@@ -14,12 +14,14 @@
 //! gate derives the live surface **in-process** from the router
 //! (`server::tool_surface` and `resources::list`, the same values the
 //! generated `list_tools` / `list_resources` return, not a reconstruction),
-//! compares it against the committed snapshot, and fails on drift.
+//! compares it against the committed snapshot, verifies `lhm.plugin.json`'s
+//! tool list and version against `Cargo.toml` and the live surface, and fails
+//! on drift.
 //!
-//! The default refuses: recording is an explicit `--record`, in the style of
-//! `check_performance --record`, so a surface change shows up as a committed
-//! diff in review rather than passing silently. Deriving in-process rather
-//! than spawning the server keeps the snapshot deterministic and fast.
+//! The default refuses: recording is an explicit `--record`, so a surface
+//! change shows up as a committed diff in review rather than passing
+//! silently. Deriving in-process rather than spawning the server keeps the
+//! snapshot deterministic and fast.
 //!
 //! Pure-Rust: no Python, no shell. stdlib + `serde_json` only.
 
@@ -28,6 +30,7 @@ mod diff;
 mod gate_args;
 #[path = "../gate_common/out.rs"]
 mod gate_out;
+mod listing;
 mod surface;
 
 #[cfg(test)]
@@ -52,7 +55,7 @@ fn main() -> std::process::ExitCode {
         PREFIX,
         &format!(
             "Compares the live MCP surface (tools/list + resources/list) against the \
-                     committed snapshot and fails on drift.\n\
+                     committed snapshot and lhm.plugin.json, and fails on drift.\n\
                      Usage: check_mcp_surface [--record] [--root <dir>]\n\
                      --record: rewrite {SNAPSHOT_PATH} from the live surface."
         ),
@@ -74,7 +77,7 @@ fn main() -> std::process::ExitCode {
     let outcome = if should_record {
         write_snapshot(&path, &live)
     } else {
-        compare_snapshot(&path, &live)
+        compare_snapshot(&root, &path, &live)
     };
     match outcome {
         Ok(code) => code,
@@ -113,8 +116,9 @@ fn write_snapshot(
     Ok(std::process::ExitCode::SUCCESS)
 }
 
-/// Compares the committed snapshot against the live surface.
+/// Compares the committed snapshot and `lhm.plugin.json` against the live surface.
 fn compare_snapshot(
+    root: &std::path::Path,
     path: &std::path::Path,
     live: &serde_json::Value,
 ) -> std::io::Result<std::process::ExitCode> {
@@ -137,7 +141,9 @@ fn compare_snapshot(
         }
     };
 
-    let differences = diff::differences(&committed, live);
+    let mut differences = diff::differences(&committed, live);
+    differences.extend(listing::check(root, live));
+
     for difference in differences.iter().take(MAX_REPORTED_DIFFERENCES) {
         gate_out::line(format_args!("mcp-surface: {difference}"))?;
     }
@@ -155,8 +161,8 @@ fn compare_snapshot(
         return Ok(std::process::ExitCode::SUCCESS);
     }
     gate_out::line(format_args!(
-        "mcp-surface: FAIL — {} differing path(s) against {}; if the change is deliberate, \
-         re-run with --record",
+        "mcp-surface: FAIL — {} differing path(s) against {} / lhm.plugin.json; if the snapshot \
+         change is deliberate, re-run with --record and keep lhm.plugin.json in sync",
         differences.len(),
         path.display()
     ))?;

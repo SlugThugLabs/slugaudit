@@ -1,177 +1,14 @@
-//! Zero refusal and warn-once for limit overrides. The warning ledger is
-//! per thread under test (process-wide in production), so every test that
-//! touches it calls `fresh_ledger()` and counts only the lines carrying its own literal.
+//! Zero refusal for environment limit overrides and warn-once clamping ledger.
+//! The warning ledger is per thread under test (process-wide in production), so
+//! every test that touches it calls `fresh_ledger()` and counts only the lines
+//! carrying its own literal.
 
 use super::*;
-use crate::project::GlobalConfig;
-use crate::store::test_capture::capture_warns;
+use crate::util::test_capture::capture_warns;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 fn lines_containing(logs: &str, needle: &str) -> usize {
     logs.lines().filter(|line| line.contains(needle)).count()
-}
-
-/// Applies `config` to the defaults twice under one capture.
-fn apply_twice(config: &GlobalConfig) -> TestResult<(ResourceLimits, String)> {
-    let (applied, logs) = capture_warns(|| -> TestResult<ResourceLimits> {
-        let first = config
-            .apply_limit_keys(ResourceLimits::default())
-            .check("first apply")?;
-        let second = config
-            .apply_limit_keys(ResourceLimits::default())
-            .check("second apply")?;
-        ensure_eq(&first, &second, "first == second")?;
-        Ok(second)
-    })?;
-    Ok((applied?, logs))
-}
-
-#[test]
-fn a_zero_config_max_parse_bytes_is_refused_with_one_warning_and_keeps_the_default() -> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_parse_bytes: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice(&config)?;
-
-    ensure_eq(
-        &limits.max_parse_bytes,
-        &(2 * 1024 * 1024),
-        "limits.max_parse_bytes == 2 * 1024 * 1024",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_parse_bytes\""),
-        &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_max_parse_wall_clock_ms_is_refused_with_one_warning_and_keeps_the_default()
--> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_parse_wall_clock_ms: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice(&config)?;
-
-    ensure_eq(
-        &limits.max_parse_wall_clock_ms,
-        &5_000,
-        "limits.max_parse_wall_clock_ms == 5_000",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_parse_wall_clock_ms\""),
-        &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_max_structure_query_bytes_is_refused_with_one_warning_and_keeps_the_default()
--> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_structure_query_bytes: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice(&config)?;
-
-    ensure_eq(
-        &limits.max_structure_query_bytes,
-        &(16 * 1024),
-        "limits.max_structure_query_bytes == 16 * 1024",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_structure_query_bytes\""),
-        &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_value_keeps_what_the_environment_already_set() -> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_parse_bytes: Some(0),
-        ..Default::default()
-    };
-    let from_env = ResourceLimits {
-        max_parse_bytes: 123_456,
-        ..ResourceLimits::default()
-    };
-
-    let applied = config
-        .apply_limit_keys(from_env)
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_parse_bytes,
-        &123_456,
-        "applied.max_parse_bytes == 123_456",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn the_same_clamp_is_reported_once_however_often_the_limits_are_built() -> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_file_bytes: Some(700_001),
-        max_parse_bytes: Some(900_009),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice(&config)?;
-    let (_, more_logs) = apply_twice(&config)?;
-
-    ensure_eq(
-        &limits.max_parse_bytes,
-        &700_001,
-        "limits.max_parse_bytes == 700_001",
-    )?;
-    ensure_eq(&lines_containing(&logs, "requested=900009"), &1, &logs)?;
-    ensure_eq(
-        &lines_containing(&more_logs, "requested=900009"),
-        &0,
-        &more_logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_clamp_with_a_changed_configured_value_is_reported_again() -> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let configured = |parse_bytes| GlobalConfig {
-        max_file_bytes: Some(700_002),
-        max_parse_bytes: Some(parse_bytes),
-        ..Default::default()
-    };
-
-    let (_, first) = apply_twice(&configured(900_010))?;
-    let (_, changed) = apply_twice(&configured(900_011))?;
-
-    ensure_eq(&lines_containing(&first, "requested=900010"), &1, &first)?;
-    ensure_eq(
-        &lines_containing(&changed, "requested=900011"),
-        &1,
-        &changed,
-    )?;
-    Ok(())
-}
-
-// --- Zero refusal for every other limit -------------------------------------
-
-fn lean() -> TestResult<ResourceLimits> {
-    crate::model::limits_for_profile(crate::model::AuditProfile::Lean).check("lean limits")
 }
 
 /// Every limit variable whose zero is refused at startup.
@@ -195,11 +32,10 @@ const ZERO_REFUSED: [&str; 16] = [
 ];
 
 /// Keeps [`ZERO_REFUSED`] in sync with the code: every variable read through
-/// `nonzero_override` in `env_overrides.rs` must be listed, and nothing else.
+/// `nonzero_override` in `limit_overrides.rs` must be listed, and nothing else.
 #[test]
-fn the_zero_refused_list_names_exactly_the_variables_env_overrides_rs_reads_with_nonzero_override()
--> TestResult {
-    let source = include_str!("env_overrides.rs");
+fn the_zero_refused_list_names_exactly_the_variables_read_with_nonzero_override() -> TestResult {
+    let source = include_str!("limit_overrides.rs");
     let mut read: Vec<&str> = source
         .split("nonzero_override")
         .skip(1)
@@ -213,17 +49,22 @@ fn the_zero_refused_list_names_exactly_the_variables_env_overrides_rs_reads_with
     let mut listed = ZERO_REFUSED.to_vec();
     listed.sort_unstable();
 
-    ensure_eq(&read, &listed, "read == listed")?;
+    ensure_eq(
+        &read,
+        &listed,
+        "every nonzero_override environment variable in limit_overrides.rs is covered",
+    )?;
     Ok(())
 }
 
 #[test]
 fn fail_closed_a_zero_limit_env_var_is_an_error_naming_only_the_variable() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let _cfg = crate::project::GlobalConfigGuardForTest::none();
     for variable in ZERO_REFUSED {
         let error = temp_env::with_vars(
             [("SLUGAUDIT_PROFILE", Some("lean")), (variable, Some("0"))],
-            ResourceLimits::from_env,
+            crate::project::validate_startup_config,
         )
         .check_err("a zero limit must fail startup")?;
 
@@ -232,144 +73,58 @@ fn fail_closed_a_zero_limit_env_var_is_an_error_naming_only_the_variable() -> Te
             &format!(
                 "{variable} is set to 0, which is not a usable limit; set a positive value or unset it"
             ),
-            "error.to_string() == format!( \"{variable} is set to 0, which is not a usable limit; set a positive value or unset it\" )",
+            "zero environment override error names the variable and remedy",
         )?;
         ensure(
-            matches!(&error, EnvConfigError::Zero { variable: named } if named == variable),
+            matches!(
+                &error,
+                crate::project::ProjectLimitsError::Env(EnvConfigError::Zero { variable: named })
+                    if named == variable
+            ),
             format!("{error:?}"),
         )?;
     }
     Ok(())
 }
 
-/// Applies `config` over the lean profile twice under one capture.
-fn apply_twice_over_lean(config: &GlobalConfig) -> TestResult<(ResourceLimits, String)> {
-    let first_base = lean()?;
-    let second_base = lean()?;
-    let (applied, logs) = capture_warns(|| -> TestResult<ResourceLimits> {
-        let first = config.apply_limit_keys(first_base).check("first apply")?;
-        let second = config.apply_limit_keys(second_base).check("second apply")?;
-        ensure_eq(&first, &second, "first == second")?;
+#[test]
+fn the_same_parse_clamp_is_reported_once_however_often_clamped() -> TestResult {
+    fresh_ledger().check("reset the ledger")?;
+    let clamp_once = |parse_bytes: u64| -> TestResult<ResourceLimits> {
+        let mut limits = ResourceLimits {
+            max_file_bytes: 700_001,
+            max_parse_bytes: parse_bytes,
+            ..ResourceLimits::default()
+        };
+        limits.clamp_parse_to_file_bytes().check("clamp parse")?;
+        Ok(limits)
+    };
+
+    let (first_batch, logs) = capture_warns(|| -> TestResult<ResourceLimits> {
+        let first = clamp_once(900_009)?;
+        let second = clamp_once(900_009)?;
+        ensure_eq(&first, &second, "repeated clamp yields identical limits")?;
         Ok(second)
     })?;
-    Ok((applied?, logs))
-}
-
-#[test]
-fn a_zero_config_max_file_bytes_is_refused_with_one_warning_and_keeps_the_default() -> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_file_bytes: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice_over_lean(&config)?;
+    let limits = first_batch?;
+    let (_, more_logs) = capture_warns(|| clamp_once(900_009))?;
+    let (_, changed_logs) = capture_warns(|| clamp_once(900_011))?;
 
     ensure_eq(
-        &limits.max_file_bytes,
-        &lean()?.max_file_bytes,
-        "limits.max_file_bytes == lean()?.max_file_bytes",
+        &limits.max_parse_bytes,
+        &700_001,
+        "max_parse_bytes clamps down to max_file_bytes",
+    )?;
+    ensure_eq(&lines_containing(&logs, "requested=900009"), &1, &logs)?;
+    ensure_eq(
+        &lines_containing(&more_logs, "requested=900009"),
+        &0,
+        &more_logs,
     )?;
     ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_file_bytes\""),
+        &lines_containing(&changed_logs, "requested=900011"),
         &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_max_total_import_bytes_is_refused_with_one_warning_and_keeps_the_default()
--> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_total_import_bytes: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice_over_lean(&config)?;
-
-    ensure_eq(
-        &limits.max_total_import_bytes,
-        &lean()?.max_total_import_bytes,
-        "limits.max_total_import_bytes == lean()?.max_total_import_bytes",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_total_import_bytes\""),
-        &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_default_page_bytes_is_refused_with_one_warning_and_keeps_the_default() -> TestResult
-{
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        default_page_bytes: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice_over_lean(&config)?;
-
-    ensure_eq(
-        &limits.default_page_bytes,
-        &lean()?.default_page_bytes,
-        "limits.default_page_bytes == lean()?.default_page_bytes",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config default_page_bytes\""),
-        &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_max_result_store_bytes_is_refused_with_one_warning_and_keeps_the_default()
--> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_result_store_bytes: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice_over_lean(&config)?;
-
-    ensure_eq(
-        &limits.max_result_store_bytes,
-        &lean()?.max_result_store_bytes,
-        "limits.max_result_store_bytes == lean()?.max_result_store_bytes",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_result_store_bytes\""),
-        &1,
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_zero_config_result_active_grace_secs_is_refused_with_one_warning_and_keeps_the_default()
--> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        result_active_grace_secs: Some(0),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice_over_lean(&config)?;
-
-    ensure_eq(
-        &limits.result_active_grace_secs,
-        &900,
-        "limits.result_active_grace_secs == 900",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config result_active_grace_secs\""),
-        &1,
-        &logs,
+        &changed_logs,
     )?;
     Ok(())
 }
@@ -389,7 +144,7 @@ fn a_value_above_sqlite_max_is_clamped_with_one_warning_per_configured_value() -
     ensure_eq(
         &clamped?,
         &[SQLITE_MAX_VALUE_BYTES; 3],
-        "clamped? == [SQLITE_MAX_VALUE_BYTES; 3]",
+        "values above SQLITE_MAX_VALUE_BYTES clamp to SQLITE_MAX_VALUE_BYTES",
     )?;
     ensure_eq(
         &lines_containing(&logs, "setting=\"clamp test setting\""),
@@ -417,7 +172,7 @@ fn a_poisoned_ledger_fails_the_clamp_naming_the_ledger() -> TestResult {
     ensure_eq(
         &error.to_string(),
         &"mutex limit_override_warnings was poisoned by a panic in an earlier holder",
-        "error.to_string() == \"mutex limit_override_warnings was poisoned by a panic in an earlier holder\"",
+        "poisoned warning ledger error names limit_override_warnings",
     )?;
     Ok(())
 }
@@ -431,31 +186,8 @@ fn a_value_within_sqlite_max_passes_through_without_a_warning() -> TestResult {
     ensure_eq(
         &value.check("clamp")?,
         &1_000_000_000,
-        "value.check(\"clamp\")? == 1_000_000_000",
+        "value at SQLITE_MAX_VALUE_BYTES passes through unchanged",
     )?;
     ensure_eq(&lines_containing(&logs, "within test setting"), &0, &logs)?;
-    Ok(())
-}
-
-#[test]
-fn a_config_max_file_bytes_above_sqlite_max_warns_once_across_calls() -> TestResult {
-    fresh_ledger().check("reset the ledger")?;
-    let config = GlobalConfig {
-        max_file_bytes: Some(2_000_000_000),
-        ..Default::default()
-    };
-
-    let (limits, logs) = apply_twice(&config)?;
-
-    ensure_eq(
-        &limits.max_file_bytes,
-        &SQLITE_MAX_VALUE_BYTES,
-        "limits.max_file_bytes == SQLITE_MAX_VALUE_BYTES",
-    )?;
-    ensure_eq(
-        &lines_containing(&logs, "setting=\"config max_file_bytes\""),
-        &1,
-        &logs,
-    )?;
     Ok(())
 }

@@ -1,12 +1,23 @@
 use super::*;
-use crate::graph::reference::ImportReference;
+use crate::graph::ImportReference;
 use crate::graph::resolver::ResolutionKind;
 use crate::graph::rust_mod_parents::{
     RustModuleParents, insert_rust_mod_parent, insert_rust_mod_parent_segments,
-    resolve_rust_path_attr, resolve_rust_path_attr_segments,
+    resolve_rust_path_attr_segments,
 };
 use crate::graph::test_support::paths;
 use slugaudit_test_check::{TestResult, ensure, ensure_eq};
+
+fn resolve_rust_path_attr(
+    declaring_file: &str,
+    path_attr: &str,
+    inline_dir: &str,
+) -> Option<String> {
+    if inline_dir.is_empty() {
+        return resolve_rust_path_attr_segments(declaring_file, path_attr, &[]);
+    }
+    resolve_rust_path_attr_segments(declaring_file, path_attr, &[inline_dir.to_owned()])
+}
 
 fn refer(text: &str) -> ImportReference {
     ImportReference {

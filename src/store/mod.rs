@@ -1,27 +1,15 @@
-//! SQLite schema and connection management. Connections are deliberately
-//! raw: `tools::context` owns the query contracts over them, so a typed
-//! repository layer would add indirection without a second consumer.
-//! The store never reads project files; sync/tools own that.
+//! SQLite schema and connection management. Connections are raw `rusqlite`
+//! handles; `sync` and `tools` own file discovery and query execution.
 
 mod connection;
-mod connection_config;
-mod findings_db;
 mod migrations;
 mod result_store;
 mod sql_functions;
 
 #[cfg(test)]
-#[path = "test_capture.rs"]
-pub(crate) mod test_capture;
-
-#[cfg(test)]
-#[path = "test_join.rs"]
-pub(crate) mod test_join;
+pub(crate) use crate::util::test_capture;
 
 /// True when a `rusqlite` error reports a corrupt or non-database file.
-/// `StoreError::is_corruption` and `MigrationError::is_corruption` both
-/// delegate here so the two error types share one corruption definition
-/// and can never drift apart.
 pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
     matches!(
         error,
@@ -34,10 +22,9 @@ pub(crate) fn is_rusqlite_corruption(error: &rusqlite::Error) -> bool {
 }
 
 pub use connection::{
-    StoreError, discard_corrupt_database, open_existing, open_existing_read_write, open_read_write,
-    remove_database_files,
+    StoreError, discard_corrupt_database, open_existing, open_existing_read_write, open_findings,
+    open_findings_existing, open_read_write, remove_database_files,
 };
-pub use findings_db::{open_findings, open_findings_existing};
 pub use migrations::MigrationError;
 pub use result_store::{
     Cell, ClassStats, Clock, Cursor, Materialize, NonFinite, PageRead, ResultClass, ResultHandle,
@@ -45,8 +32,5 @@ pub use result_store::{
     ResultWriter, StoreStats, StoredRow, SweepOutcome, Take,
 };
 
-/// The schema version a fresh database is brought to. Re-exported for tests
-/// outside this module so they assert against the constant instead of a
-/// literal that goes stale on every bump.
 #[cfg(test)]
 pub(crate) use migrations::CURRENT_SCHEMA_VERSION;

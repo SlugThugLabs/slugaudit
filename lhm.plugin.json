@@ -1,7 +1,7 @@
 {
   "identifier": "slugthuglabs-slugaudit-mcp",
   "name": "SlugAudit MCP",
-  "description": "Pre-parsed, searchable evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 re-verified against disk before every call, so the AI queries a SQLite database instead of reading hundreds of flat files. Rust is the only tested language; other languages use grammars downloaded on first use and are flagged as untested.",
+  "description": "Pre-parsed, searchable evidence about a codebase \u2014 symbols, imports, dependency edges, source spans \u2014 re-verified against disk before every call, so the AI queries a SQLite database instead of reading hundreds of flat files. Rust is compiled in and is the only tested language; other languages download grammars on first use and are flagged in notices.",
   "version": "1.1.0",
   "tools": [
     {

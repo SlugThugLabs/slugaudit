@@ -1,33 +1,54 @@
-//! The result store handle: open, cursor resolution, admission, statistics.
+//! The result store handle: limits, open, cursor resolution, admission, and
+//! statistics.
 
 use super::cursor::{Cursor, ResultId};
-use super::error::{ResultStoreError, UnsupportedPlatform};
-use super::limits::ResultStoreLimits;
-use super::owner::{self, SweepOutcome};
-use super::registry::{Entry, Refused, Registry, ResultMeta};
-use super::stats::StoreStats;
+use super::error::ResultStoreError;
+use super::owner::{self, OwnerLock};
+use super::registry::{Entry, Refused, Registry, ResultMeta, StoreStats};
+use super::sweep::SweepOutcome;
 use crate::util::lock;
 use crate::util::tally;
-use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use uuid::Uuid;
 
+/// The two resource bounds enforced by [`ResultStore`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultStoreLimits {
+    /// Total bytes of admitted results (`max_result_store_bytes`).
+    pub max_bytes: u64,
+    /// Seconds an unfinished result stays protected after its last page
+    /// (`result_active_grace_secs`).
+    pub active_grace_secs: u64,
+}
+
+impl From<&crate::model::ResourceLimits> for ResultStoreLimits {
+    fn from(limits: &crate::model::ResourceLimits) -> Self {
+        Self {
+            max_bytes: limits.max_result_store_bytes,
+            active_grace_secs: limits.result_active_grace_secs,
+        }
+    }
+}
+
 /// Seconds since the Unix epoch, injectable so tests control time.
 pub type Clock = Arc<dyn Fn() -> Result<i64, crate::util::ClockError> + Send + Sync>;
 
-/// Immutable paged results, one private SQLite file each. See the module docs.
+/// Immutable paged results, one unlinked scratch SQLite file each.
 pub struct ResultStore {
     dir: PathBuf,
     session: Uuid,
     nonce: Uuid,
-    limits: ResultStoreLimits,
+    max_bytes: AtomicU64,
+    active_grace_secs: AtomicU64,
     clock: Clock,
     registry: Mutex<Registry>,
     sweep: SweepOutcome,
-    _lock: File,
-    lock_path: PathBuf,
+    /// Declared after `registry` so all open result files close and unlink
+    /// before the directory lock is released on drop.
+    _lock: OwnerLock,
 }
 
 impl ResultStore {
@@ -35,9 +56,9 @@ impl ResultStore {
     ///
     /// # Errors
     ///
-    /// `Unavailable` when the directory or lock cannot be prepared, or on a
-    /// platform without unlink-while-open semantics. A failed startup sweep
-    /// does not fail the open; it shows in [`ResultStore::stats`].
+    /// `Unavailable` when the directory or lock cannot be prepared. A failed
+    /// startup sweep does not fail the open; it shows in
+    /// [`ResultStore::stats`].
     pub fn open(
         runtime_dir: &Path,
         session: Uuid,
@@ -58,24 +79,26 @@ impl ResultStore {
         limits: ResultStoreLimits,
         clock: Clock,
     ) -> Result<Self, ResultStoreError> {
-        if !cfg!(unix) {
-            return Err(ResultStoreError::unavailable(
-                "open the result store",
-                UnsupportedPlatform,
-            ));
-        }
         let owner = owner::open_owner(runtime_dir, session)?;
         Ok(Self {
             dir: owner.dir,
             session,
             nonce: Uuid::new_v4(),
-            limits,
+            max_bytes: AtomicU64::new(limits.max_bytes),
+            active_grace_secs: AtomicU64::new(limits.active_grace_secs),
             clock,
             registry: Mutex::new(Registry::default()),
             sweep: owner.sweep,
             _lock: owner.lock,
-            lock_path: owner.lock_path,
         })
+    }
+
+    /// Updates the store's byte ceiling and active grace period so mid-session
+    /// config or profile changes apply to subsequent admissions and sweeps.
+    pub fn update_limits(&self, limits: ResultStoreLimits) {
+        self.max_bytes.store(limits.max_bytes, Ordering::Relaxed);
+        self.active_grace_secs
+            .store(limits.active_grace_secs, Ordering::Relaxed);
     }
 
     pub(super) fn dir(&self) -> &Path {
@@ -86,12 +109,15 @@ impl ResultStore {
         self.session
     }
 
-    pub(super) fn nonce(&self) -> Uuid {
+    pub(crate) fn nonce(&self) -> Uuid {
         self.nonce
     }
 
     pub(super) fn limits(&self) -> ResultStoreLimits {
-        self.limits
+        ResultStoreLimits {
+            max_bytes: self.max_bytes.load(Ordering::Relaxed),
+            active_grace_secs: self.active_grace_secs.load(Ordering::Relaxed),
+        }
     }
 
     /// The store clock's Unix seconds; an unusable clock is `Clock`.
@@ -105,11 +131,17 @@ impl ResultStore {
         Ok(lock(&self.registry, "result_registry")?)
     }
 
-    /// Parses `token` and checks it was issued by this process.
+    fn tally_counter(&self, pick: fn(&mut Registry) -> &mut u64) -> Result<(), ResultStoreError> {
+        let mut registry = self.registry()?;
+        tally(pick(&mut registry));
+        Ok(())
+    }
+
+    /// Parses `token` and checks it was issued by this store instance.
     ///
     /// # Errors
     ///
-    /// `Unknown` for a malformed token or another process's nonce.
+    /// `Unknown` for a malformed token or another store's nonce.
     pub fn decode_cursor(&self, token: &str) -> Result<Cursor, ResultStoreError> {
         match Cursor::parse(token) {
             Some(cursor) if cursor.nonce == self.nonce => Ok(cursor),
@@ -117,25 +149,22 @@ impl ResultStore {
         }
     }
 
-    /// Counts an unknown cursor and returns the error to report: `Unknown`
-    /// (logged here), or the registry's own error when it is poisoned (already
-    /// logged where it was detected).
+    /// Counts an unknown cursor and returns `Unknown` (logged here) or the
+    /// registry lock error.
     pub(super) fn unknown_cursor(&self) -> ResultStoreError {
-        let error = self.refuse_foreign_tool();
-        if matches!(error, ResultStoreError::Unknown) {
-            tracing::info!("cursor refused: unknown");
+        if let Err(error) = self.tally_counter(|reg| &mut reg.counters.unknown_cursors) {
+            return error;
         }
-        error
+        tracing::info!("cursor refused: unknown");
+        ResultStoreError::Unknown
     }
 
     /// Counts a cursor refused because it belongs to another tool and returns
-    /// the error to report: `Unknown`, or the registry's own error when it is
-    /// poisoned. The caller logs the refusal, so this does not.
+    /// `Unknown`, or the registry lock error. The caller logs the refusal.
     #[must_use]
     pub fn refuse_foreign_tool(&self) -> ResultStoreError {
-        match self.registry() {
-            Ok(mut registry) => tally(&mut registry.counters.unknown_cursors),
-            Err(error) => return error,
+        if let Err(error) = self.tally_counter(|reg| &mut reg.counters.unknown_cursors) {
+            return error;
         }
         ResultStoreError::Unknown
     }
@@ -151,21 +180,8 @@ impl ResultStore {
         Err(ResultStoreError::Expired)
     }
 
-    /// The name of the tool that produced `id`, read from the registry. It
-    /// renews nothing, marks nothing and reads no SQL, so a caller can check
-    /// a cursor's owner before any read touches the result.
-    ///
-    /// # Errors
-    ///
-    /// `Expired` when the result was reclaimed (counted once, as for a read).
-    pub fn tool_of(&self, id: ResultId) -> Result<String, ResultStoreError> {
-        // KEEP clone: tool_of returns an owned String from the shared Arc<ResultMeta>
-        Ok(self.lookup(id)?.meta.tool.clone())
-    }
-
     /// What `id` is (tool, columns and the tool's stored record), read from
-    /// the registry. Like [`ResultStore::tool_of`] it renews nothing and
-    /// marks nothing.
+    /// the registry. Renews nothing and marks nothing.
     ///
     /// # Errors
     ///
@@ -179,10 +195,9 @@ impl ResultStore {
     pub(super) fn admit(&self, id: ResultId, entry: Entry) -> Result<(), ResultStoreError> {
         let meta = Arc::clone(&entry.meta);
         let bytes = entry.bytes;
-        let (now, grace) = (self.now()?, self.limits.active_grace_secs);
-        let budget = self.limits.max_bytes;
-        // The guard is a temporary of this statement: it is released before
-        // anything is logged or dropped.
+        let limits = self.limits();
+        let (now, grace) = (self.now()?, limits.active_grace_secs);
+        let budget = limits.max_bytes;
         let admitted = self.registry()?.admit(id, entry, budget, now, grace);
         let reclaimed = match admitted {
             Ok(reclaimed) => reclaimed,
@@ -203,7 +218,6 @@ impl ResultStore {
                     );
                 }
                 let Refused { error, entry } = refused;
-                // Closes the refused entry's connection and file, lock released.
                 drop(entry);
                 return Err(error);
             }
@@ -218,20 +232,19 @@ impl ResultStore {
                 "result reclaimed"
             );
         }
-        // Dropping the entries closes their files, outside the registry lock.
         drop(reclaimed);
         tracing::info!(result = %id, tool = %meta.tool, revision = %meta.revision_id, bytes, class = "Active", "result materialised");
         Ok(())
     }
 
-    /// Counts a writer that outgrew the whole budget and returns the error to
-    /// report: `TooLarge`, or the registry's own error when it is poisoned.
+    /// Counts a writer that outgrew the whole budget and returns `TooLarge`,
+    /// or the registry lock error.
     pub(super) fn refuse_too_large(&self, id: ResultId, bytes: u64) -> ResultStoreError {
-        match self.registry() {
-            Ok(mut registry) => tally(&mut registry.counters.refused_too_large),
-            Err(error) => return error,
+        if let Err(error) = self.tally_counter(|reg| &mut reg.counters.refused_too_large) {
+            return error;
         }
-        tracing::info!(result = %id, bytes, budget = self.limits.max_bytes, "result aborted: larger than the whole budget");
+        let budget = self.limits().max_bytes;
+        tracing::info!(result = %id, bytes, budget, "result aborted: larger than the whole budget");
         ResultStoreError::TooLarge
     }
 
@@ -242,28 +255,10 @@ impl ResultStore {
     /// `Lock` when the registry is poisoned, `Clock` when the clock is
     /// unusable.
     pub fn stats(&self) -> Result<StoreStats, ResultStoreError> {
-        // Read before the registry is locked: a clock failure logs, and
-        // nothing is logged under the guard.
         let now = self.now()?;
-        self.registry()?.snapshot(
-            self.limits.max_bytes,
-            now,
-            self.limits.active_grace_secs,
-            &self.sweep,
-        )
-    }
-}
-
-impl Drop for ResultStore {
-    /// Removes the lock file while still holding the lock, then releases it.
-    fn drop(&mut self) {
-        match std::fs::remove_file(&self.lock_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(error = %error, "could not remove the result store lock file");
-            }
-        }
+        let limits = self.limits();
+        self.registry()?
+            .snapshot(limits.max_bytes, now, limits.active_grace_secs, &self.sweep)
     }
 }
 

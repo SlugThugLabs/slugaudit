@@ -1,5 +1,16 @@
 use tree_sitter_language_pack::{detect_language_from_path, has_language};
 
+/// The pinned `tree-sitter-language-pack` version, recorded with every
+/// revision so a pack upgrade is visible as a manifest input, not a silent
+/// re-parse.
+///
+/// `tree-sitter-language-pack` exposes no runtime `VERSION` constant, so
+/// this string is manually duplicated from the exact pin
+/// (`tree-sitter-language-pack = "=1.18.0"`) in `Cargo.toml`. Bumping the
+/// dependency requires updating both together; the unit test in this module
+/// fails if they drift apart.
+pub const PACK_VERSION: &str = "1.18.0";
+
 /// The stored language of a prose file (Markdown, reStructuredText, AsciiDoc,
 /// Org, plain text). It is not a grammar name: no grammar is loaded or run for
 /// it, so `files.language = 'prose'` with `parse_outcome = 'NotAttempted'` and
@@ -9,9 +20,24 @@ use tree_sitter_language_pack::{detect_language_from_path, has_language};
 pub const PROSE_LANGUAGE: &str = "prose";
 
 /// The languages whose parsing and extraction this project's tests cover.
-/// Every other pack language still parses (its grammar is downloaded on first
-/// use) but is untested, so its results are best-effort.
+/// Rust is statically compiled into the binary; every other pack language still
+/// parses (its grammar is downloaded on first use) but is untested, so its
+/// results are best-effort.
 pub const TESTED_LANGUAGES: &[&str] = &["rust"];
+
+/// The language pack's name aliases (`tree-sitter-language-pack` 1.18.0,
+/// `registry.rs` `LANGUAGE_ALIASES`). The pack resolves them when loading a
+/// grammar, so `shell` compiles, but `files.language` holds only the canonical
+/// name the pack's extension table returns (`bash`). Shared with `tools` so
+/// alias validation has a single source of truth.
+pub(crate) const PACK_ALIASES: &[(&str, &str)] = &[
+    ("bazel", "starlark"),
+    ("gradle", "groovy"),
+    ("ignorefile", "gitignore"),
+    ("lisp", "commonlisp"),
+    ("makefile", "make"),
+    ("shell", "bash"),
+];
 
 /// True when `language` is one of [`TESTED_LANGUAGES`].
 #[must_use]
@@ -91,90 +117,5 @@ pub fn language_available(language: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use slugaudit_test_check::{TestResult, ensure, ensure_eq};
-
-    #[test]
-    fn only_rust_is_a_tested_language() -> TestResult {
-        ensure_eq(
-            &TESTED_LANGUAGES,
-            &["rust"],
-            "TESTED_LANGUAGES == [\"rust\"]",
-        )?;
-        ensure(is_tested_language("rust"), "is_tested_language(\"rust\")")?;
-        ensure(
-            !is_tested_language("python"),
-            "!is_tested_language(\"python\")",
-        )?;
-        ensure(
-            !is_tested_language(PROSE_LANGUAGE),
-            "!is_tested_language(PROSE_LANGUAGE)",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn prose_extensions_classify_as_prose_and_data_or_source_stay_parsed() -> TestResult {
-        let table = [
-            ("docs/a.md", "prose"),
-            ("a.markdown", "prose"),
-            ("a.mdx", "prose"),
-            ("a.rst", "prose"),
-            ("a.adoc", "prose"),
-            ("a.org", "prose"),
-            ("notes.txt", "prose"),
-            ("NOTES.TXT", "prose"),
-            ("a.text", "prose"),
-            ("data.json", "json"),
-            ("ci.yaml", "yaml"),
-            ("Cargo.toml", "toml"),
-            ("main.rs", "rust"),
-        ];
-        for (path, expected) in table {
-            ensure_eq(&detect_language(path).as_deref(), &Some(expected), path)?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn ignore_pattern_lists_are_stored_as_prose_at_any_depth() -> TestResult {
-        for path in [
-            ".gitignore",
-            "sub/.gitignore",
-            ".ignore",
-            ".dockerignore",
-            ".npmignore",
-            ".prettierignore",
-            ".eslintignore",
-            ".gitattributes",
-        ] {
-            ensure_eq(&detect_language(path).as_deref(), &Some("prose"), path)?;
-        }
-        for path in ["gitignore", ".gitignore.bak", "npmignore"] {
-            ensure_eq(&detect_language(path), &None, path)?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn prose_language_names_include_the_shadowed_pack_grammars() -> TestResult {
-        for name in ["prose", "markdown", "rst", "org", "vimdoc"] {
-            ensure(is_prose_language_name(name), name)?;
-        }
-        for name in ["rust", "json", "yaml", "toml", "python"] {
-            ensure(!is_prose_language_name(name), name)?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn detects_a_pack_language_by_path() -> TestResult {
-        ensure_eq(
-            &detect_language("src/main.rs").as_deref(),
-            &Some("rust"),
-            "detect_language(\"src/main.rs\").as_deref() == Some(\"rust\")",
-        )?;
-        Ok(())
-    }
-}
+#[path = "language_tests.rs"]
+mod tests;

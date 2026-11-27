@@ -1,5 +1,9 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=Recombined filesystem discovery walk and entry collection into cohesive module.
+// slugaudit-line-exception: approved-by=split-judge; reason=filesystem discovery walk, UTF-8/raw-byte path classification, and single-open Pass 1 walk+hash entry point
+//! Filesystem discovery walk, UTF-8 path classification, and single-pass
+//! discovery + hashing entry points.
+
 use crate::ignore_rules::{indexable_walker, is_excluded_path};
+#[cfg(test)]
 use crate::model::ResourceLimits;
 use crate::util::Deadline;
 use std::collections::HashSet;
@@ -8,11 +12,21 @@ use thiserror::Error;
 
 /// Bytes sampled from the start of a file to decide binary vs. text, same
 /// heuristic class as git/ripgrep: a NUL byte in the sample means binary.
-const BINARY_SNIFF_BYTES: usize = 8_000;
+pub(super) const BINARY_SNIFF_BYTES: usize = 8_000;
+
+/// A regular file yielded by the directory walk prior to opening or reading
+/// its bytes, so Pass 1 can sniff and BLAKE3-hash in one parallel file open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WalkedFile {
+    /// Project-relative path with `/` separators.
+    pub(super) relative_path: String,
+    /// Absolute path used to read the file.
+    pub(super) absolute_path: PathBuf,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// What the walk concluded about a file before sampling: to be indexed,
-/// binary (content not retained), or skipped with a reason.
+/// What Pass 1 concluded about a file before sampling: indexable text or
+/// binary (content not retained).
 pub enum FileKind {
     /// Text file whose bytes are read, hashed, and parsed.
     Indexed,
@@ -21,23 +35,23 @@ pub enum FileKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// One file yielded by the discovery walk: relative and absolute paths and
-/// kind. The sample stage re-reads the file itself.
+/// One file yielded by discovery and Pass 1 sniffing: relative and absolute
+/// paths plus binary/text classification.
 pub struct DiscoveredFile {
     /// Project-relative path with `/` separators.
     pub relative_path: String,
     /// Absolute path used to read the file.
     pub absolute_path: PathBuf,
-    /// Binary/text classification from the walk's sniff.
+    /// Binary/text classification from Pass 1's sniff.
     pub kind: FileKind,
 }
 
-/// A file the walk found but could not include, with why. Discovery
-/// continues past these rather than failing the entire project — one
-/// unreadable or non-UTF8-named file must not make every file in the
-/// project unqueryable. Never produced for a walk-level error: a directory
-/// (or the root) that could not be listed fails discovery instead, because
-/// its absence is indistinguishable from deletion.
+/// A file discovery or sampling found on disk but could not index, with why.
+///
+/// One unreadable, oversized, or non-UTF8-named file is recorded here rather
+/// than failing the entire project. Walk-level failures (an unlistable root or
+/// subdirectory, or an ignore file that could not be parsed) return
+/// [`DiscoveryError`] instead so a partial walk never looks like deletions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedFile {
     /// Absolute path of the skipped file.
@@ -49,18 +63,20 @@ pub struct SkippedFile {
     pub code: &'static str,
 }
 
+impl SkippedFile {
+    pub(super) fn sort_by_path(skips: &mut [Self]) {
+        skips.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+    }
+}
+
 #[derive(Debug, Error)]
-/// Walk-level failures. Unrepresentable or unreadable *files* become
-/// reported `skipped` entries; a walk error or an ignore file the walker
-/// could not apply aborts discovery with the reason, because those leave
-/// the walked set incomplete in a way no skip entry can represent.
+/// Walk-level failures and typed per-file skip reasons.
 pub enum DiscoveryError {
     /// The walker could not list a directory (or the project root).
     #[error("failed to walk project files: {0}")]
     Walk(#[from] ignore::Error),
     /// The walker could not apply an ignore file: its rules were dropped,
     /// so the walked set may include paths the project meant to exclude.
-    /// Fails closed rather than index a set the ignore rules refute.
     #[error(
         "failed to apply the project's ignore rules ({kind}); refusing to index a file set \
          those rules may exclude"
@@ -71,7 +87,7 @@ pub enum DiscoveryError {
         /// The ignore file the walker could not apply, when it named one.
         path: Option<PathBuf>,
     },
-    /// A discovered file could not be read while sniffing it.
+    /// A discovered file could not be read during Pass 1 sniffing/hashing.
     #[error("failed to read {path}: {source}")]
     Read {
         /// Absolute path of the unreadable file.
@@ -83,14 +99,11 @@ pub enum DiscoveryError {
     /// The walker yielded a path outside the project root.
     #[error("discovered path {0} is not relative to the project root")]
     NotRelative(PathBuf),
-    /// Relative paths are stored and queried as UTF-8 text. A non-UTF-8
-    /// path is rejected rather than lossily rewritten, which would make
-    /// the stored path unusable for round-tripping back to disk.
+    /// Relative paths are stored and queried as UTF-8 text; a non-UTF-8 path
+    /// is skipped rather than lossily rewritten.
     #[error("discovered path {0} is not valid UTF-8")]
     NonUtf8Path(PathBuf),
-    /// A file the walk listed was gone by the time discovery read it: the
-    /// tree changed during the walk. A publish turns this into its
-    /// retryable `ChangedDuringSample`, so the next attempt walks again.
+    /// A file the walk listed was deleted before it was read.
     #[error("{relative_path} was deleted during the walk")]
     Vanished {
         /// Project-relative path of the file, as the walk listed it.
@@ -105,9 +118,7 @@ pub enum DiscoveryError {
 }
 
 impl DiscoveryError {
-    /// The elapsed budget when this is a budget exhaustion, else `None`.
-    /// A publish wraps this variant in [`super::publish::PublishError::Discovery`],
-    /// so the classifier has to be reachable through the wrapper.
+    /// Elapsed budget when this error is a wall-clock budget exhaustion.
     #[must_use]
     pub(crate) fn budget_elapsed_ms(&self) -> Option<u128> {
         match self {
@@ -117,16 +128,24 @@ impl DiscoveryError {
     }
 }
 
-/// Whether a read of a file the walk listed failed because the file is no
-/// longer there (deleted, or renamed away). This is the one test every sync
-/// read uses to tell "the tree changed, walk again" from a real read error.
+/// Whether a read of a walked file failed because the file vanished (`NotFound`).
 #[must_use]
 pub(super) fn is_vanished(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::NotFound
 }
 
-fn is_excluded(relative: &Path) -> bool {
-    is_excluded_path(&relative.to_string_lossy())
+fn normalize_slashes(relative: &str) -> String {
+    relative.replace('\\', "/")
+}
+
+fn non_empty_relative<'a>(root: &Path, absolute_path: &'a Path) -> Option<&'a Path> {
+    let Ok(relative) = absolute_path.strip_prefix(root) else {
+        return None;
+    };
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    Some(relative)
 }
 
 pub(super) fn strip_project_prefix<'a>(
@@ -136,14 +155,16 @@ pub(super) fn strip_project_prefix<'a>(
     absolute_path.strip_prefix(root).map_err(|_| SkippedFile {
         reason: DiscoveryError::NotRelative(absolute_path.to_path_buf()).to_string(),
         absolute_path: absolute_path.to_path_buf(),
-        code: super::revision_skipped::SKIP_REASON_UNREADABLE,
+        code: super::revision::SKIP_REASON_UNREADABLE,
     })
 }
 
-pub(super) fn collect_walk_entry(
+/// Validates one walker entry and appends regular indexable files to `entries`
+/// or non-UTF-8 / out-of-root paths to `skipped`.
+pub(super) fn collect_walked_entry(
     root: &Path,
     entry: Result<ignore::DirEntry, ignore::Error>,
-    discovered: &mut Vec<DiscoveredFile>,
+    entries: &mut Vec<WalkedFile>,
     skipped: &mut Vec<SkippedFile>,
 ) -> Result<(), DiscoveryError> {
     let entry = entry.map_err(DiscoveryError::Walk)?;
@@ -153,26 +174,10 @@ pub(super) fn collect_walk_entry(
             path: crate::ignore_rules::ignore_error_path(error).map(Path::to_path_buf),
         });
     }
-    if entry.file_type().is_some_and(|kind| kind.is_file()) {
-        collect_file_entry(root, entry.path(), discovered, skipped)?;
+    if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+        return Ok(());
     }
-    Ok(())
-}
-
-/// Classifies one listed file into `discovered` or `skipped`.
-///
-/// # Errors
-///
-/// [`DiscoveryError::Vanished`] when the file is gone before its sniff
-/// read: the tree changed during the walk, and no skip entry describes a
-/// file that no longer exists.
-fn collect_file_entry(
-    root: &Path,
-    entry_path: &Path,
-    discovered: &mut Vec<DiscoveredFile>,
-    skipped: &mut Vec<SkippedFile>,
-) -> Result<(), DiscoveryError> {
-    let absolute_path = entry_path.to_path_buf();
+    let absolute_path = entry.path().to_path_buf();
     let relative_path = match strip_project_prefix(root, &absolute_path) {
         Ok(relative_path) => relative_path,
         Err(skipped_file) => {
@@ -180,81 +185,44 @@ fn collect_file_entry(
             return Ok(());
         }
     };
-    if is_excluded(relative_path) {
+    if is_excluded_path(&relative_path.to_string_lossy()) {
         return Ok(());
     }
-    let kind = match sniff_kind(&absolute_path) {
-        Ok(kind) => kind,
-        Err(DiscoveryError::Read { source, .. }) if is_vanished(&source) => {
-            // A non-UTF-8 name is shown lossily: the path only names the
-            // file in the error message, it is never stored.
-            return Err(DiscoveryError::Vanished {
-                relative_path: relative_path.to_string_lossy().replace('\\', "/"),
-            });
-        }
-        Err(error) => {
-            skipped.push(SkippedFile {
-                reason: error.to_string(),
-                absolute_path,
-                code: super::revision_skipped::SKIP_REASON_UNREADABLE,
-            });
-            return Ok(());
-        }
-    };
     match relative_path.to_str() {
-        Some(relative_path) => discovered.push(DiscoveredFile {
-            relative_path: relative_path.replace('\\', "/"),
+        Some(relative_path) => entries.push(WalkedFile {
+            relative_path: normalize_slashes(relative_path),
             absolute_path,
-            kind,
         }),
         None => skipped.push(SkippedFile {
-            // KEEP clone: DiscoveryError::NonUtf8Path takes an owned PathBuf while SkippedFile also moves absolute_path
             reason: DiscoveryError::NonUtf8Path(absolute_path.clone()).to_string(),
             absolute_path,
-            code: super::revision_skipped::SKIP_REASON_UNREADABLE,
+            code: super::revision::SKIP_REASON_UNREADABLE,
         }),
     }
     Ok(())
 }
 
-/// The project-relative path of a file the walk skipped, when that path can
-/// be stored as text. `None` for a non-UTF-8 name, a path outside the root,
-/// or the root itself (a walk error has no file behind it) — none of those
-/// can be a `files.path` value, so such a file stays visible only in the
-/// publish report's `skipped` list and the stderr log, never in the index.
+/// Project-relative UTF-8 path of a skipped file, or `None` when the path is
+/// non-UTF-8, outside `root`, or equal to `root` itself.
 #[must_use]
 pub(super) fn representable_relative_path(root: &Path, absolute_path: &Path) -> Option<String> {
-    // A path outside the root is documented above as `None`; the prefix error
-    // carries no detail beyond that.
-    let Ok(relative) = absolute_path.strip_prefix(root) else {
-        return None;
-    };
-    let relative = relative.to_str()?;
-    if relative.is_empty() {
-        return None;
-    }
-    Some(relative.replace('\\', "/"))
+    non_empty_relative(root, absolute_path)?
+        .to_str()
+        .map(normalize_slashes)
 }
 
-/// The project-relative raw bytes of a discovered path that cannot be
-/// represented as UTF-8 text, or `None` when the path is representable,
-/// outside the root, or the root itself (a walk error has no file behind
-/// it). These are exactly the files a `files.path` row cannot hold, so the
-/// persisted set this feeds is the only place the index can count them.
+/// Raw OS bytes of a discovered project-relative path that is not valid UTF-8.
 #[must_use]
 pub(super) fn unrepresentable_relative_bytes(root: &Path, absolute_path: &Path) -> Option<Vec<u8>> {
-    // A path outside the root is documented above as `None`.
-    let Ok(relative) = absolute_path.strip_prefix(root) else {
-        return None;
-    };
-    if relative.as_os_str().is_empty() || relative.to_str().is_some() {
+    let relative = non_empty_relative(root, absolute_path)?;
+    if relative.to_str().is_some() {
         return None;
     }
     Some(relative.as_os_str().as_encoded_bytes().to_vec())
 }
 
-/// The unrepresentable subset of a discovery walk's skipped files,
-/// persisted by the full publish.
+/// Unrepresentable non-UTF-8 paths among `skipped`, persisted in
+/// `unrepresentable_paths`.
 #[must_use]
 pub(super) fn unrepresentable_paths(root: &Path, skipped: &[SkippedFile]) -> HashSet<Vec<u8>> {
     skipped
@@ -264,103 +232,21 @@ pub(super) fn unrepresentable_paths(root: &Path, skipped: &[SkippedFile]) -> Has
 }
 
 /// Whether `bytes` sniffs as binary (a NUL byte within the first
-/// [`BINARY_SNIFF_BYTES`] bytes). Shared by discovery (`sniff_kind`) and
-/// sampling (`sample_file`) so binary classification never drifts between
-/// passes.
+/// [`BINARY_SNIFF_BYTES`] bytes).
 #[must_use]
 pub(super) fn is_binary_bytes(bytes: &[u8]) -> bool {
     bytes.iter().take(BINARY_SNIFF_BYTES).any(|byte| *byte == 0)
 }
 
-fn sniff_reader(reader: &mut impl std::io::Read) -> std::io::Result<FileKind> {
-    let mut buffer = [0_u8; BINARY_SNIFF_BYTES];
-    let mut total = 0_usize;
-    while total < BINARY_SNIFF_BYTES {
-        let Some(slice) = buffer.get_mut(total..) else {
-            break;
-        };
-        match reader.read(slice) {
-            Ok(0) => break,
-            Ok(bytes_read) => {
-                // KEEP saturating: bytes_read <= slice.len() == BINARY_SNIFF_BYTES - total, so total never exceeds BINARY_SNIFF_BYTES
-                total = total.saturating_add(bytes_read);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-    let sample = match buffer.get(..total) {
-        Some(slice) => slice,
-        None => &buffer,
-    };
-    if is_binary_bytes(sample) {
-        Ok(FileKind::Binary)
-    } else {
-        Ok(FileKind::Indexed)
-    }
-}
-
-/// Sniffs whether `path` is binary (a NUL byte in the first
-/// `BINARY_SNIFF_BYTES`) or indexable text. This is the single source of
-/// truth for binary-ness: discovery calls it for every file it yields, so
-/// a file whose binary-ness changed is classified the same way on every
-/// sync.
-pub(crate) fn sniff_kind(path: &Path) -> Result<FileKind, DiscoveryError> {
-    let mut file = super::hash_io::open_regular_file_nonblocking(path).map_err(|source| {
-        DiscoveryError::Read {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
-    sniff_reader(&mut file).map_err(|source| DiscoveryError::Read {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-/// Walks the project root for non-binary and binary files alike, honoring
-/// standard ignore files, never descending into VCS internals or
-/// SlugAudit's own activation directory, and never following symlinks that
-/// leave the project root. Returns discovered files in deterministic sorted
-/// order, plus any files the walk found but could not include (unreadable,
-/// non-UTF8 path, etc.) — those are skipped individually rather than
-/// failing the whole walk, so a single bad file can't make an entire
-/// project unqueryable.
-///
-/// The walk runs under the default sync wall-clock budget
-/// ([`ResourceLimits::default`]); callers that hold the effective limits use
-/// `discover_with_deadline`.
-///
-/// # Errors
-///
-/// Returns an error if the walk cannot list a directory (or the root),
-/// cannot apply an ignore file, or lists a file that is deleted before it
-/// is read ([`DiscoveryError::Vanished`]). A partial walked set is not a
-/// file set — a publish would read the missing paths as deleted — so
-/// discovery fails closed instead.
-pub fn discover(root: &Path) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
-    discover_with_deadline(
-        root,
-        &Deadline::after(ResourceLimits::default().max_sync_wall_clock),
-    )
-}
-
-/// [`discover`] under an explicit wall-clock [`Deadline`], checked once per
-/// walked entry so a pathological tree (huge, or on a hung network
-/// filesystem) fails closed with [`DiscoveryError::TimeBudgetExceeded`]
-/// instead of stalling the publish forever. The deadline is created by the
-/// caller so the whole operation — discovery plus sampling plus retries —
-/// shares one budget.
-pub(crate) fn discover_with_deadline(
+/// Walks the directory tree applying ignore rules and UTF-8 path validation
+/// without opening regular files, so Pass 1 (`sniff_and_hash_walked`) opens,
+/// binary-sniffs, and BLAKE3-hashes each file once across worker threads.
+pub(super) fn walk_with_deadline(
     root: &Path,
     deadline: &Deadline,
-) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), DiscoveryError> {
-    // `standard_filters` sets several flags at once, including `hidden`; it
-    // must run before the explicit `hidden(false)` override or it silently
-    // wins and dotfiles/dotdirs (e.g. `.github/`) vanish from the walk.
+) -> Result<(Vec<WalkedFile>, Vec<SkippedFile>), DiscoveryError> {
     let walker = indexable_walker(root);
-
-    let mut discovered = Vec::new();
+    let mut entries = Vec::new();
     let mut skipped = Vec::new();
     for entry in walker {
         if let Some(elapsed) = deadline.exceeded() {
@@ -368,11 +254,39 @@ pub(crate) fn discover_with_deadline(
                 elapsed_ms: elapsed.as_millis(),
             });
         }
-        collect_walk_entry(root, entry, &mut discovered, &mut skipped)?;
+        collect_walked_entry(root, entry, &mut entries, &mut skipped)?;
     }
-    discovered.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
-    Ok((discovered, skipped))
+    entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    SkippedFile::sort_by_path(&mut skipped);
+    Ok((entries, skipped))
+}
+
+/// Runs the live Pass 1 discovery + single-open sniff/hash pipeline under an
+/// explicit byte cap and wall-clock [`Deadline`].
+#[cfg(test)]
+pub(crate) fn discover_and_hash_with_deadline(
+    root: &Path,
+    max_file_bytes: u64,
+    deadline: &Deadline,
+) -> Result<super::hash_batch::SniffedWalk, super::publish::PublishError> {
+    let (walked, mut walk_skips) = walk_with_deadline(root, deadline)?;
+    let mut sniffed = super::hash_batch::sniff_and_hash_walked(&walked, max_file_bytes, deadline)?;
+    walk_skips.extend(sniffed.skips);
+    SkippedFile::sort_by_path(&mut walk_skips);
+    sniffed.skips = walk_skips;
+    Ok(sniffed)
+}
+
+/// Runs [`discover_and_hash_with_deadline`] under [`ResourceLimits::default`]
+/// (test helper).
+#[cfg(test)]
+pub(crate) fn discover_and_hash(
+    root: &Path,
+) -> Result<(Vec<DiscoveredFile>, Vec<SkippedFile>), super::publish::PublishError> {
+    let limits = ResourceLimits::default();
+    let deadline = Deadline::after(limits.max_sync_wall_clock);
+    let sniffed = discover_and_hash_with_deadline(root, limits.max_file_bytes, &deadline)?;
+    Ok((sniffed.discovered, sniffed.skips))
 }
 
 #[cfg(test)]

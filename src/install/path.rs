@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 ///
 /// The write is append-only plus `fsync`: it never rewrites existing bytes, so
 /// a crash cannot truncate the user's rc file, and its permissions and any
-/// symlink (dotfile managers) are preserved.
-pub(crate) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
+/// symlink to an existing dotfiles target are preserved.
+pub(super) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     let (config_path, line) = path_config(bin_dir)?;
     let existing =
         match crate::util::read_file_capped(&config_path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
@@ -54,7 +54,7 @@ fn append_durably(path: &Path, text: &str) -> Result<(), std::io::Error> {
 
 /// Returns the shell config file to edit and the exact `PATH` line to
 /// append for the current `$SHELL`. Reads `$HOME` and `$SHELL`; a `bin_dir`
-/// that is not valid UTF-8 is refused, since the line cannot name it exactly.
+/// that is not valid UTF-8 or contains a newline is refused before formatting.
 fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
     let home = super::non_empty_var("HOME").ok_or(InstallError::ShellConfigHomeMissing)?;
     // An unset, non-UTF-8 or unrecognized $SHELL is refused rather than
@@ -73,6 +73,9 @@ fn path_config(bin_dir: &Path) -> Result<(PathBuf, String), InstallError> {
             path: bin_dir.display().to_string(),
         })?
         .to_owned();
+    if directory.contains(['\n', '\r']) {
+        return Err(InstallError::BinDirContainsNewline { path: directory });
+    }
     match name {
         Some("fish") => Ok((
             home.join(".config/fish/config.fish"),

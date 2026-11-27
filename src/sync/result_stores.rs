@@ -1,133 +1,159 @@
-//! The process's result store handle: one `ResultStore`, opened lazily on the
-//! first materialisation and keyed by the runtime directory it lives in.
-//!
-//! Held on `SourceSyncManager` because the manager is the per-server state
-//! every tool already receives. There is deliberately one slot, not a map: a
-//! project switch (`project_control`) asks for another runtime directory, the
-//! previous store is dropped (its lock released, its results closed) and a new
-//! one is opened, so a store of another project is never kept alive and the
-//! disk budget stays one budget. A cursor issued before the switch then reads
-//! as `unknown_cursor`. A continuation carries no project path, so it uses
-//! whichever store is current; it never opens one.
+//! Single-project result store slot: holds at most one active [`ResultStore`]
+//! so switching projects drops the previous project's unlinked `.db`
+//! descriptors and bounds scratch usage to one project's `max_result_store_bytes`.
 
-use crate::model::process_limits;
+#[cfg(test)]
+use crate::model::ResourceLimits;
 use crate::store::{ResultStore, ResultStoreError, ResultStoreLimits};
 use crate::util::{LockPoisoned, lock};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The open store and the runtime directory it was opened for.
-type Slot = Option<(PathBuf, Arc<ResultStore>)>;
+type ActiveSlot = Option<(PathBuf, Arc<ResultStore>)>;
 
-/// See the module docs. Clones share the slot.
+fn canonical_or_raw(runtime_dir: &Path) -> PathBuf {
+    match runtime_dir.canonicalize() {
+        Ok(canonical) => canonical,
+        Err(_) => runtime_dir.to_path_buf(),
+    }
+}
+
+fn same_runtime_dir(held_dir: &Path, candidate: &Path) -> bool {
+    held_dir == candidate || held_dir == canonical_or_raw(candidate).as_path()
+}
+
+/// Shared single-project slot for the active project's [`ResultStore`]. Clones
+/// share the underlying slot.
 #[derive(Clone, Default)]
 pub struct ResultStoreSlot {
-    limits: Option<ResultStoreLimits>,
-    current: Arc<Mutex<Slot>>,
+    pinned_limits: Option<ResultStoreLimits>,
+    state: Arc<Mutex<ActiveSlot>>,
 }
 
 impl ResultStoreSlot {
-    /// A slot whose stores obey `limits` instead of the process limits.
+    /// A slot whose stores always obey `limits` (test helper).
     #[cfg(test)]
     pub(crate) fn with_limits(limits: ResultStoreLimits) -> Self {
         Self {
-            limits: Some(limits),
-            current: Arc::default(),
+            pinned_limits: Some(limits),
+            state: Arc::default(),
         }
     }
 
-    /// The store for `runtime_dir`, opening it on first use and replacing a
-    /// store opened for another directory.
+    /// Opens or retrieves the store for `runtime_dir` using
+    /// [`ResourceLimits::default`] (test helper).
     ///
     /// # Errors
     ///
-    /// Whatever `ResultStore::open` reports (already logged by the store).
+    /// Whatever [`ResultStore::open`] reports.
+    #[cfg(test)]
     pub fn for_dir(&self, runtime_dir: &Path) -> Result<Arc<ResultStore>, ResultStoreError> {
-        self.for_dir_with_resolved_limits(runtime_dir, None)
+        self.for_dir_with_limits(
+            runtime_dir,
+            ResultStoreLimits::from(&ResourceLimits::default()),
+        )
     }
 
-    /// Like [`ResultStoreSlot::for_dir`], but uses `limits` (from `config.json`,
-    /// `SLUGAUDIT_*`, and any session `profile`) when the slot itself was not
-    /// pinned with test limits.
+    /// Returns the store for `runtime_dir`, reusing and updating limits when
+    /// the slot already holds `runtime_dir` and its `results` directory still
+    /// exists; otherwise drops any previous store and opens a fresh one.
     ///
     /// # Errors
     ///
-    /// Whatever `ResultStore::open` reports (already logged by the store).
+    /// Whatever [`ResultStore::open`] reports.
     pub fn for_dir_with_limits(
         &self,
         runtime_dir: &Path,
         limits: ResultStoreLimits,
     ) -> Result<Arc<ResultStore>, ResultStoreError> {
-        self.for_dir_with_resolved_limits(runtime_dir, Some(limits))
-    }
-
-    fn for_dir_with_resolved_limits(
-        &self,
-        runtime_dir: &Path,
-        resolved: Option<ResultStoreLimits>,
-    ) -> Result<Arc<ResultStore>, ResultStoreError> {
-        // The slot lock is held across the open on purpose: two first calls
-        // must not both open (and lock) the same directory. The open touches
-        // only the results directory, never a result's rows.
-        let mut slot = lock(&self.current, "result_store_slot").map_err(|error| {
+        let effective = match self.pinned_limits {
+            Some(pinned) => pinned,
+            None => limits,
+        };
+        let mut state = lock(&self.state, "result_store_slot").map_err(|error| {
             ResultStoreError::unavailable("the result store slot is poisoned", error)
         })?;
-        if let Some((dir, store)) = slot.as_ref()
-            && dir == runtime_dir
+        if let Some((held_dir, existing)) = state.as_ref()
+            && same_runtime_dir(held_dir, runtime_dir)
+            && runtime_dir.join("results").is_dir()
         {
-            return Ok(Arc::clone(store));
+            existing.update_limits(effective);
+            return Ok(Arc::clone(existing));
         }
-        // Release the previous store (and its owner lock) before opening the
-        // next one.
-        *slot = None;
-        let limits = match self.limits.or(resolved) {
-            Some(limits) => limits,
-            None => ResultStoreLimits::from(process_limits().map_err(|error| {
-                tracing::error!(%error, "process limits environment is invalid");
-                ResultStoreError::Unavailable {
-                    context: "the process limits are invalid",
-                    source: Box::new(error),
-                }
-            })?),
-        };
+        *state = None;
         let store = Arc::new(ResultStore::open(
             runtime_dir,
             crate::util::session_id(),
-            limits,
+            effective,
         )?);
-        *slot = Some((runtime_dir.to_path_buf(), Arc::clone(&store)));
+        let canonical = canonical_or_raw(runtime_dir);
+        *state = Some((canonical, Arc::clone(&store)));
         Ok(store)
     }
 
-    /// Drops the store held for `runtime_dir`, if that is the one in the slot,
-    /// so the next `for_dir` opens a fresh one and recreates `results/`.
-    ///
-    /// Called when a project is enabled: a disable removed the results
-    /// directory under the slot, and the held store would keep pointing at
-    /// it. A store held for another directory is left alone.
+    /// Drops the held store if it belongs to `runtime_dir`, closing its lock
+    /// and open result descriptors.
     ///
     /// # Errors
     ///
-    /// Returns [`LockPoisoned`] when the slot was poisoned.
+    /// Returns `LockPoisoned` when the slot was poisoned.
     pub fn release_dir(&self, runtime_dir: &Path) -> Result<(), LockPoisoned> {
-        let mut slot = lock(&self.current, "result_store_slot")?;
-        if slot.as_ref().is_some_and(|(dir, _)| dir == runtime_dir) {
-            *slot = None;
+        let mut state = lock(&self.state, "result_store_slot")?;
+        if state
+            .as_ref()
+            .is_some_and(|(held_dir, _)| same_runtime_dir(held_dir, runtime_dir))
+        {
+            *state = None;
         }
         Ok(())
     }
 
-    /// The open store, if any result was ever materialised in this process.
+    /// Returns the open store for `runtime_dir` without opening a new one,
+    /// only when the held slot matches `runtime_dir` and its `results`
+    /// directory still exists.
     ///
     /// # Errors
     ///
-    /// Returns [`LockPoisoned`] when the slot was poisoned.
-    pub fn current(&self) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
-        Ok(lock(&self.current, "result_store_slot")?
+    /// Returns `LockPoisoned` when the slot was poisoned.
+    pub fn get_dir(&self, runtime_dir: &Path) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
+        let state = lock(&self.state, "result_store_slot")?;
+        Ok(state
             .as_ref()
+            .filter(|(held_dir, _)| {
+                same_runtime_dir(held_dir, runtime_dir) && runtime_dir.join("results").is_dir()
+            })
+            .map(|(_, store)| Arc::clone(store)))
+    }
+
+    /// Returns the currently held [`ResultStore`] (if any and its `results`
+    /// directory still exists) so `decode_cursor` either matches its nonce or
+    /// increments `unknown_cursors`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LockPoisoned` when the slot was poisoned.
+    pub fn store_for_cursor(&self, _token: &str) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
+        self.current()
+    }
+
+    /// Returns the currently held store when its `results` directory still
+    /// exists on disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LockPoisoned` when the slot was poisoned.
+    pub fn current(&self) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
+        let state = lock(&self.state, "result_store_slot")?;
+        Ok(state
+            .as_ref()
+            .filter(|(held_dir, _)| held_dir.join("results").is_dir())
             .map(|(_, store)| Arc::clone(store)))
     }
 }
+
+#[cfg(test)]
+#[path = "result_stores_tests.rs"]
+mod single_project_tests;
 
 #[cfg(test)]
 #[path = "result_store_proof_exclusion_tests.rs"]

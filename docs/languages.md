@@ -4,7 +4,7 @@
 
 SlugAudit's tests cover Rust. Nothing else is tested.
 
-Other languages are parsed with Tree-sitter grammars from the `tree-sitter-language-pack` library (version 1.18.0). The library downloads a grammar the first time a project contains that language. These languages usually work, but they are untested. Treat their results as best-effort and double-check the ones that matter.
+Rust's Tree-sitter grammar is compiled directly into the `slugaudit` binary, so Rust works immediately and offline with no download. Other languages are parsed with Tree-sitter grammars from `tree-sitter-language-pack` (version 1.18.0), which downloads a grammar the first time a project contains that language. These other languages usually work, but they are untested: treat their results as best-effort and double-check the ones that matter.
 
 This is not a promise that Rust is perfect either. It means Rust is the language the test suite exercises.
 
@@ -15,11 +15,11 @@ This is not a promise that Rust is perfect either. It means Rust is the language
 The exact text:
 
 ```
-python: 12 files parsed with an untested grammar (downloaded on first use). Only Rust is tested; treat python results as best-effort.
+python: 12 files use an untested grammar (downloaded on first use). Only Rust is tested; treat python results as best-effort.
 ```
 
-- In `report`, the count is the language's file count, written as `1 file parsed` or `N files parsed`.
-- In `leads` and `structure`, there is no count: `python: parsed with an untested grammar (downloaded on first use). Only Rust is tested; treat python results as best-effort.`
+- In `report`, the count is the language's file count, written as `1 file uses` or `N files use`.
+- In `leads` and `structure`, there is no count: `python: uses an untested grammar (downloaded on first use). Only Rust is tested; treat python results as best-effort.`
 - Prose files (Markdown, text) are not a code language and get no notice.
 - Rust gets no notice.
 
@@ -29,8 +29,8 @@ python: 12 files parsed with an untested grammar (downloaded on first use). Only
 
 | Language class | What happens |
 |---|---|
-| Rust | Parsed. Tested. |
-| Other languages the pack knows | Parsed with a downloaded grammar. Untested. Notice in the response. |
+| Rust | Parsed with the compiled-in grammar. Tested. |
+| Other languages the pack knows | Parsed with a grammar downloaded on first use. Untested. Notice in the response. |
 | Prose (`.md`, `.rst`, `.adoc`, `.org`, `.txt`, and ignore-list files like `.gitignore`) | Stored and searchable by `content`. Never parsed. |
 | A language the pack does not know, or a file with no detected language | Stored and searchable by `content`. No evidence. |
 | A file over `max_parse_bytes` (2 MiB by default) | Stored and searchable. Not parsed. See [how it works](how-it-works.md). |
@@ -41,7 +41,7 @@ For `structure` and `mechanic`, give the grammar name exactly as the index store
 
 ## Offline use
 
-The first time a project contains a language whose grammar is not on your machine, the library downloads it. The downloads come from GitHub (see [privacy and security](privacy-and-security.md)).
+Rust's grammar is compiled into the binary and needs no network access. For other languages, the first time a project contains a language whose grammar is not cached on your machine, `tree-sitter-language-pack` downloads it from GitHub (see [privacy and security](privacy-and-security.md)).
 
 If the download fails (for example, you are offline):
 

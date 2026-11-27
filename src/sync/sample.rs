@@ -1,60 +1,54 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=one per-file sampling pipeline: the bounded read, the skip and UTF-8 classification, and folding that sample's analysis into its FileRecord
+// slugaudit-line-exception: approved-by=split-judge; reason=per-file bounded byte sampling, skip record construction, and evidence item/byte cap enforcement
+//! Per-file bounded sampling, skip classification, pack analysis, and
+//! evidence-budget enforcement (`apply_evidence_limits`).
+
 use super::analyze::analyze;
 use super::discovery::{DiscoveredFile, is_binary_bytes, is_vanished};
 use super::hash;
 use super::publish::PublishError;
-use super::revision::FileRecord;
-use super::revision_skipped::{SKIP_REASON_STAT_FAILED, SkippedRecord};
+use super::revision::{FileRecord, SKIP_REASON_STAT_FAILED, SkippedRecord};
 use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ResourceLimits,
-    SourceIdentity, SpanAvailability,
+    DiagnosticPayload, EvidenceItem, EvidenceKind, EvidenceOrigin, EvidencePayload,
+    ExtractionCompleteness, ResourceLimits, SourceIdentity, SpanAvailability,
 };
 use crate::util::{self, Deadline};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
-// The evidence-capping loop lives in `evidence_limits`; re-exported here so
-// `to_file_record` and its tests use this module's path.
-pub(crate) use super::evidence_limits::apply_evidence_limits;
-
-// The parallel batch loop lives in `sample_batch`, which keeps this file
-// within its source-size budget. Re-exported here so importers resolve
-// `crate::sync::sample::sample_*_with_deadline` through this module's path.
-#[cfg(test)]
-pub(super) use super::sample_batch::sample_all_with_deadline;
-pub(super) use super::sample_batch::sample_pass2_with_deadline;
+/// Reserved out of `max_payload_bytes_per_file` so the truncation marker
+/// itself never pushes a file's evidence over the cap it reports on.
+const TRUNCATION_MARKER_RESERVE_BYTES: usize = 512;
 
 #[derive(Debug, Error)]
 /// Per-file sampling failures. `TooLarge` and `NotUtf8` skip that file with
 /// a reported reason; a read failure aborts the publish attempt.
 pub enum SampleError {
+    /// Reading the file failed.
     #[error("failed to read {path}: {source}")]
     Read {
+        /// Absolute path of the unreadable file.
         path: PathBuf,
+        /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
-    /// `observed` is the exact stat size when the stat itself exceeded the
-    /// cap, or the bounded read length (`limit + 1`) when the file grew in
-    /// the stat/read window. It is a lower bound on the file's size in the
-    /// growth case and never an exact size there, so the message says
-    /// "at least" rather than claiming a size the read did not establish.
+    /// File exceeded `max_file_bytes` (`observed` is a lower bound on its size).
     #[error("{path} exceeds the {limit}-byte per-file import ceiling (at least {observed} bytes)")]
     TooLarge {
+        /// Absolute path of the oversized file.
         path: PathBuf,
+        /// Observed size or bounded read length (`limit + 1`).
         observed: u64,
+        /// Configured per-file ceiling.
         limit: u64,
     },
-    /// The file's bytes are not valid UTF-8, so its exact content cannot be
-    /// stored; it becomes a skipped existence row instead of a lossy copy.
+    /// File bytes are not valid UTF-8 and become a `not_utf8` skipped row.
     #[error("{path} is not valid UTF-8; recorded as a skipped file")]
     NotUtf8 {
         /// Absolute path of the non-UTF-8 file.
         path: PathBuf,
-        /// BLAKE3 hex hash of the bytes read during sampling, so Pass 2 can
-        /// verify they still match Pass 1 before committing a `not_utf8` skip.
+        /// BLAKE3 hex hash of the bytes read during sampling.
         content_hash: String,
         /// Where the bytes stop being valid UTF-8.
         #[source]
@@ -62,9 +56,24 @@ pub enum SampleError {
     },
 }
 
-/// One discovered file's on-disk state: content, hash, and whatever it
-/// takes to classify it (binary vs. text; text that is not valid UTF-8 is an error,
-/// not a converted copy).
+impl SampleError {
+    fn read(path: &Path, source: std::io::Error) -> Self {
+        Self::Read {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
+    fn too_large(path: &Path, observed: u64, limit: u64) -> Self {
+        Self::TooLarge {
+            path: path.to_path_buf(),
+            observed,
+            limit,
+        }
+    }
+}
+
+/// One discovered file's sampled on-disk state.
 #[derive(Debug)]
 pub(super) struct Sample {
     pub relative_path: String,
@@ -72,52 +81,32 @@ pub(super) struct Sample {
     pub content: Option<String>,
     pub identity: SourceIdentity,
     pub byte_len: u64,
-    /// File mtime in unix seconds, captured from the same stat that
-    /// enforced the size ceiling. Persisted for reporting only; changes are
-    /// detected by content hash, never by mtime.
+    /// File mtime in unix seconds, captured for reporting only.
     pub modified_unix_seconds: Option<i64>,
 }
 
-/// # Errors
-///
-/// Returns an error if `file.absolute_path` can't be read, or if its size
-/// exceeds `limits.max_file_bytes`.
+/// Reads and UTF-8-validates `file` within `limits.max_file_bytes`.
 pub(super) fn sample_file(
     file: &DiscoveredFile,
     limits: &ResourceLimits,
 ) -> Result<Sample, SampleError> {
-    let metadata = std::fs::metadata(&file.absolute_path).map_err(|source| SampleError::Read {
-        // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
-        path: file.absolute_path.clone(),
-        source,
-    })?;
+    let metadata = std::fs::metadata(&file.absolute_path)
+        .map_err(|source| SampleError::read(&file.absolute_path, source))?;
     let size = metadata.len();
     if size > limits.max_file_bytes {
-        return Err(SampleError::TooLarge {
-            // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
-            path: file.absolute_path.clone(),
-            observed: size,
-            limit: limits.max_file_bytes,
-        });
+        return Err(SampleError::too_large(
+            &file.absolute_path,
+            size,
+            limits.max_file_bytes,
+        ));
     }
 
-    // The helper stats first (fast rejection) and bounds the read with
-    // `take(max + 1)`, so a file that grows between stat and read cannot
-    // allocate an unbounded buffer. Its observed length is reported, never
-    // truncated.
     let bytes = util::read_file_capped_bytes(&file.absolute_path, limits.max_file_bytes).map_err(
         |error| match error {
-            util::CappedReadError::Io(source) => SampleError::Read {
-                // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
-                path: file.absolute_path.clone(),
-                source,
-            },
-            util::CappedReadError::TooLarge { limit, observed } => SampleError::TooLarge {
-                // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
-                path: file.absolute_path.clone(),
-                observed,
-                limit,
-            },
+            util::CappedReadError::Io(source) => SampleError::read(&file.absolute_path, source),
+            util::CappedReadError::TooLarge { limit, observed } => {
+                SampleError::too_large(&file.absolute_path, observed, limit)
+            }
         },
     )?;
 
@@ -128,12 +117,8 @@ pub(super) fn sample_file(
     } else {
         match std::str::from_utf8(&bytes) {
             Ok(text) => Some(text.to_owned()),
-            // Stored content must be byte-exact: a lossy re-encoding would
-            // no longer hash to the file's identity, so the file is skipped
-            // with a reason instead of stored wrong.
             Err(source) => {
                 return Err(SampleError::NotUtf8 {
-                    // KEEP clone: sample_file borrows &DiscoveredFile and returns owned SampleError
                     path: file.absolute_path.clone(),
                     content_hash: identity.content_hash,
                     source,
@@ -142,7 +127,6 @@ pub(super) fn sample_file(
         }
     };
     Ok(Sample {
-        // KEEP clone: sample_file borrows &DiscoveredFile and returns an owned Sample
         relative_path: file.relative_path.clone(),
         is_binary,
         byte_len: bytes.len() as u64,
@@ -152,20 +136,8 @@ pub(super) fn sample_file(
     })
 }
 
-/// The existence row for a file discovery or sampling deliberately did not
-/// index. Never reads the file: the identity is stat-derived
-/// (`hash::stat_identity`) precisely so that skipping keeps its no-read
-/// cost. A stat that fails because the file is gone follows the one rule
-/// for a read after the walk (`PublishError::read_after_walk`): the tree
-/// changed, and the attempt is retried. Any other failed stat (permissions,
-/// a path component that is no longer a directory) records an unknown size
-/// (`None`, stored as NULL, never a fake 0), no mtime, and the distinct
-/// [`SKIP_REASON_STAT_FAILED`] reason instead of `reason`, rather than
-/// failing the publish; that failure is logged once here.
-///
-/// # Errors
-///
-/// [`PublishError::ChangedDuringSample`] when the file no longer exists.
+/// Builds a stat-derived existence record for a skipped file without reading
+/// its content.
 pub(super) fn skipped_record(
     relative_path: &str,
     absolute_path: &Path,
@@ -203,14 +175,8 @@ pub(super) fn skipped_record(
     })
 }
 
-/// Runs pack analysis on a sampled file and folds the result into a
-/// storable `FileRecord`, capping evidence to `limits.evidence`. The file's
-/// parses run within what is left of the sync `deadline`.
-///
-/// # Errors
-///
-/// Returns [`crate::util::LockPoisoned`] when the grammar fetch gate's state
-/// was poisoned.
+/// Runs pack analysis on a sampled file and folds the result into a storable
+/// [`FileRecord`], capping evidence to `limits.evidence`.
 pub(super) fn to_file_record(
     sample: Sample,
     limits: &ResourceLimits,
@@ -224,13 +190,6 @@ pub(super) fn to_file_record(
         Duration::from_millis(limits.max_parse_wall_clock_ms),
         deadline,
     )?;
-    // `analyze` decides completeness from the pack's own diagnostics, before
-    // the evidence caps run. A run it called `Full` whose items are then
-    // discarded by the caps must not be stored as `Full` beside the "records
-    // were dropped" marker the caps append — that is the same class of
-    // overclaim `ContentOnly` exists to remove. `ContentOnly`/`Unavailable`
-    // are left alone: they already describe a file whose structural evidence
-    // was never available.
     let discarded = apply_evidence_limits(&mut parsed.evidence, limits);
     if discarded && parsed.run.completeness == ExtractionCompleteness::Full {
         parsed.run.completeness = ExtractionCompleteness::Partial;
@@ -247,6 +206,119 @@ pub(super) fn to_file_record(
         run: parsed.run,
         evidence: parsed.evidence,
     })
+}
+
+/// Enforces item-count, per-item byte, and cumulative per-file byte caps on
+/// `items`, appending an explicit `Diagnostic` truncation item if anything is
+/// dropped.
+#[must_use]
+pub(crate) fn apply_evidence_limits(
+    items: &mut Vec<EvidenceItem>,
+    limits: &ResourceLimits,
+) -> bool {
+    EvidenceBudget::new(items.len(), limits).enforce(items)
+}
+
+struct EvidenceBudget {
+    original_len: usize,
+    max_items: usize,
+    max_bytes: usize,
+    max_payload_bytes_per_item: usize,
+    kept: Vec<EvidenceItem>,
+    cumulative_bytes: usize,
+    oversized_dropped: usize,
+    unmeasurable_dropped: usize,
+    dropped_for_cap: usize,
+}
+
+enum Admission {
+    Keep,
+    Drop,
+    Stop,
+}
+
+fn tally(count: &mut usize) {
+    // KEEP saturating: a report tally has a designed ceiling; at usize::MAX it reads "at least this many" and never wraps to a small number
+    *count = count.saturating_add(1);
+}
+
+impl EvidenceBudget {
+    fn new(original_len: usize, limits: &ResourceLimits) -> Self {
+        let cap = limits.evidence;
+        Self {
+            original_len,
+            // KEEP saturating: one slot is held back for the truncation marker; a cap of zero leaves no slot for kept items
+            max_items: cap.max_items_per_file.saturating_sub(1),
+            // KEEP saturating: the marker's reserve comes off the byte cap; a cap below the reserve leaves zero bytes for kept items
+            max_bytes: cap
+                .max_payload_bytes_per_file
+                .saturating_sub(TRUNCATION_MARKER_RESERVE_BYTES),
+            max_payload_bytes_per_item: cap.max_payload_bytes_per_item,
+            kept: Vec::with_capacity(original_len.min(cap.max_items_per_file)),
+            cumulative_bytes: 0,
+            oversized_dropped: 0,
+            unmeasurable_dropped: 0,
+            dropped_for_cap: 0,
+        }
+    }
+
+    fn enforce(mut self, items: &mut Vec<EvidenceItem>) -> bool {
+        {
+            let mut source = items.drain(..);
+            for item in source.by_ref() {
+                if matches!(self.admit(item), Admission::Stop) {
+                    self.dropped_for_cap = std::iter::once(()).chain(source.map(|_| ())).count();
+                    break;
+                }
+            }
+        }
+        let discarded =
+            self.dropped_for_cap > 0 || self.oversized_dropped > 0 || self.unmeasurable_dropped > 0;
+        let kept_len = self.kept.len();
+        *items = self.kept;
+        if discarded {
+            items.push(truncation_evidence(
+                self.original_len,
+                kept_len,
+                self.oversized_dropped,
+                self.unmeasurable_dropped,
+                self.dropped_for_cap,
+            ));
+        }
+        discarded
+    }
+
+    fn admit(&mut self, item: EvidenceItem) -> Admission {
+        if self.kept.len() >= self.max_items {
+            return Admission::Stop;
+        }
+        let payload_bytes = match util::serialized_len(&item.payload) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(
+                    key = %item.key,
+                    error = %error,
+                    "evidence payload failed to serialize; item dropped",
+                );
+                tally(&mut self.unmeasurable_dropped);
+                return Admission::Drop;
+            }
+        };
+        if payload_bytes > self.max_payload_bytes_per_item {
+            tally(&mut self.oversized_dropped);
+            return Admission::Drop;
+        }
+        let Some(cumulative) = self
+            .cumulative_bytes
+            .checked_add(payload_bytes)
+            .filter(|total| *total <= self.max_bytes)
+        else {
+            return Admission::Stop;
+        };
+        self.cumulative_bytes = cumulative;
+        self.kept.push(item);
+        Admission::Keep
+    }
 }
 
 pub(super) fn truncation_evidence(
@@ -266,15 +338,15 @@ pub(super) fn truncation_evidence(
         kind: EvidenceKind::Diagnostic,
         origin: EvidenceOrigin::SourceContent,
         span: SpanAvailability::DerivedEvidence,
-        payload: json!({
-            "message": format!(
+        payload: EvidencePayload::Diagnostic(DiagnosticPayload {
+            message: format!(
                 "evidence limits discarded records: {oversized_dropped} item(s) exceeded the \
                  per-item byte cap, {dropped_for_cap} item(s) dropped by the item-count or \
                  cumulative-byte cap{unmeasurable_note}"
             ),
-            "severity": "warning",
-            "original_item_count": original_count,
-            "kept_item_count": kept_count,
+            severity: "warning".to_owned(),
+            original_item_count: Some(original_count),
+            kept_item_count: Some(kept_count),
         }),
     }
 }
@@ -282,3 +354,7 @@ pub(super) fn truncation_evidence(
 #[cfg(test)]
 #[path = "sample_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "evidence_limits_tests.rs"]
+mod evidence_limits_tests;

@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
-use crate::sync::analyze_seam::forced_failure;
 use crate::util::BudgetBound;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::time::Duration;

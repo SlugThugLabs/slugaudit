@@ -3,7 +3,7 @@
 //! ignore files.
 
 use super::*;
-use crate::sync::discover;
+use crate::sync::discover_and_hash;
 use slugaudit_test_check::{Check, TestResult, ensure};
 use std::fs;
 
@@ -23,7 +23,7 @@ fn a_parent_gitignore_is_not_applied_to_a_nested_project() -> TestResult {
     fs::create_dir_all(root.join("src")).check("src dir")?;
     fs::write(root.join("src/lib.rs"), "fn lib() {}\n").check("lib file")?;
 
-    let (files, _skipped) = discover(&root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(&root).check("discover_and_hash")?;
     let indexed: std::collections::HashSet<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())

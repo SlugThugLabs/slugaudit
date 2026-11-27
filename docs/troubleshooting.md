@@ -9,7 +9,7 @@ First check: call `health` with the project `path`. It never fails on a project 
 | Code | Meaning | What to do |
 |---|---|---|
 | `project_not_enabled` | No folder above the path has a `.planning/slugaudit/` directory. | Call `project_control` with `{"action":"on","path":"<project directory>"}`. |
-| `sync_budget_exhausted` | The freshness check ran past `max_sync_wall_clock`. On a project too big for the budget this is permanent. | Set `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, or use the `audit` profile (1200 s) instead of `lean` (120 s). |
+| `sync_budget_exhausted` | The freshness check ran past `max_sync_wall_clock`. On a project too big for the budget this is permanent. | Set `SLUGAUDIT_MAX_SYNC_WALL_CLOCK_SECS`, or use the `audit` / `adaptive` profile (90 s) instead of `lean` (30 s). |
 | `stale_revision` | The index changed under this call (another writer, or a file changed while it was being read). | Retry the call. It re-syncs. |
 | `unknown_mechanic` | `leads` got a mechanic id that does not exist. | Call `leads` with only `path` to list the ids, then retry with one. |
 | `sql_too_large` | The SQL is longer than `max_query_sql_bytes`. | Shorten it, or raise `SLUGAUDIT_MAX_QUERY_SQL_BYTES`. |
@@ -60,7 +60,7 @@ Nothing is lost: this session's findings live in their own database, `findings-<
 
 ## Offline: grammar downloads fail
 
-Languages other than Rust need a grammar downloaded on first use. Offline:
+Rust's grammar is compiled into the binary and works offline with no download. Languages other than Rust need a grammar downloaded on first use. Offline:
 
 - The first failed fetch can block a call for about 60 seconds.
 - Affected files are stored but have no evidence, and `parser_availability` is `LoadFailed`.
@@ -99,8 +99,9 @@ The code is written to keep your source text, SQL and finding text out of the lo
 |---|---|---|
 | `connect` says the agent is unknown | The id is not in the list | Run `slugaudit connect` with no name to see detected agents, or see [getting started](getting-started.md) for the ids. |
 | `connect goose` or `connect crush` refuses | Those clients need a manual config edit | Paste the lines it prints. |
+| `connect` or `disconnect` refuses on a `.jsonc` file | The file contains `//` or `/*` comments, which automatic JSON serialization would erase | Add or remove the `"slugaudit"` entry manually as printed in the message. |
 | `connect` times out | The agent's own CLI did not finish in 15 s (for example it waited at a login prompt) | Run the agent's CLI once by hand, then retry. |
-| `update` stops with an unsupported platform error | The only published release is Linux x86_64 | Build from source: `cargo install --git https://github.com/SlugThugLabs/slugaudit.git --bin slugaudit`. |
+| `update` stops with an unsupported platform error | The only published release is Linux x86_64 | Build from source: `TSLP_LINK_MODE=static TSLP_LANGUAGES=rust cargo install --locked --git https://github.com/SlugThugLabs/slugaudit.git --bin slugaudit`. |
 | `update` fails with a checksum error | The download did not match `SHA256SUMS`. Nothing was replaced. | Retry later. |
 | A new version is worse | | Copy `slugaudit.prev` over `slugaudit` in `~/.slugthug/slugaudit/`. |
 | Gemini shows the server as Disabled | Gemini disables servers until the folder is trusted | Trust the folder in Gemini. |

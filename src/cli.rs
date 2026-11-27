@@ -9,8 +9,7 @@
 
 mod usage;
 
-use thiserror::Error;
-
+pub use crate::connect::ConnectError;
 pub use usage::{Topic, topic_usage, usage};
 
 // Read by `cli_tests` through `use super::*`; nothing in a non-test build
@@ -127,7 +126,7 @@ fn no_arguments(command: &str, mut args: impl Iterator<Item = String>) -> Result
 /// failure paths with an injected writer; [`out`] and [`err`] are the process
 /// wrappers the CLI actually calls.
 pub(crate) fn write_to(
-    writer: &mut impl std::io::Write,
+    writer: &mut (impl std::io::Write + ?Sized),
     args: std::fmt::Arguments<'_>,
 ) -> std::io::Result<()> {
     writer.write_fmt(args)?;
@@ -169,114 +168,6 @@ pub fn is_broken_pipe(error: &(dyn std::error::Error + 'static)) -> bool {
         current = error.source();
     }
     false
-}
-
-/// Errors encountered while connecting or disconnecting an agent client.
-#[derive(Debug, Error)]
-pub enum ConnectError {
-    /// The user picked an option outside the presented list.
-    #[error("invalid agent choice; choose one of the listed options")]
-    InvalidChoice,
-    /// Standard input closed before the prompt was answered.
-    #[error("input ended before an answer was given")]
-    EndOfInput,
-    /// The running binary's path could not be resolved.
-    #[error("binary path unavailable: {0}")]
-    BinaryPath(std::io::Error),
-    /// Neither a home directory nor a usable config parent was available.
-    #[error("home directory is unavailable")]
-    HomeUnavailable,
-    /// No registry entry matches the requested agent name.
-    #[error("unknown agent {0:?}; run `slugaudit connect` to see detected agents")]
-    UnknownAgent(String),
-    /// The client's executable could not be spawned or waited on.
-    #[error("failed to run `{cli}`: {inner}")]
-    AgentCommand {
-        /// Client executable that could not be run.
-        cli: String,
-        /// Underlying spawn or wait error.
-        inner: std::io::Error,
-    },
-    /// The client's executable ran past its deadline and was killed.
-    #[error("`{cli}` did not finish within {timeout_secs}s and was stopped")]
-    AgentTimeout {
-        /// Client executable that timed out.
-        cli: String,
-        /// The deadline it exceeded, in seconds.
-        timeout_secs: f32,
-    },
-    /// The client's `mcp remove` subcommand exited non-zero.
-    #[error("`{cli} mcp remove` exited with {status}")]
-    RemoveFailed {
-        /// Client executable whose remove failed.
-        cli: String,
-        /// Exit status as printed by the OS.
-        status: String,
-    },
-    /// The client's `mcp add` subcommand exited non-zero after printing output.
-    #[error("`{cli} mcp add` exited with {status} — see the output above")]
-    AddFailed {
-        /// Client executable whose add failed.
-        cli: String,
-        /// Exit status as printed by the OS.
-        status: String,
-    },
-    /// The client rejected `mcp add` and printed nothing, so there is no
-    /// "output above" to point the user at.
-    #[error("`{cli} mcp add` exited with {status} and printed no output")]
-    AddFailedNoOutput {
-        /// Client executable whose add failed.
-        cli: String,
-        /// Exit status as printed by the OS.
-        status: String,
-    },
-    /// The client has no automated registration path; carries the reason the
-    /// caller reports.
-    #[error("{agent} cannot be connected automatically: {reason}")]
-    UnsupportedAgent {
-        /// Human-readable client name.
-        agent: String,
-        /// Why the automated path is refused.
-        reason: String,
-    },
-    /// The config's expected section exists but is not a JSON object.
-    #[error(
-        "cannot connect: \"{section}\" in the configuration is not an object, so there is \
-         nowhere to write the slugaudit entry. Fix or remove that key, then retry"
-    )]
-    SectionNotAnObject {
-        /// Top-level section key that is not an object.
-        section: String,
-    },
-    /// The config file's top-level JSON value is not an object.
-    #[error(
-        "cannot connect: {path} does not hold a JSON object at its top level, so there is \
-         nowhere to write the slugaudit entry. Fix or remove the file, then retry"
-    )]
-    RootNotAnObject {
-        /// Config file that could not be written.
-        path: std::path::PathBuf,
-    },
-    /// An existing config file could not be parsed as JSON.
-    #[error(
-        "cannot modify {path}: configuration file exists but contains invalid JSON: {source} (fix syntax/comments or remove the file to reset, then retry)"
-    )]
-    InvalidConfig {
-        /// Config file that failed to parse.
-        path: std::path::PathBuf,
-        /// Parser error, including line and column.
-        #[source]
-        source: serde_json::Error,
-    },
-    /// A JSON value could not be encoded or decoded.
-    #[error("JSON config error: {0}")]
-    Json(#[from] serde_json::Error),
-    // Spelled out rather than `transparent`: transparent forwards `source()`
-    // through the io::Error, which hides the error itself from
-    // `is_broken_pipe`'s chain walk.
-    /// An I/O operation failed. A closed pipe is treated as a clean exit.
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
 }
 
 #[cfg(test)]

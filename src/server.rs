@@ -1,4 +1,3 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=the MCP server handler: its instructions, server info, resource serving and the shared tool dispatch rmcp calls into
 //! MCP server surface: the tool contracts and their registration.
 //!
 //! This file declares *what* the tools are and *how* they're registered
@@ -12,8 +11,9 @@
 
 mod handlers;
 
+use crate::error_codes::{ErrorCode, invalid_params_with_code};
 use crate::progress::ProgressSink;
-use crate::server_progress::{build_inner_sink, progress_target};
+use crate::server_progress::{open_progress_session, progress_target};
 use crate::server_runner::{MAX_CONCURRENT_BLOCKING_OPS, run_blocking};
 use crate::sync;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -27,12 +27,7 @@ use rmcp::{ErrorData, Peer, RoleServer, ServerHandler, tool_handler};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
-/// Longest resource URI accepted from a client. Resource URIs are a fixed,
-/// compile-time catalogue with no templates, so any longer value is unknown by
-/// construction; capping it keeps a multi-megabyte URI out of the
-/// `resource_not_found` message instead of echoing it back. rmcp's
-/// `JsonRpcMessageCodec` sets no length limit of its own, unlike tool inputs,
-/// which carry their own caps.
+/// Longest resource URI accepted from a client.
 const MAX_RESOURCE_URI_BYTES: usize = 8 * 1024;
 
 const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — symbols, imports, exports, call sites, comments, \
@@ -110,9 +105,7 @@ pub struct SlugAuditServer {
     /// running through `server_runner::run_blocking`.
     health_ops: Arc<Semaphore>,
     /// Per-server `SourceSyncManager`: the last-sync timestamps, session
-    /// mechanics, the mechanic scan cache and the paged-result store. `Clone` is the cheap clone of
-    /// `SourceSyncManager` itself — its shared state is shared across
-    /// `Clone`s of the server.
+    /// mechanics, and the paged-result store.
     manager: sync::SourceSyncManager,
 }
 
@@ -123,9 +116,7 @@ impl SlugAuditServer {
         Self::with_manager(sync::SourceSyncManager::default())
     }
 
-    /// Constructs a server with an explicit `SourceSyncManager`. Used by
-    /// [`SlugAuditServer::new`] and by `tool_surface`; not part of the
-    /// advertised MCP surface.
+    /// Constructs a server with an explicit `SourceSyncManager`.
     #[must_use]
     pub(crate) fn with_manager(manager: sync::SourceSyncManager) -> Self {
         Self {
@@ -149,26 +140,19 @@ impl SlugAuditServer {
         + Send
         + 'static,
     ) -> Result<T, ErrorData> {
-        let progress = progress_target(&meta, &peer);
-        let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        // KEEP clone: run_blocking also consumes progress for lifecycle notifications
-        let inner_sink = build_inner_sink(progress.clone(), Arc::clone(&completed));
-        // KEEP clone: SourceSyncManager is an Arc-backed handle cloned from &self into the 'static blocking closure
+        let target = progress_target(&meta, &peer);
+        let (progress, inner_sink) = open_progress_session(target);
         let manager = self.manager.clone();
         run_blocking(
             semaphore,
             tool_name,
             move || work(inner_sink, manager),
             progress,
-            Some(completed),
         )
         .await
     }
 
     /// Shared tool-call plumbing for standard tools under `blocking_ops`.
-    /// Each `#[tool]` handler stays declarative — it only names the tool
-    /// and its work closure, so the tool handlers don't each repeat this
-    /// prologue (DRY).
     async fn dispatch<T: Send + 'static>(
         &self,
         meta: RequestMetaObject,
@@ -182,10 +166,7 @@ impl SlugAuditServer {
             .await
     }
 
-    /// Runs `health` through `run_blocking` under its own dedicated semaphore
-    /// so health checks never wait behind saturated `blocking_ops` sync
-    /// permits while still receiving tracing, error logging, `ToolCounters`,
-    /// and progress lifecycle notifications.
+    /// Runs `health` through `run_blocking` under its own dedicated semaphore.
     pub(crate) async fn dispatch_health<T: Send + 'static>(
         &self,
         meta: RequestMetaObject,
@@ -208,13 +189,6 @@ impl Default for SlugAuditServer {
 /// The complete tool surface as it is advertised on `tools/list` — names,
 /// titles, descriptions, input schemas, output schemas, and annotations,
 /// sorted by name.
-///
-/// `#[tool_handler]` generates `list_tools` as exactly
-/// `tool_router.list_all()`, so this is the wire content, not a
-/// reconstruction of it. `check_mcp_surface` snapshots it beside
-/// `resources::list()` and fails on drift, which makes a deliberate change to
-/// any of those fields a recorded change; the router is built with a
-/// manager that executes nothing because the surface is built, not run.
 #[must_use]
 pub fn tool_surface() -> Vec<rmcp::model::Tool> {
     SlugAuditServer::with_manager(sync::SourceSyncManager::default())
@@ -233,14 +207,9 @@ impl ServerHandler for SlugAuditServer {
         )
         .with_protocol_version(ProtocolVersion::LATEST)
         .with_instructions(INSTRUCTIONS)
-        // Without this, rmcp fills `serverInfo` from its own build
-        // environment and every MCP client shows the connected server
-        // as "rmcp" (the library's name/version) instead of SlugAudit.
         .with_server_info(Implementation::new("slugaudit", env!("CARGO_PKG_VERSION")))
     }
 
-    /// The embedded cookbook and schema. Pull-based: an agent that never
-    /// reads them pays nothing for them.
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -259,16 +228,11 @@ impl ServerHandler for SlugAuditServer {
 }
 
 /// Resolves one resource URI from the embedded catalogue.
-///
-/// A URI longer than [`MAX_RESOURCE_URI_BYTES`] is refused as invalid
-/// parameters before the catalogue lookup, so an oversized caller value is
-/// never formatted into an error message. Every URI the catalogue does not
-/// serve is `resource_not_found`, including a short but unknown one.
 fn read_resource_contents(uri: &str) -> Result<ReadResourceResult, ErrorData> {
     if crate::util::exceeds_input_bytes(uri, MAX_RESOURCE_URI_BYTES) {
-        return Err(ErrorData::invalid_params(
+        return Err(invalid_params_with_code(
             format!("resource uri exceeds {MAX_RESOURCE_URI_BYTES} bytes"),
-            None,
+            ErrorCode::InvalidInput,
         ));
     }
     crate::resources::read(uri)
@@ -277,99 +241,5 @@ fn read_resource_contents(uri: &str) -> Result<ReadResourceResult, ErrorData> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
-
-    /// Every session pays for INSTRUCTIONS in context, so it stays short;
-    /// detail belongs in the tool descriptions, schemas and resources.
-    #[test]
-    fn the_initialize_instructions_stay_under_their_size_budget() -> TestResult {
-        let characters = INSTRUCTIONS.chars().count();
-
-        ensure(
-            characters < 5_500,
-            format!("INSTRUCTIONS is {characters} characters; the budget is 5500"),
-        )?;
-        Ok(())
-    }
-
-    /// The `query` description is where a model learns what `evidence.kind`
-    /// can hold, so it names every kind the schema's CHECK list allows.
-    #[test]
-    fn the_query_tool_description_names_every_evidence_kind_the_schema_allows() -> TestResult {
-        let schema = include_str!("store/schema.sql");
-        let check = schema
-            .split("CHECK (kind IN (")
-            .nth(1)
-            .and_then(|rest| rest.split("))").next())
-            .check("the evidence kind CHECK list")?;
-        let kinds: Vec<&str> = check
-            .split(',')
-            .map(|kind| kind.trim().trim_matches('\''))
-            .collect();
-        let surface = tool_surface();
-        let query = surface
-            .iter()
-            .find(|tool| tool.name == "query")
-            .check("the query tool is listed")?;
-
-        let description = query
-            .description
-            .as_deref()
-            .check("query has a description")?;
-
-        ensure_eq(&kinds.len(), &8, format!("{kinds:?}"))?;
-        for kind in kinds {
-            ensure(
-                description.contains(kind),
-                format!("`{kind}` missing: {description}"),
-            )?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn read_resource_reports_an_unknown_uri_as_resource_not_found() -> TestResult {
-        let error =
-            read_resource_contents("slugaudit://nope").check_err("an unknown URI is not served")?;
-
-        ensure_eq(
-            &error.code,
-            &rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
-            format!("{error:?}"),
-        )?;
-        ensure_eq(
-            &error.message,
-            &"unknown resource `slugaudit://nope`",
-            "error.message == \"unknown resource `slugaudit://nope`\"",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn read_resource_refuses_a_uri_over_the_cap_without_echoing_it() -> TestResult {
-        let uri = "u".repeat(MAX_RESOURCE_URI_BYTES + 1);
-
-        let error = read_resource_contents(&uri).check_err("an over-cap URI is refused")?;
-
-        ensure_eq(
-            &error.code,
-            &rmcp::model::ErrorCode::INVALID_PARAMS,
-            format!("{error:?}"),
-        )?;
-        ensure_eq(
-            &error.message,
-            &"resource uri exceeds 8192 bytes",
-            "error.message == \"resource uri exceeds 8192 bytes\"",
-        )?;
-        ensure(
-            !error.message.contains("uuuu"),
-            format!(
-                "an oversized URI must not be echoed into the message: {}",
-                error.message
-            ),
-        )?;
-        Ok(())
-    }
-}
+#[path = "server_tests.rs"]
+mod tests;

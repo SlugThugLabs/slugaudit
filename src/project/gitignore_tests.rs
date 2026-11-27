@@ -15,7 +15,7 @@ fn temp_leftovers(directory: &Path) -> TestResult<usize> {
         if entry
             .file_name()
             .to_string_lossy()
-            .starts_with(".gitignore.slugaudit.")
+            .starts_with(".slugaudit-tmp-")
         {
             count = count.checked_add(1).check("entry count fits usize")?;
         }

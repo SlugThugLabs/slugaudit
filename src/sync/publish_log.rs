@@ -11,7 +11,7 @@ use std::path::Path;
 /// returned, and each caller either returns it to the tool call with
 /// [`failure_context`] in the message (logged once by
 /// `server_runner::log_completion`) or recovers from it and logs the recovery
-/// (`recovery_log`).
+/// (`manager::log_database_recovery`).
 pub(super) fn log_completed(report: &PublishReport, retries: usize) {
     tracing::info!(
         revision_id = report.revision_id,
@@ -41,6 +41,34 @@ pub(crate) fn failure_context(root: &Path, error: &PublishError) -> String {
     }
 }
 
+/// Logs a worker failure that could not be returned from [`super::file_pool`]:
+/// either because another worker already recorded the first error (`poisoned`
+/// is `None`), or because the error slot mutex was poisoned (`Some(poisoned)`).
+pub(super) fn warn_discarded_worker_error(
+    operation: &'static str,
+    error: &PublishError,
+    poisoned: Option<&crate::util::LockPoisoned>,
+) {
+    let (error_kind, path) = failure_fields(error);
+    match poisoned {
+        None => tracing::warn!(
+            operation,
+            error_kind,
+            path = ?path,
+            error = %error,
+            "a later worker failure was discarded after the first error was recorded",
+        ),
+        Some(slot_error) => tracing::warn!(
+            operation,
+            error_kind,
+            path = ?path,
+            error = %error,
+            slot_error = %slot_error,
+            "a worker failure could not be recorded; the run fails with the poisoned slot",
+        ),
+    }
+}
+
 /// The static failure category for a publish error, plus the path the
 /// variant carries when it has one.
 ///
@@ -59,9 +87,6 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
         PublishError::Database(_) => ("database", None),
         PublishError::ImportTooLarge { .. } => ("import_too_large", None),
         PublishError::ImportTotalOverflow { .. } => ("import_total_overflow", None),
-        PublishError::UnchangedCountInconsistent { path } => {
-            ("unchanged_count_inconsistent", Some(Path::new(path)))
-        }
         PublishError::ChangedDuringSample { path } => {
             ("changed_during_sample", Some(Path::new(path)))
         }
@@ -70,7 +95,9 @@ pub(super) fn failure_fields(error: &PublishError) -> (&'static str, Option<&Pat
         }
         PublishError::SamplingIndexOutOfRange { .. } => ("sampling_index_out_of_range", None),
         PublishError::InvalidParserPackVersion(_) => ("invalid_parser_pack_version", None),
-        PublishError::TimeBudgetExceeded { .. } => ("time_budget_exceeded", None),
+        PublishError::TimeBudgetExceeded { path, .. } => {
+            ("time_budget_exceeded", path.as_deref().map(Path::new))
+        }
     }
 }
 

@@ -1,14 +1,11 @@
 //! Path-shape helpers for Rust's module tree: module directories, candidate
 //! files, and the segment-shortening walk used by `resolve_rust`.
-//!
-//! These helpers are mutually recursive on the same `known_paths` contract
-//! (module file → segment chain → module file), so they live together; the
-//! resolver entry point and crate-anchor discovery stay in `resolve_rust`,
-//! and `#[path]` parent tracking lives in `rust_mod_parents`.
 
-use super::resolve::{normalize_join, parent_dir};
-use super::resolver::{Resolution, ResolutionKind, pick, unresolved};
-use std::collections::HashSet;
+use super::WorkspaceCrates;
+use super::resolver::{
+    KnownPaths, Resolution, ResolutionKind, normalize_join, parent_dir, pick, unresolved,
+};
+use super::rust_crate_anchor::is_non_stem_crate_root;
 use std::path::Path;
 
 /// File stems that mean "this file *is* its module" rather than "this file
@@ -16,16 +13,15 @@ use std::path::Path;
 const RUST_MODULE_ROOT_STEMS: [&str; 3] = ["mod", "lib", "main"];
 
 /// The file stem, or the empty string for a path with none (`..`, `/`).
-fn file_stem(relative_path: &str) -> String {
+pub(super) fn file_stem(relative_path: &str) -> String {
     match Path::new(relative_path).file_stem() {
         Some(stem) => stem.to_string_lossy().into_owned(),
         None => String::new(),
     }
 }
 
-/// The directory that a Rust file's *own* module owns — i.e. where its
-/// child modules live. `src/a/mod.rs` owns `src/a`; `src/a/b.rs` owns
-/// `src/a/b`.
+/// Syntactic module directory based on stem alone (`mod.rs`, `lib.rs`, `main.rs`
+/// own `parent_dir`; other `.rs` files own `<parent>/<stem>`).
 pub(super) fn rust_module_dir(relative_path: &str) -> String {
     let parent = parent_dir(relative_path);
     let stem = file_stem(relative_path);
@@ -38,6 +34,22 @@ pub(super) fn rust_module_dir(relative_path: &str) -> String {
     }
 }
 
+/// Context-aware `rustc` module directory: crate-root files (`build.rs`,
+/// `<pkg>/{src/bin,tests,benches,examples}/<name>.rs`, and custom `[lib].path` /
+/// `[[bin]].path` roots) own `parent_dir(relative_path)`, while non-root
+/// submodule files own `<parent>/<stem>`.
+pub(super) fn effective_rust_module_dir(
+    relative_path: &str,
+    known_paths: &dyn KnownPaths,
+    workspace_crates: &WorkspaceCrates,
+) -> String {
+    if is_non_stem_crate_root(relative_path, known_paths, workspace_crates) {
+        parent_dir(relative_path)
+    } else {
+        rust_module_dir(relative_path)
+    }
+}
+
 /// Strips a trailing Rust glob (`*` or `::*`) off `specifier`, returning
 /// `Some(prefix)` when a glob suffix was present or `None` otherwise.
 fn split_glob_suffix(specifier: &str) -> Option<&str> {
@@ -45,11 +57,6 @@ fn split_glob_suffix(specifier: &str) -> Option<&str> {
     trimmed
         .strip_suffix("::*")
         .or_else(|| (trimmed == "*").then_some(""))
-}
-
-/// Returns whether `specifier` ends with a Rust glob (`*` or `::*`).
-pub(super) fn has_glob_suffix(specifier: &str) -> bool {
-    split_glob_suffix(specifier).is_some()
 }
 
 /// Strips a trailing glob (`::*`) off a use path, leaving the module path
@@ -67,7 +74,7 @@ pub(super) fn strip_trailing_glob(rest: &str) -> &str {
 /// `main.rs`) when `dir` is a crate's `src`.
 pub(super) fn resolve_rust_module_file(
     dir: &str,
-    known_paths: &HashSet<&str>,
+    known_paths: &dyn KnownPaths,
     forced_confidence: Option<&'static str>,
 ) -> Resolution {
     if dir.is_empty() {
@@ -89,19 +96,37 @@ pub(super) fn resolve_rust_module_file(
     }
 }
 
-/// Resolves the segment chain `rest` (which may be a glob) against
-/// `base_dir`.
+/// Resolves the segment chain `rest` (which may be a glob) against `base_dir`,
+/// stamping `"High"` only on an unambiguous exact module match (`take == parts.len()`)
+/// and `"Low"` whenever prefix shortening stopped at an ancestor module file.
 pub(super) fn resolve_rust_from_base(
     rest: &str,
     base_dir: &str,
-    known_paths: &HashSet<&str>,
+    known_paths: &dyn KnownPaths,
     forced_confidence: Option<&'static str>,
 ) -> Resolution {
     let segments = strip_trailing_glob(rest);
     if segments.is_empty() {
         return resolve_rust_module_file(base_dir, known_paths, forced_confidence);
     }
-    resolve_rust_path(segments, base_dir, known_paths, forced_confidence)
+    resolve_rust_path_inner(
+        segments,
+        base_dir,
+        known_paths,
+        forced_confidence,
+        Some("Low"),
+    )
+}
+
+/// Resolves workspace-crate segment chain `segments` under `base_dir`, keeping
+/// `"High"` confidence on exact module matches and `"Low"` when shortened to
+/// an ancestor / re-exporting module.
+pub(super) fn resolve_workspace_crate_segments(
+    segments: &str,
+    base_dir: &str,
+    known_paths: &dyn KnownPaths,
+) -> Resolution {
+    resolve_rust_path_inner(segments, base_dir, known_paths, None, Some("Low"))
 }
 
 /// Tries each candidate base directory in priority order, checking both
@@ -110,7 +135,7 @@ pub(super) fn resolve_rust_from_base(
 pub(super) fn first_resolved(
     rest: &str,
     bases: &[String],
-    known_paths: &HashSet<&str>,
+    known_paths: &dyn KnownPaths,
 ) -> Resolution {
     for base in bases {
         let resolution = resolve_rust_from_base(rest, base, known_paths, Some("Low"));
@@ -125,11 +150,12 @@ pub(super) fn first_resolved(
     unresolved()
 }
 
-fn resolve_rust_path(
+fn resolve_rust_path_inner(
     segments: &str,
     base_dir: &str,
-    known_paths: &HashSet<&str>,
+    known_paths: &dyn KnownPaths,
     forced_confidence: Option<&'static str>,
+    shortened_confidence: Option<&'static str>,
 ) -> Resolution {
     let parts: Vec<&str> = segments
         .split("::")
@@ -152,7 +178,12 @@ fn resolve_rust_path(
         let candidates = vec![format!("{joined}.rs"), format!("{joined}/mod.rs")];
         let resolution = pick(&candidates, known_paths);
         if resolution.kind == ResolutionKind::Resolved {
-            return match forced_confidence {
+            let override_conf = forced_confidence.or(if take < parts.len() {
+                shortened_confidence
+            } else {
+                None
+            });
+            return match override_conf {
                 Some(confidence) => Resolution {
                     confidence: Some(confidence),
                     ..resolution

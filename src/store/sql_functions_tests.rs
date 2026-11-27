@@ -7,6 +7,12 @@ fn connection() -> TestResult<Connection> {
     Ok(connection)
 }
 
+fn connection_with_cap(cap: usize) -> TestResult<Connection> {
+    let connection = Connection::open_in_memory().check("in-memory database")?;
+    register_with_cap(&connection, cap).check("register line functions with cap")?;
+    Ok(connection)
+}
+
 fn range(text: &str, start: i64, end: i64) -> TestResult<String> {
     connection()?
         .query_row("SELECT line_range(?1, ?2, ?3)", (text, start, end), |row| {
@@ -28,22 +34,37 @@ fn error_of(sql: &str) -> TestResult<String> {
         .to_string())
 }
 
-fn error_of_query(sql: &str, text: &str) -> TestResult<String> {
-    Ok(connection()?
-        .query_row(sql, [text], |row| row.get::<_, Option<String>>(0))
-        .check_err("the call must fail")?
-        .to_string())
+#[test]
+fn default_line_function_input_cap_matches_sqlite_max_value_bytes() -> TestResult {
+    ensure_eq(
+        &u64::try_from(MAX_LINE_FUNCTION_INPUT_BYTES).check("fits u64")?,
+        &crate::model::SQLITE_MAX_VALUE_BYTES,
+        "line scalar functions accept any storable SQLite TEXT value",
+    )?;
+    Ok(())
 }
 
 #[test]
 fn line_count_follows_the_one_based_terminator_model() -> TestResult {
-    ensure_eq(&count("")?, &0, "count(\"\")? == 0")?;
-    ensure_eq(&count("a")?, &1, "count(\"a\")? == 1")?;
-    ensure_eq(&count("a\nb")?, &2, "count(\"a\\nb\")? == 2")?;
-    ensure_eq(&count("a\nb\n")?, &2, "count(\"a\\nb\\n\")? == 2")?;
-    ensure_eq(&count("\n")?, &1, "count(\"\\n\")? == 1")?;
-    ensure_eq(&count("a\n\n")?, &2, "count(\"a\\n\\n\")? == 2")?;
-    ensure_eq(&count("a\r\nb\r\n")?, &2, "count(\"a\\r\\nb\\r\\n\")? == 2")?;
+    ensure_eq(&count("")?, &0, "empty string has zero lines")?;
+    ensure_eq(&count("a")?, &1, "single unterminated line counts as one")?;
+    ensure_eq(
+        &count("a\nb")?,
+        &2,
+        "two lines without trailing newline count as two",
+    )?;
+    ensure_eq(
+        &count("a\nb\n")?,
+        &2,
+        "trailing newline does not add a phantom empty line",
+    )?;
+    ensure_eq(&count("\n")?, &1, "lone newline counts as one empty line")?;
+    ensure_eq(
+        &count("a\n\n")?,
+        &2,
+        "line followed by blank terminated line counts as two",
+    )?;
+    ensure_eq(&count("a\r\nb\r\n")?, &2, "CRLF lines count as two")?;
     Ok(())
 }
 
@@ -54,18 +75,14 @@ fn line_range_returns_inclusive_lines_without_the_last_terminator() -> TestResul
     ensure_eq(
         &range(text, 2, 3)?,
         &"two\nthree",
-        "range(text, 2, 3)? == \"two\\nthree\"",
+        "middle inclusive slice returns lines 2 through 3 without trailing newline",
     )?;
-    ensure_eq(&range(text, 1, 1)?, &"one", "range(text, 1, 1)? == \"one\"")?;
-    ensure_eq(
-        &range(text, 4, 4)?,
-        &"four",
-        "range(text, 4, 4)? == \"four\"",
-    )?;
+    ensure_eq(&range(text, 1, 1)?, &"one", "single first line slice")?;
+    ensure_eq(&range(text, 4, 4)?, &"four", "single final line slice")?;
     ensure_eq(
         &range(text, 1, 4)?,
         &"one\ntwo\nthree\nfour",
-        "range(text, 1, 4)? == \"one\\ntwo\\nthree\\nfour\"",
+        "full range slice strips only the final newline",
     )?;
     Ok(())
 }
@@ -75,28 +92,32 @@ fn line_range_past_the_end_stops_at_eof_and_a_start_past_eof_is_empty() -> TestR
     ensure_eq(
         &range("a\nb", 2, 99)?,
         &"b",
-        "range(\"a\\nb\", 2, 99)? == \"b\"",
+        "end beyond EOF clamps at EOF on unterminated text",
     )?;
     ensure_eq(
         &range("a\nb\n", 2, i64::MAX)?,
         &"b",
-        "range(\"a\\nb\\n\", 2, i64::MAX)? == \"b\"",
+        "i64::MAX end clamps at EOF on newline-terminated text",
     )?;
     ensure_eq(
         &range("a\nb\n", 3, 3)?,
         &"",
-        "range(\"a\\nb\\n\", 3, 3)? == \"\"",
+        "start past final newline returns empty string",
     )?;
     ensure_eq(
         &range("a\nb", 3, 4)?,
         &"",
-        "range(\"a\\nb\", 3, 4)? == \"\"",
+        "start past unterminated EOF returns empty string",
     )?;
-    ensure_eq(&range("", 1, 1)?, &"", "range(\"\", 1, 1)? == \"\"")?;
+    ensure_eq(
+        &range("", 1, 1)?,
+        &"",
+        "range on empty text returns empty string",
+    )?;
     ensure_eq(
         &range("a", i64::MAX, i64::MAX)?,
         &"",
-        "range(\"a\", i64::MAX, i64::MAX)? == \"\"",
+        "i64::MAX start returns empty string",
     )?;
     Ok(())
 }
@@ -108,13 +129,17 @@ fn line_range_preserves_crlf_between_lines_and_drops_the_last_one() -> TestResul
     ensure_eq(
         &range(text, 1, 2)?,
         &"a\r\nb",
-        "range(text, 1, 2)? == \"a\\r\\nb\"",
+        "interior CRLF is preserved while final CRLF is stripped",
     )?;
-    ensure_eq(&range(text, 3, 3)?, &"c", "range(text, 3, 3)? == \"c\"")?;
+    ensure_eq(
+        &range(text, 3, 3)?,
+        &"c",
+        "final CRLF line strips CR and LF",
+    )?;
     ensure_eq(
         &range("a\nb\r\nc", 1, 3)?,
         &"a\nb\r\nc",
-        "range(\"a\\nb\\r\\nc\", 1, 3)? == \"a\\nb\\r\\nc\"",
+        "mixed LF and CRLF line endings stay intact between lines",
     )?;
     Ok(())
 }
@@ -123,16 +148,16 @@ fn line_range_preserves_crlf_between_lines_and_drops_the_last_one() -> TestResul
 fn line_range_keeps_empty_lines_and_multibyte_text_intact() -> TestResult {
     let text = "héllo\n\n日本語 🦀\nend";
 
-    ensure_eq(&range(text, 2, 2)?, &"", "range(text, 2, 2)? == \"\"")?;
+    ensure_eq(&range(text, 2, 2)?, &"", "blank line returns empty string")?;
     ensure_eq(
         &range(text, 1, 3)?,
         &"héllo\n\n日本語 🦀",
-        "range(text, 1, 3)? == \"héllo\\n\\n日本語 🦀\"",
+        "multibyte UTF-8 and interior blank lines round-trip intact",
     )?;
     ensure_eq(
         &range(text, 3, 4)?,
         &"日本語 🦀\nend",
-        "range(text, 3, 4)? == \"日本語 🦀\\nend\"",
+        "multibyte line through unterminated EOF round-trips intact",
     )?;
     Ok(())
 }
@@ -152,9 +177,9 @@ fn a_78k_line_file_returns_exactly_lines_40000_to_40200() -> TestResult {
             .get(39_999..40_200)
             .check("lines 39_999..40_200 exist")?
             .join("\n"),
-        "got == lines[39_999..40_200].join(\"\\n\")",
+        "slice of 78k-line file matches exact 1-based range",
     )?;
-    ensure_eq(&count(&text)?, &78_000, "count(&text)? == 78_000")?;
+    ensure_eq(&count(&text)?, &78_000, "78k-line file counts 78,000 lines")?;
     Ok(())
 }
 
@@ -174,7 +199,7 @@ fn null_inputs_give_null() -> TestResult {
     ensure_eq(
         &values,
         &(None, None, None, None),
-        "values == (None, None, None, None)",
+        "any NULL argument propagates NULL",
     )?;
     Ok(())
 }
@@ -198,30 +223,40 @@ fn invalid_arguments_fail_with_a_clear_message() -> TestResult {
     Ok(())
 }
 
-/// R7: an input exactly at the function cap is still accepted, so the cap
-/// bounds work without rejecting the largest value a conservative query
-/// budget can return.
+/// R7: an input exactly at the function cap is accepted, while one byte over
+/// the cap is refused with a static error that carries no part of the input.
 #[test]
-fn a_line_function_input_at_the_byte_cap_is_accepted() -> TestResult {
-    let text = "a".repeat(MAX_LINE_FUNCTION_INPUT_BYTES);
+fn line_function_input_cap_accepts_exact_boundary_and_refuses_one_byte_over() -> TestResult {
+    const TEST_CAP: usize = 64 * 1024;
+    let conn = connection_with_cap(TEST_CAP)?;
+    let at_cap = "a".repeat(TEST_CAP);
+    let over_cap = "a".repeat(TEST_CAP + 1);
 
-    ensure_eq(&count(&text)?, &1, "count(&text)? == 1")?;
+    let line_total: i64 = conn
+        .query_row("SELECT line_count(?1)", [&at_cap], |row| row.get(0))
+        .check("at-cap line_count succeeds")?;
+    let sliced: String = conn
+        .query_row("SELECT line_range(?1, 1, 1)", [&at_cap], |row| row.get(0))
+        .check("at-cap line_range succeeds")?;
+    ensure_eq(&line_total, &1, "at-cap single line counts as 1")?;
     ensure_eq(
-        &range(&text, 1, 1)?.len(),
-        &MAX_LINE_FUNCTION_INPUT_BYTES,
-        "range(&text, 1, 1)?.len() == MAX_LINE_FUNCTION_INPUT_BYTES",
+        &sliced.len(),
+        &TEST_CAP,
+        "at-cap line_range returns full line",
     )?;
-    Ok(())
-}
 
-/// R7: a value one byte over the cap is refused with a static error before
-/// any scan or slice copy, and the error carries no part of the value.
-#[test]
-fn a_line_function_input_over_the_byte_cap_is_refused_with_a_static_error() -> TestResult {
-    let text = "a".repeat(MAX_LINE_FUNCTION_INPUT_BYTES + 1);
-
-    let count_error = error_of_query("SELECT line_count(?1)", &text)?;
-    let range_error = error_of_query("SELECT line_range(?1, 1, 1)", &text)?;
+    let count_error = conn
+        .query_row("SELECT line_count(?1)", [&over_cap], |row| {
+            row.get::<_, Option<i64>>(0)
+        })
+        .check_err("over-cap line_count must fail")?
+        .to_string();
+    let range_error = conn
+        .query_row("SELECT line_range(?1, 1, 1)", [&over_cap], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .check_err("over-cap line_range must fail")?
+        .to_string();
 
     ensure(
         count_error.contains("line_count: TEXT argument exceeds"),

@@ -1,204 +1,82 @@
-//! Enriches Rust `Structure` `Module` evidence items with `#[path = "..."]`
-//! metadata (`rust_mod_path`) for external module declarations.
+//! Tracks enclosing inline `mod` ancestors and builds [`RustModPathPayload`]
+//! metadata for external (body-less `mod foo;`) Rust module declarations during
+//! the single-pass Rust CST walk.
 
-use super::rust_path_attr::parse_attribute_item;
-use super::{Extraction, WalkInput, named_children, node_text, reverse_from};
-use crate::model::{EvidenceItem, EvidenceKind, SpanAvailability};
-use serde_json::{Value, json};
-use std::collections::HashMap;
-use tree_sitter_language_pack::{Node, Tree};
+use super::named_children;
+use super::rust_path_attr::parse_attribute_node;
+use crate::model::RustModPathPayload;
+use tree_sitter::Node;
 
-type PendingStep = Option<(Node, u32, Vec<Node>)>;
-
-struct WalkState<'a> {
-    source: &'a str,
-    items: &'a mut [EvidenceItem],
-    module_index: HashMap<(u64, u64), usize>,
-    inline_stack: Vec<String>,
-    inline_path_flags: Vec<bool>,
-    pending: Vec<PendingStep>,
-    out: &'a mut Extraction,
+/// Stack of enclosing inline `mod` segments and whether each carried an
+/// explicit `#[path = "..."]` / `#[cfg_attr(..., path = "...")]` attribute.
+#[derive(Default)]
+pub(super) struct InlineModStack {
+    segments: Vec<String>,
+    has_path_flags: Vec<bool>,
 }
 
-/// Walks `tree` iteratively and attaches `rust_mod_path` to external Rust
-/// `mod_item` `Structure` items in `items` that carry `#[path = "..."]` or
-/// `#[cfg_attr(..., path = "...")]`, or sit inside an inline module with an
-/// explicit `#[path]` ancestor.
-pub(super) fn enrich_rust_mod_paths(
-    tree: &Tree,
-    input: &WalkInput<'_>,
-    items: &mut [EvidenceItem],
-    out: &mut Extraction,
-) {
-    let module_index = index_module_items(items);
-    let mut state = WalkState {
-        source: input.source,
-        items,
-        module_index,
-        inline_stack: Vec::new(),
-        inline_path_flags: Vec::new(),
-        pending: vec![Some((tree.root_node(), 0, Vec::new()))],
-        out,
-    };
+/// Outcome of inspecting a `mod_item` CST node against [`InlineModStack`].
+pub(super) enum ModItemDisposition {
+    /// Inline `mod foo { ... }`: `rust_mod_path` is `None`; `pushed` indicates
+    /// whether an ancestor segment was pushed onto [`InlineModStack`] and must
+    /// be popped when leaving the module's subtree.
+    Inline { pushed: bool },
+    /// External `mod foo;`: attach `payload` to `StructurePayload::rust_mod_path`.
+    External(Option<RustModPathPayload>),
+}
 
-    while let Some(step) = state.pending.pop() {
-        let Some((node, depth, attrs)) = step else {
-            state.inline_stack.pop();
-            state.inline_path_flags.pop();
-            continue;
-        };
-        if super::deadline_spent(input.deadline) {
-            state.out.timed_out = true;
-            break;
-        }
-        if depth >= super::MAX_WALK_DEPTH {
-            state.out.truncated = true;
-            continue;
-        }
-        let Some(child_depth) = depth.checked_add(1) else {
-            state.out.truncated = true;
-            continue;
-        };
-        if node.kind() != "mod_item" {
-            push_grouped_children(&mut state.pending, &node, child_depth);
-            continue;
-        }
-        process_mod_item(&mut state, &node, attrs, child_depth);
+impl InlineModStack {
+    pub(super) fn pop(&mut self) {
+        self.segments.pop();
+        self.has_path_flags.pop();
     }
-}
 
-fn process_mod_item(
-    state: &mut WalkState<'_>,
-    node: &Node,
-    mut attrs: Vec<Node>,
-    child_depth: u32,
-) {
-    let mod_name = node
-        .child_by_field_name("name")
-        .and_then(|child| slice_node_text(state.source, &child, state.out));
-    attrs.extend(named_children(node).filter(|child| child.kind() == "attribute_item"));
-    let path_attr = attrs
-        .iter()
-        .filter_map(|attr| {
-            slice_node_text(state.source, attr, state.out).and_then(parse_attribute_item)
-        })
-        .last();
+    pub(super) fn enter_mod_item(
+        &mut self,
+        node: Node<'_>,
+        mod_name: Option<&str>,
+        outer_attrs: &[Node<'_>],
+        source: &str,
+    ) -> ModItemDisposition {
+        let path_attr = outer_attrs
+            .iter()
+            .copied()
+            .chain(named_children(node).filter(|child| child.kind() == "attribute_item"))
+            .filter_map(|attr| parse_attribute_node(attr, source))
+            .last();
 
-    if named_children(node).any(|child| child.kind() == "declaration_list") {
-        let has_path = path_attr.is_some();
-        let segment = path_attr.or_else(|| {
-            mod_name.map(|name| match name.strip_prefix("r#") {
-                Some(stripped) => stripped.to_owned(),
-                None => name.to_owned(),
-            })
-        });
-        if let Some(segment) = segment {
-            state.inline_stack.push(segment);
-            state.inline_path_flags.push(has_path);
-            state.pending.push(None);
+        if named_children(node).any(|child| child.kind() == "declaration_list") {
+            let has_path = path_attr.is_some();
+            let segment = path_attr.or_else(|| mod_name.map(strip_raw_ident));
+            if let Some(segment) = segment {
+                self.segments.push(segment);
+                self.has_path_flags.push(has_path);
+                return ModItemDisposition::Inline { pushed: true };
+            }
+            return ModItemDisposition::Inline { pushed: false };
         }
-        push_grouped_children(&mut state.pending, node, child_depth);
-    } else if let Some(name) = mod_name {
-        let implicit_path =
-            if path_attr.is_none() && state.inline_path_flags.iter().any(|&has_path| has_path) {
-                Some(match name.strip_prefix("r#") {
-                    Some(stripped) => stripped.to_owned(),
-                    None => name.to_owned(),
-                })
-            } else {
-                None
-            };
-        if let Some(path_value) = path_attr.or(implicit_path) {
-            attach_rust_mod_path(
-                state.items,
-                &state.module_index,
-                node,
-                name,
-                &path_value,
-                &state.inline_stack,
-            );
-        }
-    }
-}
 
-fn slice_node_text<'a>(source: &'a str, node: &Node, out: &mut Extraction) -> Option<&'a str> {
-    match node_text(source, node.start_byte(), node.end_byte()) {
-        Ok(text) => Some(text),
-        Err(error) => {
-            tracing::warn!(%error, "Rust mod node skipped; extraction is partial");
-            out.truncated = true;
+        let Some(name) = mod_name else {
+            return ModItemDisposition::External(None);
+        };
+        let implicit_path = if path_attr.is_none() && self.has_path_flags.iter().any(|&flag| flag) {
+            Some(strip_raw_ident(name))
+        } else {
             None
-        }
+        };
+        ModItemDisposition::External(Some(RustModPathPayload {
+            path_attr: path_attr.or(implicit_path),
+            inline_dir: self.segments.join("/"),
+            inline_depth: self.segments.len(),
+            inline_segments: self.segments.clone(),
+        }))
     }
 }
 
-fn push_grouped_children(pending: &mut Vec<PendingStep>, node: &Node, child_depth: u32) {
-    let first = pending.len();
-    let mut pending_attrs = Vec::new();
-    for child in named_children(node) {
-        match child.kind().as_str() {
-            "attribute_item" => pending_attrs.push(child),
-            "line_comment" | "block_comment" => {
-                // Comments between an attribute and its target item do not detach the attribute.
-            }
-            "mod_item" => {
-                pending.push(Some((
-                    child,
-                    child_depth,
-                    std::mem::take(&mut pending_attrs),
-                )));
-            }
-            _ => {
-                pending_attrs.clear();
-                pending.push(Some((child, child_depth, Vec::new())));
-            }
-        }
-    }
-    reverse_from(pending, first);
-}
-
-fn index_module_items(items: &[EvidenceItem]) -> HashMap<(u64, u64), usize> {
-    let mut index = HashMap::new();
-    for (idx, item) in items.iter().enumerate() {
-        if item.kind == EvidenceKind::Structure
-            && item.payload.get("kind").and_then(Value::as_str) == Some("Module")
-            && let SpanAvailability::Present(span) = &item.span
-        {
-            index.entry((span.start_byte, span.end_byte)).or_insert(idx);
-        }
-    }
-    index
-}
-
-fn attach_rust_mod_path(
-    items: &mut [EvidenceItem],
-    module_index: &HashMap<(u64, u64), usize>,
-    mod_node: &Node,
-    mod_name: &str,
-    path_attr: &str,
-    inline_stack: &[String],
-) {
-    let mod_start = mod_node.start_byte() as u64;
-    let mod_end = mod_node.end_byte() as u64;
-    let Some(&idx) = module_index.get(&(mod_start, mod_end)) else {
-        return;
-    };
-    let Some(item) = items.get_mut(idx) else {
-        return;
-    };
-    if item.payload.get("name").and_then(Value::as_str) != Some(mod_name) {
-        return;
-    }
-    if let Some(map) = item.payload.as_object_mut() {
-        map.insert(
-            "rust_mod_path".to_owned(),
-            json!({
-                "path_attr": path_attr,
-                "inline_dir": inline_stack.join("/"),
-                "inline_depth": inline_stack.len(),
-                "inline_segments": inline_stack,
-            }),
-        );
+fn strip_raw_ident(name: &str) -> String {
+    match name.strip_prefix("r#") {
+        Some(stripped) => stripped.to_owned(),
+        None => name.to_owned(),
     }
 }
 

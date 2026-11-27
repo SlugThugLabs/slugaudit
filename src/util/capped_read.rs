@@ -63,7 +63,7 @@ const O_NONBLOCK: i32 = 0x0004;
 /// Opens `path` as a regular file without blocking on FIFOs or other special
 /// files. On Unix targets with a known `O_NONBLOCK` value, opens with
 /// `O_NONBLOCK` first and verifies `is_file()` on the opened descriptor so a
-/// FIFO never blocks `open` and a path swap cannot slip between stat and open.
+/// FIFO, directory, or device never blocks `open` or enters a file read.
 pub(crate) fn open_regular_file_nonblocking(
     path: &std::path::Path,
 ) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {

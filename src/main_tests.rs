@@ -11,7 +11,7 @@ fn unset_log_variables_take_their_defaults_without_a_complaint() -> TestResult {
     )
     .check("valid settings")?;
 
-    ensure(!settings.json, "!settings.json")?;
+    ensure(!settings.json, "plain text log format is the default")?;
     Ok(())
 }
 
@@ -39,15 +39,15 @@ fn a_valid_rust_log_and_json_format_are_honored_silently() -> TestResult {
     let settings =
         log_settings(Ok("debug".to_owned()), Ok("JSON".to_owned())).check("valid settings")?;
 
-    ensure(settings.json, "settings.json")?;
+    ensure(settings.json, "case-insensitive JSON selects JSON logging")?;
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn fail_closed_a_non_utf8_log_format_is_an_error_without_echoing_its_value() -> TestResult {
+fn non_utf8_log_format_returns_format_error_naming_only_the_variable() -> TestResult {
     use std::os::unix::ffi::OsStringExt as _;
-    let bad = std::ffi::OsString::from_vec(b"SLUGAUDIT_LEAK_MARKER\xff".to_vec());
+    let bad = std::ffi::OsString::from_vec(b"invalid_format_bytes\xff".to_vec());
 
     let result = log_settings(
         Err(std::env::VarError::NotPresent),
@@ -60,15 +60,15 @@ fn fail_closed_a_non_utf8_log_format_is_an_error_without_echoing_its_value() -> 
     };
     let message = error.to_string();
     ensure(message.contains("SLUGAUDIT_LOG_FORMAT"), &message)?;
-    ensure(!message.contains("SLUGAUDIT_LEAK_MARKER"), &message)?;
+    ensure(!message.contains("invalid_format_bytes"), &message)?;
     Ok(())
 }
 
 #[cfg(unix)]
 #[test]
-fn fail_closed_a_non_utf8_rust_log_is_an_error_without_echoing_its_value() -> TestResult {
+fn non_utf8_rust_log_returns_format_error_naming_only_the_variable() -> TestResult {
     use std::os::unix::ffi::OsStringExt as _;
-    let bad = std::ffi::OsString::from_vec(b"RUST_LOG_LEAK_MARKER\xff".to_vec());
+    let bad = std::ffi::OsString::from_vec(b"invalid_filter_bytes\xff".to_vec());
 
     let result = log_settings(
         Err(std::env::VarError::NotUnicode(bad)),
@@ -83,7 +83,7 @@ fn fail_closed_a_non_utf8_rust_log_is_an_error_without_echoing_its_value() -> Te
         message.starts_with("RUST_LOG is set but is not valid Unicode"),
         &message,
     )?;
-    ensure(!message.contains("RUST_LOG_LEAK_MARKER"), &message)?;
+    ensure(!message.contains("invalid_filter_bytes"), &message)?;
     Ok(())
 }
 
@@ -139,10 +139,10 @@ fn honest_log_default_filter_keeps_our_info_and_drops_rmcp_info() -> TestResult 
 }
 
 #[test]
-fn fail_closed_a_mistyped_log_format_is_an_error_not_silently_text() -> TestResult {
+fn mistyped_log_format_returns_validation_error_instead_of_defaulting_to_text() -> TestResult {
     let result = log_settings(
         Err(std::env::VarError::NotPresent),
-        Ok("jsno-MARKER".to_owned()),
+        Ok("jsno-typo".to_owned()),
     );
 
     let error = result
@@ -153,7 +153,7 @@ fn fail_closed_a_mistyped_log_format_is_an_error_not_silently_text() -> TestResu
         message.starts_with("SLUGAUDIT_LOG_FORMAT is set but is not valid; expected"),
         &message,
     )?;
-    ensure(!message.contains("MARKER"), &message)?;
+    ensure(!message.contains("jsno-typo"), &message)?;
     Ok(())
 }
 
@@ -162,6 +162,6 @@ fn the_text_log_format_is_accepted_in_any_case() -> TestResult {
     let settings = log_settings(Err(std::env::VarError::NotPresent), Ok("Text".to_owned()))
         .check("valid settings")?;
 
-    ensure(!settings.json, "!settings.json")?;
+    ensure(!settings.json, "Text format disables JSON logging")?;
     Ok(())
 }

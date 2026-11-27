@@ -1,10 +1,44 @@
 use super::*;
 use crate::sync::FileKind;
 use crate::sync::publish::PublishError;
+use crate::sync::sample_batch::{ChunkOutcome, Pass2ChunkContext, run_pass2_chunks};
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::thread;
 use std::time::Duration;
+
+fn run_standalone_pass2(
+    discovered: &[DiscoveredFile],
+    limits: &ResourceLimits,
+    sink: &dyn crate::progress::ProgressSink,
+    deadline: &Deadline,
+) -> Result<(Vec<FileRecord>, Vec<crate::sync::SkippedFile>), PublishError> {
+    let empty_hashes = HashMap::new();
+    let total_bytes = AtomicU64::new(0);
+    let ctx = Pass2ChunkContext {
+        total_files: discovered.len(),
+        pass1_hashes: &empty_hashes,
+        limits,
+        total_bytes: &total_bytes,
+        sink,
+        deadline,
+    };
+    let mut records = Vec::new();
+    let mut skipped = Vec::new();
+    run_pass2_chunks(discovered, &ctx, |outcomes| {
+        for outcome in outcomes {
+            match outcome {
+                ChunkOutcome::Parsed(record) => records.push(record),
+                ChunkOutcome::Skipped(skip) => skipped.push(skip),
+            }
+        }
+        Ok(())
+    })?;
+    skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+    Ok((records, skipped))
+}
 
 #[test]
 fn sample_file_accepts_a_file_exactly_at_the_cap() -> TestResult {
@@ -78,12 +112,6 @@ fn sample_file_reports_a_file_over_the_cap_as_too_large() -> TestResult {
     Ok(())
 }
 
-/// A file can grow between `sample_file`'s stat and its bounded read. The
-/// read stops at `cap + 1` bytes, so that length is only a lower bound on
-/// the file's size; the skip reason must say so rather than claim an exact
-/// size the read never established. A procfs file has stat size 0 but
-/// content longer than the cap, which drives the bounded-read arm
-/// deterministically without a race.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size() -> TestResult {
@@ -123,16 +151,6 @@ fn a_file_that_grows_past_the_cap_is_reported_as_a_lower_bound_not_an_exact_size
     Ok(())
 }
 
-/// Parallel-sampling tests below. They construct `DiscoveredFile`s
-/// directly (synthetic relative paths + temp file bodies) rather than
-/// going through the full discovery walker; the goal is to pin
-/// `sample_all_with_deadline`'s ordering, cap-enforcement, and deadline
-/// behavior in isolation, the way downstream consumers
-/// (`manifest::compare`, `aggregate_manifest_hash`,
-/// `build_upserts_and_deletions`) depend on it.
-/// Writes 100 KB files under a fresh temp directory and returns the
-/// directory guard alongside the discovered entries. The caller must keep
-/// the guard alive while it uses the paths: dropping it removes the files.
 fn write_files_relative(
     relative_paths: &[&str],
 ) -> TestResult<(tempfile::TempDir, Vec<DiscoveredFile>)> {
@@ -144,7 +162,6 @@ fn write_files_relative(
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent).check("mkdir")?;
         }
-        // 100 KB body so the byte-cap test has something concrete to add up.
         let body = vec![b'a'; 100_000];
         std::fs::write(&abs, &body).check("write body")?;
         out.push(DiscoveredFile {
@@ -156,23 +173,19 @@ fn write_files_relative(
     Ok((dir, out))
 }
 
-/// Pins that the worker pool still hands back samples indexed by
-/// `discovered` order, even though the workers finish out of order.
-/// Downstream manifest hashing relies on this; without it, concurrent
-/// publishes produce different hashes per run.
 #[test]
 fn parallel_sampling_preserves_discovered_index_ordering() -> TestResult {
     let (_dir, discovered) = write_files_relative(&[
-        "a.rs", "b.rs", "c.rs", "d.rs", "e.rs", "f.rs", "g.rs", "h.rs",
+        "a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt", "h.txt",
     ])?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
-    let (samples, _skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
-        .check("tight deadline should not fire here")?;
+    let (records, _skipped) =
+        run_standalone_pass2(&discovered, &limits, &sink, &deadline).check("pass2 succeeds")?;
 
-    let actual: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
+    let actual: Vec<&str> = records.iter().map(|s| s.relative_path.as_str()).collect();
     let expected: Vec<&str> = discovered
         .iter()
         .map(|d| d.relative_path.as_str())
@@ -180,23 +193,16 @@ fn parallel_sampling_preserves_discovered_index_ordering() -> TestResult {
     ensure_eq(
         &actual,
         &expected,
-        "sample indices mirror discovered indices",
+        "chunked outcomes mirror discovered indices",
     )?;
     Ok(())
 }
 
-/// Pins that the concurrent byte-cap check uses CAS, not load+store —
-/// i.e. when several workers would each push past the cap, exactly one
-/// worker surfaces the `ImportTooLarge` error and the rest bail. Without
-/// the CAS the test would occasionally observe two errors or a
-/// race-dependence on worker scheduling.
 #[test]
 fn parallel_sampling_total_byte_cap_is_enforced_atomically() -> TestResult {
-    // 11 files x 100 KB = 1.1 MB body total; set cap to 300 KB so the
-    // first 3 workers succeed and the 4th fails the CAS on the total.
     let (_dir, discovered) = write_files_relative(&[
-        "f1.rs", "f2.rs", "f3.rs", "f4.rs", "f5.rs", "f6.rs", "f7.rs", "f8.rs", "f9.rs", "f10.rs",
-        "f11.rs",
+        "f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt", "f6.txt", "f7.txt", "f8.txt", "f9.txt",
+        "f10.txt", "f11.txt",
     ])?;
     let limits = ResourceLimits {
         max_total_import_bytes: 300_000,
@@ -205,7 +211,7 @@ fn parallel_sampling_total_byte_cap_is_enforced_atomically() -> TestResult {
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
-    let err = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+    let err = run_standalone_pass2(&discovered, &limits, &sink, &deadline)
         .check_err("total-byte cap must fire under this many large files")?;
     match err {
         PublishError::ImportTooLarge { total, limit } => {
@@ -224,9 +230,6 @@ fn parallel_sampling_total_byte_cap_is_enforced_atomically() -> TestResult {
     Ok(())
 }
 
-/// An oversized file (over `limits.max_file_bytes`) must be skipped with a
-/// recorded reason — not fatal to the rest of the batch — and the surviving
-/// samples must stay in discovered order.
 #[test]
 fn oversized_files_are_skipped_and_returned_not_fatal() -> TestResult {
     let dir = tempfile::tempdir().check("tempdir")?;
@@ -253,14 +256,14 @@ fn oversized_files_are_skipped_and_returned_not_fatal() -> TestResult {
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
 
-    let (samples, skipped) = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+    let (records, skipped) = run_standalone_pass2(&discovered, &limits, &sink, &deadline)
         .check("an oversized file must be skipped, not fatal")?;
 
-    ensure_eq(&samples.len(), &1, "only the in-cap file is sampled")?;
+    ensure_eq(&records.len(), &1, "only the in-cap file is parsed")?;
     ensure_eq(
-        &samples.first().check("samples[0] exists")?.relative_path,
+        &records.first().check("records[0] exists")?.relative_path,
         &"small.rs",
-        "samples[0].relative_path == \"small.rs\"",
+        "records[0].relative_path == \"small.rs\"",
     )?;
     ensure_eq(
         &skipped.len(),
@@ -289,21 +292,15 @@ fn oversized_files_are_skipped_and_returned_not_fatal() -> TestResult {
     Ok(())
 }
 
-/// A deadline that's already spent (exceeded before the first file is
-/// dispatched) must surface as `PublishError::TimeBudgetExceeded`
-/// rather than completing the work — the wall-clock guard's whole
-/// reason to exist is to bound a pathological repo.
 #[test]
 fn expired_deadline_returns_time_budget_exceeded() -> TestResult {
-    let (_dir, discovered) = write_files_relative(&["only.rs"])?;
+    let (_dir, discovered) = write_files_relative(&["only.txt"])?;
     let limits = ResourceLimits::default();
     let sink = crate::progress::NoopProgressSink;
     let deadline = crate::util::Deadline::after(Duration::from_millis(1));
-    // Sleep past the deadline so the worker loop sees it as
-    // already-spent before dispatching its first sample.
     thread::sleep(Duration::from_millis(20));
 
-    let err = sample_all_with_deadline(&discovered, &limits, &sink, &deadline)
+    let err = run_standalone_pass2(&discovered, &limits, &sink, &deadline)
         .check_err("deadline must fire before first sample completes")?;
     match err {
         PublishError::TimeBudgetExceeded { .. } => {}
@@ -317,9 +314,6 @@ fn expired_deadline_returns_time_budget_exceeded() -> TestResult {
     Ok(())
 }
 
-/// Progress events arrive at the sink at least once per sampled file
-/// (the exact ordering is racy by design). We just pin the count — parallel
-/// sampling must keep the progress channel honest during an initial import.
 #[test]
 fn parallel_sampling_emits_one_progress_event_per_file() -> TestResult {
     #[derive(Default)]
@@ -330,12 +324,12 @@ fn parallel_sampling_emits_one_progress_event_per_file() -> TestResult {
         }
     }
 
-    let (_dir, discovered) = write_files_relative(&["p1.rs", "p2.rs", "p3.rs"])?;
+    let (_dir, discovered) = write_files_relative(&["p1.txt", "p2.txt", "p3.txt"])?;
     let limits = ResourceLimits::default();
 
     let counter = Counter::default();
     let deadline = crate::util::Deadline::after(Duration::from_secs(10));
-    sample_all_with_deadline(&discovered, &limits, &counter, &deadline)
+    run_standalone_pass2(&discovered, &limits, &counter, &deadline)
         .check("samples should succeed")?;
 
     ensure_eq(
@@ -346,8 +340,6 @@ fn parallel_sampling_emits_one_progress_event_per_file() -> TestResult {
     Ok(())
 }
 
-/// A path whose stat fails with something other than `NotFound`: a regular
-/// file used as a directory component (`ENOTDIR`).
 fn unstatable_path(dir: &std::path::Path) -> TestResult<std::path::PathBuf> {
     let plain = dir.join("plain.rs");
     std::fs::write(&plain, b"fn plain() {}\n").check("write the plain file")?;
@@ -460,11 +452,3 @@ fn sample_file_recomputes_binary_classification_from_actual_bytes() -> TestResul
     )?;
     Ok(())
 }
-
-/// A sync deadline no test parse comes near.
-fn generous_deadline() -> crate::util::Deadline {
-    crate::util::Deadline::after(std::time::Duration::from_mins(10))
-}
-
-#[path = "evidence_limits_tests.rs"]
-mod evidence_limits_tests;

@@ -10,7 +10,7 @@ use std::path::Path;
 
 /// SlugAudit's own data directory inside a project root (the project
 /// database lives here). Never indexed.
-pub const ACTIVATION_RELATIVE_DIR: &str = ".planning/slugaudit";
+pub(crate) const ACTIVATION_RELATIVE_DIR: &str = ".planning/slugaudit";
 const EXCLUDED_COMPONENT: &str = ".git";
 
 /// Directory-level hard exclusions: VCS internals and SlugAudit's own
@@ -53,7 +53,7 @@ fn is_scratch_file_name(relative: &Path) -> bool {
 
 /// The hardcoded exclusion set, shared by discovery and every sync pass.
 #[must_use]
-pub fn is_excluded_path(relative: &str) -> bool {
+pub(crate) fn is_excluded_path(relative: &str) -> bool {
     is_excluded_dir(relative) || is_scratch_file_name(Path::new(relative))
 }
 

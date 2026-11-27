@@ -84,7 +84,6 @@ CREATE TABLE IF NOT EXISTS files (
     -- matters.
     file_class TEXT NOT NULL DEFAULT 'authored'
         CHECK (file_class IN ('authored', 'generated', 'vendored')),
-    content TEXT,
     -- BLAKE3 over the file's content for 'indexed'/'binary' rows
     -- (hash_algorithm = 'blake3-v1'). A 'skipped' row retains no content,
     -- and reading the file to hash it would defeat the skip, so its
@@ -124,7 +123,12 @@ CREATE TABLE IF NOT EXISTS files (
     parse_error_reason TEXT,
     extraction_completeness TEXT NOT NULL
         CHECK (extraction_completeness IN ('Full', 'Partial', 'ContentOnly', 'Unavailable')),
-    last_revision_id INTEGER NOT NULL REFERENCES revisions (id)
+    last_revision_id INTEGER NOT NULL REFERENCES revisions (id),
+    -- Full UTF-8 source text for 'indexed' files; NULL for 'binary' and
+    -- 'skipped' rows. Placed as the final column of `files` so metadata scans
+    -- (`SELECT path, content_hash, file_kind, skip_reason, content IS NULL`)
+    -- read fixed/short record headers without traversing overflow pages.
+    content TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_path_hash ON files (path, content_hash);
@@ -169,9 +173,15 @@ CREATE TABLE IF NOT EXISTS evidence (
 
 CREATE INDEX IF NOT EXISTS idx_evidence_kind ON evidence (kind);
 CREATE INDEX IF NOT EXISTS idx_evidence_file ON evidence (file_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_item_name
+    ON evidence (json_extract(payload, '$.name'), file_id)
+    WHERE kind IN ('Structure', 'Symbol');
 CREATE INDEX IF NOT EXISTS idx_evidence_call_callee
     ON evidence (json_extract(payload, '$.callee_name'), file_id)
     WHERE kind = 'Call';
+CREATE INDEX IF NOT EXISTS idx_evidence_rust_mod_path
+    ON evidence (file_id)
+    WHERE kind = 'Structure' AND instr(payload, 'rust_mod_path') > 0;
 
 -- Derived from import evidence during sync (src/graph/). Kept separate from
 -- `evidence` because traversal needs real from/to columns for recursive

@@ -1,6 +1,6 @@
 //! Resource limit profiles (Lean, Audit, Adaptive).
 
-use super::env_error::EnvConfigError;
+use super::limit_overrides::EnvConfigError;
 use super::limits::{EvidenceLimits, ResourceLimits, SQLITE_MAX_VALUE_BYTES};
 use super::system_ram::{MemoryDetectError, SystemMemoryInfo, detect_system_memory};
 use schemars::JsonSchema;
@@ -51,8 +51,8 @@ const PROFILE_EXPECTED: &str = "one of `lean`, `audit`, `adaptive`";
 pub(crate) fn profile_from_env() -> Result<Option<AuditProfile>, EnvConfigError> {
     match std::env::var("SLUGAUDIT_PROFILE") {
         Err(std::env::VarError::NotPresent) => Ok(None),
-        // `VarError::NotUnicode`'s Display prints the raw value, which may be
-        // sensitive, so only the variable name is reported.
+        // `VarError::NotUnicode`'s Display prints lossy bytes rather than a
+        // clean type hint, so only the variable name is reported.
         Err(std::env::VarError::NotUnicode(_)) => Err(EnvConfigError::NotUnicode {
             variable: "SLUGAUDIT_PROFILE".to_owned(),
             expected: PROFILE_EXPECTED.to_owned(),
@@ -142,7 +142,7 @@ pub(super) fn lean_limits() -> ResourceLimits {
         max_structure_query_bytes: DEFAULT_MAX_STRUCTURE_QUERY_BYTES,
         max_structure_matches: 2_000,
         max_structure_execution_time: Duration::from_secs(10),
-        max_sync_wall_clock: Duration::from_mins(2),
+        max_sync_wall_clock: Duration::from_secs(30),
         max_result_store_bytes: result_store_budget(32 * 1024 * 1024),
         result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
@@ -169,7 +169,7 @@ fn audit_limits() -> ResourceLimits {
         max_structure_query_bytes: DEFAULT_MAX_STRUCTURE_QUERY_BYTES,
         max_structure_matches: 20_000,
         max_structure_execution_time: Duration::from_mins(1),
-        max_sync_wall_clock: Duration::from_mins(20),
+        max_sync_wall_clock: Duration::from_secs(90),
         max_result_store_bytes: result_store_budget(256 * 1024 * 1024),
         result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {
@@ -181,7 +181,7 @@ fn audit_limits() -> ResourceLimits {
 }
 
 /// Budgets scaled from detected host memory.
-pub(super) fn adaptive_limits(ram: SystemMemoryInfo) -> ResourceLimits {
+pub(crate) fn adaptive_limits(ram: SystemMemoryInfo) -> ResourceLimits {
     let import_budget = (ram.available_bytes / 2).max(4 * 1024 * 1024 * 1024);
     // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
     // clamping here keeps a per-file skip from becoming a failed
@@ -201,7 +201,7 @@ pub(super) fn adaptive_limits(ram: SystemMemoryInfo) -> ResourceLimits {
         max_structure_query_bytes: DEFAULT_MAX_STRUCTURE_QUERY_BYTES,
         max_structure_matches: 20_000,
         max_structure_execution_time: Duration::from_mins(1),
-        max_sync_wall_clock: Duration::from_mins(20),
+        max_sync_wall_clock: Duration::from_secs(90),
         max_result_store_bytes: result_store_budget(max_file as usize),
         result_active_grace_secs: DEFAULT_RESULT_ACTIVE_GRACE_SECS,
         evidence: EvidenceLimits {

@@ -1,13 +1,14 @@
-//! The client model encoded by the registry: how slugaudit can register with a
-//! client ([`Strategy`]), the on-disk shape a writer must produce
-//! ([`ConfigShape`]), where its config lives ([`ConfigPath`]), how the entry's
-//! facts were established ([`Evidence`]), and the argument grammar of its
-//! `mcp add` subcommand ([`Dialect`]).
+//! The client model encoded by the registry: client specification record
+//! ([`AgentDef`]), how slugaudit can register with a client ([`Strategy`]),
+//! the on-disk shape a writer must produce ([`ConfigShape`]), where its config
+//! lives ([`ConfigPath`]), how the entry's facts were established
+//! ([`Evidence`]), and the argument grammar of its `mcp add` subcommand
+//! ([`Dialect`]).
 //!
-//! [`crate::connect_agents`] re-exports every type; the registry table and its
-//! lookups live there.
+//! [`crate::connect`] re-exports every type; the registry table and its
+//! lookups live in `agents`.
 
-use crate::cli::ConnectError;
+use super::ConnectError;
 use std::path::{Path, PathBuf};
 
 /// The binary path as text a client can launch, or the typed refusal when it
@@ -24,6 +25,99 @@ pub(crate) fn binary_text(binary: &Path) -> Result<&str, ConnectError> {
             "the binary path is not valid UTF-8, so it cannot be registered with a client",
         ))
     })
+}
+
+/// A specification for an AI agent or editor client supported by `slugaudit connect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentDef {
+    /// Stable registry identifier used on the command line (e.g. `claude`).
+    pub id: &'static str,
+    /// Human-readable client name shown in prompts and lists.
+    pub display_name: &'static str,
+    /// How slugaudit can register with this client.
+    pub strategy: Strategy,
+    /// The client's real executable: invocation and detection. Never a display
+    /// name (warp's CLI is `oz`).
+    pub cli: Option<&'static str>,
+    /// An executable that can only *confirm* registration (`mcp list`), not
+    /// create it — cursor's `agent`. Used for install detection only; never
+    /// spawned, and never for add/remove.
+    pub verify_cli: Option<&'static str>,
+    /// Where the client's config file lives.
+    pub config: ConfigPath,
+    /// On-disk shape of the `slugaudit` entry the client reads.
+    pub shape: ConfigShape,
+    /// Argument grammar of the client's `mcp add` subcommand.
+    pub dialect: Dialect,
+    /// How this entry's facts were established.
+    pub evidence: Evidence,
+    /// Write the config file when the CLI is absent or its `mcp add` fails.
+    pub file_fallback: bool,
+    /// The client needs manual/UI steps beyond an automated write; `connect`
+    /// refuses and prints [`AgentDef::guidance`] instead.
+    pub manual_steps: bool,
+    /// Paste-ready remedy shown when the automated path is refused, with
+    /// `{binary}` standing for the slugaudit executable. Empty when the
+    /// automated path is sufficient.
+    pub remedy: &'static str,
+    /// The version (and probe date) this entry's information comes from, e.g.
+    /// `goose 1.52.0 (probed 2026-09-30)` or `vendor docs, as of 2026-09-30`.
+    /// Never an invented version.
+    pub reference: &'static str,
+    /// The vendor page a human can re-check.
+    pub docs_url: &'static str,
+    /// Reconciliation note for docs: what is verified, contested, or pending.
+    pub note: &'static str,
+}
+
+impl AgentDef {
+    /// The sentence explaining why `connect` must refuse this entry, or `None`
+    /// when the automated path is sufficient.
+    #[must_use]
+    pub fn blocker(&self) -> Option<&'static str> {
+        if self.manual_steps {
+            return Some(match self.shape {
+                ConfigShape::GooseExtensions => {
+                    "its config is YAML, which the JSON writer cannot merge without clobbering it"
+                }
+                ConfigShape::Unknown => "no machine-writable shape is established for its config",
+                _ => "it requires a manual step slugaudit cannot perform",
+            });
+        }
+        None
+    }
+
+    /// The manual remedy for a refusal, with `{binary}` resolved, or `None`
+    /// when the entry carries no remedy. A path no client can represent yields
+    /// the refusal text itself, never a lossy rendering.
+    #[must_use]
+    pub fn guidance(&self, binary: &Path) -> Option<String> {
+        let remedy = self.remedy.trim();
+        if remedy.is_empty() {
+            return None;
+        }
+        Some(match binary_text(binary) {
+            Ok(text) => remedy.replace("{binary}", text),
+            Err(error) => error.to_string(),
+        })
+    }
+
+    /// True when this entry registers itself by writing the config file, either
+    /// as its primary strategy or as a fallback.
+    #[must_use]
+    pub fn writes_config_file(&self) -> bool {
+        self.file_fallback
+            || matches!(
+                self.strategy,
+                Strategy::ConfigFile | Strategy::CliInteractiveOnly
+            )
+    }
+
+    /// Executables that prove the client is present: the invocation CLI, or a
+    /// verify-only CLI.
+    pub(super) fn executables(&self) -> impl Iterator<Item = &'static str> {
+        self.cli.into_iter().chain(self.verify_cli)
+    }
 }
 
 /// How slugaudit can register itself with a client.
@@ -240,8 +334,10 @@ pub enum Dialect {
     Claude,
     /// `mcp add <name> --command <binary>` (Hermes)
     Hermes,
-    /// `mcp add <name> [--scope ...] -- <binary>`
+    /// `mcp add <name> -- <binary>` (Codex, Copilot, `OpenCode`, Amp, Pi)
     DashSeparator,
+    /// `mcp add <name> --scope user -- <binary>` (Grok CLI)
+    DashSeparatorUserScope,
     /// `mcp add --name <name> --command <binary>` (Amazon Q)
     Q,
     /// `mcp add <name> --command <binary>` (Crush)
@@ -272,57 +368,5 @@ pub enum Dialect {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
-
-    #[test]
-    fn the_appdata_token_expands_from_the_environment_and_is_never_guessed() -> TestResult {
-        let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-        let home = Path::new("/home/u");
-
-        let set = temp_env::with_var("APPDATA", Some("/roaming"), || {
-            expand_os_tokens("%APPDATA%/Claude/c.json", home)
-        });
-        let unset = temp_env::with_var_unset("APPDATA", || {
-            expand_os_tokens("%APPDATA%/Claude/c.json", home)
-        });
-        let empty = temp_env::with_var("APPDATA", Some(""), || {
-            expand_os_tokens("%APPDATA%/Claude/c.json", home)
-        });
-
-        ensure_eq(
-            &set,
-            &Some(PathBuf::from("/roaming/Claude/c.json")),
-            "set == Some(PathBuf::from(\"/roaming/Claude/c.json\"))",
-        )?;
-        ensure_eq(
-            &unset,
-            &None,
-            "an unset APPDATA must not become home/AppData",
-        )?;
-        ensure_eq(
-            &empty,
-            &None,
-            "an empty APPDATA must not produce a relative path",
-        )?;
-        ensure_eq(
-            &expand_os_tokens(".config/x.json", home),
-            &Some(PathBuf::from("/home/u/.config/x.json")),
-            "expand_os_tokens(\".config/x.json\", home) == Some(PathBuf::from(\"/home/u/.config/x.json\"))",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn shapes_without_a_json_writer_have_no_entry() -> TestResult {
-        for shape in [ConfigShape::GooseExtensions, ConfigShape::Unknown] {
-            let result = shape.entry(Path::new("/bin/slugaudit"));
-            ensure(
-                matches!(result, Err(ConnectError::UnsupportedAgent { .. })),
-                format!("{shape:?}: {result:?}"),
-            )?;
-        }
-        Ok(())
-    }
-}
+#[path = "registry_types_tests.rs"]
+mod tests;

@@ -1,8 +1,6 @@
 use super::*;
 use crate::model::{ExtractionCompleteness, ParseOutcome, ParserAvailability};
 use crate::parse::fetch_gate::test_controls;
-use crate::sync::analyze_results::COOLDOWN_REASON;
-use crate::sync::analyze_seam::forced_failure;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 
 /// `analyze` under the default `max_parse_bytes` and a deadline no test
@@ -520,7 +518,8 @@ fn a_load_failure_that_is_not_a_fetch_failure_does_not_close_the_gate() -> TestR
         "crate::parse::fetch_gate::load_failed_retry_due().check(\"read the fetch gate\")?",
     )?;
     ensure(
-        crate::parse::fetch_gate::is_locally_failed("rust").check("read local load failure")?,
+        crate::parse::local_load_failures::is_locally_failed("rust")
+            .check("read local load failure")?,
         "non-fetch load failure must record language as locally failed",
     )?;
     Ok(())

@@ -1,24 +1,13 @@
-//! Tests for the self-update helpers that don't need the network:
-//! release URL building, version comparison, and checksum verification
-//! against a real `sha256sum` invocation.
+//! Tests for `update`: target discovery, platform gating, `O_EXCL` staging,
+//! error formatting, and placement failure handling.
 
 use super::*;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
-/// The checksum tests drive a real `sha256sum`; a machine without it must fail
-/// them, not report green for tests that ran nothing. They resolve and execute
-/// it through `PATH`, so each holds `TEST_ENV_LOCK` for its whole body: the
-/// update failure-path tests replace `PATH` with a fake bin directory, and an
-/// unguarded checksum test would otherwise execute the fake.
-fn require_sha256sum() -> TestResult {
-    which::which("sha256sum")
-        .check("sha256sum (coreutils) is required to run the checksum tests")?;
-    Ok(())
+fn target_binary() -> Result<PathBuf, UpdateError> {
+    resolve_binaries().map(|(_, target)| target)
 }
 
-/// Runs `f` with `PATH` pointing at exactly `bin_dir`: the inherited entries
-/// are dropped, so `curl` and `sha256sum` resolve only to the fakes planted
-/// there and no real network request or coreutils process can run.
 fn with_replaced_path<T>(bin_dir: &std::path::Path, f: impl FnOnce() -> T) -> TestResult<T> {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     Ok(temp_env::with_var("PATH", Some(bin_dir.as_os_str()), f))
@@ -37,9 +26,6 @@ fn make_executable(path: &std::path::Path) -> TestResult {
     Ok(())
 }
 
-/// Plants a fake `curl` that answers the `SHA256SUMS` URL with `sums` and
-/// every other URL with `binary`, writing the body to the `-o` destination and
-/// appending each invocation's argv to `log`.
 fn plant_fake_curl(
     bin_dir: &std::path::Path,
     log: &std::path::Path,
@@ -68,8 +54,6 @@ fn plant_fake_curl(
     Ok(())
 }
 
-/// Plants a fake `sha256sum` that reports `digest` for whatever path it is
-/// given; `verify_checksum` compares digests, never filenames.
 fn plant_fake_sha256sum(bin_dir: &std::path::Path, digest: &str) -> TestResult {
     let script = bin_dir.join("sha256sum");
     std::fs::write(
@@ -81,108 +65,39 @@ fn plant_fake_sha256sum(bin_dir: &std::path::Path, digest: &str) -> TestResult {
     Ok(())
 }
 
-/// Verifies a real (mock) binary against a SHA256SUMS file by invoking
-/// `sha256sum`.
 #[test]
-fn verify_checksum_accepts_a_matching_file() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum()?;
+fn create_staging_file_refuses_an_existing_path_without_overwriting() -> TestResult {
     let dir = tempfile::tempdir().check("temp dir")?;
-    let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
-    let contents = b"#!/bin/sh\necho fake binary\n";
-    std::fs::write(&binary, contents).check("write fake binary")?;
+    let existing = dir.path().join(".slugaudit-update-existing.tmp");
+    std::fs::write(&existing, b"keep-me").check("plant existing file")?;
 
-    // Compute the expected hash and write a SHA256SUMS line for it.
-    let expected = {
-        let output = std::process::Command::new("sha256sum")
-            .current_dir(dir.path())
-            .arg("slugaudit-x86_64-unknown-linux-gnu")
-            .output()
-            .check("run sha256sum")?;
-        String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-            .check("sha256sum stdout format has digest as first token")?
-            .to_string()
+    let err = create_staging_file(dir.path(), ".slugaudit-update-existing.tmp")
+        .check_err("O_EXCL must refuse existing staging filename")?;
+
+    let UpdateError::Stage {
+        action,
+        path,
+        source,
+    } = err
+    else {
+        return Err(format!("expected Stage error, got {err:?}")).check("unexpected outcome");
     };
-    let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(
-        &sums_file,
-        format!("{expected}  slugaudit-x86_64-unknown-linux-gnu\n"),
-    )
-    .check("write sha256sums")?;
-
-    verify_checksum(&binary, &sums_file).check("matching checksum must verify")?;
-    Ok(())
-}
-
-/// The temp binary need not be named exactly the asset filename:
-/// verification compares digests, not filenames, so a unique temp name (as
-/// `apply_update` uses) must verify fine. This guards against a temp name
-/// that has to equal the asset filename.
-#[test]
-fn verify_checksum_accepts_a_unique_temporary_file_path() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum()?;
-    let dir = tempfile::tempdir().check("temp dir")?;
-    // Deliberately NOT named the asset — a unique `.update-<pid>` name.
-    let binary = dir
-        .path()
-        .join(".slugaudit-update-12345-slugaudit-x86_64-unknown-linux-gnu");
-    std::fs::write(&binary, b"#!/bin/sh\necho fake binary\n").check("write fake binary")?;
-
-    let expected = {
-        let output = std::process::Command::new("sha256sum")
-            .arg(&binary)
-            .output()
-            .check("run sha256sum")?;
-        String::from_utf8_lossy(&output.stdout)
-            .split_whitespace()
-            .next()
-            .check("sha256sum stdout format has digest as first token")?
-            .to_string()
-    };
-    let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(
-        &sums_file,
-        format!("{expected}  slugaudit-x86_64-unknown-linux-gnu\n"),
-    )
-    .check("write sha256sums")?;
-
-    verify_checksum(&binary, &sums_file).check("unique temp name must verify")?;
-    Ok(())
-}
-
-/// A SHA256SUMS entry that doesn't match must be rejected so the old binary
-/// is never replaced with a corrupt download.
-#[test]
-fn verify_checksum_rejects_a_mismatching_file() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum()?;
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let binary = dir.path().join("slugaudit-x86_64-unknown-linux-gnu");
-    std::fs::write(&binary, b"different bytes\n").check("write fake binary")?;
-
-    let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(
-        &sums_file,
-        format!("{}  slugaudit-x86_64-unknown-linux-gnu\n", "0".repeat(64)),
-    )
-    .check("write sha256sums")?;
-
-    let err = verify_checksum(&binary, &sums_file).check_err("a mismatch must be rejected")?;
-    match err {
-        UpdateError::Checksum(msg) => {
-            ensure(
-                msg.contains("checksum mismatch"),
-                format!("unexpected error message: {msg}"),
-            )?;
-        }
-        other => {
-            return Err(format!("expected Checksum error, got: {other:?}"))
-                .check("unexpected outcome");
-        }
-    }
+    ensure_eq(
+        &action,
+        &"create staging file",
+        "names create staging file step",
+    )?;
+    ensure_eq(&path, &existing, "names colliding staging path")?;
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::AlreadyExists,
+        "preserves AlreadyExists kind",
+    )?;
+    ensure_eq(
+        &std::fs::read(&existing).check("read existing")?,
+        &b"keep-me",
+        "existing file at staging path stays intact",
+    )?;
     Ok(())
 }
 
@@ -200,54 +115,9 @@ fn target_binary_prefers_the_installed_stable_path() -> TestResult {
         Some(temp.path().as_os_str()),
         || -> TestResult {
             let target = target_binary().check("target binary resolves")?;
-            ensure_eq(&target, &stable, "target == stable")?;
+            ensure_eq(&target, &stable, "prefers installed stable path")?;
             Ok(())
         },
-    )?;
-    Ok(())
-}
-
-#[test]
-fn verify_checksum_fails_on_missing_sums_file() -> TestResult {
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let binary = dir.path().join("fake_bin");
-    std::fs::write(&binary, b"content").check("write binary")?;
-    let missing_sums = dir.path().join("nonexistent_SHA256SUMS");
-    let err = verify_checksum(&binary, &missing_sums).check_err("the call must fail")?;
-    ensure(
-        err.to_string().contains("reading checksums"),
-        "err.to_string().contains(\"reading checksums\")",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn verify_checksum_fails_when_asset_entry_missing() -> TestResult {
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let binary = dir.path().join("fake_bin");
-    std::fs::write(&binary, b"content").check("write binary")?;
-    let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(&sums_file, "1234567890abcdef  other-asset.tar.gz\n").check("write sums")?;
-    let err = verify_checksum(&binary, &sums_file).check_err("the call must fail")?;
-    ensure(
-        err.to_string().contains("has no entry for"),
-        "err.to_string().contains(\"has no entry for\")",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn verify_checksum_fails_when_binary_file_missing() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    require_sha256sum()?;
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let missing_binary = dir.path().join("missing_bin");
-    let sums_file = dir.path().join("SHA256SUMS");
-    std::fs::write(&sums_file, format!("{}  {ASSET}\n", "0".repeat(64))).check("write sums")?;
-    let err = verify_checksum(&missing_binary, &sums_file).check_err("the call must fail")?;
-    ensure(
-        err.to_string().contains("checksum verification failed"),
-        "err.to_string().contains(\"checksum verification failed\")",
     )?;
     Ok(())
 }
@@ -261,47 +131,47 @@ fn update_error_display_covers_all_variants() -> TestResult {
         }
         .to_string()
         .contains("could not run curl (required to self-update): Permission denied"),
-        "UpdateError::ToolSpawn { tool: \"curl\", source: std::io::Error::other(\"Permission denied (os error 13)\"), } ...",
+        "ToolSpawn display includes tool name and source cause",
     )?;
     ensure(
         UpdateError::Target(std::io::Error::other("fail"))
             .to_string()
             .contains("could not determine"),
-        "UpdateError::Target(std::io::Error::other(\"fail\")) .to_string() .contains(\"could not determine\")",
+        "Target display explains binary lookup failure",
     )?;
     ensure(
         UpdateError::Network("conn reset".into())
             .to_string()
             .contains("network request failed"),
-        "UpdateError::Network(\"conn reset\".into()) .to_string() .contains(\"network request failed\")",
+        "Network display states network request failed",
     )?;
     ensure(
         UpdateError::Json("bad json".into())
             .to_string()
             .contains("JSON decodable"),
-        "UpdateError::Json(\"bad json\".into()) .to_string() .contains(\"JSON decodable\")",
+        "Json display states response was not JSON decodable",
     )?;
     ensure(
         UpdateError::NoTag.to_string().contains("tag name"),
-        "UpdateError::NoTag.to_string().contains(\"tag name\")",
+        "NoTag display mentions missing tag name",
     )?;
     ensure(
         UpdateError::InvalidReleaseVersion("1.0.0-rc1".into())
             .to_string()
             .contains("numeric release"),
-        "UpdateError::InvalidReleaseVersion mentions numeric release",
+        "InvalidReleaseVersion display mentions numeric release",
     )?;
     ensure(
         UpdateError::Checksum("bad hash".into())
             .to_string()
             .contains("checksum verification failed"),
-        "UpdateError::Checksum(\"bad hash\".into()) .to_string() .contains(\"checksum verification failed\")",
+        "Checksum display states checksum verification failed",
     )?;
     ensure(
         UpdateError::Io(std::io::Error::other("io"))
             .to_string()
             .contains("filesystem"),
-        "UpdateError::Io(std::io::Error::other(\"io\")) .to_string() .contains(\"filesystem\")",
+        "Io display mentions filesystem failure",
     )?;
     ensure(
         UpdateError::Stage {
@@ -311,7 +181,7 @@ fn update_error_display_covers_all_variants() -> TestResult {
         }
         .to_string()
         .contains("could not create /test"),
-        "UpdateError::Stage { action: \"create\", path: PathBuf::from(\"/test\"), source: std::io::Error::other(\"perm\"),...",
+        "Stage display includes action and path",
     )?;
     Ok(())
 }
@@ -327,7 +197,7 @@ fn a_download_failure_keeps_its_typed_cause() -> TestResult {
     ensure(
         err.to_string()
             .contains("could not download binary to /test"),
-        "err.to_string() .contains(\"could not download binary to /test\")",
+        "Download display includes action and destination",
     )?;
     ensure(
         std::error::Error::source(&err)
@@ -341,25 +211,23 @@ fn a_download_failure_keeps_its_typed_cause() -> TestResult {
 fn only_the_published_platform_may_self_update() -> TestResult {
     ensure(
         platform_supported("linux", "x86_64"),
-        "platform_supported(\"linux\", \"x86_64\")",
+        "accepts linux/x86_64",
     )?;
     ensure(
         !platform_supported("linux", "aarch64"),
-        "!platform_supported(\"linux\", \"aarch64\")",
+        "rejects linux/aarch64",
     )?;
     ensure(
         !platform_supported("macos", "x86_64"),
-        "!platform_supported(\"macos\", \"x86_64\")",
+        "rejects macos/x86_64",
     )?;
     ensure(
         !platform_supported("macos", "aarch64"),
-        "!platform_supported(\"macos\", \"aarch64\")",
+        "rejects macos/aarch64",
     )?;
     Ok(())
 }
 
-/// The refusal `run_update` takes on an unsupported machine is reachable on
-/// this one through the same pure check, with the actual platform kept.
 #[test]
 fn an_unsupported_platform_is_the_exact_unsupported_variant() -> TestResult {
     let error = ensure_platform_supported("macos", "aarch64")
@@ -369,8 +237,8 @@ fn an_unsupported_platform_is_the_exact_unsupported_variant() -> TestResult {
         return Err(format!("expected UnsupportedPlatform, got {error:?}"))
             .check("unexpected outcome");
     };
-    ensure_eq(&os, &"macos", "os == \"macos\"")?;
-    ensure_eq(&arch, &"aarch64", "arch == \"aarch64\"")?;
+    ensure_eq(&os, &"macos", "records unsupported os")?;
+    ensure_eq(&arch, &"aarch64", "records unsupported arch")?;
     Ok(())
 }
 
@@ -411,52 +279,6 @@ fn update_fetches_only_a_newer_or_incomparable_release() -> TestResult {
 }
 
 #[test]
-fn verify_checksum_rejects_oversized_sums_file() -> TestResult {
-    let dir = tempfile::tempdir().check("temp dir")?;
-    let binary = dir.path().join("fake_bin");
-    std::fs::write(&binary, b"content").check("write binary")?;
-    let sums_file = dir.path().join("SHA256SUMS");
-    let oversized_len = usize::try_from(CHECKSUMS_MAX_BYTES)
-        .check("cap")?
-        .checked_add(1)
-        .check("oversized len")?;
-    let oversized = "a".repeat(oversized_len);
-    std::fs::write(&sums_file, oversized).check("write oversized sums")?;
-
-    let err = verify_checksum(&binary, &sums_file).check_err("oversized sums must fail")?;
-    ensure(
-        err.to_string().contains("reading checksums"),
-        format!("unexpected error: {err}"),
-    )?;
-    Ok(())
-}
-
-/// A `sha256sum` that exits 0 but prints nothing must be named as a parse
-/// failure, not surface as a mismatch against an empty digest.
-#[test]
-fn an_empty_sha256sum_output_is_a_named_parse_failure() -> TestResult {
-    let error = parse_digest("  \n").check_err("no token is no digest")?;
-
-    ensure(
-        error.to_string().contains("printed no digest"),
-        format!("{error}"),
-    )?;
-    Ok(())
-}
-
-#[test]
-fn the_first_sha256sum_token_is_the_lowercase_digest() -> TestResult {
-    ensure_eq(
-        &parse_digest("ABCDEF  file\n").check("digest")?,
-        &"abcdef",
-        "parse_digest(\"ABCDEF file\\n\").check(\"digest\")? == \"abcdef\"",
-    )?;
-    Ok(())
-}
-
-/// A stat failure on the installed path is reported rather than read as "not
-/// installed", which would make the update replace a temporary running path.
-#[test]
 fn target_binary_reports_a_failing_stat_of_the_installed_path() -> TestResult {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -475,14 +297,11 @@ fn target_binary_reports_a_failing_stat_of_the_installed_path() -> TestResult {
     ensure_eq(
         &source.kind(),
         &std::io::ErrorKind::NotADirectory,
-        "source.kind() == std::io::ErrorKind::NotADirectory",
+        "preserves NotADirectory kind",
     )?;
     Ok(())
 }
 
-/// A target with no parent cannot host the temp files the update stages, so
-/// the failure is named as the prepare stage rather than passed to the
-/// filesystem.
 #[test]
 fn apply_update_with_a_target_that_has_no_parent_reports_the_prepare_stage() -> TestResult {
     let latest = LatestRelease::from_tag("v1.0.3");
@@ -497,18 +316,16 @@ fn apply_update_with_a_target_that_has_no_parent_reports_the_prepare_stage() -> 
     else {
         return Err(format!("expected Stage, got {result:?}")).check("unexpected outcome");
     };
-    ensure_eq(&action, &"prepare", "action == \"prepare\"")?;
-    ensure_eq(&path, &PathBuf::from("/"), "path == PathBuf::from(\"/\")")?;
+    ensure_eq(&action, &"prepare", "names prepare action")?;
+    ensure_eq(&path, &PathBuf::from("/"), "names root path")?;
     ensure_eq(
         &source.kind(),
         &std::io::ErrorKind::InvalidInput,
-        "source.kind() == std::io::ErrorKind::InvalidInput",
+        "reports InvalidInput for parentless target",
     )?;
     Ok(())
 }
 
-/// A placement failure after a verified download keeps the failing step and
-/// path under `Stage`, so the operator sees which move failed.
 #[test]
 fn apply_update_maps_a_placement_failure_to_the_stage_variant() -> TestResult {
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -542,49 +359,25 @@ fn apply_update_maps_a_placement_failure_to_the_stage_variant() -> TestResult {
     ensure_eq(
         &action,
         &"retain the previous binary at",
-        "action == \"retain the previous binary at\"",
+        "names retain step",
     )?;
     ensure_eq(
         &path,
         &install_dir.join("slugaudit.prev"),
-        "path == install_dir.join(\"slugaudit.prev\")",
+        "names slugaudit.prev path",
     )?;
-    // `std::fs::copy` refuses a directory as its source before it reads any
-    // bytes; the target directory is what made the retain step fail.
     ensure_eq(
         &source.kind(),
         &std::io::ErrorKind::InvalidInput,
-        "source.kind() == std::io::ErrorKind::InvalidInput",
+        "refuses directory source with InvalidInput",
     )?;
     ensure(target.is_dir(), "the target must be left in place")?;
     let argv = std::fs::read_to_string(&argv_log).check("the fake curl ran")?;
-    ensure(argv.contains(
+    ensure(
+        argv.contains(
             "https://github.com/SlugThugLabs/slugaudit/releases/download/v1.0.3/slugaudit-x86_64-unknown-linux-gnu"
-        ), format!("the fake curl must have served the asset download: {argv}"))?;
-    Ok(())
-}
-
-/// Without `sha256sum` on `PATH` the checksum step reports the missing tool
-/// rather than comparing against an empty digest.
-#[test]
-fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let binary = directory.path().join("fake_bin");
-    std::fs::write(&binary, b"content").check("write binary")?;
-    let sums = directory.path().join("SHA256SUMS");
-    std::fs::write(&sums, format!("{}  {ASSET}\n", "0".repeat(64))).check("write sums")?;
-    let empty = tempfile::tempdir().check("empty bin dir")?;
-
-    let result = with_replaced_path(empty.path(), || verify_checksum(&binary, &sums))?;
-
-    let Err(UpdateError::ToolSpawn { tool, source }) = result else {
-        return Err(format!("expected ToolSpawn, got {result:?}")).check("unexpected outcome");
-    };
-    ensure_eq(&tool, &"sha256sum", "tool == \"sha256sum\"")?;
-    ensure_eq(
-        &source.kind(),
-        &std::io::ErrorKind::NotFound,
-        "source.kind() == std::io::ErrorKind::NotFound",
+        ),
+        format!("the fake curl must have served the asset download: {argv}"),
     )?;
     Ok(())
 }

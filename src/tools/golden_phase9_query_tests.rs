@@ -189,21 +189,35 @@ fn golden_phase9_mask_paging_keeps_result_columns_aliased_like_paging_keys() -> 
         &json!([{ "cursor": "c", "offset": 7, "next_offset": 8 }]),
         "response[\"rows\"] == json!([{ \"cursor\": \"c\", \"offset\": 7, \"next_offset\": 8 }])",
     )?;
+    let page = response.get("page").check("response[\"page\"]")?;
     ensure(
-        response
-            .get("page")
-            .check("response[\"page\"]")?
-            .get("cursor")
-            .is_none(),
-        "response[\"page\"].get(\"cursor\").is_none()",
+        page.get("cursor").is_none(),
+        "single-page response keeps cursor omitted after masking",
+    )?;
+    ensure_eq(
+        page.get("completeness").check("page[\"completeness\"]")?,
+        &json!("complete"),
+        "mask_paging preserves completeness so regressions are caught",
     )?;
     ensure(
-        response
-            .get("page")
-            .check("response[\"page\"]")?
-            .get("next_offset")
-            .is_none(),
+        page.get("next_offset").is_none(),
         "response[\"page\"].get(\"next_offset\").is_none()",
+    )?;
+
+    let mut multi = run_query(
+        &project,
+        &manager,
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<30) SELECT i, printf('%050d', i) AS pad FROM n",
+        Some(400),
+    )?;
+    mask_paging(&mut multi);
+    ensure_eq(
+        multi
+            .get("page")
+            .and_then(|p| p.get("cursor"))
+            .check("multi-page cursor preserved")?,
+        &json!("<CURSOR>"),
+        "mask_paging masks random UUIDs in cursor while preserving cursor presence",
     )?;
     Ok(())
 }

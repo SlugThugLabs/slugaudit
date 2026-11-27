@@ -16,7 +16,8 @@
       "page_bytes": 65536,
       "bytes_used": 366,
       "limited_by": "limit",
-      "revision_id": "<REVISION_ID>"
+      "revision_id": "<REVISION_ID>",
+      "current_disk_revision_id": "<REVISION_ID>"
     },
     "mechanic_counts": [
       {
@@ -100,7 +101,6 @@
         ]
       }
     ],
-    "mechanics_invalid": 0,
     "notices": [],
     "files_not_parsed": 0,
     "rows": [

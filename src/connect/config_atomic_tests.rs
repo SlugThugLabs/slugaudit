@@ -44,19 +44,19 @@ fn config_file_round_trip_keeps_key_order_and_ends_with_newline() -> TestResult 
     let position = |needle: &str| text.find(needle).check("key present");
     ensure(
         position("\"zeta\"")? < position("\"mcpServers\"")?,
-        "position(\"\\\"zeta\\\"\")? < position(\"\\\"mcpServers\\\"\")?",
+        "zeta stays ahead of mcpServers",
     )?;
     ensure(
         position("\"mcpServers\"")? < position("\"alpha\"")?,
-        "position(\"\\\"mcpServers\\\"\")? < position(\"\\\"alpha\\\"\")?",
+        "mcpServers stays ahead of alpha",
     )?;
     ensure(
         position("\"zz\"")? < position("\"aa\"")?,
-        "position(\"\\\"zz\\\"\")? < position(\"\\\"aa\\\"\")?",
+        "zz stays ahead of aa inside mcpServers",
     )?;
     ensure(
         position("\"aa\"")? < position("\"slugaudit\"")?,
-        "position(\"\\\"aa\\\"\")? < position(\"\\\"slugaudit\\\"\")?",
+        "new slugaudit key appends after existing aa key",
     )?;
     ensure(text.ends_with("}\n"), format!("trailing newline: {text:?}"))?;
     Ok(())

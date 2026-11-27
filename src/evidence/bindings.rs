@@ -1,24 +1,26 @@
-//! Variable-binding and field-declaration walker.
+//! Non-Rust variable-binding and field-declaration CST walker.
 //!
-//! The language pack's `process()` extracts structure, imports, exports,
-//! comments, docstrings, symbols, and diagnostics — but not individual
-//! variable bindings or struct/class fields. Those are exactly the items an
-//! AI needs to spot near-duplicate names (`file_path` vs `filepath` vs
-//! `filePath`) that probably refer to the same thing. This module walks the
-//! tree with generic node-type patterns that are consistent across
-//! tree-sitter grammars, so no per-language query code is needed.
+//! Rust files use the single-parse CST extractor in [`super::rust_items`] and
+//! [`super::rust_bindings`]; other languages use the generic node-kind matcher
+//! here over the shared secondary `tree_sitter::Tree`.
 
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, LineIndex, PositionOverflow};
-use serde_json::json;
-use tree_sitter_language_pack::SymbolKind;
+use crate::model::{
+    EvidenceItem, EvidenceKind, EvidenceOrigin, EvidencePayload, LineIndex, PositionOverflow,
+    SymbolPayload,
+};
 
 use super::{Extraction, TextRangeError, WalkInput, named_children, node_span, node_text};
 
-/// Node-type patterns that indicate an individual binding. These names are
-/// shared across tree-sitter language grammars — `let_declaration` in Rust,
-/// JS, Go, etc.; `field_declaration` in Rust, C#, Java; `parameter`
-/// universally. Matching on the name rather than a per-language query is
-/// what keeps this generic.
+/// Payload fields for a single [`EvidenceOrigin::GenericWalker`] `Symbol` row.
+pub(super) struct BindingFields<'a> {
+    pub(super) name: &'a str,
+    pub(super) sym_kind: &'static str,
+    pub(super) prefix: &'static str,
+    pub(super) visibility: Option<&'a str>,
+    pub(super) type_annotation: Option<&'a str>,
+    pub(super) doc: Option<&'a str>,
+}
+
 fn is_variable_binding(kind: &str) -> bool {
     matches!(
         kind,
@@ -32,18 +34,6 @@ fn is_variable_binding(kind: &str) -> bool {
     )
 }
 
-/// Exact node kinds for a *field* declaration, verified against a fixed
-/// grammar matrix: rust/go/c/cpp/csharp/ocaml/java use
-/// `field_declaration`; swift/kotlin use `property_declaration`;
-/// javascript uses `field_definition`; typescript uses
-/// `public_field_definition` and (for interface members) `property_signature`.
-///
-/// Exact match only — never `contains`: a substring test on
-/// `field_declaration` also matches the *container* node
-/// `field_declaration_list` (and could match unrelated kinds in an
-/// unforeseen grammar), which would emit a duplicate Field symbol for the
-/// same member. `field_identifier` (the name child) is deliberately not a
-/// declaration and is not listed.
 fn is_field_declaration(kind: &str) -> bool {
     matches!(
         kind,
@@ -55,22 +45,15 @@ fn is_field_declaration(kind: &str) -> bool {
     )
 }
 
-/// Pre-order walk over an explicit heap stack (never recursion — see
-/// [`crate::evidence::push_children`]) pushing onto `out.items` one symbol
-/// per named binding or field. Children are visited regardless of a match —
-/// a function body contains let bindings, a struct body contains field
-/// declarations, etc. Sets `out.truncated` when the walk was cut short by the
-/// depth bound or an unsliceable name, and `out.timed_out` (stopping the
-/// walk) when the deadline ran out; a position past `u32::MAX` is an error
-/// that fails the file's extraction.
+/// Pre-order walk over an explicit heap stack pushing onto `out.items` one
+/// symbol per named binding or field for non-Rust languages.
 pub(super) fn walk_bindings(
-    root: &tree_sitter_language_pack::Node,
+    root: tree_sitter::Node<'_>,
     input: &WalkInput<'_>,
     out: &mut Extraction,
     counter: &mut usize,
 ) -> Result<(), PositionOverflow> {
-    // KEEP clone: tree_sitter_language_pack::Node is not Copy; walk stack owns Node handles
-    let mut pending = vec![(root.clone(), 0)];
+    let mut pending = vec![(root, 0u32)];
     while let Some((node, depth)) = pending.pop() {
         if super::deadline_spent(input.deadline) {
             out.timed_out = true;
@@ -80,17 +63,20 @@ pub(super) fn walk_bindings(
             out.truncated = true;
             continue;
         }
-        if let Some(binding) = binding_kind(&node.kind()) {
-            match identifier_name(&node, input.source) {
+        if let Some((sym_kind, prefix)) = binding_kind(node.kind()) {
+            match identifier_name(node, input.source) {
                 Ok(Some(name)) => {
-                    let Some(next) = counter.checked_add(1) else {
-                        tracing::warn!("binding key counter exhausted; extraction is partial");
-                        out.truncated = true;
-                        break;
+                    let fields = BindingFields {
+                        name: &name,
+                        sym_kind,
+                        prefix,
+                        visibility: None,
+                        type_annotation: None,
+                        doc: None,
                     };
-                    let item = binding_item(&node, binding, &name, *counter, input.lines)?;
-                    *counter = next;
-                    out.items.push(item);
+                    if !push_binding(node, &fields, input.lines, out, counter)? {
+                        break;
+                    }
                 }
                 Ok(None) => {}
                 Err(error) => {
@@ -99,80 +85,76 @@ pub(super) fn walk_bindings(
                 }
             }
         }
-        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
-        // would mean the depth bound was passed, which the walk reports as cut.
         let Some(child_depth) = depth.checked_add(1) else {
             out.truncated = true;
             continue;
         };
-        super::push_children(&mut pending, &node, |child| (child, child_depth));
+        super::push_children(&mut pending, node, |child| (child, child_depth));
     }
     Ok(())
 }
 
-/// The symbol kind and key prefix of a node `kind` that is a field or a
-/// variable binding, or `None` for any other named node.
-fn binding_kind(kind: &str) -> Option<(SymbolKind, &'static str)> {
+/// Appends one `Symbol` row for `node` and increments `counter`, returning
+/// `Ok(false)` when `counter` overflows `usize::MAX`.
+pub(super) fn push_binding(
+    node: tree_sitter::Node<'_>,
+    fields: &BindingFields<'_>,
+    lines: &LineIndex<'_>,
+    out: &mut Extraction,
+    counter: &mut usize,
+) -> Result<bool, PositionOverflow> {
+    let Some(next) = counter.checked_add(1) else {
+        tracing::warn!("binding key counter exhausted; extraction is partial");
+        out.truncated = true;
+        return Ok(false);
+    };
+    let item = binding_item(node, fields, *counter, lines)?;
+    *counter = next;
+    out.items.push(item);
+    Ok(true)
+}
+
+fn binding_kind(kind: &str) -> Option<(&'static str, &'static str)> {
     if is_field_declaration(kind) {
-        Some((SymbolKind::Other("Field".to_owned()), "field"))
+        Some(("Other(\"Field\")", "field"))
     } else if is_variable_binding(kind) {
         if kind.starts_with("const") {
-            Some((SymbolKind::Constant, "variable"))
+            Some(("Constant", "variable"))
         } else {
-            Some((SymbolKind::Variable, "variable"))
+            Some(("Variable", "variable"))
         }
     } else {
         None
     }
 }
 
-/// The symbol row for a binding `node` named `name`, keyed
-/// `{prefix}:{index}`.
 fn binding_item(
-    node: &tree_sitter_language_pack::Node,
-    (sym_kind, prefix): (SymbolKind, &'static str),
-    name: &str,
+    node: tree_sitter::Node<'_>,
+    fields: &BindingFields<'_>,
     index: usize,
     lines: &LineIndex<'_>,
 ) -> Result<EvidenceItem, PositionOverflow> {
     Ok(EvidenceItem {
-        key: format!("{prefix}:{index}"),
+        key: format!("{}:{index}", fields.prefix),
         kind: EvidenceKind::Symbol,
         origin: EvidenceOrigin::GenericWalker,
         span: node_span(node, lines, "binding")?,
-        payload: json!({
-            "name": name,
-            "kind": format!("{sym_kind:?}"),
-            "type_annotation": null,
-            "doc": null,
+        payload: EvidencePayload::Symbol(SymbolPayload {
+            name: fields.name.to_owned(),
+            kind: fields.sym_kind.to_owned(),
+            visibility: fields.visibility.map(str::to_owned),
+            type_annotation: fields.type_annotation.map(str::to_owned),
+            doc: fields.doc.map(str::to_owned),
         }),
     })
 }
 
-/// Returns the text of the first identifier-flavored named child of `node`,
-/// if any. This is the binding name for every node type this extractor
-/// targets. Different grammars spell the name node differently — Rust
-/// struct fields use `field_identifier`, swift/kotlin `simple_identifier`,
-/// and most everything else plain `identifier` — so we match every kind
-/// [`is_identifier_kind`] lists rather than hard-coding one (type-name kinds
-/// are deliberately not among them). The pack exposes no `utf8_text`
-/// helper, so the text is sliced directly from `source` using the child's
-/// byte range.
-///
-/// When no direct child is an identifier, falls back to a bounded
-/// recursive search of the declaration node's subtree: swift/kotlin nest
-/// the name under `pattern` /
-/// `variable_declaration` wrappers, so `property_declaration`'s direct
-/// children are not identifiers. The search returns the *first*
-/// identifier-kind descendant — for the probed grammars (rust, go, c,
-/// cpp, csharp, java, ocaml, swift, kotlin, js/ts) the member name
-/// precedes the type, so this yields the name, not the type.
 fn identifier_name(
-    node: &tree_sitter_language_pack::Node,
+    node: tree_sitter::Node<'_>,
     source: &str,
 ) -> Result<Option<String>, TextRangeError> {
     for child in named_children(node) {
-        if is_identifier_kind(&child.kind()) {
+        if is_identifier_kind(child.kind()) {
             return Ok(Some(
                 node_text(source, child.start_byte(), child.end_byte())?.to_owned(),
             ));
@@ -181,13 +163,8 @@ fn identifier_name(
     first_identifier_descendant(node, source, 0)
 }
 
-/// Depth-first search for the first identifier-kind descendant. `depth`
-/// bounds the descent so a pathological grammar can't turn a single
-/// declaration into an unbounded traversal — two levels of wrapper
-/// (e.g. `property_declaration → pattern → simple_identifier`) is the
-/// deepest any probed grammar nests a member name.
 fn first_identifier_descendant(
-    node: &tree_sitter_language_pack::Node,
+    node: tree_sitter::Node<'_>,
     source: &str,
     depth: u8,
 ) -> Result<Option<String>, TextRangeError> {
@@ -195,30 +172,23 @@ fn first_identifier_descendant(
         return Ok(None);
     }
     for child in named_children(node) {
-        if is_identifier_kind(&child.kind()) {
+        if is_identifier_kind(child.kind()) {
             return Ok(Some(
                 node_text(source, child.start_byte(), child.end_byte())?.to_owned(),
             ));
         }
     }
-    // `depth < 3` here; an increment that fails is past the depth bound.
     let Some(next_depth) = depth.checked_add(1) else {
         return Ok(None);
     };
     for child in named_children(node) {
-        if let Some(name) = first_identifier_descendant(&child, source, next_depth)? {
+        if let Some(name) = first_identifier_descendant(child, source, next_depth)? {
             return Ok(Some(name));
         }
     }
     Ok(None)
 }
 
-/// Node kinds that name a *binding or member*. Deliberately excludes
-/// `type_identifier`/`type_name`: in Java (and other grammars) a
-/// `field_declaration` lists the type before the name, so treating the
-/// type node as a name candidate would emit the type as the member name
-/// (found by the grammar-matrix tests). Type-name nodes are never the *name* of
-/// a binding this walker targets.
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(
         kind,

@@ -13,9 +13,9 @@ fn a_sampling_index_error_maps_to_its_static_category_without_a_path() -> TestRe
     ensure_eq(
         &error_kind,
         &"sampling_index_out_of_range",
-        "error_kind == \"sampling_index_out_of_range\"",
+        "sampling index error maps to static category",
     )?;
-    ensure_eq(&path, &None, "path == None")?;
+    ensure_eq(&path, &None, "sampling index error carries no file path")?;
     Ok(())
 }
 
@@ -65,17 +65,25 @@ fn discovery_log_field_cases() -> Vec<(PublishError, &'static str, Option<&'stat
     ]
 }
 
-/// One non-discovery publish failure of every kind, with the log fields it
-/// must map to.
-fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Option<&'static str>)>>
-{
+fn sample_and_budget_log_field_cases()
+-> TestResult<Vec<(PublishError, &'static str, Option<&'static str>)>> {
     use std::path::PathBuf;
     let invalid = vec![0xff_u8];
     let not_utf8 = std::str::from_utf8(&invalid).check_err("0xff is not valid UTF-8")?;
     Ok(vec![
         (
             PublishError::TimeBudgetExceeded {
-                path: " a.rs".into(),
+                activity: "processing",
+                path: Some("a.rs".into()),
+                elapsed_ms: 42,
+            },
+            "time_budget_exceeded",
+            Some("a.rs"),
+        ),
+        (
+            PublishError::TimeBudgetExceeded {
+                activity: "diffing",
+                path: None,
                 elapsed_ms: 42,
             },
             "time_budget_exceeded",
@@ -121,6 +129,12 @@ fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Opti
             "sample_not_utf8",
             Some("bytes.rs"),
         ),
+    ])
+}
+
+fn limit_and_db_log_field_cases() -> Vec<(PublishError, &'static str, Option<&'static str>)> {
+    use std::path::PathBuf;
+    vec![
         (
             PublishError::Limits(crate::project::ProjectLimitsError::Config(
                 crate::project::ConfigError::Io {
@@ -150,13 +164,6 @@ fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Opti
             None,
         ),
         (
-            PublishError::UnchangedCountInconsistent {
-                path: "a.rs".into(),
-            },
-            "unchanged_count_inconsistent",
-            Some("a.rs"),
-        ),
-        (
             PublishError::SamplingIndexOutOfRange { index: 2, total: 1 },
             "sampling_index_out_of_range",
             None,
@@ -166,13 +173,14 @@ fn publish_log_field_cases() -> TestResult<Vec<(PublishError, &'static str, Opti
             "invalid_parser_pack_version",
             None,
         ),
-    ])
+    ]
 }
 
 #[test]
 fn every_publish_failure_maps_to_its_kind_and_path() -> TestResult {
     let mut cases = discovery_log_field_cases();
-    cases.extend(publish_log_field_cases()?);
+    cases.extend(sample_and_budget_log_field_cases()?);
+    cases.extend(limit_and_db_log_field_cases());
     for (error, kind, path) in &cases {
         ensure_eq(
             &failure_fields(error),

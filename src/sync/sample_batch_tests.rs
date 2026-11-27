@@ -1,9 +1,45 @@
-//! Tests for the Pass 2 sampling pass.
+//! Tests for the Pass 2 chunked sampling and parsing pass.
 
 use super::*;
+use crate::model::SourceIdentity;
 use crate::sync::discovery::FileKind;
 use crate::sync::test_support::write;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
+
+fn run_pass2(
+    discovered: &[DiscoveredFile],
+    identities: &[SourceIdentity],
+    limits: &ResourceLimits,
+    sink: &dyn ProgressSink,
+    deadline: &Deadline,
+) -> Result<(Vec<FileRecord>, Vec<SkippedFile>), PublishError> {
+    let pass1_hashes: HashMap<&str, &str> = identities
+        .iter()
+        .map(|id| (id.relative_path.as_str(), id.content_hash.as_str()))
+        .collect();
+    let total_bytes = AtomicU64::new(0);
+    let ctx = Pass2ChunkContext {
+        total_files: discovered.len(),
+        pass1_hashes: &pass1_hashes,
+        limits,
+        total_bytes: &total_bytes,
+        sink,
+        deadline,
+    };
+    let mut records = Vec::new();
+    let mut skipped = Vec::new();
+    run_pass2_chunks(discovered, &ctx, |outcomes| {
+        for outcome in outcomes {
+            match outcome {
+                ChunkOutcome::Parsed(record) => records.push(record),
+                ChunkOutcome::Skipped(skip) => skipped.push(skip),
+            }
+        }
+        Ok(())
+    })?;
+    skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
+    Ok((records, skipped))
+}
 
 fn indexed(project: &std::path::Path, relative_path: &str) -> DiscoveredFile {
     DiscoveredFile {
@@ -26,8 +62,9 @@ fn a_file_deleted_since_the_walk_is_a_change_the_sample_pass_reports() -> TestRe
         indexed(project.path(), "keep.rs"),
     ];
 
-    let error = sample_all_with_deadline(
+    let error = run_pass2(
         &discovered,
+        &[],
         &ResourceLimits::default(),
         &crate::progress::NoopProgressSink,
         &generous(),
@@ -47,8 +84,9 @@ fn a_file_the_sample_pass_cannot_read_fails_with_its_read_error() -> TestResult 
     std::fs::create_dir(project.path().join("dir.rs")).check("create a directory")?;
     let discovered = [indexed(project.path(), "dir.rs")];
 
-    let error = sample_all_with_deadline(
+    let error = run_pass2(
         &discovered,
+        &[],
         &ResourceLimits::default(),
         &crate::progress::NoopProgressSink,
         &generous(),
@@ -79,19 +117,20 @@ fn per_file_skips_are_returned_sorted_with_their_codes() -> TestResult {
         ..ResourceLimits::default()
     };
 
-    let (samples, skipped) = sample_all_with_deadline(
+    let (records, skipped) = run_pass2(
         &discovered,
+        &[],
         &limits,
         &crate::progress::NoopProgressSink,
         &generous(),
     )
     .check("sample")?;
 
-    let sampled_paths: Vec<&str> = samples.iter().map(|s| s.relative_path.as_str()).collect();
+    let sampled_paths: Vec<&str> = records.iter().map(|s| s.relative_path.as_str()).collect();
     ensure_eq(
         &sampled_paths,
         &["c-ok.rs"],
-        "sampled_paths == [\"c-ok.rs\"]",
+        "only valid in-cap file is parsed",
     )?;
     let codes: Vec<(std::path::PathBuf, &str)> = skipped
         .iter()
@@ -103,7 +142,7 @@ fn per_file_skips_are_returned_sorted_with_their_codes() -> TestResult {
             (project.path().join("a-big.rs"), SKIP_REASON_OVERSIZE),
             (project.path().join("b-not-utf8.rs"), SKIP_REASON_NOT_UTF8),
         ],
-        "codes == [ (project.path().join(\"a-big.rs\"), SKIP_REASON_OVERSIZE), (project.path().join(\"b-not-utf8.rs\"), SKIP_REASON_NOT_UTF8), ]",
+        "skipped files are sorted by path with oversize and not_utf8 codes",
     )?;
     Ok(())
 }
@@ -114,8 +153,9 @@ fn an_expired_deadline_names_the_file_being_processed() -> TestResult {
     write(project.path(), "lib.rs", b"fn a() {}\n")?;
     let discovered = [indexed(project.path(), "lib.rs")];
 
-    let error = sample_all_with_deadline(
+    let error = run_pass2(
         &discovered,
+        &[],
         &ResourceLimits::default(),
         &crate::progress::NoopProgressSink,
         &Deadline::after(std::time::Duration::ZERO),
@@ -123,8 +163,19 @@ fn an_expired_deadline_names_the_file_being_processed() -> TestResult {
     .check_err("the deadline must trip")?;
 
     ensure(
-        matches!(&error, PublishError::TimeBudgetExceeded { path, .. } if path == " while processing lib.rs"),
+        matches!(
+            &error,
+            PublishError::TimeBudgetExceeded {
+                activity: "processing",
+                path: Some(p),
+                ..
+            } if p == "lib.rs"
+        ),
         format!("got {error:?}"),
+    )?;
+    ensure(
+        error.to_string().contains("while processing lib.rs"),
+        format!("display message names processing and lib.rs: {error}"),
     )?;
     Ok(())
 }
@@ -188,7 +239,7 @@ fn pass2_treats_too_large_and_not_utf8_hash_mismatch_as_changed_during_sample() 
         "grew.rs".to_owned(),
         "pass1-h".to_owned(),
     )];
-    let grew_err = sample_pass2_with_deadline(
+    let grew_err = run_pass2(
         &grew,
         &grew_id,
         &limits,
@@ -206,7 +257,7 @@ fn pass2_treats_too_large_and_not_utf8_hash_mismatch_as_changed_during_sample() 
         "corrupted.rs".to_owned(),
         "stale-pass1-hash".to_owned(),
     )];
-    let bad_err = sample_pass2_with_deadline(
+    let bad_err = run_pass2(
         &bad,
         &stale_id,
         &ResourceLimits::default(),

@@ -1,58 +1,24 @@
-//! Tool handlers orchestrate: they resolve the active project, ensure it's
-//! synced, and format a response. They own no parsing, SQL, or storage
-//! logic themselves — that lives in `sync`, `store`, and `evidence`.
-//!
-//! This module also owns the **tool-level call counters** (defined in
-//! `tool_counters`): process-wide `AtomicU64` counts of total calls, error
-//! calls, and total elapsed wall-clock time across every tool. The `health`
-//! tool exposes these counters for observability without changing anything
-//! about how the other tools execute.
+//! MCP tool contracts and their tool-level execution, pagination, and session
+//! state.
 
 pub(crate) mod context;
 mod finding;
-mod finding_clear;
-mod finding_insert;
-mod finding_read;
-mod finding_store;
-mod finding_validate;
+mod grammar;
 mod health;
-mod health_phase;
-mod health_result_store;
-mod input_caps;
-mod language_notices;
 mod leads;
-mod leads_compact;
-mod leads_covers;
-mod leads_custom;
-mod leads_mechanics;
-mod leads_page;
-mod leads_query;
 mod mechanic;
-mod mechanic_catalog;
-mod mechanic_register;
-mod mechanic_scan;
-mod mechanic_scan_cached;
-mod mechanic_scan_pass;
 mod page;
-mod page_size;
 mod paginate;
+mod paginate_cursor;
+mod paginate_cut;
+mod paginate_fresh;
+mod paginate_sink;
+mod paginate_store;
 mod project_control;
 mod query;
-mod query_clip;
-mod query_exec;
-mod query_row_bound;
-mod query_sql;
-mod query_value;
-
 mod report;
-mod report_completeness;
-mod report_sections;
 mod sql_predicates;
 mod structure;
-mod structure_exec;
-mod structure_outcome;
-mod structure_page;
-mod structure_source;
 mod tool_counters;
 mod tool_limits;
 
@@ -60,78 +26,116 @@ mod tool_limits;
 pub(crate) mod test_support;
 
 #[cfg(test)]
-#[path = "discard_surface_tests.rs"]
 mod discard_surface_tests;
 
 #[cfg(test)]
-#[path = "redaction_tests.rs"]
 mod redaction_tests;
 
 #[cfg(test)]
 mod golden_phase9_support;
 
 #[cfg(test)]
-#[path = "golden_phase9_leads_tests.rs"]
 mod golden_phase9_leads_tests;
 
 #[cfg(test)]
-#[path = "golden_phase9_mechanic_tests.rs"]
 mod golden_phase9_mechanic_tests;
 
 #[cfg(test)]
-#[path = "golden_phase9_query_tests.rs"]
 mod golden_phase9_query_tests;
 
 #[cfg(test)]
-#[path = "golden_phase9_structure_tests.rs"]
 mod golden_phase9_structure_tests;
 
 #[cfg(test)]
-#[path = "golden_phase9_finding_read_tests.rs"]
 mod golden_phase9_finding_read_tests;
 
-pub use context::{
-    PageContext, PageRequest, PageSpec, Produced, RowSink, Served, decode_rows, ensure_synced,
-    page_request, paginate,
+pub use context::ensure_synced;
+pub use finding::{
+    FindingClearRequest, FindingClearResponse, FindingReadEntry, FindingReadRequest,
+    FindingReadResponse, FindingRequest, FindingResponse, finding, finding_clear, finding_read,
 };
-pub use finding::{FindingRequest, FindingResponse, finding};
-pub use finding_clear::{FindingClearRequest, FindingClearResponse, finding_clear};
-pub use finding_read::{FindingReadEntry, FindingReadRequest, FindingReadResponse, finding_read};
 pub use health::{HealthRequest, HealthResponse, health};
 pub use leads::{
     CompactLeadRow, FileCount, LeadMode, LeadRow, LeadRows, LeadsRequest, LeadsResponse,
     MechanicCount, leads,
 };
 pub use mechanic::{
-    InvalidMechanic, MechanicAction, MechanicListing, MechanicRequest, MechanicResponse,
-    MechanicSource, mechanic,
+    MechanicAction, MechanicListing, MechanicRequest, MechanicResponse, MechanicSource, mechanic,
 };
 pub use page::{Completeness, LegacyPaging, Page, PageLimit};
+#[cfg(test)]
+pub(crate) use paginate::{CutStep, ServedRows, paginate_rows};
+pub use paginate::{PageContext, PageRequest, PageSpec, Produced, RowSink, page_request};
 pub use project_control::{
     GitignoreReport, GitignoreStatus, ImportReport, ProjectControlAction, ProjectControlRequest,
     ProjectControlResponse, ProjectControlStatus, project_control,
 };
-pub use query::{QueryRequest, QueryResponse, query};
-pub use query_clip::ClippedCell;
-pub use query_value::NonFiniteCell;
-pub use report::DependencyEdgeTotals;
-pub use report::{ReportMechanics, ReportRequest, ReportResponse, report};
-pub use report_completeness::{
-    CompletenessCount, CompletenessEnvelope, FileClassCount, FileKindCount, SkipReasonCount,
+pub use query::{ClippedCell, NonFiniteCell, QueryRequest, QueryResponse, query};
+pub use report::{
+    CompletenessCount, CompletenessEnvelope, DependencyEdgeTotals, FileClassCount, FileKindCount,
+    ReportMechanics, ReportRequest, ReportResponse, SkipReasonCount, report,
 };
 pub use structure::{StructureRequest, StructureResponse, structure};
 pub use tool_counters::ToolCounters;
 
-pub(crate) use input_caps::{MAX_CURSOR_BYTES, MAX_PATH_BYTES};
+pub(crate) use paginate::MAX_CURSOR_BYTES;
 pub(crate) use sql_predicates::{CREDENTIAL_PATH_PREDICATE, PARSER_FAILURE_PREDICATE};
 pub(crate) use tool_limits::{limits_for_root, project_root, resolve_limits};
 
-// `ToolCounters` is deliberately not tested here. Its three counters are
-// process-wide `AtomicU64`s that any test in this binary may bump and
-// there is no reset (adding one would be a production test hook), so a
-// zero-initial-state assertion cannot be pinned in the shared test
-// process. The snapshot/record delta contract is covered by
-// `tool_counters_record_bumps_call_and_total_counts`,
-// `tool_counters_record_bumps_error_count_on_error` and
-// `tool_counters_always_return_non_decreasing_after_a_bump` in
-// `src/tools/health_tests.rs`.
+/// Longest `path` (or path-shaped field, such as `start_after_file`) a tool
+/// accepts, checked before the value is used.
+pub(crate) const MAX_PATH_BYTES: usize = 32 * 1024;
+
+/// Rejects `value` when its UTF-8 byte length exceeds `max_bytes`.
+pub(in crate::tools) fn check_bytes_limit(
+    value: &str,
+    field_name: &str,
+    max_bytes: usize,
+) -> Result<(), rmcp::ErrorData> {
+    if crate::util::exceeds_input_bytes(value, max_bytes) {
+        return Err(crate::error_codes::invalid_params_with_code(
+            format!("{field_name} exceeds {max_bytes} bytes"),
+            crate::error_codes::ErrorCode::InvalidInput,
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects `path` when its UTF-8 byte length exceeds [`MAX_PATH_BYTES`].
+pub(in crate::tools) fn check_path_bytes(path: &str) -> Result<(), rmcp::ErrorData> {
+    check_bytes_limit(path, "path", MAX_PATH_BYTES)
+}
+
+/// Rejects `Some(path)` when its UTF-8 byte length exceeds [`MAX_PATH_BYTES`].
+pub(in crate::tools) fn check_optional_path_bytes(
+    path: Option<&str>,
+) -> Result<(), rmcp::ErrorData> {
+    if let Some(value) = path {
+        check_path_bytes(value)?;
+    }
+    Ok(())
+}
+
+/// Builds one notice per untested code language in `languages` (prose and
+/// tested languages are skipped). Shared by `report`, `structure`, and `leads`.
+pub(in crate::tools) fn untested_language_notices<'a>(
+    languages: impl IntoIterator<Item = (&'a str, Option<i64>)>,
+) -> Vec<String> {
+    use crate::parse::{PROSE_LANGUAGE, is_tested_language};
+
+    languages
+        .into_iter()
+        .filter(|(language, _)| *language != PROSE_LANGUAGE && !is_tested_language(language))
+        .map(|(language, files)| {
+            let subject = match files {
+                Some(1) => "1 file uses".to_owned(),
+                Some(files) => format!("{files} files use"),
+                None => "uses".to_owned(),
+            };
+            format!(
+                "{language}: {subject} an untested grammar (downloaded on first use). \
+                 Only Rust is tested; treat {language} results as best-effort."
+            )
+        })
+        .collect()
+}

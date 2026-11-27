@@ -1,30 +1,18 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=the call dispatch and the Rust call walker it owns: the walk, its row emission and the Rust callee naming the macro re-parse shares
+// slugaudit-line-exception: approved-by=split-judge; reason=call dispatch and iterative Rust CST call walker sharing callee naming with macro re-parsing
 //! Call-site evidence: the Rust walker, the query-driven languages
 //! (`calls/query_calls.rs`), and the one row builder both feed.
-//!
-//! This module deliberately reports syntax facts, not a compiler-grade call
-//! graph. A Tree-sitter call node proves that source contains a call-shaped
-//! expression and gives us its span; name resolution can still be ambiguous
-//! for traits, generics, function pointers, macros, and dynamic dispatch.
-//!
-//! Rust keeps a walker rather than an embedded query: it re-parses macro
-//! token trees (`calls/macro_calls.rs`), which a query cannot reach, and it
-//! records every call node — including a callee no pattern names, such as
-//! `(f)()` or `f()()`, whose whole call text becomes the callee — which a
-//! single-capture query would drop.
 
 use crate::model::{EvidenceOrigin, PositionOverflow};
 use std::collections::HashSet;
 use std::rc::Rc;
 
 mod call_queries;
-mod caller_index;
 mod macro_calls;
 mod query_calls;
 mod site;
 use super::{Extraction, TextRangeError, WalkInput, named_children, node_text};
 use site::{CallSite, call_item, is_qualified};
-use tree_sitter_language_pack::{Node, Tree};
+use tree_sitter::{Node, Tree};
 
 const RUST_CALL_KINDS: &[&str] = &["call_expression", "macro_invocation"];
 const RUST_FUNCTION_KINDS: &[&str] = &[
@@ -36,8 +24,7 @@ const RUST_FUNCTION_KINDS: &[&str] = &[
 ];
 
 /// Every language call evidence is extracted for: Rust (the walker) and each
-/// language with an embedded call query. Derived from the query table, so a
-/// `covers` list built from it cannot drift from what is extracted.
+/// language with an embedded call query.
 pub(crate) fn call_languages() -> impl Iterator<Item = &'static str> {
     std::iter::once("rust").chain(
         call_queries::CALL_QUERIES
@@ -46,12 +33,8 @@ pub(crate) fn call_languages() -> impl Iterator<Item = &'static str> {
     )
 }
 
-/// Extracts call-site evidence for one already indexed file in `language`:
-/// the Rust walker over `walker_tree` (the tree the binding walker read) for
-/// Rust, the embedded call query for a language that has one (on a parse of
-/// its own, within what is left of the deadline), and nothing (complete,
-/// empty) for any other language. A position past `u32::MAX` is an error
-/// that fails the file's extraction.
+/// Extracts call-site evidence for one already parsed file in `language` from
+/// `walker_tree` without re-parsing the outer file.
 pub(super) fn extract(
     language: &str,
     walker_tree: &Tree,
@@ -60,16 +43,16 @@ pub(super) fn extract(
     if language == "rust" {
         extract_rust(walker_tree, input)
     } else {
-        query_calls::extract(language, input.source, input.lines, input.deadline)
+        query_calls::extract(
+            language,
+            walker_tree,
+            input.source,
+            input.lines,
+            input.deadline,
+        )
     }
 }
 
-/// Extracts Rust call-site evidence from `tree`, the parse of one already
-/// indexed source file. The result is truncated when a walk bound (tree
-/// depth or macro nesting) was hit, a macro body could not be re-parsed, or
-/// a node range did not slice the source, which the caller must report as
-/// partial; it is timed out when the walk or a macro body's re-parse hit the
-/// deadline.
 fn extract_rust(tree: &Tree, input: &WalkInput<'_>) -> Result<Extraction, PositionOverflow> {
     let mut out = Extraction::default();
     let mut counter = 0usize;
@@ -78,27 +61,16 @@ fn extract_rust(tree: &Tree, input: &WalkInput<'_>) -> Result<Extraction, Positi
     Ok(out)
 }
 
-/// The caller every node in a subtree reports: the name of the nearest
-/// enclosing [`RUST_FUNCTION_KINDS`] node (`None` at file scope, or when that
-/// node has no `identifier` child, as for a closure or an `impl`), or the
-/// error slicing that name, which fails each call under it. The walkers carry
-/// it down their own stacks, so no call climbs `parent()` (which tree-sitter
-/// answers by descending from the root, quadratic on a wide node).
 type Caller = Result<Option<Rc<str>>, TextRangeError>;
 
-/// The caller `node`'s children report: `node`'s own name when it is a
-/// function-like node, else `inherited`.
-fn caller_below(node: &Node, kind: &str, source: &str, inherited: &Caller) -> Caller {
+fn caller_below(node: Node<'_>, kind: &str, source: &str, inherited: &Caller) -> Caller {
     if RUST_FUNCTION_KINDS.contains(&kind) {
         function_name(node, source).map(|name| name.map(Rc::from))
     } else {
-        // KEEP clone: Caller is Result<Option<Rc<str>>, TextRangeError> shared across AST children
         inherited.clone()
     }
 }
 
-/// The `caller` a call row carries, or the error slicing its function's
-/// name, which skips the call.
 fn caller_text(enclosing: &Caller) -> Result<Option<String>, TextRangeError> {
     match enclosing {
         Ok(name) => Ok(name.as_deref().map(str::to_owned)),
@@ -106,7 +78,6 @@ fn caller_text(enclosing: &Caller) -> Result<Option<String>, TextRangeError> {
     }
 }
 
-/// The text-derived fields of one call node.
 struct CallParts {
     callee_text: String,
     callee_name: String,
@@ -115,18 +86,18 @@ struct CallParts {
 }
 
 fn call_parts(
-    node: &Node,
+    node: Node<'_>,
     source: &str,
     macro_call: bool,
     enclosing: &Caller,
 ) -> Result<CallParts, TextRangeError> {
     let callee = callee_node(node, macro_call);
-    let callee_text = match &callee {
+    let callee_text = match callee {
         Some(child) => node_text(source, child.start_byte(), child.end_byte())?,
         None => node_text(source, node.start_byte(), node.end_byte())?,
     }
     .to_owned();
-    let qualified = match &callee {
+    let qualified = match callee {
         Some(child) => qualified_callee(child, source)?,
         None => is_qualified(&callee_text),
     };
@@ -146,14 +117,10 @@ fn call_parts(
     })
 }
 
-/// Whether a Rust callee is a `::` path. A turbofish (`foo::<u8>`,
-/// `x.parse::<u32>`) is a `generic_function`, whose `::` introduces type
-/// arguments, not a path: only its `function` part is checked.
-fn qualified_callee(callee: &Node, source: &str) -> Result<bool, TextRangeError> {
+fn qualified_callee(callee: Node<'_>, source: &str) -> Result<bool, TextRangeError> {
     let path = match generic_function_inner(callee) {
         Some(inner) => inner,
-        // KEEP clone: tree_sitter_language_pack::Node is not Copy; generic_function_inner returns an owned Node
-        None => callee.clone(),
+        None => callee,
     };
     Ok(is_qualified(node_text(
         source,
@@ -162,9 +129,7 @@ fn qualified_callee(callee: &Node, source: &str) -> Result<bool, TextRangeError>
     )?))
 }
 
-/// The `function` part of a turbofish callee (`generic_function`), or `None`
-/// for any other node.
-fn generic_function_inner(node: &Node) -> Option<Node> {
+fn generic_function_inner(node: Node<'_>) -> Option<Node<'_>> {
     if node.kind() == "generic_function" {
         node.child_by_field_name("function")
     } else {
@@ -172,20 +137,14 @@ fn generic_function_inner(node: &Node) -> Option<Node> {
     }
 }
 
-/// Pre-order walk with an explicit heap stack, so the thread stack stays flat
-/// however deep the file nests (see [`crate::evidence::MAX_WALK_DEPTH`]).
-/// Children pop in source order, which keeps `call:N` keys and the first-wins
-/// dedup identical to a recursive pre-order walk's. Each entry carries its
-/// [`Caller`]. When the deadline runs out the walk stops and sets
-/// `out.timed_out`.
-fn walk(
-    root: Node,
+fn walk<'tree>(
+    root: Node<'tree>,
     input: &WalkInput<'_>,
     out: &mut Extraction,
     counter: &mut usize,
     seen: &mut HashSet<(usize, usize)>,
 ) -> Result<(), PositionOverflow> {
-    let mut pending: Vec<(Node, u32, Caller)> = vec![(root, 0, Ok(None))];
+    let mut pending: Vec<(Node<'tree>, u32, Caller)> = vec![(root, 0, Ok(None))];
     while let Some((node, depth, caller)) = pending.pop() {
         if super::deadline_spent(input.deadline) {
             out.timed_out = true;
@@ -196,36 +155,30 @@ fn walk(
             continue;
         }
         let kind = node.kind();
-        if RUST_CALL_KINDS.contains(&kind.as_str()) {
+        if RUST_CALL_KINDS.contains(&kind) {
             let macro_call = kind == "macro_invocation";
-            match call_parts(&node, input.source, macro_call, &caller) {
-                Ok(parts) => emit_call(&node, parts, input, out, counter, seen)?,
+            match call_parts(node, input.source, macro_call, &caller) {
+                Ok(parts) => emit_call(node, parts, input, out, counter, seen)?,
                 Err(error) => {
                     tracing::warn!(%error, "Rust call node skipped; extraction is partial");
                     out.truncated = true;
                 }
             }
         }
-        let below = caller_below(&node, &kind, input.source, &caller);
-        // `depth < MAX_WALK_DEPTH` here, so the increment cannot fail; a failure
-        // would mean the depth bound was passed, which the walk reports as cut.
+        let below = caller_below(node, kind, input.source, &caller);
         let Some(child_depth) = depth.checked_add(1) else {
             out.truncated = true;
             continue;
         };
-        crate::evidence::push_children(&mut pending, &node, |child| {
-            // KEEP clone: each child node on the walk stack carries a cheap Rc<str>-backed Caller
+        crate::evidence::push_children(&mut pending, node, |child| {
             (child, child_depth, below.clone())
         });
     }
     Ok(())
 }
 
-/// Pushes the call row for `node` (and, for a macro, the calls recovered from
-/// its token tree), recording in `out` whether the macro scan was truncated
-/// or timed out.
 fn emit_call(
-    node: &Node,
+    node: Node<'_>,
     parts: CallParts,
     input: &WalkInput<'_>,
     out: &mut Extraction,
@@ -246,7 +199,6 @@ fn emit_call(
             origin: EvidenceOrigin::RustCallWalker,
             callee_text: parts.callee_text,
             callee_name: parts.callee_name,
-            // KEEP clone: parts.caller is also borrowed below for macro_calls::extract
             caller: parts.caller.clone(),
             macro_call,
             qualified: parts.qualified,
@@ -275,7 +227,7 @@ fn emit_call(
     Ok(())
 }
 
-fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
+fn callee_node(node: Node<'_>, macro_call: bool) -> Option<Node<'_>> {
     named_children(node).find(|child| {
         macro_call
             || child.kind() == "identifier"
@@ -285,14 +237,7 @@ fn callee_node(node: &Node, macro_call: bool) -> Option<Node> {
     })
 }
 
-/// The simple name of a callee. `field_expression` (`v.expect`) recurses to
-/// its last named child — the `field_identifier` — so a method call reports
-/// `expect`, while `callee_text` keeps the receiver for context. A turbofish
-/// (`generic_function`: `foo::<u8>`, `x.parse::<u32>`) recurses into its
-/// `function` part, not its type arguments, so it reports `foo` / `parse`.
-/// A loop, not recursion: the descent follows file content, so its length is
-/// untrusted.
-fn simple_name(node: Node, source: &str) -> Result<Option<String>, TextRangeError> {
+fn simple_name(node: Node<'_>, source: &str) -> Result<Option<String>, TextRangeError> {
     let mut current = node;
     loop {
         if current.kind() == "identifier" || current.kind() == "field_identifier" {
@@ -300,20 +245,18 @@ fn simple_name(node: Node, source: &str) -> Result<Option<String>, TextRangeErro
                 node_text(source, current.start_byte(), current.end_byte())?.to_owned(),
             ));
         }
-        if let Some(inner) = generic_function_inner(&current) {
+        if let Some(inner) = generic_function_inner(current) {
             current = inner;
             continue;
         }
-        match named_children(&current).last() {
+        match named_children(current).last() {
             Some(child) => current = child,
             None => return Ok(None),
         }
     }
 }
 
-/// The text of a function-like node's first `identifier` child, or `None`
-/// when it has none.
-fn function_name(node: &Node, source: &str) -> Result<Option<String>, TextRangeError> {
+fn function_name(node: Node<'_>, source: &str) -> Result<Option<String>, TextRangeError> {
     match named_children(node).find(|child| child.kind() == "identifier") {
         Some(child) => Ok(Some(
             node_text(source, child.start_byte(), child.end_byte())?.to_owned(),

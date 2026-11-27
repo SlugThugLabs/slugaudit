@@ -1,6 +1,6 @@
 //! Tests for the shell PATH line written by `install`: which config file is
-//! chosen, how the install directory is quoted for each shell, and that the
-//! append is idempotent.
+//! chosen, how the install directory is quoted for each shell, newline
+//! rejection, dotfile symlink preservation, and idempotency.
 
 use super::*;
 use crate::install::InstallError;
@@ -23,12 +23,12 @@ fn path_config_maps_bash_shell_to_bashrc_export() -> TestResult {
             ensure_eq(
                 &config,
                 &temp.path().join(".bashrc"),
-                "config == temp.path().join(\".bashrc\")",
+                "bash selects ~/.bashrc",
             )?;
             ensure_eq(
                 &line,
                 &"export PATH=\"/x/slugthug/slugaudit:$PATH\"",
-                "line == \"export PATH=\\\"/x/slugthug/slugaudit:$PATH\\\"\"",
+                "bash formats double-quoted export PATH line",
             )?;
             Ok(())
         },
@@ -51,12 +51,12 @@ fn path_config_maps_fish_shell_to_config_fish() -> TestResult {
             ensure_eq(
                 &config,
                 &temp.path().join(".config/fish/config.fish"),
-                "config == temp.path().join(\".config/fish/config.fish\")",
+                "fish selects ~/.config/fish/config.fish",
             )?;
             ensure_eq(
                 &line,
                 &"fish_add_path /x/slugthug/slugaudit",
-                "line == \"fish_add_path /x/slugthug/slugaudit\"",
+                "fish formats fish_add_path line",
             )?;
             Ok(())
         },
@@ -135,13 +135,13 @@ fn install_path_append_keeps_mode_and_leaves_no_temp_file() -> TestResult {
         .permissions()
         .mode()
         & 0o777;
-    ensure_eq(&mode, &0o640, "mode == 0o640")?;
+    ensure_eq(&mode, &0o640, "existing rc file keeps 0640 permissions")?;
     let contents = std::fs::read_to_string(&config).check("read rc")?;
     ensure(contents.starts_with("alias a=b\nexport PATH="), &contents)?;
     ensure_eq(
         &std::fs::read_dir(temp.path()).check("read home")?.count(),
         &1,
-        "std::fs::read_dir(temp.path()).check(\"read home\")?.count() == 1",
+        "append leaves no stray temporary files in home",
     )?;
     Ok(())
 }
@@ -162,7 +162,7 @@ fn path_config_escapes_a_bash_bin_dir_with_spaces_quotes_and_dollars() -> TestRe
             ensure_eq(
                 &config,
                 &home.join(".bashrc"),
-                "config == home.join(\".bashrc\")",
+                "bash selects .bashrc under special home",
             )?;
             let escaped = bin_dir
                 .display()
@@ -173,7 +173,7 @@ fn path_config_escapes_a_bash_bin_dir_with_spaces_quotes_and_dollars() -> TestRe
             ensure_eq(
                 &line,
                 &format!("export PATH=\"{escaped}:$PATH\""),
-                "line == format!(\"export PATH=\\\"{escaped}:$PATH\\\"\")",
+                "escapes backslashes, quotes, and dollar signs",
             )?;
             Ok(())
         },
@@ -197,7 +197,7 @@ fn path_config_quotes_a_fish_bin_dir_with_spaces_and_quotes() -> TestResult {
             ensure_eq(
                 &config,
                 &home.join(".config/fish/config.fish"),
-                "config == home.join(\".config/fish/config.fish\")",
+                "fish selects config.fish under special home",
             )?;
             let escaped = bin_dir
                 .display()
@@ -207,7 +207,7 @@ fn path_config_quotes_a_fish_bin_dir_with_spaces_and_quotes() -> TestResult {
             ensure_eq(
                 &line,
                 &format!("fish_add_path '{escaped}'"),
-                "line == format!(\"fish_add_path '{escaped}'\")",
+                "single-quotes and escapes fish path",
             )?;
             Ok(())
         },
@@ -297,7 +297,7 @@ fn add_to_path_reports_unreadable_shell_config() -> TestResult {
             let error = add_to_path(&bin_dir).check_err("a directory cannot be read as config")?;
             ensure(
                 matches!(error, InstallError::Io(_)),
-                "matches!(error, InstallError::Io(_))",
+                "directory at .bashrc surfaces InstallError::Io",
             )?;
             Ok(())
         },
@@ -360,6 +360,72 @@ fn a_non_utf8_bin_dir_is_refused_instead_of_writing_a_lossy_path_line() -> TestR
         "no shell config may be written",
     )?;
     Ok(())
+}
+
+#[test]
+fn path_config_rejects_bin_dir_containing_newlines_across_shells() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    for shell in ["/bin/bash", "/bin/zsh", "/usr/bin/fish", "/usr/bin/nushell"] {
+        for bad_dir in ["/opt/slug\necho injected", "/opt/slug\recho injected"] {
+            temp_env::with_vars(
+                [
+                    ("HOME", Some(temp.path().as_os_str())),
+                    ("SHELL", Some(std::ffi::OsStr::new(shell))),
+                ],
+                || -> TestResult {
+                    let error = add_to_path(Path::new(bad_dir))
+                        .check_err("bin_dir with LF or CR must be rejected")?;
+                    ensure(
+                        matches!(error, InstallError::BinDirContainsNewline { .. }),
+                        format!("expected BinDirContainsNewline for {shell}, got {error:?}"),
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
+    }
+    ensure_eq(
+        &std::fs::read_dir(temp.path()).check("read home")?.count(),
+        &0,
+        "newline rejection must not create any shell startup file",
+    )?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn add_to_path_preserves_valid_symlink_to_dotfiles() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let target = temp.path().join("dotfiles-bashrc");
+    std::fs::write(&target, "# dotfiles\n").check("create valid target")?;
+    let bashrc = temp.path().join(".bashrc");
+    std::os::unix::fs::symlink(&target, &bashrc).check("create dotfiles symlink")?;
+
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || -> TestResult {
+            add_to_path(&temp.path().join("slugaudit"))
+                .check("valid symlink target accepts PATH append")?;
+            ensure(
+                std::fs::symlink_metadata(&bashrc)
+                    .check("stat symlink")?
+                    .file_type()
+                    .is_symlink(),
+                ".bashrc symlink survives append",
+            )?;
+            let updated = std::fs::read_to_string(&target).check("read target")?;
+            ensure(
+                updated.contains("export PATH="),
+                format!("target received PATH export: {updated}"),
+            )?;
+            Ok(())
+        },
+    )
 }
 
 #[test]

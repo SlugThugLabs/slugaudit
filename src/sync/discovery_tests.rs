@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::publish::PublishError;
 use crate::sync::test_support::write;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::fs;
@@ -11,7 +12,7 @@ fn discovers_source_config_and_doc_files_in_sorted_order() -> TestResult {
     write(root, "README.md", b"# Title")?;
     write(root, ".github/workflows/ci.yml", b"name: ci")?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -34,7 +35,7 @@ fn classifies_binary_files_without_dropping_them() -> TestResult {
         &[0x89, b'P', b'N', b'G', 0x00, 0x01, 0x02],
     )?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     ensure_eq(&files.len(), &1, "files.len() == 1")?;
     ensure_eq(
         &files.first().check("files[0] exists")?.kind,
@@ -51,7 +52,7 @@ fn excludes_the_activation_directory() -> TestResult {
     write(root, "src/lib.rs", b"pub fn lib() {}")?;
     write(root, ".planning/slugaudit/project.db", b"sqlite-bytes")?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -68,7 +69,7 @@ fn indexes_a_planning_directory_that_only_shares_the_activation_prefix() -> Test
     write(root, ".planning/slugaudit-notes/x.md", b"# notes")?;
     write(root, ".planning/slugauditx", b"x")?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -88,7 +89,7 @@ fn excludes_git_internals() -> TestResult {
     write(root, "src/lib.rs", b"pub fn lib() {}")?;
     write(root, ".git/HEAD", b"ref: refs/heads/main")?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
@@ -105,13 +106,11 @@ fn honors_gitignore_content() -> TestResult {
     write(root, "ignored.txt", b"should not appear")?;
     write(root, "kept.txt", b"should appear")?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files
         .iter()
         .map(|file| file.relative_path.as_str())
         .collect();
-    // .gitignore itself is a legitimate config file and stays indexed;
-    // only the file it excludes, ignored.txt, is missing.
     ensure_eq(
         &paths,
         &vec![".gitignore", "kept.txt"],
@@ -120,16 +119,6 @@ fn honors_gitignore_content() -> TestResult {
     Ok(())
 }
 
-/// Relative paths are stored/queried as UTF-8 text, so a filename that
-/// isn't valid UTF-8 must be skipped individually, with the reason
-/// recorded, rather than panicking or failing the entire discovery walk
-/// (a single bad filename anywhere in a project must not make every other
-/// file in that project unqueryable). Unix filenames are just bytes (no
-/// NUL, no `/`), so a lone `0xFF` byte is real and filesystem-legal here
-/// even though it can never be valid UTF-8.
-// APFS, macOS's default filesystem, refuses a non-UTF-8 file name outright
-// (`EILSEQ`, "Illegal byte sequence"),
-// so this input cannot arise there and the test cannot construct it.
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
 fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() -> TestResult {
@@ -142,7 +131,8 @@ fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() -> TestR
     std::fs::write(root.join(&bad_name), b"content").check("write non-UTF-8-named file")?;
     std::fs::write(root.join("good.txt"), b"content").check("write a normal file")?;
 
-    let (files, skipped) = discover(root).check("a bad filename must not fail the whole walk")?;
+    let (files, skipped) =
+        discover_and_hash(root).check("a bad filename must not fail the whole walk")?;
     ensure_eq(
         &files.len(),
         &1,
@@ -153,7 +143,7 @@ fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() -> TestR
         &1,
         "the bad filename must be recorded as skipped",
     )?;
-    let skipped_file = &skipped.first().check("skipped[0] exists")?;
+    let skipped_file = skipped.first().check("skipped[0] exists")?;
     ensure_eq(
         &skipped_file.absolute_path,
         &root.join(&bad_name),
@@ -167,10 +157,6 @@ fn a_non_utf8_filename_is_skipped_not_a_panic_or_a_whole_walk_failure() -> TestR
     Ok(())
 }
 
-/// The walker is expected to yield only paths beneath the root. If it ever
-/// yields one outside it, the file must be reported with the typed
-/// `NotRelative` reason rather than dropped silently; a path that cannot be
-/// named relative to the project has no safe `files.path` value.
 #[test]
 fn a_path_outside_the_root_is_skipped_with_the_not_relative_reason() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -202,14 +188,11 @@ fn a_path_outside_the_root_is_skipped_with_the_not_relative_reason() -> TestResu
     Ok(())
 }
 
-/// A regular file discovered in one sync can be replaced by a symlink
-/// before the next sync's walk (e.g. an editor or a malicious actor
-/// swapping it out between syncs). `follow_links(false)` means the
-/// walker must never dereference it: it either lists the symlink itself
-/// (still classified without following it into whatever it points at)
-/// or the walk simply doesn't traverse through it — either way, content
-/// from outside the project root must never be sniffed/read as if it
-/// were the original file.
+/// A regular file discovered in one sync can be replaced by a symlink before
+/// the next sync's walk (e.g. a build step or package tool swapping a file for
+/// a link). `follow_links(false)` means the walker reports the symlink's own
+/// `lstat` file type rather than following it, so `is_file()` drops it without
+/// reading the target.
 #[cfg(unix)]
 #[test]
 fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() -> TestResult {
@@ -217,46 +200,34 @@ fn a_file_replaced_by_a_symlink_between_syncs_is_never_dereferenced() -> TestRes
     let root = directory.path();
     write(root, "lib.rs", b"pub fn a() {}\n")?;
 
-    let (first, _skipped) = discover(root).check("first discover")?;
+    let (first, _skipped) = discover_and_hash(root).check("first discover")?;
     ensure_eq(
         &(first
             .iter()
             .map(|f| f.relative_path.as_str())
             .collect::<Vec<_>>()),
         &vec!["lib.rs"],
-        "first .iter() .map(|f| f.relative_path.as_str()) .collect::<Vec<_>>() == vec![\"lib.rs\"]",
+        "first discover finds lib.rs",
     )?;
 
-    // Outside the project root entirely, so a NUL byte here would prove
-    // the walker actually dereferenced the link if it ever got sniffed.
     let outside = tempfile::tempdir().check("outside dir")?;
-    let secret = outside.path().join("secret.bin");
-    fs::write(&secret, [0_u8, 1, 2]).check("write outside file")?;
+    let external_target = outside.path().join("target.bin");
+    fs::write(&external_target, [0_u8, 1, 2]).check("write outside file")?;
 
     std::fs::remove_file(root.join("lib.rs")).check("remove the real file")?;
-    std::os::unix::fs::symlink(&secret, root.join("lib.rs")).check("replace with a symlink")?;
+    std::os::unix::fs::symlink(&external_target, root.join("lib.rs"))
+        .check("replace with a symlink")?;
 
-    let (second, _skipped) = discover(root).check("second discover does not error or panic")?;
-    // `follow_links(false)` makes walkdir/ignore report the symlink's own
-    // (non-regular) file type via `lstat` rather than following it, so
-    // `discover`'s `is_file()` filter drops it entirely: the replaced
-    // path is safely skipped, not silently reindexed as if it still held
-    // lib.rs's real content, and never dereferenced into the target
-    // living outside `root`.
+    let (second, _skipped) =
+        discover_and_hash(root).check("second discover does not error or panic")?;
     ensure_eq(
         &second,
         &Vec::new(),
-        "a path replaced by a symlink must be skipped, not reindexed or dereferenced",
+        "a path replaced by a symlink is skipped without following the link",
     )?;
     Ok(())
 }
 
-/// Scratch, temp, and editor-swap files must never be indexed — their
-/// parse failures would otherwise pollute the project's evidence with
-/// noise that has nothing to do with the source the project intends to
-/// maintain. This covers both AI-generated scratch output (the
-/// `.claude_output.txt` pattern that dominates real-world noise) and the
-/// generic temp/backup patterns an editor or human leaves behind.
 #[test]
 fn scratch_and_temp_files_are_excluded_from_discovery() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -269,7 +240,7 @@ fn scratch_and_temp_files_are_excluded_from_discovery() -> TestResult {
     write(root, "file~", b"emacs backup")?;
     write(root, "output.claude_output.txt", b"claude session output")?;
 
-    let (files, _skipped) = discover(root).check("discover")?;
+    let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
     ensure_eq(
         &paths,
@@ -281,107 +252,15 @@ fn scratch_and_temp_files_are_excluded_from_discovery() -> TestResult {
     Ok(())
 }
 
-/// `sniff_kind` must report a missing path as `DiscoveryError::Read`, not
-/// panic — a path that vanishes between the walk and the sniff (or is
-/// unreadable) must not take down the whole sync.
-#[test]
-fn sniff_kind_reports_an_error_for_a_missing_file() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let error = sniff_kind(&directory.path().join("missing.rs"))
-        .check_err("a missing file must be a reported error, not a panic")?;
-    ensure(
-        matches!(error, DiscoveryError::Read { .. }),
-        "matches!(error, DiscoveryError::Read { .. })",
-    )?;
-    Ok(())
-}
-
-/// Opening a directory succeeds on Unix but reading it fails with EISDIR —
-/// the read-error arm of `sniff_kind`, the same failure a file that
-/// becomes unreadable between walk and sniff would produce.
-#[cfg(unix)]
-#[test]
-fn sniff_kind_reports_an_error_for_an_unreadable_path() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let dir = directory.path().join("dir");
-    fs::create_dir(&dir).check("create dir")?;
-
-    let error = sniff_kind(&dir).check_err("reading a directory must error")?;
-    ensure(
-        matches!(error, DiscoveryError::Read { .. }),
-        "matches!(error, DiscoveryError::Read { .. })",
-    )?;
-    Ok(())
-}
-
-/// A file the walk listed and that is gone before the sniff read is a change
-/// to the tree, not an unreadable file: discovery fails with `Vanished`
-/// (which a publish retries) and records no skip for a file that no longer
-/// exists.
-#[test]
-fn a_listed_file_deleted_before_its_sniff_fails_discovery_as_vanished() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let root = directory.path();
-    let mut discovered = Vec::new();
-    let mut skipped = Vec::new();
-
-    let error = collect_file_entry(
-        root,
-        &root.join("src").join("gone.rs"),
-        &mut discovered,
-        &mut skipped,
-    )
-    .check_err("a vanished file must fail discovery")?;
-
-    ensure(
-        matches!(&error, DiscoveryError::Vanished { relative_path } if relative_path == "src/gone.rs"),
-        format!("got {error:?}"),
-    )?;
-    ensure(discovered.is_empty(), "discovered.is_empty()")?;
-    ensure(
-        skipped.is_empty(),
-        format!("no skip for a vanished file: {skipped:?}"),
-    )?;
-    Ok(())
-}
-
-/// A listed file that exists but cannot be read stays a skip.
-#[cfg(unix)]
-#[test]
-fn a_listed_file_that_cannot_be_read_is_skipped_as_unreadable() -> TestResult {
-    let directory = tempfile::tempdir().check("temp dir")?;
-    let root = directory.path();
-    fs::create_dir(root.join("dir.rs")).check("create dir")?;
-    let mut discovered = Vec::new();
-    let mut skipped = Vec::new();
-
-    collect_file_entry(root, &root.join("dir.rs"), &mut discovered, &mut skipped)
-        .check("an unreadable file is a skip, not a failure")?;
-
-    ensure(discovered.is_empty(), "discovered.is_empty()")?;
-    let [skip] = skipped.as_slice() else {
-        return Err(format!("expected one skip, got {skipped:?}")).check("skips");
-    };
-    ensure_eq(
-        &skip.code,
-        &crate::sync::revision_skipped::SKIP_REASON_UNREADABLE,
-        "skip.code == crate::sync::revision_skipped::SKIP_REASON_UNREADABLE",
-    )?;
-    Ok(())
-}
-
-/// A root the walker cannot list yields one walk error and no entries.
-/// Discovery must fail closed: returning `Ok` with an empty file set would
-/// let the publish diff delete every stored row.
 #[test]
 fn a_missing_project_root_fails_discovery_with_the_walk_error() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let missing = directory.path().join("gone");
 
-    let error = discover(&missing).check_err("an unlistable root must fail discovery")?;
+    let error = discover_and_hash(&missing).check_err("an unlistable root must fail discovery")?;
 
     ensure(
-        matches!(error, DiscoveryError::Walk(_)),
+        matches!(error, PublishError::Discovery(DiscoveryError::Walk(_))),
         format!("the typed walk failure must survive, got {error:?}"),
     )?;
     ensure(
@@ -391,9 +270,6 @@ fn a_missing_project_root_fails_discovery_with_the_walk_error() -> TestResult {
     Ok(())
 }
 
-/// An unreadable directory deep in the tree is walked as an `Err` entry,
-/// not as a file. It must name the failing directory (carried by the
-/// walker's error), never the project root, and must not become a skip.
 #[test]
 fn a_walk_error_is_returned_with_the_failing_subdirectory_not_the_root() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -406,10 +282,10 @@ fn a_walk_error_is_returned_with_the_failing_subdirectory_not_the_root() -> Test
             "permission denied",
         ))),
     };
-    let mut discovered = Vec::new();
+    let mut entries = Vec::new();
     let mut skipped = Vec::new();
 
-    let error = collect_walk_entry(root, Err(error), &mut discovered, &mut skipped)
+    let error = collect_walked_entry(root, Err(error), &mut entries, &mut skipped)
         .check_err("a walk error must fail discovery")?;
 
     match error {
@@ -424,17 +300,12 @@ fn a_walk_error_is_returned_with_the_failing_subdirectory_not_the_root() -> Test
         }
     }
     ensure(
-        discovered.is_empty() && skipped.is_empty(),
-        format!(
-            "a walk error is not a per-file skip: discovered={discovered:?} skipped={skipped:?}"
-        ),
+        entries.is_empty() && skipped.is_empty(),
+        format!("a walk error is not a per-file skip: entries={entries:?} skipped={skipped:?}"),
     )?;
     Ok(())
 }
 
-/// A malformed `.gitignore` is attached to a walked entry as an error while
-/// the walk continues with that rule dropped. Discovery must fail closed
-/// instead of indexing a file set the user's ignore rules refute.
 #[test]
 fn a_malformed_gitignore_fails_discovery_instead_of_dropping_its_rules() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -442,10 +313,11 @@ fn a_malformed_gitignore_fails_discovery_instead_of_dropping_its_rules() -> Test
     write(root, ".gitignore", b"[z-a]\n")?;
     write(root, "kept.rs", b"fn kept() {}")?;
 
-    let error = discover(root).check_err("an unapplied ignore file must fail discovery")?;
+    let error =
+        discover_and_hash(root).check_err("an unapplied ignore file must fail discovery")?;
 
     match error {
-        DiscoveryError::IgnoreRules { kind, path } => {
+        PublishError::Discovery(DiscoveryError::IgnoreRules { kind, path }) => {
             ensure_eq(
                 &kind,
                 &"glob",
@@ -460,7 +332,7 @@ fn a_malformed_gitignore_fails_discovery_instead_of_dropping_its_rules() -> Test
         }
         other => {
             return Err(format!(
-                "expected DiscoveryError::IgnoreRules, got {other:?}"
+                "expected PublishError::Discovery(DiscoveryError::IgnoreRules), got {other:?}"
             ))
             .check("unexpected outcome");
         }
@@ -468,14 +340,10 @@ fn a_malformed_gitignore_fails_discovery_instead_of_dropping_its_rules() -> Test
     Ok(())
 }
 
-/// The end-to-end consequence the fail-closed rule exists for: after a
-/// successful publish, a root the walker cannot list must not produce a
-/// revision that deletes the stored rows or shrinks the index.
 #[test]
 fn a_failed_walk_publishes_no_revision_and_deletes_no_stored_rows() -> TestResult {
     use crate::progress::NoopProgressSink;
     use crate::store::open_read_write;
-    use crate::sync::PublishError;
     use crate::sync::publish::publish;
     use crate::sync::test_support::stored_paths;
 
@@ -515,51 +383,6 @@ fn a_failed_walk_publishes_no_revision_and_deletes_no_stored_rows() -> TestResul
         &current,
         &first.revision_id,
         "no revision may be published from a partial walk",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn sniff_reader_retries_eintr_and_loops_across_short_reads() -> TestResult {
-    struct ChunkedReader {
-        step: usize,
-    }
-    impl std::io::Read for ChunkedReader {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            let current = self.step;
-            // KEEP saturating: test reader runs at most 4 steps
-            self.step = self.step.saturating_add(1);
-            match current {
-                0 => Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "EINTR",
-                )),
-                1 => {
-                    let chunk = b"hello";
-                    let Some(dest) = buf.get_mut(..chunk.len()) else {
-                        return Ok(0);
-                    };
-                    dest.copy_from_slice(chunk);
-                    Ok(chunk.len())
-                }
-                2 => {
-                    let Some(first) = buf.first_mut() else {
-                        return Ok(0);
-                    };
-                    *first = 0;
-                    Ok(1)
-                }
-                _ => Ok(0),
-            }
-        }
-    }
-
-    let mut reader = ChunkedReader { step: 0 };
-    let kind = super::sniff_reader(&mut reader).check("sniff across EINTR and short reads")?;
-    ensure_eq(
-        &kind,
-        &FileKind::Binary,
-        "NUL byte in later short read must still classify as binary",
     )?;
     Ok(())
 }

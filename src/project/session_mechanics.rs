@@ -1,75 +1,113 @@
-//! The mechanics an auditor registered for one server's session, held in
-//! memory only: this set dies with the process.
+//! Auditor-registered session mechanics, keyed per canonical project root and
+//! held in memory only for the lifetime of this server process.
 
-use super::mechanic_entry::MechanicEntry;
 use crate::util::LockPoisoned;
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// The mechanics registered for this server's session: held in memory by the
-/// server's `SourceSyncManager` (clones share them), never written anywhere,
-/// and gone when the process exits. Also records whether this server has
-/// already delivered the one-time `report` mechanics note.
-#[derive(Debug, Clone, Default)]
-pub struct SessionMechanics {
-    entries: Arc<Mutex<Vec<MechanicEntry>>>,
-    report_note_delivered: Arc<AtomicBool>,
+/// One auditor-registered mechanic: a Tree-sitter query with a single capture
+/// run over indexed files of `language`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MechanicEntry {
+    /// Identifier `leads` accepts as `mechanic`; never a built-in mechanic id.
+    pub id: String,
+    /// Grammar name the query compiles against and scans.
+    pub language: String,
+    /// Tree-sitter S-expression with a single capture.
+    pub query: String,
+    /// The model's note describing what the mechanic counts.
+    pub note: String,
 }
 
-/// Most session entries one server holds; a further `add` is refused.
+/// Validated [`MechanicEntry`] paired with its pre-compiled Tree-sitter [`tree_sitter::Query`].
+#[derive(Debug, Clone)]
+pub struct CompiledMechanic {
+    /// Wire metadata of the registered mechanic.
+    pub entry: MechanicEntry,
+    /// Compiled Tree-sitter query reused across `leads` scans.
+    pub compiled: Arc<tree_sitter::Query>,
+}
+
+/// Most session mechanics one project may register; a 65th `add` is refused.
 pub const MAX_SESSION_MECHANICS: usize = 64;
 
+#[derive(Debug, Default)]
+struct MechanicsState {
+    by_project: HashMap<PathBuf, Vec<CompiledMechanic>>,
+    report_notes_delivered: HashSet<PathBuf>,
+}
+
+/// In-memory session mechanics shared across clones of `SourceSyncManager`,
+/// scoped per canonical project root and wiped when the process exits or a
+/// project is turned `off`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionMechanics {
+    state: Arc<Mutex<MechanicsState>>,
+}
+
 impl SessionMechanics {
-    /// A snapshot of the session entries, oldest first.
+    /// Snapshot of registered mechanics for `project_root`, oldest first.
     ///
     /// # Errors
     ///
-    /// Returns [`LockPoisoned`] when the entries were poisoned.
-    pub fn entries(&self) -> Result<Vec<MechanicEntry>, LockPoisoned> {
-        // KEEP clone: snapshot releases the MutexGuard before returning an owned Vec<MechanicEntry>
-        Ok(crate::util::lock(&self.entries, "session_mechanics")?.clone())
+    /// Returns `LockPoisoned` when the session-mechanics mutex was poisoned.
+    pub fn entries(&self, project_root: &Path) -> Result<Vec<CompiledMechanic>, LockPoisoned> {
+        let state = crate::util::lock(&self.state, "session_mechanics")?;
+        let Some(entries) = state.by_project.get(project_root) else {
+            return Ok(Vec::new());
+        };
+        Ok(entries.clone())
     }
 
-    /// Runs `change` with the session entries locked, so a check and the
-    /// change it guards (collision, cap) are one step for every
-    /// `mechanic` call on this server.
+    /// Runs `change` against `project_root`'s mechanics list under the lock so
+    /// collision checks, cap enforcement, and mutation are atomic.
     ///
     /// # Errors
     ///
-    /// Returns [`LockPoisoned`] when the entries were poisoned.
+    /// Returns `LockPoisoned` when the session-mechanics mutex was poisoned.
     pub fn with_entries<T>(
         &self,
-        change: impl FnOnce(&mut Vec<MechanicEntry>) -> T,
+        project_root: &Path,
+        change: impl FnOnce(&mut Vec<CompiledMechanic>) -> T,
     ) -> Result<T, LockPoisoned> {
-        Ok(change(&mut *crate::util::lock(
-            &self.entries,
-            "session_mechanics",
-        )?))
+        let mut state = crate::util::lock(&self.state, "session_mechanics")?;
+        let entries = state
+            .by_project
+            .entry(project_root.to_path_buf())
+            .or_default();
+        Ok(change(entries))
     }
 
-    /// True exactly once per server: for the first caller that claims the
-    /// `report` mechanics note.
-    #[must_use]
-    pub fn claim_report_note(&self) -> bool {
-        !self.report_note_delivered.swap(true, Ordering::SeqCst)
+    /// Clears all custom mechanics and resets the `report` note state for
+    /// `project_root` (called on `project_control off`).
+    ///
+    /// # Errors
+    ///
+    /// Returns `LockPoisoned` when the session-mechanics mutex was poisoned.
+    pub fn clear_project(&self, project_root: &Path) -> Result<(), LockPoisoned> {
+        let mut state = crate::util::lock(&self.state, "session_mechanics")?;
+        state.by_project.remove(project_root);
+        state.report_notes_delivered.remove(project_root);
+        Ok(())
+    }
+
+    /// True once per `project_root` (until `clear_project`) for the first
+    /// `report` call that delivers the mechanics notice.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LockPoisoned` when the session-mechanics mutex was poisoned.
+    pub fn claim_report_note(&self, project_root: &Path) -> Result<bool, LockPoisoned> {
+        let mut state = crate::util::lock(&self.state, "session_mechanics")?;
+        Ok(state
+            .report_notes_delivered
+            .insert(project_root.to_path_buf()))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use slugaudit_test_check::{TestResult, ensure};
-
-    #[test]
-    fn claim_report_note_is_true_once_per_session_set() -> TestResult {
-        let session = SessionMechanics::default();
-        let shared = session.clone();
-
-        let first = session.claim_report_note();
-        let second = shared.claim_report_note();
-
-        ensure(first, "the first claim delivers the note")?;
-        ensure(!second, "a clone shares the claim")?;
-        Ok(())
-    }
-}
+#[path = "session_mechanics_tests.rs"]
+mod tests;

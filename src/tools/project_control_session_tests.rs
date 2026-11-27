@@ -11,7 +11,6 @@ fn on_with_profile(path: &str, profile: &str) -> Parameters<ProjectControlReques
     })
 }
 
-/// The names in the activation directory, sorted.
 fn activation_entries(project: &tempfile::TempDir) -> TestResult<Vec<String>> {
     let mut names: Vec<String> = std::fs::read_dir(project.path().join(".planning/slugaudit"))
         .check("activation dir")?
@@ -28,11 +27,12 @@ fn activation_entries(project: &tempfile::TempDir) -> TestResult<Vec<String>> {
 #[test]
 fn turning_on_with_a_profile_holds_it_in_memory_and_writes_no_config() -> TestResult {
     let (project, path) = indexed_project()?;
+    let manager = sync::SourceSyncManager::new();
 
     project_control(
         &on_with_profile(&path, "lean"),
         &crate::progress::NoopProgressSink,
-        None,
+        &manager,
     )
     .check("enable with a profile")?;
 
@@ -40,7 +40,7 @@ fn turning_on_with_a_profile_holds_it_in_memory_and_writes_no_config() -> TestRe
     ensure_eq(
         &project::session_profile(root.as_path()).check("read the session profile")?,
         &Some(crate::model::AuditProfile::Lean),
-        "project::session_profile(root.as_path()).check(\"read the session profile\")? == Some(crate::model::AuditProfile::Lean)",
+        "session profile stored in memory",
     )?;
     let entries = activation_entries(&project)?;
     ensure(
@@ -59,15 +59,16 @@ fn turning_on_with_a_profile_holds_it_in_memory_and_writes_no_config() -> TestRe
 }
 
 #[test]
-fn a_per_repo_config_json_is_ignored_when_turning_on() -> TestResult {
+fn a_per_repo_settings_file_in_activation_dir_is_ignored_when_turning_on() -> TestResult {
     let (project, path) = indexed_project()?;
     let activation = project.path().join(".planning/slugaudit");
     std::fs::create_dir_all(&activation).check("activation dir")?;
+    let legacy_name = ["config", ".json"].concat();
     std::fs::write(
-        activation.join("config.json"),
+        activation.join(legacy_name),
         br#"{"max_total_import_bytes": 1}"#,
     )
-    .check("an old install's config")?;
+    .check("an old install's per-repo file")?;
 
     let response = control(&path, ProjectControlAction::On)?.0;
 
@@ -79,11 +80,12 @@ fn a_per_repo_config_json_is_ignored_when_turning_on() -> TestResult {
     response
         .import
         .as_ref()
-        .check("the 1-byte ceiling in the old file was not applied")?;
+        .check("the 1-byte ceiling in the ignored file was not applied")?;
     Ok(())
 }
 
 fn control(path: &str, action: ProjectControlAction) -> TestResult<Json<ProjectControlResponse>> {
+    let manager = sync::SourceSyncManager::new();
     project_control(
         &Parameters(ProjectControlRequest {
             path: Some(path.to_owned()),
@@ -91,7 +93,7 @@ fn control(path: &str, action: ProjectControlAction) -> TestResult<Json<ProjectC
             profile: None,
         }),
         &crate::progress::NoopProgressSink,
-        None,
+        &manager,
     )
     .check("project_control succeeds")
 }
@@ -108,7 +110,7 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
     let (project, path) = indexed_project()?;
     control(&path, ProjectControlAction::On)?;
     let activation = project.path().join(".planning/slugaudit");
-    std::fs::write(activation.join("config.json"), b"{}").check("write config")?;
+    std::fs::write(activation.join("extra.json"), b"{}").check("write extra")?;
 
     let off = control(&path, ProjectControlAction::Off)?.0;
 
@@ -145,7 +147,7 @@ fn a_tool_call_after_project_off_is_not_active_and_does_not_recreate_the_directo
 #[test]
 fn off_fails_when_the_activation_dir_cannot_be_inspected() -> TestResult {
     let (project, path) = indexed_project()?;
-    // `.planning` is a file, so `.planning/slugaudit` fails with ENOTDIR.
+    let manager = sync::SourceSyncManager::new();
     std::fs::write(project.path().join(".planning"), b"x").check("write file")?;
 
     let error = project_control(
@@ -155,7 +157,7 @@ fn off_fails_when_the_activation_dir_cannot_be_inspected() -> TestResult {
             profile: None,
         }),
         &crate::progress::NoopProgressSink,
-        None,
+        &manager,
     )
     .err()
     .check("an uninspectable activation dir is not 'already disabled'")?;

@@ -70,8 +70,6 @@
         "query": null
       }
     ],
-    "invalid": [],
-    "mechanics_invalid": 0,
     "first_count": {
       "page": {
         "returned": 2,
@@ -176,7 +174,6 @@
           ]
         }
       ],
-      "mechanics_invalid": 0,
       "notices": [],
       "files_not_parsed": 0,
       "rows": [

@@ -3,19 +3,14 @@
 //! failures `connect_agent` surfaces.
 
 use super::*;
-use crate::connect_agents::find_agent;
-use crate::connect_exec::{DisconnectOutcome, connect_agent, disconnect_agent};
+use crate::connect::{DisconnectOutcome, connect_agent, disconnect_agent, find_agent};
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::{Path, PathBuf};
 
-fn cursor() -> TestResult<crate::connect_agents::AgentDef> {
+fn cursor() -> TestResult<crate::connect::AgentDef> {
     find_agent("cursor").check("cursor is registered")
 }
 
-/// Writes an executable shell script named `name`: it appends its argv (one
-/// line per call) to the file named by `FAKE_ARGV_LOG`, prints `FAKE_STDOUT`
-/// when that is set, and exits with `exit_code`. Tests run it with `PATH`
-/// replaced, never prepended, so no real client can be resolved.
 #[cfg(unix)]
 fn fake_cli(bin_dir: &Path, name: &str, exit_code: i32) -> TestResult {
     use std::os::unix::fs::PermissionsExt as _;
@@ -34,9 +29,6 @@ fn fake_cli(bin_dir: &Path, name: &str, exit_code: i32) -> TestResult {
     Ok(())
 }
 
-/// Runs `f` with `PATH` pointing at exactly `bin_dir` and the fake CLI's argv
-/// log at `log`; the inherited entries are dropped so a real client CLI can
-/// neither be found nor executed.
 #[cfg(unix)]
 fn with_fake_cli<T>(bin_dir: &Path, log: &Path, f: impl FnOnce() -> T) -> TestResult<T> {
     let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
@@ -50,7 +42,6 @@ fn with_fake_cli<T>(bin_dir: &Path, log: &Path, f: impl FnOnce() -> T) -> TestRe
     ))
 }
 
-/// Counts the staging files an atomic write may have left behind.
 fn temp_leftovers(directory: &Path) -> TestResult<usize> {
     let mut count = 0_usize;
     for entry in std::fs::read_dir(directory).check("list the directory")? {
@@ -234,49 +225,6 @@ fn a_config_parent_that_is_a_file_reports_the_create_directory_error() -> TestRe
     Ok(())
 }
 
-/// Builds a nested directory path of exactly `target_len` bytes, with every
-/// component within `NAME_MAX` (255) so the path itself is valid.
-#[cfg(target_os = "linux")]
-fn directory_path_of_length(base: &Path, target_len: usize) -> TestResult<PathBuf> {
-    let base_len = base.as_os_str().len();
-    let minimum = base_len
-        .checked_add(2)
-        .check("base length plus a component overflowed")?;
-    ensure(
-        target_len > minimum,
-        "target length must leave room for a component",
-    )?;
-    let available = target_len
-        .checked_sub(base_len)
-        .check("target length is shorter than the base")?;
-    let components = available.div_ceil(256);
-    let names_total = available
-        .checked_sub(components)
-        .check("component count exceeds the available length")?;
-    let mut path = base.to_path_buf();
-    for index in 0..components {
-        let remainder = names_total
-            .checked_rem(components)
-            .check("component count is zero")?;
-        let extra = usize::from(index < remainder);
-        let name_len = names_total
-            .checked_div(components)
-            .check("component count is zero")?
-            .checked_add(extra)
-            .check("component length overflowed")?;
-        path.push("d".repeat(name_len));
-    }
-    ensure_eq(
-        &path.as_os_str().len(),
-        &target_len,
-        "the helper must build a path of the requested length",
-    )?;
-    Ok(path)
-}
-
-/// The client's CLI rejects an argv containing a raw non-UTF-8 byte, so a path
-/// no client can represent must be refused before the client is executed or a
-/// config file is written.
 #[cfg(unix)]
 #[test]
 fn a_non_utf8_binary_path_is_refused_before_the_client_cli_runs() -> TestResult {
@@ -317,8 +265,6 @@ fn a_non_utf8_binary_path_is_refused_before_the_client_cli_runs() -> TestResult 
     Ok(())
 }
 
-/// A lossy rendering would register a command with U+FFFD, which no client can
-/// launch; guidance must carry the refusal text instead.
 #[cfg(unix)]
 #[test]
 fn a_non_utf8_binary_path_is_not_rendered_lossily_in_guidance() -> TestResult {
@@ -329,7 +275,7 @@ fn a_non_utf8_binary_path_is_not_rendered_lossily_in_guidance() -> TestResult {
     for id in ["goose", "cursor"] {
         let agent = find_agent(id).check(id)?;
 
-        let text = crate::connect_guidance::refusal(&agent, &binary, None).to_string();
+        let text = super::super::guidance::refusal(&agent, &binary, None).to_string();
 
         ensure(
             text.contains("not valid UTF-8"),
@@ -343,8 +289,6 @@ fn a_non_utf8_binary_path_is_not_rendered_lossily_in_guidance() -> TestResult {
     Ok(())
 }
 
-/// A client that explains its rejection on stdout still leaves output to look
-/// at above the error, so it must not be reported as silent.
 #[cfg(unix)]
 #[test]
 fn an_add_failure_printed_only_to_stdout_is_not_reported_as_silent() -> TestResult {
@@ -357,7 +301,7 @@ fn an_add_failure_printed_only_to_stdout_is_not_reported_as_silent() -> TestResu
 
     let result = with_fake_cli(&bin_dir, &log, || {
         temp_env::with_var("FAKE_STDOUT", Some("the client rejected it"), || {
-            crate::connect_cli::run_add("pi", &args)
+            super::super::cli::run_add("pi", &args)
         })
     })?;
 
@@ -367,12 +311,10 @@ fn an_add_failure_printed_only_to_stdout_is_not_reported_as_silent() -> TestResu
         ))
         .check("unexpected outcome");
     };
-    ensure_eq(&cli, &"pi", "cli == \"pi\"")?;
+    ensure_eq(&cli, &"pi", "add failure names pi executable")?;
     Ok(())
 }
 
-/// A closed pipe while relaying the client's output must not replace the
-/// failure that produced it.
 #[test]
 fn a_failed_failure_output_print_keeps_the_source_error() -> TestResult {
     let source = ConnectError::AddFailed {
@@ -382,7 +324,7 @@ fn a_failed_failure_output_print_keeps_the_source_error() -> TestResult {
     let print_failure = Err(ConnectError::Io(std::io::ErrorKind::BrokenPipe.into()));
 
     let (kept, logs) = crate::store::test_capture::capture_warns(|| {
-        crate::connect_guidance::keep_source_error(source, print_failure)
+        super::super::guidance::keep_source_error(source, print_failure)
     })?;
 
     ensure(
@@ -396,8 +338,6 @@ fn a_failed_failure_output_print_keeps_the_source_error() -> TestResult {
     Ok(())
 }
 
-/// The CLI remove route never needs a home, so a missing home must not suppress
-/// the installed client's own `mcp remove`.
 #[cfg(unix)]
 #[test]
 fn disconnecting_without_a_home_still_runs_the_installed_client_remove() -> TestResult {
@@ -414,7 +354,7 @@ fn disconnecting_without_a_home_still_runs_the_installed_client_remove() -> Test
     ensure_eq(
         &outcome,
         &DisconnectOutcome::Disconnected,
-        "outcome == DisconnectOutcome::Disconnected",
+        "CLI disconnect without home reports Disconnected",
     )?;
     ensure_eq(
         &std::fs::read_to_string(&log).check("read argv log")?,
@@ -424,8 +364,6 @@ fn disconnecting_without_a_home_still_runs_the_installed_client_remove() -> Test
     Ok(())
 }
 
-/// A file sync failure must fail the write before the rename, leaving the
-/// destination bytes untouched and no staging file behind.
 #[test]
 fn a_config_write_whose_file_sync_fails_leaves_the_destination_untouched() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
@@ -446,7 +384,7 @@ fn a_config_write_whose_file_sync_fails_leaves_the_destination_untouched() -> Te
     ensure_eq(
         &error.to_string(),
         &"injected file sync failure",
-        "error.to_string() == \"injected file sync failure\"",
+        "preserves file sync failure message",
     )?;
     ensure_eq(
         &std::fs::read(&path).check("read destination")?,
@@ -457,11 +395,9 @@ fn a_config_write_whose_file_sync_fails_leaves_the_destination_untouched() -> Te
     Ok(())
 }
 
-/// The rename is already committed when the directory sync runs, so its
-/// failure is logged once and the visible write still succeeds.
 #[test]
 fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() -> TestResult {
-    const SENTENCE: &str = "client config renamed but its directory was not synced; the file is on disk, but the rename may not survive a crash";
+    const SENTENCE: &str = "file renamed into place, but syncing its parent directory failed";
     let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("mcp.json");
 
@@ -486,15 +422,47 @@ fn a_directory_sync_failure_after_the_rename_is_logged_and_kept() -> TestResult 
     Ok(())
 }
 
-/// The config path itself is valid, but the temp name appended beside it
-/// crosses Linux's `PATH_MAX`, so creating the staging file fails. The
-/// failure is reported as the typed I/O error and no temp is left behind.
+#[cfg(target_os = "linux")]
+fn directory_path_of_length(base: &Path, target_len: usize) -> TestResult<PathBuf> {
+    let base_len = base.as_os_str().len();
+    let minimum = base_len
+        .checked_add(2)
+        .check("base length plus a component overflowed")?;
+    ensure(
+        target_len > minimum,
+        "target length must leave room for a component",
+    )?;
+    let available = target_len
+        .checked_sub(base_len)
+        .check("target length is shorter than the base")?;
+    let components = available.div_ceil(256);
+    let names_total = available
+        .checked_sub(components)
+        .check("component count exceeds the available length")?;
+    let mut path = base.to_path_buf();
+    for index in 0..components {
+        let remainder = names_total
+            .checked_rem(components)
+            .check("component count is zero")?;
+        let extra = usize::from(index < remainder);
+        let name_len = names_total
+            .checked_div(components)
+            .check("component count is zero")?
+            .checked_add(extra)
+            .check("component length overflowed")?;
+        path.push("d".repeat(name_len));
+    }
+    ensure_eq(
+        &path.as_os_str().len(),
+        &target_len,
+        "the helper must build a path of the requested length",
+    )?;
+    Ok(path)
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_config_write_whose_temp_path_exceeds_the_limit_fails_without_a_stray_temp() -> TestResult {
-    // `home/.cursor/mcp.json` adds 17 bytes to the home; keeping the home at
-    // 4075 puts the target at 4092 (valid) while every temp name
-    // (`.slugaudit-tmp-<pid>-<count>`) pushes the path past 4095.
     const HOME_LEN: usize = 4075;
     let directory = tempfile::tempdir().check("temp dir")?;
     let home = directory_path_of_length(directory.path(), HOME_LEN)?;

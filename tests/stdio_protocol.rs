@@ -9,7 +9,7 @@ use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Follows the JSON pointer `pointer` into `value`; a missing path is an error
 /// naming the pointer and the value it was looked up in.
@@ -137,8 +137,7 @@ impl ServerProcess {
             "params": { "name": name, "arguments": arguments },
         });
         self.send(&request.to_string())?;
-        let response: serde_json::Value = serde_json::from_str(&self.recv_stdout_line()?)
-            .check(&format!("{name} response is valid JSON"))?;
+        let (response, _) = self.recv_response(id)?;
         ensure_eq(
             at(&response, "/id")?,
             &id,
@@ -172,14 +171,12 @@ impl ServerProcess {
         lines.join("\n")
     }
 
-    /// Initialize the server and return a project path string suitable
-    /// for embedding in tool-call JSON.  Writes a single `lib.rs` fixture
-    /// and handles the init/initialized handshake.
+    /// Initialize an enabled project directory with a single `lib.rs` fixture
+    /// and return `(tempdir, slash_normalized_path)`.
     fn init_project() -> TestResult<(tempfile::TempDir, String)> {
         let project = tempfile::tempdir().check("project dir")?;
         std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
             .check("activate project")?;
-        write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
         std::fs::write(project.path().join("lib.rs"), b"pub fn a() {}\n")
             .check("write fixture file")?;
         let path = project.path().to_string_lossy().replace('\\', "/");
@@ -219,6 +216,83 @@ impl Drop for ServerProcess {
     }
 }
 
+/// Asserts that `notifications` is a non-empty sequence of JSON-RPC 2.0
+/// `notifications/progress` frames for `expected_token` with no `"id"` member,
+/// `0.0 <= p_0 <= p_1 <= ... <= p_n == 1.0`.
+fn check_monotonic_progress(
+    notifications: &[serde_json::Value],
+    expected_token: &str,
+) -> TestResult {
+    ensure(
+        !notifications.is_empty(),
+        format!(
+            "at least one progress notification must arrive when progressToken={expected_token:?}"
+        ),
+    )?;
+
+    let mut previous: Option<f64> = None;
+    for (index, notification) in notifications.iter().enumerate() {
+        let object = notification
+            .as_object()
+            .check("progress notification must be a JSON object")?;
+        ensure(
+            !object.contains_key("id"),
+            format!(
+                "progress notification {index} must omit the JSON-RPC 'id' key: {notification}"
+            ),
+        )?;
+        ensure_eq(
+            at(notification, "/method")?,
+            &"notifications/progress",
+            format!("stdout line {index} must be notifications/progress: {notification}"),
+        )?;
+        ensure_eq(
+            at(notification, "/params/progressToken")?,
+            &expected_token,
+            format!("progressToken must round-trip on notification {index}: {notification}"),
+        )?;
+        let progress = at(notification, "/params/progress")?
+            .as_f64()
+            .check("params.progress must be a finite JSON number")?;
+        ensure(
+            progress.is_finite() && (0.0..=1.0).contains(&progress),
+            format!(
+                "progress notification {index} fraction {progress} must lie within 0.0..=1.0: {notification}"
+            ),
+        )?;
+        if let Some(prev) = previous {
+            ensure(
+                prev <= progress,
+                format!(
+                    "progress notifications must be monotonic: notification {index} reported {progress} after {prev}"
+                ),
+            )?;
+        }
+        previous = Some(progress);
+    }
+
+    let first = notifications
+        .first()
+        .check("first progress notification exists")?;
+    let first_progress = at(first, "/params/progress")?
+        .as_f64()
+        .check("first params.progress is numeric")?;
+    ensure(
+        first_progress >= 0.0,
+        format!("first progress notification must be >= 0.0, got {first_progress}"),
+    )?;
+
+    let last = notifications
+        .last()
+        .check("last progress notification exists")?;
+    ensure_eq(
+        at(last, "/params/progress")?,
+        &1.0,
+        format!("final progress notification must report completion at 1.0: {last}"),
+    )?;
+    Ok(())
+}
+
 /// Workflow act 2: the finding bound to `lib.rs` must read stale once the
 /// source changes, across a real sync on the live `server`.
 fn check_finding_reads_stale_after_the_source_changes(
@@ -226,36 +300,24 @@ fn check_finding_reads_stale_after_the_source_changes(
     project: &tempfile::TempDir,
     project_path: &str,
 ) -> TestResult {
-    // --- Workflow act 2: the finding must read stale the moment the source
-    // it was bound to changes, across a real sync on a live server. ---
     std::fs::write(
         project.path().join("lib.rs"),
         b"pub fn a() { changed(); }\n",
     )
     .check("modify source")?;
-    // The next tool call hashes the tree, sees the change, and publishes
-    // revision 2 (the finding reads stale). Poll the revision count
-    // instead of sleeping a fixed amount, so a slow CI machine can't turn
-    // a correct test into a flaky one.
-    let mut revision_count: i64 = 1;
-    for _ in 0..10 {
-        let sync_result = server.tool_json(
-            7,
-            "query",
-            &json!({ "path": project_path, "sql": "SELECT count(*) AS n FROM revisions" }),
-        )?;
-        revision_count = at(&sync_result, "/rows/0/n")?
-            .as_i64()
-            .check("revision count is a number")?;
-        if revision_count == 2 {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+
+    let sync_result = server.tool_json(
+        7,
+        "query",
+        &json!({ "path": project_path, "sql": "SELECT count(*) AS n FROM revisions" }),
+    )?;
+    let revision_count = at(&sync_result, "/rows/0/n")?
+        .as_i64()
+        .check("revision count is a number")?;
     ensure_eq(
         &revision_count,
         &2,
-        "the modification must publish a second revision",
+        "the modification must publish a second revision synchronously on the next tool call",
     )?;
 
     let stale_result = server.tool_json(8, "finding_read", &json!({ "path": project_path }))?;
@@ -269,13 +331,6 @@ fn check_finding_reads_stale_after_the_source_changes(
 
 /// Structured tracing must reach stderr and nothing of the protocol may.
 fn check_stderr_carries_tracing_not_protocol(server: &ServerProcess) -> TestResult {
-    // Structured tracing (src/server.rs's `run_blocking`, src/tools/*.rs)
-    // must actually reach stderr with the fields it claims to record, and
-    // — the point of this whole test file — none of that can leak onto
-    // stdout, which every `recv_stdout_line` + `serde_json::from_str`
-    // call above already implicitly guarantees (any stray non-JSON text on
-    // a stdout line would fail parsing), but assert it explicitly
-    // for the tracing content specifically.
     let stderr = server.stderr_snapshot();
     ensure(
         !stderr.is_empty(),
@@ -312,7 +367,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
     ensure_eq(
         at(&report, "/file_count")?,
         &1,
-        "report[\"file_count\"] == 1",
+        "report file_count equals the single fixture file",
     )?;
     let languages = at(&report, "/languages")?
         .as_array()
@@ -323,7 +378,7 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
                 .get("language")
                 .is_some_and(|language| language == "rust")
         }),
-        "languages.iter().any(|entry| entry[\"language\"] == \"rust\")",
+        "report languages array includes rust",
     )?;
 
     let query_result = server.tool_json(
@@ -334,12 +389,12 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
     ensure_eq(
         at(&query_result, "/rows/0/path")?,
         &"lib.rs",
-        "query_result[\"rows\"][0][\"path\"] == \"lib.rs\"",
+        "query row 0 path is lib.rs",
     )?;
     ensure_eq(
         at(&query_result, "/rows/0/language")?,
         &"rust",
-        "query_result[\"rows\"][0][\"language\"] == \"rust\"",
+        "query row 0 language is rust",
     )?;
 
     let write_response = server.tool_response(
@@ -366,12 +421,12 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
     ensure_eq(
         at(&structure_result, "/matches/0/text")?,
         &"a",
-        "structure_result[\"matches\"][0][\"text\"] == \"a\"",
+        "structure match text is function name `a`",
     )?;
     ensure_eq(
         at(&structure_result, "/matches/0/capture_name")?,
         &"name",
-        "structure_result[\"matches\"][0][\"capture_name\"] == \"name\"",
+        "structure match capture_name is `name`",
     )?;
 
     let finding_result = server.tool_json(
@@ -391,13 +446,13 @@ fn real_stdio_handshake_and_tool_call_stay_protocol_pure() -> TestResult {
     ensure_eq(
         at(&finding_result, "/status")?,
         &"current",
-        "finding_result[\"status\"] == \"current\"",
+        "recorded finding status starts as current",
     )?;
     ensure(
         at(&finding_result, "/id")?
             .as_i64()
             .is_some_and(|id| id > 0),
-        "finding_result[\"id\"].as_i64().is_some_and(|id| id > 0)",
+        "recorded finding id is a positive integer",
     )?;
 
     check_finding_reads_stale_after_the_source_changes(&mut server, &project, &project_path)?;
@@ -417,16 +472,7 @@ fn restart_serves_the_same_revision_from_disk() -> TestResult {
 
     let report_revision = |server: &mut ServerProcess| -> TestResult<String> {
         server.handshake()?;
-        let call = format!(
-            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
-        );
-        server.send(&call)?;
-        let response: serde_json::Value =
-            serde_json::from_str(&server.recv_stdout_line()?).check("report response")?;
-        let content = at(&response, "/result/content/0/text")?
-            .as_str()
-            .check("report text")?;
-        let report: serde_json::Value = serde_json::from_str(content).check("report JSON")?;
+        let report = server.tool_json(2, "report", &json!({ "path": project_path }))?;
         Ok(at(&report, "/revision_id")?
             .as_str()
             .check("revision id")?
@@ -471,10 +517,14 @@ fn findings_last_one_server_process_and_finding_clear_empties_a_live_one() -> Te
     ensure_eq(
         &at(&read, "/findings")?.as_array().map(Vec::len),
         &Some(1),
-        "read[\"findings\"].as_array().map(Vec::len) == Some(1)",
+        "finding_read returns the single recorded finding",
     )?;
     let cleared = first.tool_json(4, "finding_clear", &json!({ "path": project_path }))?;
-    ensure_eq(at(&cleared, "/removed")?, &1, "cleared[\"removed\"] == 1")?;
+    ensure_eq(
+        at(&cleared, "/removed")?,
+        &1,
+        "finding_clear reports 1 removed finding",
+    )?;
     first.tool_json(5, "finding", &finding)?;
     drop(first);
 
@@ -532,19 +582,23 @@ fn two_live_servers_on_one_repo_keep_their_own_findings() -> TestResult {
     ensure_eq(
         &titles(&mut first, 3)?,
         &["from first"],
-        "titles(&mut first, 3)? == [\"from first\"]",
+        "first server retains its own finding",
     )?;
     ensure_eq(
         &titles(&mut second, 4)?,
         &["from second"],
-        "titles(&mut second, 4)? == [\"from second\"]",
+        "second server retains its own finding",
     )?;
     let cleared = second.tool_json(5, "finding_clear", &json!({ "path": project_path }))?;
-    ensure_eq(at(&cleared, "/removed")?, &1, "cleared[\"removed\"] == 1")?;
+    ensure_eq(
+        at(&cleared, "/removed")?,
+        &1,
+        "clearing second server removes 1 finding",
+    )?;
     ensure_eq(
         &titles(&mut first, 4)?,
         &["from first"],
-        "titles(&mut first, 4)? == [\"from first\"]",
+        "first server's finding is untouched by second server's finding_clear",
     )?;
     Ok(())
 }
@@ -572,100 +626,139 @@ fn the_tool_list_has_finding_clear_and_no_finding_sessions() -> TestResult {
 
 /// When the caller requests progress notifications (by passing
 /// `_meta.progressToken` at the request level), the server must emit
-/// `/notifications/progress` messages on stdout *before* the final
-/// tool-call response.  This exercises the path from `progress_target` →
-/// `McpProgressSink` → `notify_progress` that every other test bypasses
-/// by calling Rust functions directly.
-///
-/// We sync the project first (without a progress token) so the follow-up
-/// query is a fast, no-publish call — the progress pipeline still fires
-/// regardless.
+/// monotonically non-decreasing `/notifications/progress` messages
+/// (`0.0 <= p1 <= p2 <= ... <= 1.0`) with no `"id"` key on stdout *before*
+/// the final tool-call response, on both a cold sync and a warm query.
 #[test]
 fn progress_notifications_flow_over_stdio() -> TestResult {
     let (_project, project_path) = ServerProcess::init_project()?;
     let mut server = ServerProcess::spawn()?;
     server.handshake()?;
 
-    // Phase 1 — sync without progress: drain any stdout, verify success.
-    let sync_call = format!(
-        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"report","arguments":{{"path":"{project_path}"}}}}}}"#
-    );
-    server.send(&sync_call)?;
-    let (sync_response, _) = server.recv_response(2)?;
+    // Phase 1 — cold sync `report` *with* a progress token so sync-layer
+    // phase notifications and lifecycle notifications both travel over stdio.
+    let sync_call = json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "report",
+            "arguments": { "path": project_path },
+            "_meta": { "progressToken": "pt-sync" },
+        },
+    });
+    server.send(&sync_call.to_string())?;
+    let (sync_response, sync_notifications) = server.recv_response(2)?;
     ensure(
         at(&sync_response, "/result")?.is_object(),
         format!("initial sync must succeed: {sync_response}"),
     )?;
+    check_monotonic_progress(&sync_notifications, "pt-sync")?;
 
-    // Phase 2 — query *with* a progress token inside `params._meta`
-    // (the MCP tool-call convention). The project is already synced;
-    // this should be a fast call, but the progress notifications must
-    // still arrive.
-    let query_call = format!(
-        r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"query","arguments":{{"path":"{project_path}","sql":"SELECT 1"}},"_meta":{{"progressToken":"pt-q"}}}}}}"#
-    );
-    server.send(&query_call)?;
+    // Phase 2 — warm `query` with a fresh progress token.
+    let query_call = json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "query",
+            "arguments": { "path": project_path, "sql": "SELECT 1" },
+            "_meta": { "progressToken": "pt-q" },
+        },
+    });
+    server.send(&query_call.to_string())?;
     let (response, notifications) = server.recv_response(3)?;
 
     ensure(
         at(&response, "/result")?.is_object(),
         format!("query must succeed: {response}"),
     )?;
-
-    ensure(
-        !notifications.is_empty(),
-        "at least one progress notification must arrive when progressToken is set",
-    )?;
-
-    for (i, notification) in notifications.iter().enumerate() {
-        ensure(
-            notification
-                .get("id")
-                .is_none_or(serde_json::Value::is_null),
-            format!("progress notification {i} must have no 'id': {notification}"),
-        )?;
-        ensure_eq(
-            at(notification, "/method")?,
-            &"notifications/progress",
-            format!("stdout line {i} must be a progress notification: {notification}"),
-        )?;
-        ensure_eq(
-            at(notification, "/params/progressToken")?,
-            &"pt-q",
-            format!("progress token must round-trip: {notification}"),
-        )?;
-        at(notification, "/params/progress")?
-            .as_f64()
-            .check("`notification['params']['progress'].as_f64()` is present")?;
-    }
-
-    // The last notification must signal completion at 1.0.
-    let last = notifications
-        .last()
-        .check("at least one progress notification")?;
-    ensure_eq(
-        at(last, "/params/progress")?,
-        &1.0,
-        format!("final progress notification must report completion at 1.0: {last}"),
-    )?;
+    check_monotonic_progress(&notifications, "pt-q")?;
     Ok(())
 }
 
-/// The auditor-owned mechanics flow over real stdio, in one live server:
-/// the first `report` carries the mechanics note, `mechanic add` returns the
-/// new entry's first count, `leads` lists it first as a session entry, and a
-/// second `report` no longer carries the note.
+/// Asserts `mechanic list` and `mechanic remove` responses plus the post-remove
+/// `leads` counts for `"rs_dangerous_hook"`.
+fn check_mechanic_list_and_remove(
+    listed: &serde_json::Value,
+    removed: &serde_json::Value,
+    leads_after_remove: &serde_json::Value,
+) -> TestResult {
+    ensure_eq(
+        at(listed, "/action")?,
+        &"list",
+        "mechanic list echoes action `list`",
+    )?;
+    ensure_eq(
+        at(listed, "/id")?,
+        &serde_json::Value::Null,
+        "mechanic list sets id to null",
+    )?;
+    ensure_eq(
+        at(listed, "/page/complete")?,
+        &true,
+        "mechanic list fits on one complete page",
+    )?;
+    ensure_eq(
+        at(listed, "/mechanics/0/id")?,
+        &"rs_dangerous_hook",
+        "mechanic list orders session mechanic first",
+    )?;
+    ensure_eq(
+        at(listed, "/mechanics/0/source")?,
+        &"session",
+        "mechanic list marks custom entry as session",
+    )?;
+
+    ensure_eq(
+        at(removed, "/action")?,
+        &"remove",
+        "mechanic remove echoes action `remove`",
+    )?;
+    ensure_eq(
+        at(removed, "/id")?,
+        &"rs_dangerous_hook",
+        "mechanic remove echoes removed id",
+    )?;
+    ensure_eq(
+        at(removed, "/source")?,
+        &"session",
+        "mechanic remove reports session source",
+    )?;
+    let remaining_ids = at(removed, "/mechanics")?
+        .as_array()
+        .check("removed mechanics array")?
+        .iter()
+        .map(|entry| at(entry, "/id")?.as_str().check("mechanic entry id"))
+        .collect::<TestResult<Vec<&str>>>()?;
+    ensure(
+        !remaining_ids.contains(&"rs_dangerous_hook"),
+        format!("removed mechanic must disappear from catalogue: {remaining_ids:?}"),
+    )?;
+    let post_remove_leads = at(leads_after_remove, "/mechanic_counts")?
+        .as_array()
+        .check("leads mechanic_counts array")?;
+    ensure(
+        post_remove_leads
+            .iter()
+            .all(|entry| entry.get("mechanic") != Some(&json!("rs_dangerous_hook"))),
+        format!("leads after remove must not count removed mechanic: {leads_after_remove}"),
+    )
+}
+
+/// Full auditor-owned `mechanic` flow over real stdio (`add` -> `leads` ->
+/// `list` -> `remove`), plus verifying `report.mechanics.note` is a string on
+/// the first `report` and explicitly `null` on subsequent `report` calls.
 #[test]
 fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
         .check("activate project")?;
-    write_database_marker(&project.path().join(".planning").join("slugaudit"))?;
     std::fs::write(
-        project.path().join("app.py"),
-        b"def run(code):\n    eval(code)  # eval(comment)\n    return \"eval(text)\"\n",
+        project.path().join("src.rs"),
+        b"pub fn run() {\n    dangerous_hook(); // dangerous_hook()\n    let _s = \"dangerous_hook()\";\n}\nfn dangerous_hook() {}\n",
     )
-    .check("write fixture file")?;
+    .check("write Rust fixture file")?;
     let project_path = project.path().to_string_lossy().replace('\\', "/");
     let mut server = ServerProcess::spawn()?;
     server.handshake()?;
@@ -677,74 +770,494 @@ fn real_stdio_mechanic_add_is_counted_and_listed_first_by_leads() -> TestResult 
         &json!({
             "path": project_path,
             "action": "add",
-            "id": "py_eval",
-            "language": "python",
-            "query": "(call function: (identifier) @callee (#eq? @callee \"eval\"))",
-            "note": "dynamic code execution",
+            "id": "rs_dangerous_hook",
+            "language": "rust",
+            "query": "(call_expression function: (identifier) @callee (#eq? @callee \"dangerous_hook\"))",
+            "note": "explicit calls to dangerous_hook",
         }),
     )?;
     let leads = server.tool_json(4, "leads", &json!({ "path": project_path }))?;
     let second_report = server.tool_json(5, "report", &json!({ "path": project_path }))?;
+    let listed = server.tool_json(
+        6,
+        "mechanic",
+        &json!({ "path": project_path, "action": "list" }),
+    )?;
+    let removed = server.tool_json(
+        7,
+        "mechanic",
+        &json!({
+            "path": project_path,
+            "action": "remove",
+            "id": "rs_dangerous_hook",
+        }),
+    )?;
+    let leads_after_remove = server.tool_json(8, "leads", &json!({ "path": project_path }))?;
 
     ensure(
         at(&first_report, "/mechanics/note")?
             .as_str()
             .is_some_and(|note| note.contains("not a checklist")),
-        format!("the first report carries the note: {first_report}"),
+        format!("the first report carries the mechanics note: {first_report}"),
     )?;
     ensure_eq(
         at(&added, "/source")?,
         &"session",
-        "added[\"source\"] == \"session\"",
+        "added mechanic source is session",
     )?;
     ensure_eq(
         at(&added, "/first_count/page/total")?,
         &1,
-        format!("{added}"),
+        format!("first_count finds only the real call site, ignoring comment and string: {added}"),
     )?;
     ensure_eq(
         at(&added, "/first_count/rows/0/line")?,
         &2,
-        format!("{added}"),
+        format!("first_count reports line 2: {added}"),
     )?;
     ensure_eq(
         at(&leads, "/mechanic_counts/0/mechanic")?,
-        &"py_eval",
-        format!("{leads}"),
+        &"rs_dangerous_hook",
+        format!("session mechanic is listed first in leads: {leads}"),
     )?;
     ensure_eq(
         at(&leads, "/mechanic_counts/0/source")?,
         &"session",
-        format!("{leads}"),
+        format!("leads marks the custom mechanic as session: {leads}"),
     )?;
     ensure_eq(
         at(&leads, "/mechanic_counts/0/count")?,
         &1,
-        format!("{leads}"),
+        format!("leads counts 1 call site: {leads}"),
     )?;
     ensure_eq(
         at(&leads, "/mechanic_counts/0/covers")?,
-        &json!(["python"]),
-        "leads[\"mechanic_counts\"][0][\"covers\"] == json!([\"python\"])",
+        &json!(["rust"]),
+        "leads covers reports rust",
+    )?;
+    // Strict key check: `/mechanics/note` must be present and equal to JSON `null`.
+    ensure_eq(
+        at(&second_report, "/mechanics/note")?,
+        &serde_json::Value::Null,
+        format!("second report must serialize mechanics.note as null: {second_report}"),
+    )?;
+
+    check_mechanic_list_and_remove(&listed, &removed, &leads_after_remove)
+}
+
+/// Live stdio lifecycle for `project_control`: `health` reports `disabled` on
+/// an unenabled directory, `project_control on` sets up `.planning/README.md`
+/// and `.planning/slugaudit/` and runs the initial import, `report` succeeds,
+/// and `project_control off` deletes `.planning/slugaudit/` while preserving
+/// `.planning/README.md` and returning the project to `project_not_enabled`.
+#[test]
+fn real_stdio_project_control_on_report_and_off_lifecycle() -> TestResult {
+    let project = tempfile::tempdir().check("create unenabled project dir")?;
+    std::fs::write(
+        project.path().join("lib.rs"),
+        b"pub fn answer() -> u64 { 42 }\n",
+    )
+    .check("write lib.rs")?;
+    let project_path = project.path().to_string_lossy().replace('\\', "/");
+
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+
+    let health_before = server.tool_json(2, "health", &json!({ "path": project_path }))?;
+    ensure_eq(
+        at(&health_before, "/phase")?,
+        &"disabled",
+        "unenabled project reports phase disabled",
     )?;
     ensure(
-        second_report
-            .pointer("/mechanics/note")
-            .is_none_or(serde_json::Value::is_null),
-        format!("only the first report carries the note: {second_report}"),
+        at(&health_before, "/remedy")?
+            .as_str()
+            .is_some_and(|remedy| remedy.contains("project_control")),
+        format!("disabled health includes project_control remedy: {health_before}"),
+    )?;
+
+    let enabled = server.tool_json(
+        3,
+        "project_control",
+        &json!({ "path": project_path, "action": "on", "profile": "lean" }),
+    )?;
+    ensure_eq(
+        at(&enabled, "/status")?,
+        &"enabled",
+        "project_control on reports status enabled",
+    )?;
+    ensure(
+        at(&enabled, "/import/added")?
+            .as_u64()
+            .is_some_and(|added| added >= 1),
+        format!("initial import adds discovered files: {enabled}"),
+    )?;
+    ensure_eq(
+        at(&enabled, "/gitignore/status")?,
+        &"added",
+        "project_control on adds .planning/slugaudit/ to .gitignore",
+    )?;
+    ensure(
+        project
+            .path()
+            .join(".planning/slugaudit/project.db")
+            .is_file(),
+        "project_control on creates .planning/slugaudit/project.db",
+    )?;
+    ensure(
+        project.path().join(".planning/README.md").is_file(),
+        "project_control on creates .planning/README.md via slugplan",
+    )?;
+
+    let report = server.tool_json(4, "report", &json!({ "path": project_path }))?;
+    ensure(
+        at(&report, "/revision_id")?.is_string(),
+        "report returns a committed revision_id on the enabled project",
+    )?;
+
+    let disabled = server.tool_json(
+        5,
+        "project_control",
+        &json!({ "path": project_path, "action": "off" }),
+    )?;
+    ensure_eq(
+        at(&disabled, "/status")?,
+        &"disabled",
+        "project_control off reports status disabled",
+    )?;
+    ensure(
+        !project.path().join(".planning/slugaudit").exists(),
+        "project_control off deletes .planning/slugaudit/",
+    )?;
+    ensure(
+        project.path().join(".planning/README.md").is_file(),
+        "project_control off leaves .planning/README.md untouched",
+    )?;
+
+    let after_off = server.tool_response(6, "report", &json!({ "path": project_path }))?;
+    ensure_eq(
+        at(&after_off, "/error/data/code")?,
+        &"project_not_enabled",
+        format!("report after project_control off must return project_not_enabled: {after_off}"),
     )?;
     Ok(())
 }
 
-/// Creates the empty owner-only `project.db` that marks a project as active.
-fn write_database_marker(activation: &std::path::Path) -> TestResult {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(activation.join("project.db"))
-        .check("create database marker")?;
+/// Asserts `health(verbose: true)` fields before any paged result is created
+/// (`detail.database`, `detail.server`, and `detail.result_store == null`).
+fn check_verbose_health_before_paging(health_before: &serde_json::Value) -> TestResult {
+    ensure_eq(
+        at(health_before, "/phase")?,
+        &"steady_state",
+        "synced project reports steady_state phase",
+    )?;
+    ensure_eq(
+        at(health_before, "/remedy")?,
+        &serde_json::Value::Null,
+        "steady_state project has null remedy",
+    )?;
+    ensure(
+        at(health_before, "/detail/database/parser_pack_version")?.is_string(),
+        "verbose health carries detail.database.parser_pack_version",
+    )?;
+    ensure_eq(
+        at(health_before, "/detail/database/skipped_file_count")?,
+        &0,
+        "verbose health reports 0 skipped files",
+    )?;
+    ensure(
+        at(health_before, "/detail/server/tool_call_count")?
+            .as_u64()
+            .is_some_and(|calls| calls >= 1),
+        "verbose health detail.server.tool_call_count reflects prior calls",
+    )?;
+    ensure_eq(
+        at(health_before, "/detail/server/tool_call_error_count")?,
+        &0,
+        "verbose health detail.server.tool_call_error_count is 0",
+    )?;
+    ensure(
+        at(health_before, "/detail/server/tool_call_total_ms")?.is_u64(),
+        "verbose health detail.server.tool_call_total_ms is a u64",
+    )?;
+    ensure(
+        at(health_before, "/detail/server/last_sync_unix_seconds")?
+            .as_i64()
+            .is_some_and(|ts| ts > 0),
+        "verbose health detail.server.last_sync_unix_seconds is stamped",
+    )?;
+    ensure(
+        at(health_before, "/detail/server/last_sync_duration_ms")?.is_u64(),
+        "verbose health detail.server.last_sync_duration_ms is a u64",
+    )?;
+    ensure_eq(
+        at(health_before, "/detail/result_store")?,
+        &serde_json::Value::Null,
+        "detail.result_store is null before the first paged result",
+    )
+}
+
+/// Pages a 12-file `query` to completion via cursor-only continuation calls and
+/// returns `(next_request_id, collected_paths)`.
+fn collect_paged_query_paths(
+    server: &mut ServerProcess,
+    project_path: &str,
+    start_id: u64,
+) -> TestResult<(u64, Vec<String>)> {
+    let first_page = server.tool_json(
+        start_id,
+        "query",
+        &json!({
+            "path": project_path,
+            "sql": "SELECT path, content FROM files WHERE language = 'rust' ORDER BY path",
+            "page_bytes": 350,
+        }),
+    )?;
+    ensure_eq(
+        at(&first_page, "/page/complete")?,
+        &false,
+        "first query page must be incomplete at 350 page_bytes",
+    )?;
+    ensure_eq(
+        at(&first_page, "/page/limited_by")?,
+        &"page_bytes",
+        "first query page is cut by page_bytes",
+    )?;
+    ensure_eq(
+        at(&first_page, "/page/total")?,
+        &12,
+        "query page.total counts all 12 Rust files",
+    )?;
+
+    let mut collected_paths = Vec::new();
+    for row in at(&first_page, "/rows")?.as_array().check("page 1 rows")? {
+        collected_paths.push(at(row, "/path")?.as_str().check("row path")?.to_owned());
+    }
+    let mut next_cursor = Some(
+        at(&first_page, "/page/cursor")?
+            .as_str()
+            .check("page 1 carries a continuation cursor")?
+            .to_owned(),
+    );
+    let mut request_id = start_id
+        .checked_add(1)
+        .check("request id counter overflowed")?;
+    let mut page_count = 1_usize;
+
+    while let Some(cursor) = next_cursor {
+        let continuation = server.tool_json(request_id, "query", &json!({ "cursor": cursor }))?;
+        request_id = request_id
+            .checked_add(1)
+            .check("request id counter overflowed")?;
+        page_count = page_count.checked_add(1).check("page count overflowed")?;
+        ensure(
+            page_count <= 20,
+            "cursor continuation must terminate within 12 rows",
+        )?;
+
+        for row in at(&continuation, "/rows")?
+            .as_array()
+            .check("continuation rows")?
+        {
+            collected_paths.push(at(row, "/path")?.as_str().check("row path")?.to_owned());
+        }
+        let complete = at(&continuation, "/page/complete")?
+            .as_bool()
+            .check("page.complete is a boolean")?;
+        let page_obj = at(&continuation, "/page")?
+            .as_object()
+            .check("page is an object")?;
+        if complete {
+            ensure(
+                !page_obj.contains_key("cursor"),
+                format!("completed final page must omit cursor: {continuation}"),
+            )?;
+            next_cursor = None;
+        } else {
+            next_cursor = Some(
+                at(&continuation, "/page/cursor")?
+                    .as_str()
+                    .check("incomplete continuation page carries cursor")?
+                    .to_owned(),
+            );
+        }
+    }
+
+    ensure(
+        page_count >= 2,
+        format!("expected multi-page query continuation, got {page_count} page(s)"),
+    )?;
+    Ok((request_id, collected_paths))
+}
+
+/// Asserts typed `detail.result_store` fields on `health(verbose: true)` after
+/// a paged result has been read to completion.
+fn check_verbose_health_after_paging(health_after: &serde_json::Value) -> TestResult {
+    ensure(
+        at(health_after, "/detail/result_store/budget_bytes")?
+            .as_u64()
+            .is_some_and(|budget| budget > 0),
+        "detail.result_store.budget_bytes is positive once opened",
+    )?;
+    ensure(
+        at(health_after, "/detail/result_store/admitted_bytes")?.is_u64(),
+        "detail.result_store.admitted_bytes is a u64",
+    )?;
+    ensure(
+        at(health_after, "/detail/result_store/active/results")?.is_u64(),
+        "detail.result_store.active.results is a u64",
+    )?;
+    ensure(
+        at(health_after, "/detail/result_store/idle/results")?.is_u64(),
+        "detail.result_store.idle.results is a u64",
+    )?;
+    ensure(
+        at(health_after, "/detail/result_store/delivered/results")?
+            .as_u64()
+            .is_some_and(|delivered| delivered >= 1),
+        "completed query result transitions into delivered class",
+    )?;
+    ensure(
+        at(health_after, "/detail/result_store/sweep/removed_files")?.is_u64(),
+        "detail.result_store.sweep.removed_files is a u64",
+    )
+}
+
+/// Live stdio coverage for `query` cursor continuation (`page 1` -> `page 2` ->
+/// completion with cursor-only calls) and `health` with `verbose: true`
+/// verifying typed `detail.database`, `detail.server`, and `detail.result_store`
+/// before and after paging.
+#[test]
+fn real_stdio_query_cursor_continuation_and_verbose_health_detail() -> TestResult {
+    let project = tempfile::tempdir().check("create multi-file project dir")?;
+    std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
+        .check("activate project")?;
+
+    let mut expected_paths = Vec::new();
+    for idx in 0..12_u32 {
+        let filename = format!("mod_{idx:02}.rs");
+        let content = format!(
+            "//! Module {idx:02} padding text so serialized rows exceed a small page budget.\npub fn item_{idx:02}() -> u32 {{ {idx} }}\n"
+        );
+        std::fs::write(project.path().join(&filename), content).check("write fixture module")?;
+        expected_paths.push(filename);
+    }
+    let project_path = project.path().to_string_lossy().replace('\\', "/");
+
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+    server.tool_json(2, "report", &json!({ "path": project_path }))?;
+
+    let health_before = server.tool_json(
+        3,
+        "health",
+        &json!({ "path": project_path, "verbose": true }),
+    )?;
+    check_verbose_health_before_paging(&health_before)?;
+
+    let (next_id, collected_paths) = collect_paged_query_paths(&mut server, &project_path, 4)?;
+    ensure_eq(
+        &collected_paths,
+        &expected_paths,
+        "cursor continuation reconstructs the exact ordered row sequence without duplicates or gaps",
+    )?;
+
+    let health_after = server.tool_json(
+        next_id,
+        "health",
+        &json!({ "path": project_path, "verbose": true }),
+    )?;
+    check_verbose_health_after_paging(&health_after)
+}
+
+/// Live stdio coverage for `resources/list` and `resources/read` (both valid
+/// embedded URIs and `resource_not_found` on an unknown URI).
+#[test]
+fn real_stdio_resources_list_and_read_serve_embedded_catalogue() -> TestResult {
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+
+    server.send(r#"{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}"#)?;
+    let (list_response, _) = server.recv_response(2)?;
+    let uris = at(&list_response, "/result/resources")?
+        .as_array()
+        .check("resources array")?
+        .iter()
+        .map(|entry| at(entry, "/uri")?.as_str().check("resource uri"))
+        .collect::<TestResult<Vec<&str>>>()?;
+    ensure_eq(
+        &uris.len(),
+        &10,
+        format!("expected 10 embedded resources, got {uris:?}"),
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://schema.sql"),
+        format!("resources/list must advertise slugaudit://schema.sql: {uris:?}"),
+    )?;
+    ensure(
+        uris.contains(&"slugaudit://queries/README.md"),
+        format!("resources/list must advertise slugaudit://queries/README.md: {uris:?}"),
+    )?;
+
+    server.send(
+        r#"{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"slugaudit://schema.sql"}}"#,
+    )?;
+    let (read_response, _) = server.recv_response(3)?;
+    ensure_eq(
+        at(&read_response, "/result/contents/0/uri")?,
+        &"slugaudit://schema.sql",
+        "resources/read echoes the requested URI",
+    )?;
+    ensure_eq(
+        at(&read_response, "/result/contents/0/mimeType")?,
+        &"application/sql",
+        "schema.sql carries application/sql mimeType",
+    )?;
+    ensure(
+        at(&read_response, "/result/contents/0/text")?
+            .as_str()
+            .is_some_and(|sql| sql.contains("CREATE TABLE IF NOT EXISTS files")),
+        format!("schema.sql text contains canonical table DDL: {read_response}"),
+    )?;
+
+    server.send(
+        r#"{"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"slugaudit://does-not-exist"}}"#,
+    )?;
+    let (missing_response, _) = server.recv_response(4)?;
+    ensure_eq(
+        at(&missing_response, "/error/code")?,
+        &-32002,
+        format!("unknown resource URI must return -32002 resource_not_found: {missing_response}"),
+    )?;
+    ensure(
+        at(&missing_response, "/error/message")?
+            .as_str()
+            .is_some_and(|msg| msg.contains("unknown resource")),
+        format!("resource_not_found names unknown resource: {missing_response}"),
+    )?;
+    Ok(())
+}
+
+/// Cold subprocess startup and MCP `initialize` JSON-RPC response must complete
+/// in under one second.
+#[test]
+fn initialize_responds_under_one_second() -> TestResult {
+    let started = Instant::now();
+    let mut server = ServerProcess::spawn()?;
+    server.send(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cold-start-check","version":"0.0.1"}}}"#,
+    )?;
+    let (response, _) = server.recv_response(1)?;
+    let elapsed = started.elapsed();
+
+    ensure_eq(
+        at(&response, "/result/serverInfo/name")?,
+        &"slugaudit",
+        "initialize response identifies the slugaudit MCP server",
+    )?;
+    ensure(
+        elapsed < Duration::from_secs(1),
+        format!("cold-start MCP initialize took {elapsed:?}, exceeding the 1s ceiling"),
+    )?;
     Ok(())
 }

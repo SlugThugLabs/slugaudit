@@ -308,3 +308,46 @@ mod disable_tests;
 
 #[path = "activation_gitignore_tests.rs"]
 mod gitignore_tests;
+
+#[test]
+fn resolves_an_existing_directory_and_rejects_files_or_missing_paths() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let root = ProjectRoot::resolve(directory.path()).check("valid root")?;
+    ensure_eq(
+        &root.as_path(),
+        &directory
+            .path()
+            .canonicalize()
+            .check("tempdir canonicalizes")?,
+        "resolved ProjectRoot matches canonicalized directory",
+    )?;
+    ensure_eq(
+        &database_path(&root),
+        &root
+            .as_path()
+            .join(".planning")
+            .join("slugaudit")
+            .join("project.db"),
+        "database_path points to .planning/slugaudit/project.db",
+    )?;
+
+    let file_path = directory.path().join("not-a-directory");
+    std::fs::write(&file_path, b"content").check("write fixture file")?;
+    ensure(
+        matches!(
+            ProjectRoot::resolve(&file_path),
+            Err(RootError::NotADirectory)
+        ),
+        "file path is rejected with NotADirectory",
+    )?;
+
+    let missing = directory.path().join("does-not-exist");
+    let Err(RootError::Unresolvable(source)) = ProjectRoot::resolve(&missing) else {
+        return Err("a missing path must be unresolvable".to_owned()).check("unexpected outcome");
+    };
+    ensure_eq(
+        &source.kind(),
+        &std::io::ErrorKind::NotFound,
+        "missing path preserves NotFound error kind",
+    )
+}

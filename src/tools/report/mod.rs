@@ -1,0 +1,408 @@
+mod completeness;
+mod sections;
+mod sql;
+
+use super::context::{ensure_synced, operation_error, synced_root, with_verified_read};
+use super::finding::store::{count_current, findings_path_of};
+use super::mechanic::{MechanicListing, catalog as mechanic_catalog};
+use super::untested_language_notices;
+use crate::progress::ProgressSink;
+use crate::sync;
+use rmcp::ErrorData;
+use rmcp::handler::server::wrapper::{Json, Parameters};
+use schemars::JsonSchema;
+#[cfg(test)]
+use sections::MAX_PARSER_FAILURE_FILES;
+use sections::{ReportSections, read_sections};
+use serde::{Deserialize, Serialize};
+
+/// Edge totals in both directions, over the whole revision.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DependencyEdgeTotals {
+    /// `count(*) FROM dependency_edges`: every edge, since every edge
+    /// originates at a file (`from_file_id` is `NOT NULL`).
+    pub outbound_edge_count: i64,
+    /// Edges whose `to_file_id` names a row in `files` — the subset that
+    /// lands on a project file. `Unresolved` and `External` edges carry no
+    /// target, and `import_resolution` splits those two apart; this total
+    /// groups them only by their absence of a target.
+    pub inbound_edge_count: i64,
+    /// Distinct files that are the source of at least one edge.
+    pub outbound_file_count: i64,
+    /// Distinct files that are the target of at least one edge.
+    pub inbound_file_count: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one `files.file_kind` value.
+pub struct FileKindCount {
+    /// One of `indexed`, `binary`, `skipped` — `files.file_kind`.
+    pub kind: String,
+    /// Number of `files` rows carrying this `file_kind`.
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one `files.file_class` value.
+pub struct FileClassCount {
+    /// One of `authored`, `generated`, `vendored` — `files.file_class`.
+    pub class: String,
+    /// Number of `files` rows carrying this `file_class`.
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one recorded skip reason.
+pub struct SkipReasonCount {
+    /// A short stable code from `files.skip_reason`: `oversize` (over the
+    /// per-file import ceiling), `not_utf8` (the bytes are not valid UTF-8),
+    /// `unreadable` (the read failed) or `stat_failed` (the stat failed, so
+    /// `files.byte_len` is NULL: size unknown, not 0). Every skipped row
+    /// carries one; a skipped row without a reason fails the report.
+    pub reason: String,
+    /// Number of skipped `files` rows with this `reason`.
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+/// Row count for one extraction-completeness value.
+pub struct CompletenessCount {
+    /// One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`
+    /// means the file's text is in `files.content` but no parser ran over it
+    /// — the file is readable even though it has no structural evidence.
+    /// `Unavailable` means no content is retained at all (binary, or skipped).
+    pub extraction_completeness: String,
+    /// Number of `files` rows with this `extraction_completeness` value.
+    pub count: i64,
+}
+
+/// Counts that say whether the rest of the response is the whole truth.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct CompletenessEnvelope {
+    /// Every `files` row by `file_kind`. `indexed` is the set with content and
+    /// metadata — its structural evidence may still be missing, which
+    /// `indexed_files_without_evidence` counts; `binary` was sampled and
+    /// deliberately not parsed; `skipped` was discovered but never read, so
+    /// it has no content.
+    pub file_kind_counts: Vec<FileKindCount>,
+    /// Every `files` row by `file_class` — where the code came from, derived
+    /// from the path alone (`sync::classify`): `authored` (the project's own
+    /// source), `generated` (a machine-written file: a `generated` path token
+    /// or a codegen suffix such as `.pb.go` / `.g.dart` / `.min.js`), or
+    /// `vendored` (a third-party tree: `vendor/`, `node_modules/`, …). A
+    /// mechanic whose rows are dominated by one class can be summarised in a
+    /// sentence instead of paged row by row. `vendored` subsumes `generated`
+    /// when a path matches both. A path heuristic, not a verdict: it says
+    /// where a file came from, never whether it matters.
+    pub file_class_counts: Vec<FileClassCount>,
+    /// `files` rows with `file_kind = 'skipped'`, i.e. files that exist in the
+    /// project but are not in the index.
+    pub skipped_file_count: i64,
+    /// Those skipped rows grouped by `skip_reason`. This is the "why" paired
+    /// with `index_partial`. A file with no representable `files.path` (a
+    /// non-UTF-8 name) cannot appear here; it is counted by
+    /// `unrepresentable_path_count` instead.
+    pub skipped_by_reason: Vec<SkipReasonCount>,
+    /// Every `files` row by `extraction_completeness`, so "text present but
+    /// not parsed" (`ContentOnly`) is visible as itself instead of vanishing
+    /// into a parser-failure count.
+    pub extraction_completeness_counts: Vec<CompletenessCount>,
+    /// True when the index does not cover every file discovery found in the
+    /// current tree: an existence row is `skipped`, or a discovered file's
+    /// path has no UTF-8 representation and therefore no `files` row at all.
+    /// False means every discovered file is represented by a row here.
+    pub index_partial: bool,
+    /// Discovered files whose project-relative path is not valid UTF-8, so
+    /// no `files` row can represent them and they cannot be stored, skipped
+    /// or named in this report. Sync persists this set during every full
+    /// discovery, so the count is read from the index rather than from a
+    /// walk run for this report. It is project-level — describing the tree
+    /// as of the sync that produced this report, not a particular revision —
+    /// and is included in `index_partial`.
+    pub unrepresentable_path_count: i64,
+    /// Files whose stored evidence was cut short by an evidence cap: each
+    /// carries the `evidence:truncated` diagnostic appended by
+    /// `sync::sample::apply_evidence_limits`. Their structural record is
+    /// incomplete in a way this report cannot recover, so an agent counting
+    /// `evidence_counts` for them is counting a floor, not a total.
+    pub evidence_capped_file_count: i64,
+    /// `indexed` rows with no evidence at all — content is present and
+    /// readable, but the index holds nothing structural about them (a
+    /// language with no loaded parser, or a file that parsed to nothing).
+    /// Binary and skipped rows are excluded: no evidence is their expected
+    /// state, not a gap.
+    pub indexed_files_without_evidence: i64,
+    /// `indexed` files stored as `language = 'prose'` (Markdown,
+    /// reStructuredText, AsciiDoc, Org, plain text): content is stored and
+    /// searchable, but no grammar is run on them by design, so they are
+    /// `ContentOnly`, have no evidence, and are counted in
+    /// `indexed_files_without_evidence`, yet they are not parser failures and
+    /// never appear in `parser_failure_*`. Subtract this from those counts to
+    /// see the files that lack evidence for another reason.
+    pub prose_files_not_parsed: i64,
+    /// `indexed` files larger than `max_parse_bytes` (`parse_error_reason =
+    /// 'oversize_for_parse'`): content is stored and searchable via `query`,
+    /// but no grammar was run, so they have no evidence and every `leads`
+    /// mechanic that reads evidence is blind to them. They are also listed
+    /// among the parser failures and counted in `leads.files_not_parsed`.
+    pub oversize_for_parse_file_count: i64,
+    /// `indexed` files a parse of which was cut at the sync deadline
+    /// (`parse_error_reason = 'parse_timeout'`): content is stored; no
+    /// evidence when the main parse was cut (`ContentOnly`), the main
+    /// parse's evidence but no call or binding evidence when a later
+    /// re-parse was (`Partial`). Also listed among the parser failures and
+    /// counted in `leads.files_not_parsed`.
+    pub parse_timeout_file_count: i64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+/// The project to snapshot — any path inside an active project.
+pub struct ReportRequest {
+    /// Any path inside the active project: its root, or a file/directory under it.
+    pub path: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+/// How many discovered files the last revision attributed to one detected
+/// language.
+pub struct LanguageCount {
+    /// Detected language name stored in `files.language`.
+    pub language: String,
+    /// Number of `files` rows attributed to `language`.
+    pub file_count: i64,
+    /// Whether this project's tests cover the language (only Rust). An
+    /// untested language is parsed best-effort and has a line in `notices`.
+    pub tested: bool,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+/// How many evidence rows the current revision holds for one kind.
+pub struct EvidenceKindCount {
+    /// Evidence kind stored in `evidence.kind`.
+    pub kind: String,
+    /// Number of `evidence` rows of this `kind`.
+    pub count: i64,
+}
+
+/// How many import edges fell into each resolution bucket. `Resolved` edges
+/// land on a project file; `External` and `Unresolved` edges carry no target.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ImportResolutionCount {
+    /// One of `Resolved`, `Unresolved`, or `External`.
+    pub kind: String,
+    /// Number of `dependency_edges` rows with this `resolution_kind`.
+    pub count: i64,
+}
+
+/// A file whose parse failed or was not attempted, with the recorded
+/// outcome, reason, completeness and parser availability.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ParserFailureFile {
+    /// Project-relative file path.
+    pub path: String,
+    /// Recorded `files.parse_outcome`.
+    pub parse_outcome: String,
+    /// Why no tree was extracted: the grammar's load error, the parser's
+    /// hard error (not just syntax error nodes), or a stable code —
+    /// `oversize_for_parse` (content over `max_parse_bytes`, never parsed) or
+    /// `parse_timeout` (the parse was cancelled at the deadline). `None` when
+    /// no grammar exists for the file or for `SyntaxErrors`.
+    pub parse_error_reason: Option<String>,
+    /// One of `Full`, `Partial`, `ContentOnly`, `Unavailable`. `ContentOnly`
+    /// means the file's text *is* indexed but no parser ran over it — the
+    /// row is listed for availability reasons, not because extraction
+    /// failed, and its content can still be read from `files.content`.
+    pub extraction_completeness: String,
+    /// One of `Available`, `Unavailable`, `LoadFailed`. Separates
+    /// `ContentOnly` rows that have no parser for their language
+    /// (`Unavailable`) from ones whose parser could not be loaded
+    /// (`LoadFailed`), which a completeness value alone cannot.
+    pub parser_availability: String,
+}
+
+/// Automatic project snapshot: what evidence exists, not what's suspicious
+/// about it. No score, no risk leads, no safe/unsafe claim.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ReportResponse {
+    /// Revision id of the index this snapshot was read from.
+    pub revision_id: String,
+    /// Present only when this call discarded and rebuilt the project
+    /// database (corruption, version bump, root mismatch), and why. Session
+    /// findings live in their own database and are not affected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database_discard: Option<crate::sync::DatabaseDiscard>,
+    /// Rows in `files`: every discovered file whose project-relative path is
+    /// representable as UTF-8, whether or not it was indexed. A discovered
+    /// path that is not valid UTF-8 cannot have a row and is counted by
+    /// `completeness.unrepresentable_path_count` instead. Read
+    /// `completeness.file_kind_counts` to see how many of these rows have
+    /// content (`indexed`), are binary, or were skipped — this number alone
+    /// does not mean "files with evidence".
+    pub file_count: i64,
+    /// Whether every count above is the whole truth: rows by kind, skipped
+    /// rows by reason, rows by extraction completeness, and a partial-index
+    /// flag. See [`CompletenessEnvelope`].
+    pub completeness: CompletenessEnvelope,
+    /// Detected language of each `files` row, with its file count; grouped by
+    /// language and ordered by language name. Rows with no detected language
+    /// are not listed.
+    pub languages: Vec<LanguageCount>,
+    /// One line per untested code language in `languages` (prose is not one):
+    /// its grammar is downloaded on first use and only Rust is tested, so its
+    /// results are best-effort. Empty when there is nothing to say.
+    pub notices: Vec<String>,
+    /// Evidence rows by `kind` across the current revision, ordered by kind.
+    pub evidence_counts: Vec<EvidenceKindCount>,
+    /// Uncapped total of files whose parser was unavailable or whose parse
+    /// failed — the same predicate `parser_failure_files` lists. Larger than
+    /// the returned list's length means the list was truncated at
+    /// `MAX_PARSER_FAILURE_FILES`; equal means the list is complete.
+    pub parser_failure_count: i64,
+    /// Up to `MAX_PARSER_FAILURE_FILES` files with parse failures, ordered
+    /// by path.
+    pub parser_failure_files: Vec<ParserFailureFile>,
+    /// This session's findings that are `current`: findings whose file
+    /// content hash still matches the hash they were written against.
+    /// Findings invalidated by a later content change are `stale` and are not
+    /// counted.
+    pub open_finding_count: i64,
+    /// How many import edges are Resolved, Unresolved and External.
+    pub import_resolution: Vec<ImportResolutionCount>,
+    /// The same graph counted in both directions: how many edges leave a
+    /// file, how many land on one, and how many files are on each end.
+    /// Pure arithmetic over `dependency_edges`. Per-file counts and traversal
+    /// are the `blast_radius_outbound.sql`, `blast_radius_inbound.sql` and
+    /// `blast_radius_closure.sql` recipes under `slugaudit://queries/`.
+    pub dependency_edges: DependencyEdgeTotals,
+    /// Total number of Diagnostic evidence items (e.g. linter or compiler
+    /// diagnostics extracted from source files).
+    pub diagnostic_count: i64,
+    /// Of the `Unresolved` count in `import_resolution`, how many come from
+    /// import syntax the resolver couldn't parse at all — `extract_reference`
+    /// returned `None` on the raw text (e.g. Go's `import "fmt"`), as
+    /// opposed to an import whose syntax was parsed but matched no project
+    /// file (e.g. a stdlib module like `kotlin.math.max`). Both are stored as
+    /// `Unresolved` edges; this count is the first kind
+    /// (`dependency_edges.syntax_unmodeled = 1`).
+    pub unsupported_language_unresolved_count: i64,
+    /// How many rows in `files` match common credential-file patterns
+    /// (`.env`, `*.pem`, `*.key`, `id_rsa*`, etc. — the same list the
+    /// SQL below matches, and the same list `leads`' `credential_files`
+    /// rows use). These paths are recorded like any other file, including
+    /// when the file was skipped and no content was retained. The count is
+    /// a path match, not a statement about the file's content.
+    pub credential_pattern_file_count: i64,
+    /// Every mechanic `leads` counts — session entries for this project, then
+    /// the built-ins — with its source and the author's note. On the first
+    /// `report` for this project on this server only, `note` also explains how
+    /// mechanics work.
+    pub mechanics: ReportMechanics,
+}
+
+/// The one-time note the first `report` of a project on this server carries.
+const MECHANICS_NOTE: &str = "The built-in mechanics are counting primitives, not a checklist. \
+    What counts as a signal in this codebase is your decision. Register one with `mechanic` \
+    action `add` (`id`, `language`, `query` with exactly one capture, `note`); `leads` then \
+    counts and pages it beside the built-ins. Entries last until this server exits.";
+
+/// The mechanics section of a report.
+#[derive(Debug, Default, Serialize, JsonSchema)]
+pub struct ReportMechanics {
+    /// Present on the first `report` for this project on this server only; `null` after.
+    pub note: Option<String>,
+    /// Every loaded mechanic for this project: session, then builtin.
+    pub entries: Vec<MechanicListing>,
+}
+
+/// # Errors
+///
+/// Returns an error if `request.path` isn't inside an active project, or if
+/// syncing or querying the project's database fails.
+pub fn report(
+    request: &Parameters<ReportRequest>,
+    sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<Json<ReportResponse>, ErrorData> {
+    super::check_path_bytes(&request.0.path)?;
+    let synced = ensure_synced(&request.0.path, sink, manager)?;
+    let (sections, open_finding_count) = with_verified_read(&synced, |tx| {
+        let sections =
+            read_sections(tx).map_err(|error| operation_error("building the report", error))?;
+        let open_finding_count = count_current(tx, &findings_path_of(tx)?)?;
+        Ok((sections, open_finding_count))
+    })?;
+    let root = synced_root(&synced)?;
+    let session = manager.session_mechanics();
+    let catalog = mechanic_catalog::load(session, root)?;
+    let mut mechanics = ReportMechanics {
+        note: None,
+        entries: catalog.listings(),
+    };
+    // Claimed last, once nothing else can fail, so a failed first report
+    // does not use up the note.
+    if session.claim_report_note(root)? {
+        mechanics.note = Some(MECHANICS_NOTE.to_owned());
+    }
+    tracing::info!(
+        target: "slugaudit_mcp_rust::tools::report",
+        revision_id = %synced.revision_id,
+        file_count = sections.scope.file_count,
+        parser_failure_count = sections.scope.parser_failure_count,
+        diagnostic_count = sections.graph.diagnostic_count,
+        "report built"
+    );
+    let response = build_response(
+        sections,
+        synced.revision_id,
+        open_finding_count,
+        synced.discard,
+        mechanics,
+    );
+    Ok(Json(response))
+}
+
+fn build_response(
+    sections: ReportSections,
+    revision_id: String,
+    open_finding_count: i64,
+    database_discard: Option<crate::sync::DatabaseDiscard>,
+    mechanics: ReportMechanics,
+) -> ReportResponse {
+    let ReportSections { scope, graph } = sections;
+    let notices = untested_language_notices(
+        scope
+            .languages
+            .iter()
+            .map(|c| (c.language.as_str(), Some(c.file_count))),
+    );
+    ReportResponse {
+        database_discard,
+        revision_id,
+        file_count: scope.file_count,
+        completeness: scope.completeness,
+        notices,
+        languages: scope.languages,
+        evidence_counts: scope.evidence_counts,
+        parser_failure_count: scope.parser_failure_count,
+        parser_failure_files: scope.parser_failure_files,
+        open_finding_count,
+        import_resolution: graph.import_resolution,
+        dependency_edges: graph.dependency_edges,
+        diagnostic_count: graph.diagnostic_count,
+        unsupported_language_unresolved_count: graph.unsupported_language_unresolved_count,
+        credential_pattern_file_count: graph.credential_pattern_file_count,
+        mechanics,
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod envelope_tests;
+
+#[cfg(test)]
+mod prose_tests;
+
+#[cfg(test)]
+mod first_call_tests;

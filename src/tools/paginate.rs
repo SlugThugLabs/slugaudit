@@ -1,34 +1,38 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=one paging entry: request/spec types, the producer's row sink, fresh materialisation and continuation share the cursor, budget and stored-extras contract
 //! The one paging entry every paged tool calls.
 //!
-//! A call without a cursor is a new request: it syncs, streams the tool's rows
-//! out of the verified read transaction into the result store, and serves page
-//! one from the stored copy. A call with a cursor is a continuation: it reads
-//! the stored copy and nothing else (no sync, no revision check, no `path`),
-//! so the rows and `revision_id` are those of the first call however the tree
-//! changed since.
-//!
-//! This function is synchronous; callers run it inside the server's existing
-//! blocking-operation semaphore, which also bounds concurrent
-//! materialisations.
+//! Fresh calls stream rows into an in-memory buffer first and serve single-page
+//! results directly from memory with zero `ResultStore` disk I/O. Multi-page
+//! results materialise into `ResultStore` and return a `cursor` whose
+//! continuations read the immutable stored snapshot without syncing.
 
-use super::context::{ensure_synced, internal_error, with_verified_read};
-use super::page::{Completeness, Page, PageLimit};
+#[cfg(test)]
+use super::context::internal_error;
+use super::page::Completeness;
+use super::paginate_cursor::continue_rows;
+pub use super::paginate_cut::PageContext;
+pub(in crate::tools) use super::paginate_cut::byte_cut_step;
+#[cfg(test)]
+pub(in crate::tools) use super::paginate_cut::compute_limited_by;
+pub(crate) use super::paginate_cut::{CutStep, ServedRows};
+use super::paginate_fresh::fresh_rows;
+pub use super::paginate_sink::RowSink;
+#[cfg(test)]
 use crate::error_codes::store_error;
+use crate::error_codes::{ErrorCode, invalid_params_with_code};
 use crate::progress::ProgressSink;
-use crate::store::{
-    Cell, Materialize, ResultId, ResultMeta, ResultSpec, ResultStore, ResultStoreError,
-    ResultWriter, StoredRow, Take,
-};
+use crate::store::{Materialize, StoredRow};
 use crate::sync::SourceSyncManager;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Serialize, de::DeserializeOwned};
+
+/// Longest `cursor` a tool accepts before decoding.
+pub(crate) const MAX_CURSOR_BYTES: usize = 1024;
 
 /// What the call is: a new request or the continuation of a stored one.
 #[derive(Clone, Copy)]
 pub enum PageRequest<'a> {
-    /// No cursor: sync `path` and materialise a new result.
+    /// No cursor: sync `path` and serve page one (materialising if multi-page).
     Fresh {
         /// A path inside the project.
         path: &'a str,
@@ -43,23 +47,17 @@ pub enum PageRequest<'a> {
 pub struct PageSpec {
     /// The tool name; a cursor only continues the tool that issued it.
     pub tool: &'static str,
-    /// Column names, stored with the result. Empty when the producer declares
-    /// them with [`RowSink::set_columns`] (the columns of a `query` come from
-    /// its prepared statement).
+    /// Column names, stored with the result (empty when declared via [`RowSink::set_columns`]).
     pub columns: Vec<String>,
-    /// The byte budget the caller's `accept` closure enforces, echoed in the
-    /// page. For a new request it is also stored with the result, as the
-    /// budget its continuations default to.
+    /// Effective byte budget of page one, echoed and stored for continuations.
     pub page_bytes: usize,
-    /// The `page_bytes` a continuation's request carried, if any, exactly as
-    /// asked: a continuation clamps it to the ceiling stored with the result
-    /// and uses it, else it uses the budget stored with the result.
+    /// Explicit `page_bytes` on a continuation request, if any.
     pub requested_page_bytes: Option<usize>,
-    /// The hard ceiling (`max_query_response_bytes`) the project resolved to
-    /// for a new request. It is stored with the result, so a continuation
-    /// clamps its `page_bytes` to the same ceiling and judges `at_ceiling`
-    /// against it. Ignored on a continuation.
+    /// Hard byte ceiling (`max_query_response_bytes`) stored with the result.
     pub ceiling: usize,
+    /// Optional per-page row cap (`max_structure_matches` on `structure`),
+    /// enforced on page one and persisted for every cursor continuation.
+    pub max_rows: Option<usize>,
 }
 
 impl PageSpec {
@@ -72,6 +70,7 @@ impl PageSpec {
             page_bytes,
             requested_page_bytes: None,
             ceiling: usize::MAX,
+            max_rows: None,
         }
     }
 }
@@ -80,342 +79,38 @@ impl PageSpec {
 pub struct Produced<E> {
     /// Whether the scan covered everything it set out to.
     pub completeness: Completeness,
-    /// Tool-level totals and extras, stored with the result and returned on
-    /// every page.
+    /// Tool-level totals and extras, stored with the result and returned on every page.
     pub extra: E,
 }
 
-/// The producer's handle for streaming rows into the store.
-pub struct RowSink<'w, 's> {
-    store: &'s ResultStore,
-    /// The spec with empty columns, used when the producer declares them.
-    pending: &'w ResultSpec,
-    writer: &'w mut Option<ResultWriter<'s>>,
-}
-
-/// A misuse of [`RowSink`] by its producer.
-#[derive(Debug, thiserror::Error)]
-enum SinkError {
-    /// `set_columns` after the columns were already known.
-    #[error("the result columns were already declared")]
-    ColumnsAlreadyDeclared,
-    /// A row pushed before any columns were declared.
-    #[error("a row was pushed before the result columns were declared")]
-    ColumnsNotDeclared,
-}
-
-impl RowSink<'_, '_> {
-    /// Declares the result's columns. Callable once, before the first push,
-    /// and only when [`PageSpec::columns`] was empty.
-    ///
-    /// # Errors
-    ///
-    /// An internal error when the columns are already known (declared twice,
-    /// supplied by the spec, or a row was pushed), or a store failure mapped
-    /// to its wire code.
-    pub fn set_columns(&mut self, columns: Vec<String>) -> Result<(), ErrorData> {
-        if self.writer.is_some() {
-            return Err(internal_error(
-                "declaring the result columns",
-                SinkError::ColumnsAlreadyDeclared,
-            ));
-        }
-        // KEEP clone: RowSink keeps pending ResultSpec as a template when set_columns opens the writer
-        let mut spec = self.pending.clone();
-        spec.columns = columns;
-        *self.writer = Some(self.store.begin(spec).map_err(|e| store_error(&e))?);
-        Ok(())
-    }
-
-    /// Stores one typed row.
-    ///
-    /// # Errors
-    ///
-    /// A store failure mapped to its wire code.
-    pub fn push<R: Materialize>(&mut self, row: &R) -> Result<(), ErrorData> {
-        self.push_cells(&row.to_values())
-    }
-
-    /// Stores one raw row (`query`).
-    ///
-    /// # Errors
-    ///
-    /// A store failure mapped to its wire code.
-    pub fn push_cells(&mut self, cells: &[Cell]) -> Result<(), ErrorData> {
-        let Some(writer) = self.writer.as_mut() else {
-            return Err(internal_error(
-                "storing a result row",
-                SinkError::ColumnsNotDeclared,
-            ));
-        };
-        writer.push(cells).map_err(|e| store_error(&e))
-    }
-}
-
-/// One served page.
-pub struct Served<E> {
-    /// The rows of this page, in order.
-    pub rows: Vec<StoredRow>,
-    /// The shared page block. `bytes_used` is 0 and `limited_by` is
-    /// `page_bytes` (or `none` on the last page); the tool, which measured the
-    /// bytes in `accept`, overwrites them when it knows better.
-    pub page: Page,
-    /// The tool-level extras stored with the result.
-    pub meta: E,
-    /// The column names stored with the result.
-    pub columns: Vec<String>,
-    /// Whether the effective budget (`page.page_bytes`) is the ceiling, so a
-    /// page it cuts reports `limited_by: ceiling`.
-    pub at_ceiling: bool,
-}
-
-/// Completeness and extras as stored in the result's metadata.
-#[derive(Serialize, Deserialize)]
-struct Stored<E> {
-    completeness: Completeness,
-    extra: E,
-    /// The effective page budget of the request that made the result.
-    page_bytes: usize,
-    /// The ceiling that request resolved to; every continuation's budget is
-    /// clamped to it.
-    ceiling: usize,
-}
-
-/// What the page cut may know about the result it cuts, identical on a new
-/// request (after `produce`) and on a continuation (decoded from the stored
-/// result): the tool never reads a process limit or the store to learn it.
-pub struct PageContext<'a, E> {
-    /// The effective byte budget of this page: the request's own (already
-    /// clamped to the ceiling by the tool) or the one the result's first page
-    /// used. Also echoed in `page.page_bytes`.
-    pub page_bytes: usize,
-    /// Whether `page_bytes` is the ceiling the result was made under.
-    pub at_ceiling: bool,
-    /// The column names stored with the result.
-    pub columns: &'a [String],
-    /// The tool-level extras the producer reported, as stored.
-    pub extra: &'a E,
-}
-
-/// Serves one page; see the module docs.
-///
-/// `produce` runs inside the verified read transaction and streams rows
-/// through the [`RowSink`] (it never needs the whole result in memory).
-/// `accept_for` receives one [`PageContext`] for both branches: the effective
-/// budget (a continuation's `requested_page_bytes` when it carries one, else
-/// the budget stored with the result; a new request's is `spec.page_bytes`),
-/// the stored column names and the stored extras. It returns the `accept`
-/// closure, which must own what it needs from the context. Every row of the
-/// page is offered to `accept`, the first too so the tool's byte accounting
-/// sees it; the first is always taken whatever the verdict, so a page always
-/// advances, and the page ends at the first later `No`.
-///
-/// # Errors
-///
-/// Sync failures, producer failures, and store failures mapped to
-/// `unknown_cursor`, `result_expired`, `result_store_full`, `result_too_large`
-/// or `result_store_unavailable`. A failed materialisation leaves no cursor
-/// and no stored result.
-pub fn paginate<E, P, A>(
+/// Serves one page of decoded rows `R`, decoding and measuring each offered row
+/// once and computing `bytes_used` and `limited_by` in one shared place.
+pub(crate) fn paginate_rows<E, R, P, C>(
     manager: &SourceSyncManager,
     spec: &PageSpec,
     request: PageRequest<'_>,
     produce: P,
-    accept_for: impl FnOnce(&PageContext<'_, E>) -> A,
-) -> Result<Served<E>, ErrorData>
+    cut_for: impl FnOnce(&PageContext<'_, E>) -> Result<C, ErrorData>,
+) -> Result<ServedRows<R, E>, ErrorData>
 where
     E: Serialize + DeserializeOwned,
     P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
-    A: FnMut(&StoredRow) -> Take,
+    C: FnMut(&StoredRow, usize, usize) -> Result<CutStep<R>, ErrorData>,
 {
     match request {
-        PageRequest::Cursor(token) => continue_page(manager, spec, token, accept_for),
+        PageRequest::Cursor(token) => continue_rows(manager, spec, token, cut_for),
         PageRequest::Fresh { path, sink } => {
-            let synced = ensure_synced(path, sink, manager)?;
-            let runtime_dir = synced.database_path.parent().ok_or_else(|| {
-                internal_error("locating the runtime directory", "no parent directory")
-            })?;
-            let store_limits = crate::store::ResultStoreLimits::from(&super::limits_for_root(
-                &super::project_root(path)?,
-            )?);
-            let store = manager
-                .result_stores()
-                .for_dir_with_limits(runtime_dir, store_limits)
-                .map_err(|e| store_error(&e))?;
-            let pending = ResultSpec {
-                tool: spec.tool.to_owned(),
-                project: project_label(runtime_dir)?,
-                // KEEP clone: synced is still borrowed by with_verified_read below
-                revision_id: synced.revision_id.clone(),
-                columns: Vec::new(),
-            };
-            // With columns in the spec the writer starts now; otherwise the
-            // producer declares them before its first row.
-            let mut writer = if spec.columns.is_empty() {
-                None
-            } else {
-                // KEEP clone: pending is also moved into RowSink below
-                let mut known = pending.clone();
-                known.columns.clone_from(&spec.columns);
-                Some(store.begin(known).map_err(|e| store_error(&e))?)
-            };
-            let produced = with_verified_read(&synced, |tx| {
-                produce(
-                    tx,
-                    &mut RowSink {
-                        store: &store,
-                        pending: &pending,
-                        writer: &mut writer,
-                    },
-                )
-            })?;
-            let Some(writer) = writer else {
-                return Err(internal_error(
-                    "storing the result",
-                    SinkError::ColumnsNotDeclared,
-                ));
-            };
-            let stored = Stored {
-                completeness: produced.completeness,
-                extra: produced.extra,
-                page_bytes: spec.page_bytes,
-                ceiling: spec.ceiling,
-            };
-            let encoded = serde_json::to_value(&stored)
-                .map_err(|error| internal_error("encoding the result extras", error))?;
-            let handle = writer.finish(&encoded).map_err(|e| store_error(&e))?;
-            let meta = store.meta_of(handle.id).map_err(|e| store_error(&e))?;
-            let mut served = serve(&store, handle.id, 0, stored, meta.as_ref(), accept_for)?;
-            served.page.database_discard = synced.discard;
-            Ok(served)
+            fresh_rows(manager, spec, path, sink, produce, cut_for)
         }
     }
 }
 
-/// The label stored with a result: the project root's path hash, an opaque
-/// label that is not the path itself. The runtime directory is `<root>/.planning/slugaudit`.
-fn project_label(runtime_dir: &std::path::Path) -> Result<String, ErrorData> {
-    let root = runtime_dir
-        .parent()
-        .and_then(std::path::Path::parent)
-        .ok_or_else(|| internal_error("locating the project root", "no project root"))?;
-    Ok(crate::util::redacted_path(root))
-}
-
-fn continue_page<E, A>(
-    manager: &SourceSyncManager,
-    spec: &PageSpec,
-    token: &str,
-    accept_for: impl FnOnce(&PageContext<'_, E>) -> A,
-) -> Result<Served<E>, ErrorData>
-where
-    E: DeserializeOwned,
-    A: FnMut(&StoredRow) -> Take,
-{
-    let Some(store) = manager.result_stores().current()? else {
-        tracing::info!("cursor refused: no result was ever stored");
-        return Err(store_error(&ResultStoreError::Unknown));
-    };
-    let cursor = store.decode_cursor(token).map_err(|e| store_error(&e))?;
-    // Before any read: a read renews the result and may mark it delivered,
-    // which another tool's cursor must never do.
-    let meta = store.meta_of(cursor.result).map_err(|e| store_error(&e))?;
-    if meta.tool != spec.tool {
-        tracing::info!(
-            tool = spec.tool,
-            "cursor refused: it belongs to another tool"
-        );
-        return Err(store_error(&store.refuse_foreign_tool()));
-    }
-    let mut stored: Stored<E> = serde::Deserialize::deserialize(&meta.completeness)
-        .map_err(|error| internal_error("decoding the stored result extras", error))?;
-    if let Some(requested) = spec.requested_page_bytes {
-        // Clamped to the ceiling page one ran under, not to a re-derived one.
-        stored.page_bytes = requested.min(stored.ceiling);
-    }
-    serve(
-        &store,
-        cursor.result,
-        cursor.ord,
-        stored,
-        meta.as_ref(),
-        accept_for,
-    )
-}
-
-/// Reads the page at `from_ord` of result `id`. `stored` carries the extras
-/// and the effective budget (`stored.page_bytes`), `meta` the stored columns.
-fn serve<E, A>(
-    store: &ResultStore,
-    id: ResultId,
-    from_ord: u64,
-    stored: Stored<E>,
-    meta: &ResultMeta,
-    accept_for: impl FnOnce(&PageContext<'_, E>) -> A,
-) -> Result<Served<E>, ErrorData>
-where
-    A: FnMut(&StoredRow) -> Take,
-{
-    let page_bytes = stored.page_bytes;
-    // The budget is the ceiling exactly when clamping reached it.
-    let at_ceiling = page_bytes >= stored.ceiling;
-    let accept = accept_for(&PageContext {
-        page_bytes,
-        at_ceiling,
-        columns: &meta.columns,
-        extra: &stored.extra,
-    });
-    let read = store
-        .read_page(id, from_ord, accept)
-        .map_err(|e| store_error(&e))?;
-    let complete = read.next_ord.is_none();
-    let page = Page {
-        returned: read.rows.len(),
-        total: Some(read.row_count),
-        complete,
-        cursor: read.next_ord.map(|ord| store.cursor(id, ord).to_string()),
-        completeness: Some(stored.completeness),
-        page_bytes,
-        bytes_used: 0,
-        limited_by: if complete {
-            PageLimit::None
-        } else {
-            PageLimit::PageBytes
-        },
-        // KEEP clone: read.meta is an Arc<ResultMeta> while Page owns revision_id
-        revision_id: read.meta.revision_id.clone(),
-        database_discard: None,
-    };
-    Ok(Served {
-        rows: read.rows,
-        page,
-        meta: stored.extra,
-        // KEEP clone: read.meta is an Arc<ResultMeta> while Served owns columns
-        columns: read.meta.columns.clone(),
-        at_ceiling,
-    })
-}
-
-/// Rebuilds typed rows from a served page.
+/// Resolves the cursor/path pair every paged tool takes into a [`PageRequest`].
 ///
 /// # Errors
 ///
-/// An internal error when the stored cells do not match `R`'s layout.
-pub fn decode_rows<R: Materialize>(rows: &[StoredRow]) -> Result<Vec<R>, ErrorData> {
-    rows.iter()
-        .map(|row| R::from_values(&row.cells).map_err(|error| store_error(&error)))
-        .collect()
-}
-
-/// Resolves the cursor/path pair every paged tool takes into a
-/// [`PageRequest`]. With a cursor the call continues a stored result: `path`
-/// and every request-shaping parameter are ignored (only `page_bytes` is
-/// honoured). Without one it is a new request and `path` is required.
-///
-/// # Errors
-///
-/// `invalid_params` when `cursor` exceeds `MAX_CURSOR_BYTES`, or when there is
-/// neither a cursor nor a path.
+/// `invalid_params` when `cursor` exceeds `MAX_CURSOR_BYTES`, or when neither
+/// `cursor` nor `path` is supplied.
 pub fn page_request<'a>(
     cursor: Option<&'a str>,
     path: Option<&'a str>,
@@ -423,18 +118,18 @@ pub fn page_request<'a>(
 ) -> Result<PageRequest<'a>, ErrorData> {
     match (cursor, path) {
         (Some(token), _) => {
-            if crate::util::exceeds_input_bytes(token, super::MAX_CURSOR_BYTES) {
-                return Err(ErrorData::invalid_params(
-                    format!("cursor exceeds {} bytes", super::MAX_CURSOR_BYTES),
-                    None,
+            if crate::util::exceeds_input_bytes(token, MAX_CURSOR_BYTES) {
+                return Err(invalid_params_with_code(
+                    format!("cursor exceeds {MAX_CURSOR_BYTES} bytes"),
+                    ErrorCode::InvalidInput,
                 ));
             }
             Ok(PageRequest::Cursor(token))
         }
         (None, Some(path)) => Ok(PageRequest::Fresh { path, sink }),
-        (None, None) => Err(ErrorData::invalid_params(
+        (None, None) => Err(invalid_params_with_code(
             "path is required when no cursor is given",
-            None,
+            ErrorCode::InvalidInput,
         )),
     }
 }
@@ -442,3 +137,19 @@ pub fn page_request<'a>(
 #[cfg(test)]
 #[path = "paginate_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "paginate_cursor_tests.rs"]
+mod cursor_tests;
+
+#[cfg(test)]
+#[path = "paginate_late_tests.rs"]
+mod late_tests;
+
+#[cfg(test)]
+#[path = "paginate_store_limit_tests.rs"]
+mod store_limit_tests;
+
+#[cfg(test)]
+#[path = "paginate_context_store_tests.rs"]
+mod context_store_tests;

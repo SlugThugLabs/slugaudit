@@ -1,4 +1,3 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=One responsibility: reading a page of a stored result and decoding its rows.
 //! Reading a page of a stored result. The reader holds no position: the same
 //! `from_ord` always returns the same rows.
 

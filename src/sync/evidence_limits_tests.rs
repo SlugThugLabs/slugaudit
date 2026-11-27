@@ -1,20 +1,24 @@
 //! Evidence caps: what `apply_evidence_limits` discards, the marker it leaves,
 //! and the completeness downgrade `to_file_record` applies.
 use super::*;
-use crate::model::{EvidenceLimits, ExtractionCompleteness};
+use crate::model::{EvidenceLimits, ExportPayload, ExtractionCompleteness};
+use crate::sync::test_support::generous_deadline;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
+const EXPORT_WRAPPER_BYTES: usize = 26;
+
 fn item_with_content_bytes(index: usize, content_len: usize) -> EvidenceItem {
-    // A bare JSON string payload serializes as `"` + content + `"`, so its
-    // byte length is exactly `content_len + 2` — no escaping, no object
-    // overhead to account for, which keeps the arithmetic in these tests
-    // exact instead of approximate.
+    // `ExportPayload { name, kind: "Named" }` serializes as
+    // `{"name":"...","kind":"Named"}`, whose wrapper is 26 bytes plus `name.len()`.
     EvidenceItem {
-        key: format!("structure:{index}"),
-        kind: EvidenceKind::Structure,
+        key: format!("export:{index}"),
+        kind: EvidenceKind::Export,
         origin: EvidenceOrigin::PackStructure,
         span: SpanAvailability::PackOmitted,
-        payload: serde_json::Value::String("a".repeat(content_len)),
+        payload: EvidencePayload::Export(ExportPayload {
+            name: "a".repeat(content_len),
+            kind: "Named".to_owned(),
+        }),
     }
 }
 
@@ -25,19 +29,12 @@ fn has_truncation_marker(items: &[EvidenceItem]) -> bool {
 fn total_payload_bytes(items: &[EvidenceItem]) -> TestResult<usize> {
     let mut total = 0;
     for item in items.iter().filter(|item| item.key != "evidence:truncated") {
-        let payload_len = serde_json::to_vec(&item.payload)
-            .check("encode payload")?
-            .len();
+        let payload_len = util::serialized_len(&item.payload).check("encode payload")?;
         total = usize::checked_add(total, payload_len).check("payload total fits")?;
     }
     Ok(total)
 }
 
-/// 82 items each individually well under the 64 KiB per-item cap, and 82
-/// items is nowhere near the 10,000 item-count cap, yet their combined
-/// serialized payload is 5,326,990 bytes — over the 4 MiB (4,194,304-byte)
-/// per-file cap. A check of count and per-item size only would let the whole
-/// oversized set through, so the cumulative cap must catch it.
 #[test]
 fn reproduces_the_5_326_990_byte_cumulative_overflow() -> TestResult {
     let limits = ResourceLimits {
@@ -48,14 +45,14 @@ fn reproduces_the_5_326_990_byte_cumulative_overflow() -> TestResult {
         ..ResourceLimits::default()
     };
     let mut items: Vec<EvidenceItem> = (0..81)
-        .map(|i| item_with_content_bytes(i, 65_000))
+        .map(|i| item_with_content_bytes(i, 65_002 - EXPORT_WRAPPER_BYTES))
         .collect();
-    items.push(item_with_content_bytes(81, 61_826));
-    let mut serialized = 0;
+    items.push(item_with_content_bytes(81, 61_828 - EXPORT_WRAPPER_BYTES));
+    let mut serialized = 0usize;
     for item in &items {
-        serialized += serde_json::to_vec(&item.payload)
-            .check("payload serializes")?
-            .len();
+        serialized = serialized
+            .checked_add(util::serialized_len(&item.payload).check("payload serializes")?)
+            .check("serialized sum fits")?;
     }
     ensure_eq(
         &serialized,
@@ -124,8 +121,8 @@ fn an_oversized_single_item_is_dropped_and_recorded() -> TestResult {
 
     ensure_eq(&items.len(), &2, "the kept item plus the truncation marker")?;
     ensure(
-        items.iter().any(|item| item.key == "structure:0"),
-        "items.iter().any(|item| item.key == \"structure:0\")",
+        items.iter().any(|item| item.key == "export:0"),
+        "items.iter().any(|item| item.key == \"export:0\")",
     )?;
     ensure(
         has_truncation_marker(&items),
@@ -151,8 +148,6 @@ fn item_count_cap_truncates_and_reserves_room_for_the_marker() -> TestResult {
         "apply_evidence_limits(&mut items, &limits)",
     )?;
 
-    // Cap is 3; one slot is reserved for the marker itself, so at most 2
-    // real items survive plus the marker — never more than the cap total.
     ensure(items.len() <= 3, "items.len() <= 3")?;
     ensure(
         has_truncation_marker(&items),
@@ -190,10 +185,6 @@ fn cumulative_byte_cap_stops_before_the_file_cap_not_after() -> TestResult {
     Ok(())
 }
 
-/// A file that parsed cleanly is `Full` — the completeness the evidence caps
-/// can overclaim. Once the caps discard any item, the stored run must
-/// downgrade to `Partial` rather than assert `Full` beside its own truncation
-/// marker.
 #[test]
 fn evidence_limit_truncation_downgrades_a_full_run_to_partial() -> TestResult {
     let limits = ResourceLimits {
@@ -228,8 +219,6 @@ fn evidence_limit_truncation_downgrades_a_full_run_to_partial() -> TestResult {
     Ok(())
 }
 
-/// The downgrade must be conditional: a clean parse with room for every item
-/// stays `Full`, so the downgrade cannot simply erase `Full` everywhere.
 #[test]
 fn a_full_run_within_every_evidence_cap_stays_full() -> TestResult {
     let content = "pub fn a() {}\npub fn b() {}\n";
@@ -264,12 +253,10 @@ fn the_truncation_marker_names_items_that_failed_to_serialize_only_when_there_we
     let with = truncation_evidence(5, 2, 1, 2, 0);
 
     let message = |item: &EvidenceItem| -> TestResult<String> {
-        Ok(item
-            .payload
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .check("the truncation marker has a text message")?
-            .to_owned())
+        match &item.payload {
+            EvidencePayload::Diagnostic(diag) => Ok(diag.message.clone()),
+            other => Err(format!("expected Diagnostic payload, got {other:?}")).check("payload"),
+        }
     };
     ensure(
         !message(&without)?.contains("failed to serialize"),

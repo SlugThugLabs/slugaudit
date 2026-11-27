@@ -16,7 +16,7 @@ fn foreign_keys_are_enabled_on_a_read_write_connection() -> TestResult {
     let enabled: i64 = connection
         .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
         .check("read pragma")?;
-    ensure_eq(&enabled, &1, "enabled == 1")?;
+    ensure_eq(&enabled, &1, "foreign_keys pragma is enabled on open")?;
     Ok(())
 }
 
@@ -42,7 +42,7 @@ fn read_only_open_fails_against_a_missing_database() -> TestResult {
     let result = open_existing(&directory.path().join("missing.db"));
     ensure(
         matches!(result, Err(StoreError::Open(_))),
-        "matches!(result, Err(StoreError::Open(_)))",
+        "opening a missing read-only database fails with StoreError::Open",
     )?;
     Ok(())
 }
@@ -215,12 +215,13 @@ fn every_evidence_kind_text_passes_the_kind_check() -> TestResult {
 
     let mut inserted_kinds = Vec::new();
     for (index, kind) in every_evidence_kind()?.into_iter().enumerate() {
+        let payload = crate::model::EvidencePayload::sample_for_kind(&kind);
         let row = to_row(&EvidenceItem {
             key: format!("kind:{index}"),
             kind,
             origin: EvidenceOrigin::PackSymbol,
             span: SpanAvailability::PackOmitted,
-            payload: serde_json::json!({}),
+            payload,
         });
         let inserted = connection.execute(
             "INSERT INTO evidence (file_id, key, kind, origin, span_availability, payload) \
@@ -288,7 +289,7 @@ fn a_connection_that_cannot_enter_wal_mode_fails_configuration() -> TestResult {
 
     ensure(
         matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == "memory"),
-        "matches!(&result, Err(StoreError::WalUnavailable { granted }) if granted == \"memory\")",
+        "in-memory SQLite connection fails WAL configuration with granted mode memory",
     )?;
     Ok(())
 }

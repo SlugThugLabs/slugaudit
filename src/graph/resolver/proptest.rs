@@ -18,8 +18,11 @@
 //! is otherwise a pure function over the chosen Strategy.
 
 use proptest::prelude::*;
+use std::collections::HashSet;
 
 use super::generic::{GenericResolver, LanguageResolver};
+use super::normalize_join;
+use crate::graph::rust_use_tree::parse_rust_import;
 
 /// Vocabulary: a Python-style `from <M> import <S>` statement where
 /// `<M>` is 1–3 dotted segments of alphanumeric+underscore
@@ -73,6 +76,16 @@ fn python_from_vocab() -> impl Strategy<Value = (String, String, String)> {
             let raw = format!("from{sb}{module}{sam}import{sai}{sym}");
             (raw, module, sym)
         })
+}
+
+fn segment_vocab() -> impl Strategy<Value = String> {
+    prop_oneof![
+        Just(String::new()),
+        Just(".".to_owned()),
+        Just("..".to_owned()),
+        Just("...".to_owned()),
+        "[a-z0-9_]{1,6}",
+    ]
 }
 
 proptest! {
@@ -130,5 +143,128 @@ proptest! {
             "extract produced wrong module path for raw={:?}",
             raw
         );
+    }
+
+    /// Property #2 — `parse_rust_import` never panics on arbitrary or malformed
+    /// token soup and always returns bounded, deduplicated, non-empty targets.
+    #[test]
+    fn parse_rust_import_never_panics_and_preserves_bounds(
+        raw in "([a-z0-9_:{},*;/# \\t\\n]|use|pub|crate|self|super|as|r#){0,120}"
+    ) {
+        if let Some(targets) = parse_rust_import(&raw) {
+            if targets.len() > 256 {
+                return Err(TestCaseError::fail(format!(
+                    "expanded targets exceeded bound 256: {}",
+                    targets.len()
+                )));
+            }
+            let mut unique = HashSet::new();
+            for target in &targets {
+                if target.is_empty() {
+                    return Err(TestCaseError::fail(
+                        "parse_rust_import emitted an empty target".to_owned(),
+                    ));
+                }
+                if !unique.insert(target.as_str()) {
+                    return Err(TestCaseError::fail(format!(
+                        "parse_rust_import emitted duplicate target {target:?}"
+                    )));
+                }
+            }
+        }
+    }
+
+    /// Property #3 — Canonical expansion of grouped Rust `use` trees across
+    /// visibility, comments, aliases, `self`, and globs.
+    #[test]
+    fn parse_rust_import_expands_grouped_trees_canonically(
+        vis in prop_oneof![Just(""), Just("pub "), Just("pub(crate) "), Just("pub(in crate::m) ")],
+        root in prop_oneof![Just("crate"), Just("super"), Just("self"), Just("my_crate")],
+        seg in "[a-z][a-z0-9_]{1,6}",
+        leaf_a in "[a-z][a-z0-9_]{1,6}",
+        leaf_b in "[a-z][a-z0-9_]{1,6}",
+        alias in "[a-z][a-z0-9_]{1,6}",
+        ws in "[ \\t]{0,2}",
+    ) {
+        prop_assume!(leaf_a != "self" && leaf_a != "as");
+        prop_assume!(leaf_b != "self" && leaf_b != "as" && leaf_b != leaf_a);
+        prop_assume!(alias != "as" && seg != "self" && seg != "as");
+
+        let raw = format!(
+            "{vis}use /* comment */ {root}::{seg}::{{{ws}self,{ws}{leaf_a} as {alias},{ws}{leaf_b}::*{ws}}};"
+        );
+        let Some(targets) = parse_rust_import(&raw) else {
+            return Err(TestCaseError::fail(format!(
+                "valid grouped Rust use returned None: {raw:?}"
+            )));
+        };
+        let expected = vec![
+            format!("{root}::{seg}"),
+            format!("{root}::{seg}::{leaf_a}"),
+            format!("{root}::{seg}::{leaf_b}::*"),
+        ];
+        prop_assert_eq!(targets, expected, "unexpected expansion for raw={:?}", raw);
+    }
+
+    /// Property #4 — `normalize_join` never panics on arbitrary segments and
+    /// never escapes the project root or retains `.` / `..` / empty segments.
+    #[test]
+    fn normalize_join_never_panics_or_escapes_root(
+        base_parts in proptest::collection::vec(segment_vocab(), 0..=6),
+        rel_parts in proptest::collection::vec(segment_vocab(), 0..=6),
+    ) {
+        let base_dir = base_parts.join("/");
+        let relative = rel_parts.join("/");
+
+        let mut expected_depth: Option<usize> = Some(0);
+        for part in base_dir.split('/').chain(relative.split('/')) {
+            let Some(cur) = expected_depth else {
+                break;
+            };
+            match part {
+                "" | "." => {}
+                ".." => {
+                    expected_depth = cur.checked_sub(1);
+                }
+                _ => {
+                    expected_depth = cur.checked_add(1);
+                }
+            }
+        }
+
+        let actual = normalize_join(&base_dir, &relative);
+        match (expected_depth, actual) {
+            (None, Some(escaped)) => {
+                return Err(TestCaseError::fail(format!(
+                    "normalize_join escaped root instead of returning None: {escaped:?}"
+                )));
+            }
+            (Some(_), None) => {
+                return Err(TestCaseError::fail(format!(
+                    "normalize_join unexpectedly returned None for base={base_dir:?} rel={relative:?}"
+                )));
+            }
+            (None, None) => {}
+            (Some(depth), Some(joined)) => {
+                if joined.starts_with('/') || joined.ends_with('/') || joined.contains("//") {
+                    return Err(TestCaseError::fail(format!(
+                        "unnormalized slashes in {joined:?}"
+                    )));
+                }
+                let segments: Vec<&str> = if joined.is_empty() {
+                    Vec::new()
+                } else {
+                    joined.split('/').collect()
+                };
+                prop_assert_eq!(segments.len(), depth);
+                for seg in segments {
+                    if seg.is_empty() || seg == "." || seg == ".." {
+                        return Err(TestCaseError::fail(format!(
+                            "unnormalized segment {seg:?} in {joined:?}"
+                        )));
+                    }
+                }
+            }
+        }
     }
 }

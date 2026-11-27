@@ -1,18 +1,37 @@
-//! One result file: created, opened, unlinked at once (the open
-//! descriptor is the only reference), pragmas applied and read back, schema
-//! created.
+//! One scratch result file: created exclusively, opened by SQLite, and
+//! unlinked immediately so the open descriptor is the sole reference and no
+//! leftover `.db` survives an abrupt kill.
 
 use super::error::{PragmaMismatch, ResultStoreError};
-use super::platform;
+use super::owner;
 use rusqlite::{Connection, OpenFlags};
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use uuid::Uuid;
 
-/// Most result columns: SQLite allows 2000 per table, two are ours.
+/// Maximum result columns: SQLite allows 2000 per table, two are internal.
 pub(super) const MAX_COLUMNS: usize = 1000;
 
-/// The column list `c0, c1, ...` for `count` columns (integers only, never
-/// caller text).
+/// Open scratch SQLite connection for one materialized result.
+pub(super) struct ResultFile {
+    pub(super) conn: Connection,
+}
+
+impl Deref for ResultFile {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.conn
+    }
+}
+
+impl DerefMut for ResultFile {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.conn
+    }
+}
+
+/// Column list `c0, c1, ...` for `count` columns.
 pub(super) fn column_list(count: usize) -> String {
     (0..count)
         .map(|index| format!("c{index}"))
@@ -20,30 +39,30 @@ pub(super) fn column_list(count: usize) -> String {
         .join(", ")
 }
 
-/// Creates `<dir>/<session>-<result>.db`, opens it, unlinks it, applies the
-/// pragmas. On any failure the file is removed if it still exists.
+/// Creates `<dir>/<session>-<result>.db`, opens it, unlinks its directory
+/// entry immediately, and applies scratch pragmas.
 pub(super) fn create(
     dir: &Path,
     session: Uuid,
     result: Uuid,
-) -> Result<Connection, ResultStoreError> {
+) -> Result<ResultFile, ResultStoreError> {
     let path = dir.join(format!(
         "{}-{}.db",
         session.hyphenated(),
         result.hyphenated()
     ));
     drop(
-        platform::create_new_file(&path)
+        owner::create_new_file(&path)
             .map_err(|error| ResultStoreError::unavailable("create a result file", error))?,
     );
-    let opened = open_unlinked(&path);
+    let opened = open_result_file(&path);
     if opened.is_err() {
         remove_leftover(&path);
     }
     opened
 }
 
-fn open_unlinked(path: &Path) -> Result<Connection, ResultStoreError> {
+fn open_result_file(path: &Path) -> Result<ResultFile, ResultStoreError> {
     let conn = Connection::open_with_flags(
         path,
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -52,22 +71,19 @@ fn open_unlinked(path: &Path) -> Result<Connection, ResultStoreError> {
     std::fs::remove_file(path)
         .map_err(|error| ResultStoreError::unavailable("unlink a result file", error))?;
     apply_pragmas(&conn)?;
-    Ok(conn)
+    Ok(ResultFile { conn })
 }
 
-/// A file that survived a failed open; the startup sweep is the backstop.
 fn remove_leftover(path: &Path) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            tracing::warn!(error = %error, "could not remove a failed result file; the startup sweep will");
+            tracing::warn!(error = %error, "could not remove a result file; the startup sweep will");
         }
     }
 }
 
-/// Sets and reads back the result pragmas; a pragma that did not take fails
-/// closed.
 fn apply_pragmas(conn: &Connection) -> Result<(), ResultStoreError> {
     let sql = |error| ResultStoreError::from_sqlite("apply result pragmas", error);
     for (pragma, expected) in [("journal_mode", "off"), ("locking_mode", "exclusive")] {
@@ -112,7 +128,7 @@ pub(super) fn create_schema(conn: &Connection, columns: usize) -> Result<(), Res
         .map_err(|error| ResultStoreError::from_sqlite("create the result schema", error))
 }
 
-/// The file's size: `page_count * page_size`.
+/// Measures the SQLite file size as `page_count * page_size`.
 pub(super) fn measure_bytes(conn: &Connection) -> Result<u64, ResultStoreError> {
     let read = |name: &str| -> Result<u64, ResultStoreError> {
         conn.pragma_query_value(None, name, |row| row.get::<_, u64>(0))

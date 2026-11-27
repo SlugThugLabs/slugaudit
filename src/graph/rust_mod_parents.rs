@@ -1,14 +1,9 @@
-//! Rust `#[path = "..."]` module-parent map and `super::` resolution walk.
-//!
-//! Kept apart from `resolve_rust` and `rust_paths` so each module owns one
-//! clear job and stays well within the code-line limit.
+//! Rust `#[path = "..."]` module-parent map, path-attribute normalization,
+//! and parent-hop walking.
 
-use super::resolve::{normalize_join, parent_dir};
-use super::resolver::{Resolution, ResolutionKind, unresolved};
-use super::rust_paths::{
-    first_resolved, has_glob_suffix, resolve_rust_from_base, rust_module_dir, strip_trailing_glob,
-};
-use std::collections::{BTreeMap, HashSet};
+use super::resolver::{normalize_join, parent_dir};
+use super::rust_paths::rust_module_dir;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Maximum `#[path]` parent hops before stopping to guard against cycles.
@@ -28,10 +23,96 @@ pub(crate) struct RustModuleParent {
 /// Map from `#[path]` target file path to its declaring parent module info.
 pub(crate) type RustModuleParents = BTreeMap<String, RustModuleParent>;
 
+/// Outcome of walking `#[path]` parent hops for a `super::` chain.
+pub(super) enum SuperParentWalk<'a> {
+    /// Stopped inside an inline ancestor or directly on `declaring_file`.
+    InParent {
+        declaring_file: &'a str,
+        base_dir: String,
+    },
+    /// Exhausted `#[path]` entries (or hit the hop cap) with `supers` hops left.
+    Remaining { file: &'a str, supers: usize },
+}
+
+/// Splits a `/`-joined `inline_dir` string into non-empty inline ancestor
+/// segment names.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn split_inline_dir(inline_dir: &str) -> Vec<String> {
+    inline_dir
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Walks `rust_parents` up to [`MAX_RUST_PARENT_HOPS`] to find the top-most
+/// declaring file owning `start_file`.
+pub(super) fn root_declaring_file<'a>(
+    start_file: &'a str,
+    rust_parents: &'a RustModuleParents,
+) -> &'a str {
+    let mut current = start_file;
+    for _ in 0..MAX_RUST_PARENT_HOPS {
+        let Some(parent) = rust_parents.get(current) else {
+            break;
+        };
+        current = parent.declaring_file.as_str();
+    }
+    current
+}
+
+/// Walks `#[path]` parent hops for `initial_supers` leading `super::` segments.
+/// Returns `None` if an inline ancestor path escapes the project root.
+pub(super) fn walk_super_parents<'a>(
+    start_file: &'a str,
+    initial_supers: usize,
+    rust_parents: &'a RustModuleParents,
+) -> Option<SuperParentWalk<'a>> {
+    let mut current_file = start_file;
+    let mut remaining_supers = initial_supers;
+    let mut hops: usize = 0;
+
+    while remaining_supers > 0 && hops < MAX_RUST_PARENT_HOPS {
+        let Some(parent) = rust_parents.get(current_file) else {
+            break;
+        };
+        let (Some(next_hops), Some(levels)) = (
+            hops.checked_add(1),
+            parent.inline_ancestors.len().checked_add(1),
+        ) else {
+            break;
+        };
+        hops = next_hops;
+        if let Some(keep) = levels.checked_sub(remaining_supers) {
+            let ancestors = parent
+                .inline_ancestors
+                .iter()
+                .take(keep)
+                .map(String::as_str);
+            let base_dir =
+                join_inline_segments(&rust_module_dir(&parent.declaring_file), ancestors)?;
+            return Some(SuperParentWalk::InParent {
+                declaring_file: parent.declaring_file.as_str(),
+                base_dir,
+            });
+        }
+        let Some(after) = remaining_supers.checked_sub(levels) else {
+            break;
+        };
+        remaining_supers = after;
+        current_file = parent.declaring_file.as_str();
+    }
+    Some(SuperParentWalk::Remaining {
+        file: current_file,
+        supers: remaining_supers,
+    })
+}
+
 /// Joins each inline ancestor segment onto `start_dir` via `normalize_join`,
 /// rejecting any absolute segment (starting with `/`) or any step that escapes
 /// above the project root.
-fn join_inline_segments<'a>(
+pub(super) fn join_inline_segments<'a>(
     start_dir: &str,
     inline_segments: impl IntoIterator<Item = &'a str>,
 ) -> Option<String> {
@@ -70,22 +151,6 @@ pub(crate) fn resolve_rust_path_attr_segments(
     (!joined.is_empty()).then_some(joined)
 }
 
-/// Resolves a `#[path = "..."]` attribute from `declaring_file` (nested inside
-/// `inline_dir`) to a normalized repo-relative child path, or `None` when the
-/// path or `inline_dir` escapes the repo root or is absolute/empty.
-#[cfg(test)]
-#[must_use]
-pub(crate) fn resolve_rust_path_attr(
-    declaring_file: &str,
-    path_attr: &str,
-    inline_dir: &str,
-) -> Option<String> {
-    if inline_dir.is_empty() {
-        return resolve_rust_path_attr_segments(declaring_file, path_attr, &[]);
-    }
-    resolve_rust_path_attr_segments(declaring_file, path_attr, &[inline_dir.to_owned()])
-}
-
 /// Inserts a `#[path = "..."]` module edge into `parents` using explicit
 /// per-module `inline_segments` when the target path stays inside the project
 /// root.
@@ -107,7 +172,6 @@ pub(crate) fn insert_rust_mod_parent_segments(
     if Path::new(path_attr).extension().is_some() {
         parents.entry(child_path).or_insert(parent);
     } else {
-        // KEEP clone: implicit external mod under #[path] inline ancestor may be <name>.rs or <name>/mod.rs
         parents
             .entry(format!("{child_path}.rs"))
             .or_insert_with(|| parent.clone());
@@ -119,6 +183,7 @@ pub(crate) fn insert_rust_mod_parent_segments(
 
 /// Inserts a `#[path = "..."]` module edge into `parents` when the target path
 /// stays inside the project root.
+#[cfg(test)]
 pub(crate) fn insert_rust_mod_parent(
     parents: &mut RustModuleParents,
     declaring_file: &str,
@@ -128,117 +193,10 @@ pub(crate) fn insert_rust_mod_parent(
     if inline_dir.starts_with('/') {
         return;
     }
-    let segments = inline_dir
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_owned)
-        .collect();
-    insert_rust_mod_parent_segments(parents, declaring_file, path_attr, segments);
-}
-
-/// Resolves a Rust `super` or `super::...` reference, walking `rust_parents`
-/// for `#[path = "..."]` declarations before falling back to module-tree
-/// directory traversal.
-pub(super) fn resolve_super_with_parents(
-    text: &str,
-    importing_relative_path: &str,
-    known_paths: &HashSet<&str>,
-    rust_parents: &RustModuleParents,
-) -> Resolution {
-    let Some((mut remaining_supers, rest)) = split_leading_supers(text) else {
-        return unresolved();
-    };
-    let mut current_file = importing_relative_path;
-    let mut hops: usize = 0;
-
-    while remaining_supers > 0 && hops < MAX_RUST_PARENT_HOPS {
-        let Some(parent) = rust_parents.get(current_file) else {
-            break;
-        };
-        let (Some(next_hops), Some(levels)) = (
-            hops.checked_add(1),
-            parent.inline_ancestors.len().checked_add(1),
-        ) else {
-            break;
-        };
-        hops = next_hops;
-        if let Some(keep) = levels.checked_sub(remaining_supers) {
-            let ancestors = parent
-                .inline_ancestors
-                .iter()
-                .take(keep)
-                .map(String::as_str);
-            let Some(base) =
-                join_inline_segments(&rust_module_dir(&parent.declaring_file), ancestors)
-            else {
-                return unresolved();
-            };
-            return resolve_under_base_or_declaring(parent, &base, rest, known_paths);
-        }
-        let Some(after) = remaining_supers.checked_sub(levels) else {
-            break;
-        };
-        remaining_supers = after;
-        current_file = parent.declaring_file.as_str();
-    }
-
-    let mut strict = rust_module_dir(current_file);
-    let mut legacy = parent_dir(current_file);
-    for _ in 0..remaining_supers {
-        strict = parent_dir(&strict);
-        legacy = parent_dir(&legacy);
-    }
-    let keep_legacy =
-        !legacy.is_empty() && legacy != strict && strict != "src" && !strict.ends_with("/src");
-    let mut bases = vec![strict];
-    if keep_legacy {
-        bases.push(legacy);
-    }
-    first_resolved(rest, &bases, known_paths)
-}
-
-fn split_leading_supers(text: &str) -> Option<(usize, &str)> {
-    let mut count: usize = 1;
-    let mut rest = text.split_once("::").map_or("", |(_, after)| after);
-    while let Some(next) = rest.strip_prefix("super::") {
-        rest = next;
-        count = count.checked_add(1)?;
-    }
-    if rest == "super" {
-        rest = "";
-        count = count.checked_add(1)?;
-    }
-    Some((count, rest))
-}
-
-fn resolve_under_base_or_declaring(
-    parent: &RustModuleParent,
-    base: &str,
-    rest: &str,
-    known_paths: &HashSet<&str>,
-) -> Resolution {
-    if !strip_trailing_glob(rest).is_empty() {
-        let sub = resolve_rust_from_base(rest, base, known_paths, None);
-        if sub.kind == ResolutionKind::Resolved {
-            return sub;
-        }
-    }
-    resolved_declaring_file(parent, rest, known_paths)
-}
-
-fn resolved_declaring_file(
-    parent: &RustModuleParent,
-    rest: &str,
-    known_paths: &HashSet<&str>,
-) -> Resolution {
-    if !known_paths.contains(parent.declaring_file.as_str()) {
-        return unresolved();
-    }
-    let simple = rest.is_empty() || !has_glob_suffix(rest) || strip_trailing_glob(rest).is_empty();
-    Resolution {
-        kind: ResolutionKind::Resolved,
-        confidence: Some(if simple { "High" } else { "Low" }),
-        // KEEP clone: Resolution owns the resolved project-relative path String
-        to_relative_path: Some(parent.declaring_file.clone()),
-    }
+    insert_rust_mod_parent_segments(
+        parents,
+        declaring_file,
+        path_attr,
+        split_inline_dir(inline_dir),
+    );
 }

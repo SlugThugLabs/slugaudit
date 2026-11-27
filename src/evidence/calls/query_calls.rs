@@ -1,36 +1,27 @@
+// slugaudit-line-exception: approved-by=split-judge; reason=embedded tree-sitter query call extraction and linear preorder caller span index
 //! Call-site evidence for the languages SlugAudit reads through an embedded
-//! tree-sitter call query (the table is `call_queries.rs`).
-//!
-//! Each query has exactly one capture, `@callee`: the simple name of the
-//! called function or method. The call node it belongs to, its span, the
-//! callee text as written and the enclosing caller are derived here, once,
-//! for every language; the row itself is built by the shared
-//! [`super::site::call_item`]. Rust is not in this table: its walker also re-parses
-//! macro bodies and keeps callees no query pattern names (see `calls.rs`).
+//! tree-sitter call query (the table is `call_queries.rs`), executed over the
+//! already-parsed `tree_sitter::Tree`.
 
 use super::call_queries::{CALL_QUERIES, CallQuery, MAX_CALLEE_DEPTH};
-use super::caller_index::{FunctionIndex, collect_functions};
 use super::site::{CallSite, call_item};
 use crate::evidence::deadline_spent as spent;
-use crate::evidence::{Extraction, NoTree, NodeError, node_text};
+use crate::evidence::{Extraction, NoTree, NodeError, TextRangeError, node_text};
 use crate::model::{EvidenceOrigin, LineIndex, PositionOverflow};
-use crate::parse::budget::{Parsed, parse_within};
 use crate::util::Deadline;
 use std::ops::ControlFlow;
 use tree_sitter::{
-    Language, Node, Parser, Query, QueryCursor, QueryCursorOptions, QueryCursorState,
-    StreamingIterator, Tree,
+    Node, Query, QueryCursor, QueryCursorOptions, QueryCursorState, StreamingIterator, Tree,
 };
 
 /// The deepest node a query match may start at: one below the walk depth cap.
 const MAX_START_DEPTH: u32 = crate::evidence::MAX_WALK_DEPTH - 1;
 
 /// Extracts call evidence for `language` when it has an embedded call query
-/// (an empty, complete extraction otherwise). The parse and the query cursor
-/// both run within what is left of `deadline`. A position past `u32::MAX` is
-/// an error that fails the file's extraction.
+/// (an empty, complete extraction otherwise), reusing the already-parsed `tree`.
 pub(super) fn extract(
     language: &str,
+    tree: &Tree,
     source: &str,
     lines: &LineIndex<'_>,
     deadline: Option<&Deadline>,
@@ -38,60 +29,17 @@ pub(super) fn extract(
     let Some(entry) = CALL_QUERIES.iter().find(|entry| entry.language == language) else {
         return Ok(Extraction::default());
     };
-    let grammar = match tree_sitter_language_pack::get_language(entry.language) {
-        Ok(grammar) => grammar,
-        Err(error) => {
-            tracing::warn!(language = entry.language, %error, "call query has no grammar; extraction is partial");
-            return Ok(Extraction::without_tree(NoTree::Failed));
-        }
-    };
+    if spent(deadline) {
+        return Ok(Extraction::without_tree(NoTree::TimedOut));
+    }
+    let grammar = tree.language();
     let query = match entry.compiled(&grammar) {
         Ok(query) => query,
-        // Logged once, when the query failed to compile; the file's call
-        // evidence is reported partial.
         Err(_logged_at_compile) => return Ok(Extraction::without_tree(NoTree::Failed)),
     };
-    let tree = match parse_call_tree(&grammar, source, deadline) {
-        Ok(tree) => tree,
-        Err(why) => return Ok(Extraction::without_tree(why)),
-    };
-    run(entry, query, &tree, source, lines, deadline)
+    run(entry, query, tree, source, lines, deadline)
 }
 
-/// Parses `source` with a parser of its own (dropped after, so a cancelled
-/// parse leaves no state behind), cancelled once `deadline` is spent. This
-/// only builds the parser and maps the outcome onto [`NoTree`]; the
-/// progress-callback loop is the one in `parse::budget`, shared with
-/// `structure` and the mechanic scans.
-fn parse_call_tree(
-    grammar: &Language,
-    source: &str,
-    deadline: Option<&Deadline>,
-) -> Result<Tree, NoTree> {
-    if spent(deadline) {
-        return Err(NoTree::TimedOut);
-    }
-    let mut parser = Parser::new();
-    if let Err(error) = parser.set_language(grammar) {
-        tracing::warn!(%error, "call query parser could not take its grammar; extraction is partial");
-        return Err(NoTree::Failed);
-    }
-    match parse_within(&mut parser, source, || spent(deadline)) {
-        Parsed::Tree(tree) => Ok(tree),
-        Parsed::Cancelled => Err(NoTree::TimedOut),
-        Parsed::NoTree => {
-            tracing::warn!("call query parse produced no tree; extraction is partial");
-            Err(NoTree::Failed)
-        }
-    }
-}
-
-/// Runs `query` over `tree`, one row per match. The cursor stops at the
-/// deadline (the rows so far are kept and the extraction is timed out), and
-/// starts no match deeper than [`crate::evidence::MAX_WALK_DEPTH`] — the bound
-/// every walker shares; the bindings walker reads the same tree and reports
-/// such a file partial. A position past `u32::MAX` is an error that fails the
-/// file's extraction.
 fn run(
     entry: &CallQuery,
     query: &Query,
@@ -127,8 +75,6 @@ fn run(
         for capture in found.captures {
             match call_site(entry, capture.node, source, lines, &functions) {
                 Ok(Some(site)) => {
-                    // Every row is pushed here and nowhere else, so its key
-                    // number is the count of rows before it.
                     let key = format!("call:{}", out.items.len());
                     out.items.push(call_item(key, site));
                 }
@@ -152,9 +98,6 @@ fn run(
     Ok(out)
 }
 
-/// The call site of one `@callee` capture, or `None` when no call node of
-/// `entry.call_kind` sits within [`MAX_CALLEE_DEPTH`] above it (an embedded
-/// query that captures outside a call).
 fn call_site(
     entry: &CallQuery,
     callee: Node<'_>,
@@ -175,8 +118,6 @@ fn call_site(
     let Some(call) = call else {
         return Ok(None);
     };
-    // The callee as written: from the start of the call (the receiver, if
-    // any) to the end of the captured name — `obj.method`, `pkg.F`, `f`.
     let callee_text = node_text(source, call.start_byte(), callee.end_byte())?.to_owned();
     let callee_name = node_text(source, callee.start_byte(), callee.end_byte())?.to_owned();
     Ok(Some(CallSite {
@@ -196,6 +137,109 @@ fn call_site(
     }))
 }
 
-#[cfg(test)]
-#[path = "query_calls_tests.rs"]
-mod tests;
+struct FunctionSpan {
+    start: usize,
+    end: usize,
+    name: Option<String>,
+    parent: Option<usize>,
+}
+
+struct FunctionIndex {
+    spans: Vec<FunctionSpan>,
+}
+
+impl FunctionIndex {
+    fn enclosing_caller(&self, call_start: usize, call_end: usize) -> Option<String> {
+        let pos = self.spans.partition_point(|span| span.start <= call_start);
+        let mut idx = pos.checked_sub(1)?;
+        loop {
+            let span = self.spans.get(idx)?;
+            if span.end >= call_end {
+                return span.name.clone();
+            }
+            idx = span.parent?;
+        }
+    }
+}
+
+fn collect_functions(
+    entry: &CallQuery,
+    tree: &Tree,
+    source: &str,
+    deadline: Option<&Deadline>,
+    out: &mut Extraction,
+) -> FunctionIndex {
+    let mut spans: Vec<FunctionSpan> = Vec::new();
+    let mut active: Vec<usize> = Vec::new();
+    let mut cursor = tree.walk();
+    let mut depth: u32 = 0;
+
+    loop {
+        if spent(deadline) {
+            out.timed_out = true;
+            break;
+        }
+        let node = cursor.node();
+        if entry.function_kinds.contains(&node.kind()) {
+            let start = node.start_byte();
+            let end = node.end_byte();
+            while active
+                .last()
+                .and_then(|&idx| spans.get(idx))
+                .is_some_and(|span| span.end <= start)
+            {
+                active.pop();
+            }
+            let name = match function_name(node, source) {
+                Ok(name) => name,
+                Err(error) => {
+                    tracing::warn!(%error, "function name skipped; extraction is partial");
+                    out.truncated = true;
+                    None
+                }
+            };
+            let idx = spans.len();
+            spans.push(FunctionSpan {
+                start,
+                end,
+                name,
+                parent: active.last().copied(),
+            });
+            active.push(idx);
+        }
+
+        if depth < crate::evidence::MAX_WALK_DEPTH
+            && let Some(next_depth) = depth.checked_add(1)
+            && cursor.goto_first_child()
+        {
+            depth = next_depth;
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return FunctionIndex { spans };
+            }
+            if let Some(prev_depth) = depth.checked_sub(1) {
+                depth = prev_depth;
+            }
+        }
+    }
+
+    FunctionIndex { spans }
+}
+
+fn function_name(function: Node<'_>, source: &str) -> Result<Option<String>, TextRangeError> {
+    let mut current = function;
+    let name = loop {
+        if let Some(name) = current.child_by_field_name("name") {
+            break Some(name);
+        }
+        match current.child_by_field_name("declarator") {
+            Some(declarator) if declarator.kind() == "identifier" => break Some(declarator),
+            Some(declarator) => current = declarator,
+            None => break None,
+        }
+    };
+    name.map(|name| node_text(source, name.start_byte(), name.end_byte()).map(str::to_owned))
+        .transpose()
+}

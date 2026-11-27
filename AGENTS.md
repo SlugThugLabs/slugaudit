@@ -11,10 +11,11 @@ history conflicts with the owner, the owner wins.
   reading files.
   <!-- Owner decision (2026-10-31): the purpose is to save the model context and tokens on mundane, repetitive file reads, so its context goes to the audit itself. -->
 - On every tool call (except `health`), before answering: walk the project,
-  BLAKE3-hash every file, update the rows of files that changed, add new
-  files, remove deleted ones, and re-hash stored text against its stored
-  hash. A broken or missing database is deleted and rebuilt.
-  <!-- Owner decision (2026-10-31): the database only matters if it is exactly the same as the code base. Checking every hash on every call is simpler than trusting any shortcut. -->
+  BLAKE3-hash every regular file on disk, compare against `files.content_hash`
+  in SQLite, and update changed rows, add new files, and remove deleted ones.
+  Never re-read or re-hash stored `files.content` out of SQLite. A broken or
+  missing database is deleted and rebuilt.
+  <!-- Owner decision (2026-10-31, clarified 2026-11-26): every file row holds its content hash so we hash disk files on every call and only touch rows whose hash differs. -->
 - A project is on when the directory `<root>/.planning/slugaudit/` exists.
   `project_control on` creates it. `project_control off` deletes it. Nothing
   else creates it.
@@ -42,9 +43,11 @@ history conflicts with the owner, the owner wins.
 - Target: comfortable up to ~40k files on a normal laptop.
 - No file watcher.
   <!-- Owner decision (2026-10-31): checking every file's hash on every call makes a watcher duplicate work. -->
-- No guards against threats nobody reported: no SQL authorizer, file
-  permission policing, locks, or network-filesystem refusal.
-  <!-- Owner decision (2026-10-31): SlugAudit is not a security product and never was. The database is the user's own local scratch. Earlier agents kept building against threats nobody reported. -->
+- No guards against threats nobody reported, and no protecting SlugAudit's
+  scratch files against the model or local user: no SQL authorizer, workspace
+  path jails, symlink/`NOFOLLOW` refusals, file-permission policing, locks
+  beyond dead-session cleanup, or network-filesystem refusal.
+  <!-- Owner decision (2026-10-31, clarified 2026-11-26): the host coding harness already owns the permission boundary, and the model already has access to the repo files. `project.db` and `results/` are disposable scratch holding only data from that repo. Bound accidental runaway calls (read-only `query`, time/step/byte caps); never build defenses against the model tampering with our own scratch DB or layers to police our own layers. -->
 - No feature that ranks, scores, decides what matters, or gives the model a
   checklist. Built-in leads only count. The model chooses its own signals.
   <!-- Owner decision (2026-10-31): when the tool hands the model findings or a checklist, the model starts to treat running the tool as doing the audit. When the model sets up its own signals, the tool stays a helper. -->
@@ -66,8 +69,9 @@ history conflicts with the owner, the owner wins.
   <!-- Owner decision (2026-11-03): you can't use a tool that isn't finished on itself while you build it, and doing so mixes up what SlugAudit does with the code that builds it. -->
 
 - A line marked `Owner decision` records why the owner chose a rule. Don't
-  change the rule on your own. If you think it should change, quote the
-  decision to the owner and ask.
+  change the rule on your own, and never add or rewrite an `Owner decision`
+  comment unless recording the owner's explicit words with their OK. If you
+  think a rule should change, quote the decision to the owner and ask.
 - Don't commit, push, or delete without the owner's OK.
 - When something fails, check your own change first, then the test, then
   the environment.
@@ -75,13 +79,18 @@ history conflicts with the owner, the owner wins.
   whether it should exist.
 - No mocks, stubs, placeholder returns or fake data outside tests. Product
   code does the real work or fails with an error.
+- Never fabricate or edit benchmark baselines, coverage thresholds, or CI
+  configs without running the tool that checks them (if the tool is not
+  installed locally, stop and tell the owner). Never mask new wire fields out
+  of golden test comparisons.
 - Don't rewrite working code without a reason: a bug, a broken rule, or the
   owner's request. A function or file that mixes separate responsibilities is
   a broken rule; length alone is not. Never split code only to meet a line
   count. For any file at or above 200 code lines, run `split-judge`; if it
   says `KEEP`, record a `slugaudit-line-exception: approved-by=split-judge; reason=...`
-  comment — there is no hard cap.
-  <!-- Owner decision (2026-11-02, updated 2026-11-25): over 200 lines per file or 50 per function is fine when the code does one job. No hard cap; run split-judge on files over 200 and trust its verdict. -->
+  comment — there is no hard cap. Never stamp `approved-by=slugthuglabs` or
+  `approved-by=human-user` on new or rewritten files.
+  <!-- Owner decision (2026-11-02, updated 2026-11-26): over 200 lines per file or 50 per function is fine when the code does one job. No hard cap; run split-judge on files over 200 and trust its verdict. -->
 - Never write a judgment about the code (for example, "module X is fine")
   into a file that outlives the session.
 - Errors fail the operation and are logged once. No `let _ =` on a Result,

@@ -7,8 +7,8 @@ version = 2
 ignore = [
     # Transitive via rmcp and schemars; upstream has no replacement yet ("No safe upgrade is available!").
     { id = "RUSTSEC-2026-0543", reason = "chrono is pulled transitively by rmcp and schemars with no upstream alternative yet" },
-    # Applies only when opening an untrusted DB + mismatched -wal written by another party; project.db is local disposable scratch, and rusqlite 0.41 is a breaking API jump.
-    { id = "RUSTSEC-2026-0459", reason = "project.db is local disposable scratch owned by the user; rusqlite 0.37 -> 0.41 is a breaking API change deferred from this pass" },
+    # Applies only when opening an untrusted DB + mismatched -wal written by another party; project.db is disposable local scratch under the host harness boundary.
+    { id = "RUSTSEC-2026-0459", reason = "project.db is disposable local scratch under the host harness boundary; rusqlite 0.37 -> 0.41 is a breaking API change deferred from this pass" },
 ]
 
 [licenses]
@@ -26,12 +26,9 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
-# No license exceptions. libfuzzer-sys ("… AND NCSA", from its LLVM-derived C
-# shim) is reached only by the development-only fuzz workspace (fuzz/Cargo.toml,
-# a separate cargo workspace the product never builds or ships), which this gate
-# does not traverse — so an exception for it here can never match and cargo-deny
-# warns on it as unused. If the fuzz workspace is ever brought under cargo-deny,
-# its NCSA exception belongs in that workspace's own config, not this one.
+# No license exceptions in the shipped workspace. `libfuzzer-sys` ("… AND NCSA",
+# from its LLVM-derived C shim) is reached only by the development-only fuzz
+# workspace (`fuzz/Cargo.toml`), which carries its own `fuzz/deny.toml`.
 exceptions = []
 # The root crate's license is a non-SPDX PolyForm Noncommercial 1.0.0 plus
 # the SlugAudit tool-use additional permission (see LICENSE), expressed only

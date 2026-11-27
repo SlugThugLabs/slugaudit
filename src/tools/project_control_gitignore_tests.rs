@@ -1,11 +1,19 @@
-//! Tests for the `.gitignore` rule that `project_control on` adds, and off leaves alone.
+//! Tests for the `.gitignore` rule that `project_control on` adds, and `off` leaves alone.
+use super::tests::{activation_dir, off_request, on_request, temp_project_with_source};
 use super::*;
+use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
+use std::fs;
 
 #[test]
 fn on_action_reports_the_gitignore_rule_it_added() -> TestResult {
     let (project, path) = temp_project_with_source()?;
-    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .check("enable succeeds")?;
+    let manager = sync::SourceSyncManager::new();
+    let response = project_control(
+        &on_request(&path),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("enable succeeds")?;
 
     let report = response
         .0
@@ -42,12 +50,17 @@ fn on_action_reports_the_gitignore_rule_it_added() -> TestResult {
 #[test]
 fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() -> TestResult {
     let (project, path) = temp_project_with_source()?;
+    let manager = sync::SourceSyncManager::new();
     let gitignore = project.path().join(".gitignore");
     let original = b"/target\n/.planning/slugaudit/\n";
     fs::write(&gitignore, original).check("write .gitignore")?;
 
-    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .check("enable succeeds")?;
+    let response = project_control(
+        &on_request(&path),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("enable succeeds")?;
 
     let report = response
         .0
@@ -75,10 +88,15 @@ fn on_action_reports_an_already_ignored_project_without_duplicating_the_rule() -
 #[test]
 fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() -> TestResult {
     let (project, path) = temp_project_with_source()?;
+    let manager = sync::SourceSyncManager::new();
     fs::create_dir(project.path().join(".gitignore")).check("block the ignore file")?;
 
-    let response = project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .check("the convenience guard must not fail the enable")?;
+    let response = project_control(
+        &on_request(&path),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("the convenience guard must not fail the enable")?;
 
     let report = response
         .0
@@ -105,15 +123,20 @@ fn on_action_enables_the_project_even_when_the_gitignore_cannot_be_written() -> 
 #[test]
 fn off_action_does_not_touch_the_gitignore() -> TestResult {
     let (project, path) = temp_project_with_source()?;
-    project_control(&on_request(&path), &crate::progress::NoopProgressSink, None)
-        .check("enable")?;
+    let manager = sync::SourceSyncManager::new();
+    project_control(
+        &on_request(&path),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("enable")?;
     let gitignore = project.path().join(".gitignore");
     let after_enable = fs::read(&gitignore).check("read .gitignore")?;
 
     let response = project_control(
         &off_request(&path),
         &crate::progress::NoopProgressSink,
-        None,
+        &manager,
     )
     .check("disable succeeds")?;
 
@@ -137,13 +160,14 @@ fn off_action_does_not_touch_the_gitignore() -> TestResult {
 #[test]
 fn an_unknown_profile_is_refused_before_anything_is_enabled() -> TestResult {
     let (project, path) = temp_project_with_source()?;
+    let manager = sync::SourceSyncManager::new();
     let req = Parameters(ProjectControlRequest {
         path: Some(path),
         action: ProjectControlAction::On,
         profile: Some("strict".to_string()),
     });
 
-    let error = project_control(&req, &crate::progress::NoopProgressSink, None)
+    let error = project_control(&req, &crate::progress::NoopProgressSink, &manager)
         .err()
         .check("a profile that does not exist must not enable on the default")?;
 

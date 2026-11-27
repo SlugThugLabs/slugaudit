@@ -14,18 +14,18 @@ fn enum_variants_come_from_the_declaration() -> TestResult {
             "Beta".to_owned(),
             "Gamma".to_owned(),
         ]),
-        "variants::enum_variants(source, \"Thing\") == Some(vec![ \"Alpha\".to_owned(), \"Beta\".to_owned(), \"Gamma\".to_owned() ])",
+        "enum_variants extracts all three declared unit variants",
     )?;
     Ok(())
 }
 
 #[test]
-fn enum_variants_ignore_attributes_and_payloads() -> TestResult {
-    let source = "pub enum Thing {\n    /// docs\n    Alpha,\n    Failed { reason: String },\n}\n";
+fn enum_variants_ignore_attributes_comments_and_payloads() -> TestResult {
+    let source = "pub enum Thing {\n    /// docs\n    /* block comment Variant */\n    Alpha,\n    Failed { reason: String },\n}\n";
     ensure_eq(
         &variants::enum_variants(source, "Thing"),
         &Some(vec!["Alpha".to_owned(), "Failed".to_owned()]),
-        "variants::enum_variants(source, \"Thing\") == Some(vec![\"Alpha\".to_owned(), \"Failed\".to_owned()])",
+        "enum_variants ignores doc comments, block comments, and struct payloads",
     )?;
     Ok(())
 }
@@ -41,36 +41,60 @@ fn enum_variants_survive_multi_line_payloads() -> TestResult {
             "Pair".to_owned(),
             "Omega".to_owned(),
         ]),
-        "variants::enum_variants(source, \"Thing\") == Some(vec![ \"Alpha\".to_owned(), \"Failed\".to_owned(), \"Pair\".to_owned(), \"Omega\".to_owned() ])",
+        "enum_variants handles multi-line struct and tuple variant payloads",
     )?;
     Ok(())
 }
 
 #[test]
-fn a_braced_value_is_a_producer() -> TestResult {
+fn a_braced_or_assigned_value_is_a_producer() -> TestResult {
     let produced =
         variants::producer_variants("let item = Thing { kind: Thing::Alpha, x: 1 };", "Thing");
     ensure_eq(
         &produced,
         &vec!["Alpha".to_owned()],
-        "produced == vec![\"Alpha\".to_owned()]",
+        "struct-literal field construction counts as a producer",
     )?;
 
     let produced = variants::producer_variants("run.completeness = Thing::Beta;", "Thing");
     ensure_eq(
         &produced,
         &vec!["Beta".to_owned()],
-        "produced == vec![\"Beta\".to_owned()]",
+        "assignment RHS construction counts as a producer",
     )?;
     Ok(())
 }
 
 #[test]
-fn a_match_arm_is_not_a_producer() -> TestResult {
-    let source = "match kind {\n    Thing::Alpha => \"Alpha\",\n    Thing::Beta => \"Beta\",\n}";
+fn function_call_arguments_are_producers() -> TestResult {
+    let source = concat!(
+        "emit(Thing::Alpha);\n",
+        "record(ctx, crate::model::Thing::Beta, 42);\n",
+        "let wrapped = Some(Thing::Gamma);\n",
+    );
+    ensure_eq(
+        &variants::producer_variants(source, "Thing"),
+        &vec!["Alpha".to_owned(), "Beta".to_owned(), "Gamma".to_owned()],
+        "leading and comma-separated function-call arguments count as producers",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn match_arms_matches_macros_and_destructuring_patterns_are_not_producers() -> TestResult {
+    let source = concat!(
+        "match kind {\n",
+        "    Thing::Alpha => \"Alpha\",\n",
+        "    (Thing::Beta, Thing::Gamma) => \"Pair\",\n",
+        "    Item { kind: Thing::Delta } => \"Struct\",\n",
+        "}\n",
+        "let is_alpha = matches!(self.kind, Thing::Alpha);\n",
+        "if let Some(Thing::Beta) = maybe_kind {}\n",
+        "let (Thing::Gamma, _) = pair;\n",
+    );
     ensure(
         variants::producer_variants(source, "Thing").is_empty(),
-        "the SQL mirror's arms enumerate every variant; counting them would make the gate vacuous",
+        "match arms, matches! macros, and let destructuring patterns must not count as producers",
     )?;
     Ok(())
 }
@@ -79,11 +103,11 @@ fn a_match_arm_is_not_a_producer() -> TestResult {
 fn a_comparison_or_binding_pattern_is_not_a_producer() -> TestResult {
     ensure(
         variants::producer_variants("if x.kind == Thing::Alpha { }", "Thing").is_empty(),
-        "variants::producer_variants(\"if x.kind == Thing::Alpha { }\", \"Thing\").is_empty()",
+        "equality comparison must not count as a producer",
     )?;
     ensure(
         variants::producer_variants("if let Thing::Alpha = x { }", "Thing").is_empty(),
-        "variants::producer_variants(\"if let Thing::Alpha = x { }\", \"Thing\").is_empty()",
+        "if-let pattern binding must not count as a producer",
     )?;
     Ok(())
 }
@@ -99,7 +123,7 @@ fn a_path_qualified_comparison_is_not_a_producer() -> TestResult {
         ensure(
             variants::producer_variants(source, "Thing").is_empty()
                 && variants::producer_variants(source, "EvidenceKind").is_empty(),
-            format!("a comparison is not a construction: {source}"),
+            format!("a path-qualified comparison is not a construction: {source}"),
         )?;
     }
     Ok(())
@@ -111,7 +135,7 @@ fn a_path_qualified_value_is_a_producer() -> TestResult {
     ensure_eq(
         &variants::producer_variants(source, "Thing"),
         &vec!["Alpha".to_owned(), "Beta".to_owned()],
-        "variants::producer_variants(source, \"Thing\") == vec![\"Alpha\".to_owned(), \"Beta\".to_owned()]",
+        "path-qualified struct-field and assignment values count as producers",
     )?;
     Ok(())
 }
@@ -124,7 +148,7 @@ fn a_value_in_a_block_tail_is_a_producer() -> TestResult {
     ensure_eq(
         &produced,
         &vec!["Alpha".to_owned(), "Beta".to_owned()],
-        "produced == vec![\"Alpha\".to_owned(), \"Beta\".to_owned()]",
+        "block-tail values in conditional branches count as producers",
     )?;
     Ok(())
 }
@@ -133,8 +157,14 @@ fn a_value_in_a_block_tail_is_a_producer() -> TestResult {
 fn production_code_drops_an_inline_test_module() -> TestResult {
     let source = "fn real() {}\n#[cfg(test)]\nmod tests {\n    fn helper() -> Thing { Thing::Alpha }\n}\nfn after() {}\n";
     let code = scan::production_code(source).check("strip test code")?;
-    ensure(code.contains("fn real"), "code.contains(\"fn real\")")?;
-    ensure(code.contains("fn after"), "code.contains(\"fn after\")")?;
+    ensure(
+        code.contains("fn real"),
+        "production fn before test mod is kept",
+    )?;
+    ensure(
+        code.contains("fn after"),
+        "production fn after test mod is kept",
+    )?;
     ensure(
         !code.contains("Thing::Alpha"),
         format!("a cfg(test) fixture must not count as a producer: {code}"),
@@ -146,7 +176,7 @@ fn production_code_drops_an_inline_test_module() -> TestResult {
 fn production_code_drops_items_gated_on_test_inside_all() -> TestResult {
     let source = "#[cfg(all(test, unix))]\nfn fixture() -> Thing { Thing::Alpha }\nfn real() {}\n";
     let code = scan::production_code(source).check("strip test code")?;
-    ensure(code.contains("fn real"), "code.contains(\"fn real\")")?;
+    ensure(code.contains("fn real"), "production fn is kept")?;
     ensure(
         !code.contains("Thing::Alpha"),
         format!("a cfg(all(test, ..)) fixture must not count as a producer: {code}"),
@@ -177,20 +207,33 @@ fn production_code_drops_cfg_test_items() -> TestResult {
     let source =
         "#[cfg(test)]\nuse x::y;\n#[cfg(test)]\n#[path = \"z.rs\"]\nmod z;\nfn real() {}\n";
     let code = scan::production_code(source).check("strip test code")?;
-    ensure(!code.contains("use x::y"), "!code.contains(\"use x::y\")")?;
-    ensure(!code.contains("mod z"), "!code.contains(\"mod z\")")?;
-    ensure(code.contains("fn real"), "code.contains(\"fn real\")")?;
+    ensure(!code.contains("use x::y"), "cfg(test) use item is dropped")?;
+    ensure(!code.contains("mod z"), "cfg(test) mod item is dropped")?;
+    ensure(code.contains("fn real"), "production fn is kept")?;
     Ok(())
 }
 
 #[test]
-fn production_code_drops_a_line_comment_that_names_a_variant() -> TestResult {
-    let source = "// pair with `kind: Thing::Alpha` in the writer\nfn real() {}\n";
-    let code = scan::production_code(source).check("strip test code")?;
-    ensure(code.contains("fn real"), "code.contains(\"fn real\")")?;
-    ensure(
-        !code.contains("Thing::Alpha"),
-        format!("a comment naming a variant must not count as a producer: {code}"),
+fn production_code_strips_line_comments_block_comments_and_string_literals() -> TestResult {
+    let source = concat!(
+        "// pair with `kind: Thing::Alpha` in the writer\n",
+        "/* outer /* nested kind: Thing::Beta */ still comment = Thing::Gamma */\n",
+        "const S: &str = \"kind: Thing::Delta\";\n",
+        "const ESC: &str = \"escaped \\\" kind: Thing::Epsilon\";\n",
+        "const RAW: &str = r#\"raw { Thing::Zeta } and \"quotes\"\"#;\n",
+        "fn real<'a>(x: &'a str) -> Thing { emit(Thing::Eta) }\n",
+    );
+    let code = scan::production_code(source).check("strip non-code and test items")?;
+    for spoofed in ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"] {
+        ensure(
+            !code.contains(spoofed),
+            format!("non-code {spoofed} survived stripping: {code}"),
+        )?;
+    }
+    ensure_eq(
+        &variants::producer_variants(&code, "Thing"),
+        &vec!["Eta".to_owned()],
+        "only real code construction after comments, strings, and lifetimes counts",
     )?;
     Ok(())
 }
@@ -214,7 +257,7 @@ fn the_gate_finds_every_variant_of_this_projects_enums_produced() -> TestResult 
         ensure_eq(
             &report.covered,
             &report.declared,
-            "report.covered == report.declared",
+            "every declared variant has a production producer",
         )?;
     }
     Ok(())

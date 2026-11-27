@@ -6,22 +6,22 @@ fn parse_str_recognizes_profiles() -> TestResult {
     ensure_eq(
         &AuditProfile::parse_str("lean"),
         &Some(AuditProfile::Lean),
-        "AuditProfile::parse_str(\"lean\") == Some(AuditProfile::Lean)",
+        "lowercase lean parses to AuditProfile::Lean",
     )?;
     ensure_eq(
         &AuditProfile::parse_str("AUDIT"),
         &Some(AuditProfile::Audit),
-        "AuditProfile::parse_str(\"AUDIT\") == Some(AuditProfile::Audit)",
+        "uppercase AUDIT parses case-insensitively to AuditProfile::Audit",
     )?;
     ensure_eq(
         &AuditProfile::parse_str("adaptive"),
         &Some(AuditProfile::Adaptive),
-        "AuditProfile::parse_str(\"adaptive\") == Some(AuditProfile::Adaptive)",
+        "lowercase adaptive parses to AuditProfile::Adaptive",
     )?;
     ensure_eq(
         &AuditProfile::parse_str("unknown"),
         &None,
-        "AuditProfile::parse_str(\"unknown\") == None",
+        "unrecognized profile name returns None",
     )?;
     Ok(())
 }
@@ -34,16 +34,45 @@ fn profiles_provide_positive_limits() -> TestResult {
         AuditProfile::Adaptive,
     ] {
         let limits = limits_for_profile(profile).check("profile limits")?;
-        ensure(limits.max_file_bytes > 0, "limits.max_file_bytes > 0")?;
+        ensure(
+            limits.max_file_bytes > 0,
+            "profile max_file_bytes is positive",
+        )?;
         ensure(
             limits.max_total_import_bytes >= limits.max_file_bytes,
-            "limits.max_total_import_bytes >= limits.max_file_bytes",
+            "profile import budget is at least one max-size file",
         )?;
         ensure(
             limits.max_query_response_bytes > 0,
-            "limits.max_query_response_bytes > 0",
+            "profile query response cap is positive",
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn profiles_bound_sync_wall_clock_to_30s_lean_and_90s_audit_and_adaptive() -> TestResult {
+    ensure_eq(
+        &limits_for_profile(AuditProfile::Lean)
+            .check("lean limits")?
+            .max_sync_wall_clock,
+        &Duration::from_secs(30),
+        "lean profile defaults to a 30-second sync wall-clock budget",
+    )?;
+    ensure_eq(
+        &limits_for_profile(AuditProfile::Audit)
+            .check("audit limits")?
+            .max_sync_wall_clock,
+        &Duration::from_secs(90),
+        "audit profile defaults to a 90-second sync wall-clock budget",
+    )?;
+    ensure_eq(
+        &limits_for_profile(AuditProfile::Adaptive)
+            .check("adaptive limits")?
+            .max_sync_wall_clock,
+        &Duration::from_secs(90),
+        "adaptive profile defaults to a 90-second sync wall-clock budget",
+    )?;
     Ok(())
 }
 
@@ -58,7 +87,7 @@ fn fail_closed_a_set_but_unknown_profile_is_an_error_naming_the_variable_not_the
         ensure_eq(
             &error.to_string(),
             &"SLUGAUDIT_PROFILE is set but is not valid; expected one of `lean`, `audit`, `adaptive`",
-            "error.to_string() == \"SLUGAUDIT_PROFILE is set but is not valid; expected one of `lean`, `audit`, `adaptive`\"",
+            "unknown profile error names SLUGAUDIT_PROFILE and lists valid options",
         )?;
         Ok(())
     })?;
@@ -93,7 +122,7 @@ fn an_unset_profile_selects_nothing() -> TestResult {
         ensure_eq(
             &profile_from_env().check("unset is valid")?,
             &None,
-            "profile_from_env().check(\"unset is valid\")? == None",
+            "unset SLUGAUDIT_PROFILE returns None",
         )?;
         Ok(())
     })?;
@@ -108,7 +137,7 @@ fn a_known_profile_resolves() -> TestResult {
         ensure_eq(
             &profile_from_env().check("valid")?,
             &Some(AuditProfile::Lean),
-            "profile_from_env().check(\"valid\")? == Some(AuditProfile::Lean)",
+            "SLUGAUDIT_PROFILE=lean resolves to AuditProfile::Lean",
         )?;
         Ok(())
     })?;
@@ -147,12 +176,12 @@ fn adaptive_file_and_query_caps_never_exceed_sqlite_max() -> TestResult {
 
     ensure(
         limits.max_file_bytes <= SQLITE_MAX_VALUE_BYTES,
-        "limits.max_file_bytes <= SQLITE_MAX_VALUE_BYTES",
+        "adaptive max_file_bytes stays within SQLite's maximum value length",
     )?;
     ensure(
         limits.max_query_value_bytes
             <= usize::try_from(SQLITE_MAX_VALUE_BYTES).check("the cap fits usize")?,
-        "limits.max_query_value_bytes <= usize::try_from(SQLITE_MAX_VALUE_BYTES).check(\"the cap fits usize\")?",
+        "adaptive max_query_value_bytes stays within SQLite's maximum value length",
     )?;
     Ok(())
 }
@@ -169,7 +198,7 @@ fn every_profile_defaults_to_a_64_kib_page_under_its_ceiling() -> TestResult {
         ensure_eq(&limits.default_page_bytes, &65_536, format!("{profile:?}"))?;
         ensure(
             limits.default_page_bytes <= limits.max_query_response_bytes,
-            "limits.default_page_bytes <= limits.max_query_response_bytes",
+            "default page size fits within query response ceiling",
         )?;
     }
     Ok(())
@@ -258,14 +287,14 @@ fn every_profile_budgets_the_result_store_at_four_maximal_responses() -> TestRes
             .check("profile limits")?
             .max_result_store_bytes,
         &(1024 * 1024 * 1024),
-        "limits_for_profile(AuditProfile::Audit) .check(\"profile limits\")? .max_result_store_bytes == 1024 * 1024 * 1024",
+        "audit result store budget defaults to 1 GiB",
     )?;
     ensure_eq(
         &limits_for_profile(AuditProfile::Lean)
             .check("profile limits")?
             .max_result_store_bytes,
         &(128 * 1024 * 1024),
-        "limits_for_profile(AuditProfile::Lean) .check(\"profile limits\")? .max_result_store_bytes == 128 * 1024 * 1024",
+        "lean result store budget defaults to 128 MiB",
     )?;
     Ok(())
 }

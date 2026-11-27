@@ -1,6 +1,6 @@
 use super::harness_tests::*;
 use super::*;
-use crate::store::test_join::join_scoped_checked;
+use crate::util::join_scoped_checked;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::path::Path;
 use uuid::Uuid;
@@ -9,12 +9,12 @@ use uuid::Uuid;
 fn assert_no_leftovers(fx: &Fixture) -> TestResult {
     ensure(
         db_files(&fx.results_dir())?.is_empty(),
-        "db_files(&fx.results_dir())?.is_empty()",
+        "no result database files remain in the results directory",
     )?;
     ensure_eq(
         &deleted_descriptors_under(fx.dir.path())?,
         &(Vec::<String>::new()),
-        "deleted_descriptors_under(fx.dir.path())? == Vec::<String>::new()",
+        "no open descriptors point to unlinked result files",
     )?;
     ensure_eq(
         &fx.store
@@ -22,7 +22,7 @@ fn assert_no_leftovers(fx: &Fixture) -> TestResult {
             .check("read the store counters")?
             .admitted_bytes,
         &0,
-        "fx.store .stats() .check(\"read the store counters\")? .admitted_bytes == 0",
+        "store holds zero admitted bytes after abort",
     )?;
     Ok(())
 }
@@ -46,7 +46,7 @@ fn result_store_an_over_budget_write_aborts_itself_and_leaves_no_file_or_descrip
             .check("read the store counters")?
             .refused_too_large,
         &1,
-        "fx.store .stats() .check(\"read the store counters\")? .refused_too_large == 1",
+        "aborted oversized write increments refused_too_large once",
     )?;
     Ok(())
 }
@@ -58,7 +58,7 @@ fn result_store_a_failure_after_the_first_batch_leaves_nothing_and_the_next_writ
     let fx = fixture(1 << 30)?;
     let mut writer = fx.store.begin(spec(&["id", "payload"])).check("begin")?;
     writer
-        .inject(super::fault::Fault::FailBeforeBatch(2))
+        .inject(super::writer::Fault::FailBeforeBatch(2))
         .check("arm")?;
     let mut outcome = Ok(());
     for index in 0..3_000_i64 {
@@ -79,7 +79,7 @@ fn result_store_a_failure_after_the_first_batch_leaves_nothing_and_the_next_writ
     ensure_eq(
         &read_all(&fx.store, next.id)?.len(),
         &1_500,
-        "read_all(&fx.store, next.id)?.len() == 1_500",
+        "subsequent result write stores and serves all 1,500 rows",
     )?;
     Ok(())
 }
@@ -90,7 +90,7 @@ fn result_store_a_full_disk_is_unavailable_and_keeps_the_sqlite_source() -> Test
     let fx = fixture(1 << 30)?;
     let mut writer = fx.store.begin(spec(&["payload"])).check("begin")?;
     writer
-        .inject(super::fault::Fault::MaxPages(8))
+        .inject(super::writer::Fault::MaxPages(8))
         .check("arm")?;
     let payload = Cell::Text("y".repeat(1_000));
     let mut failure = None;
@@ -159,7 +159,7 @@ fn result_store_a_process_abort_mid_write_leaves_no_result_file() -> TestResult 
     )?;
     ensure(
         db_files(&dir.path().join("results"))?.is_empty(),
-        "db_files(&dir.path().join(\"results\"))?.is_empty()",
+        "process abort leaves no result .db file on disk",
     )?;
     Ok(())
 }
@@ -211,7 +211,7 @@ fn result_store_open_sweeps_the_files_and_lock_of_a_dead_owner() -> TestResult {
     ensure_eq(
         &listing(dir.path())?,
         &vec![format!("{}.lock", session.hyphenated())],
-        "listing(dir.path())? == vec![format!(\"{}.lock\", session.hyphenated())]",
+        "startup sweep removes dead owner's files and leaves only this session's lock",
     )?;
     ensure_eq(
         &store
@@ -220,7 +220,7 @@ fn result_store_open_sweeps_the_files_and_lock_of_a_dead_owner() -> TestResult {
             .sweep
             .removed_files,
         &3,
-        "store .stats() .check(\"read the store counters\")? .sweep .removed_files == 3",
+        "startup sweep counts all three removed files",
     )?;
     Ok(())
 }
@@ -237,7 +237,7 @@ fn result_store_open_leaves_the_files_of_a_live_owner() -> TestResult {
 
     ensure(
         listing(dir.path())?.contains(&in_flight),
-        "listing(dir.path())?.contains(&in_flight)",
+        "live owner's result file is preserved",
     )?;
     ensure_eq(
         &second
@@ -246,7 +246,7 @@ fn result_store_open_leaves_the_files_of_a_live_owner() -> TestResult {
             .sweep
             .live_owners_skipped,
         &1,
-        "second .stats() .check(\"read the store counters\")? .sweep .live_owners_skipped == 1",
+        "live owner is counted in live_owners_skipped",
     )?;
     drop(live);
     Ok(())
@@ -262,7 +262,7 @@ fn result_store_open_sweeps_a_result_file_with_no_lock_file() -> TestResult {
 
     ensure(
         !listing(dir.path())?.contains(&orphan),
-        "!listing(dir.path())?.contains(&orphan)",
+        "orphaned result file without a lock is deleted",
     )?;
     ensure_eq(
         &store
@@ -271,7 +271,7 @@ fn result_store_open_sweeps_a_result_file_with_no_lock_file() -> TestResult {
             .sweep
             .removed_files,
         &1,
-        "store .stats() .check(\"read the store counters\")? .sweep .removed_files == 1",
+        "swept orphan increments removed_files once",
     )?;
     Ok(())
 }
@@ -287,7 +287,7 @@ fn result_store_open_never_sweeps_its_own_sessions_files() -> TestResult {
 
     ensure(
         listing(dir.path())?.contains(&own),
-        "listing(dir.path())?.contains(&own)",
+        "current session's own files are never swept",
     )?;
     ensure_eq(
         &store
@@ -296,7 +296,7 @@ fn result_store_open_never_sweeps_its_own_sessions_files() -> TestResult {
             .sweep
             .removed_files,
         &0,
-        "store .stats() .check(\"read the store counters\")? .sweep .removed_files == 0",
+        "no files are removed for the current session",
     )?;
     Ok(())
 }
@@ -312,7 +312,7 @@ fn result_store_open_leaves_files_that_are_not_ours() -> TestResult {
     let names = listing(dir.path())?;
     ensure(
         names.contains(&"notes.db".to_owned()) && names.contains(&"readme.txt".to_owned()),
-        "names.contains(&\"notes.db\".to_owned()) && names.contains(&\"readme.txt\".to_owned())",
+        "foreign files in the results directory are left untouched",
     )?;
     Ok(())
 }
@@ -324,17 +324,21 @@ fn result_store_a_sweep_removal_failure_is_counted_and_keeps_the_first_error() -
     std::fs::create_dir(&not_a_file).check("dir")?;
     let mut outcome = SweepOutcome::default();
 
-    let ((), logs) = crate::store::test_capture::capture_warns(|| {
+    let ((), logs) = crate::util::test_capture::capture_warns(|| {
         outcome.remove(&not_a_file, "remove the zz-sweep-probe file");
     })?;
 
-    ensure_eq(&outcome.errors, &1, "outcome.errors == 1")?;
+    ensure_eq(
+        &outcome.errors,
+        &1,
+        "failed sweep removal increments errors",
+    )?;
     ensure(
         outcome
             .first_error
             .as_deref()
             .is_some_and(|e| e.starts_with("remove the zz-sweep-probe file")),
-        "outcome .first_error .as_deref() .is_some_and(|e| e.starts_with(\"remove the zz-sweep-probe file\"))",
+        "first_error records the context of the failed removal",
     )?;
     ensure_eq(
         &logs
@@ -370,14 +374,14 @@ fn result_store_dropping_the_store_removes_its_lock_file() -> TestResult {
     ensure_eq(
         &listing(dir.path())?.len(),
         &1,
-        "listing(dir.path())?.len() == 1",
+        "opening the store creates one owner lock file",
     )?;
 
     drop(store);
 
     ensure(
         listing(dir.path())?.is_empty(),
-        "listing(dir.path())?.is_empty()",
+        "dropping the store removes its owner lock file",
     )?;
     Ok(())
 }
@@ -411,7 +415,7 @@ fn run_threads(fx: &Fixture) -> TestResult<(Vec<ResultHandle>, Vec<Vec<ResultHan
                         ensure_eq(
                             &read_all(store, id)?.len(),
                             &500,
-                            "read_all(store, id)?.len() == 500",
+                            "concurrent pager reads all 500 seeded rows",
                         )?;
                     }
                     Ok(())
@@ -447,7 +451,7 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
 
     let all: Vec<&ResultHandle> = seeded.iter().chain(written.iter().flatten()).collect();
     let stats = fx.store.stats().check("read the store counters")?;
-    ensure_eq(&all.len(), &16, "all.len() == 16")?;
+    ensure_eq(&all.len(), &16, "16 total results were produced")?;
     ensure_eq(
         &stats
             .active
@@ -455,18 +459,18 @@ fn result_store_writers_and_pagers_on_many_threads_finish_with_consistent_totals
             .checked_add(stats.delivered.results)
             .check("result counts fit")?,
         &16,
-        "stats.active.results + stats.delivered.results == 16",
+        "all 16 results remain accounted for across active and delivered classes",
     )?;
     ensure_eq(
         &stats.admitted_bytes,
         &(all.iter().map(|h| h.bytes).sum::<u64>()),
-        "stats.admitted_bytes == all.iter().map(|h| h.bytes).sum::<u64>()",
+        "admitted_bytes equals the sum of all stored result sizes",
     )?;
     for handle in written.iter().flatten() {
         ensure_eq(
             &read_all(&fx.store, handle.id)?.len(),
             &1_200,
-            "read_all(&fx.store, handle.id)?.len() == 1_200",
+            "each concurrently written result serves all 1,200 rows",
         )?;
     }
     Ok(())

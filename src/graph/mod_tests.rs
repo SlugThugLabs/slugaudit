@@ -303,3 +303,115 @@ fn same_file_dedup_prefers_higher_confidence() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_idents() -> TestResult
+{
+    let known = paths(&[
+        "src/lib.rs",
+        "src/foo.rs",
+        "src/bar/mod.rs",
+        "src/foo/a/b.rs",
+        "src/foo_tests.rs",
+        "src/foo/inner/x.rs",
+        "src/type.rs",
+        "benches/discovery.rs",
+        "benches/common/mod.rs",
+    ]);
+
+    let file_edge = resolve_rust_mod_declaration("src/lib.rs", "foo", None, &[], &known);
+    ensure_eq(
+        &file_edge,
+        &ResolvedEdge {
+            raw_import_text: "mod foo;".to_owned(),
+            resolution_kind: "Resolved",
+            confidence: Some("High"),
+            to_relative_path: Some("src/foo.rs".to_owned()),
+            syntax_unmodeled: false,
+        },
+        "mod foo; in src/lib.rs resolves to src/foo.rs",
+    )?;
+
+    let dir_edge = resolve_rust_mod_declaration("src/lib.rs", "bar", None, &[], &known);
+    ensure_eq(
+        &dir_edge.to_relative_path.as_deref(),
+        &Some("src/bar/mod.rs"),
+        "mod bar; in src/lib.rs resolves to src/bar/mod.rs",
+    )?;
+
+    let nested_inline =
+        resolve_rust_mod_declaration("src/foo.rs", "b", None, &["a".to_owned()], &known);
+    ensure_eq(
+        &nested_inline.to_relative_path.as_deref(),
+        &Some("src/foo/a/b.rs"),
+        "nested inline mod a { mod b; } in src/foo.rs resolves to src/foo/a/b.rs",
+    )?;
+
+    let sibling_path_attr =
+        resolve_rust_mod_declaration("src/foo.rs", "tests", Some("foo_tests.rs"), &[], &known);
+    ensure_eq(
+        &sibling_path_attr.to_relative_path.as_deref(),
+        &Some("src/foo_tests.rs"),
+        "#[path = \"foo_tests.rs\"] mod tests; in src/foo.rs resolves relative to src/",
+    )?;
+
+    let inline_path_attr = resolve_rust_mod_declaration(
+        "src/foo.rs",
+        "y",
+        Some("x.rs"),
+        &["inner".to_owned()],
+        &known,
+    );
+    ensure_eq(
+        &inline_path_attr.to_relative_path.as_deref(),
+        &Some("src/foo/inner/x.rs"),
+        "inline mod inner { #[path = \"x.rs\"] mod y; } in src/foo.rs resolves under src/foo/inner/",
+    )?;
+
+    let raw_ident = resolve_rust_mod_declaration("src/lib.rs", "r#type", None, &[], &known);
+    ensure_eq(
+        &raw_ident,
+        &ResolvedEdge {
+            raw_import_text: "mod r#type;".to_owned(),
+            resolution_kind: "Resolved",
+            confidence: Some("High"),
+            to_relative_path: Some("src/type.rs".to_owned()),
+            syntax_unmodeled: false,
+        },
+        "mod r#type; strips r# for file lookup while preserving raw_import_text",
+    )?;
+
+    let shared_bench =
+        resolve_rust_mod_declaration("benches/discovery.rs", "common", None, &[], &known);
+    ensure_eq(
+        &shared_bench.to_relative_path.as_deref(),
+        &Some("benches/common/mod.rs"),
+        "mod common; in benches/discovery.rs resolves shared benches/common/mod.rs",
+    )?;
+
+    let missing = resolve_rust_mod_declaration("src/lib.rs", "nonexistent", None, &[], &known);
+    ensure_eq(
+        &missing,
+        &ResolvedEdge {
+            raw_import_text: "mod nonexistent;".to_owned(),
+            resolution_kind: "Unresolved",
+            confidence: None,
+            to_relative_path: None,
+            syntax_unmodeled: false,
+        },
+        "missing module target resolves as Unresolved without unmodeled flag",
+    )?;
+
+    let dual_known = paths(&["src/lib.rs", "src/foo.rs", "src/foo/mod.rs"]);
+    let dual_edge = resolve_rust_mod_declaration("src/lib.rs", "foo", None, &[], &dual_known);
+    ensure_eq(
+        &(
+            dual_edge.resolution_kind,
+            dual_edge.to_relative_path.as_deref(),
+            dual_edge.confidence,
+        ),
+        &("Resolved", Some("src/foo.rs"), Some("Low")),
+        "mod foo; with both src/foo.rs and src/foo/mod.rs present stamps Low confidence",
+    )?;
+    Ok(())
+}

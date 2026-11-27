@@ -1,18 +1,6 @@
 use super::*;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
-/// A field of a JSON payload; a missing field reads as JSON null, as `value[key]`
-/// does, without the indexing that can panic.
-pub(in crate::evidence) fn field<'a>(
-    value: &'a serde_json::Value,
-    key: &str,
-) -> &'a serde_json::Value {
-    match value.get(key) {
-        Some(found) => found,
-        None => &serde_json::Value::Null,
-    }
-}
-
 #[test]
 fn an_unavailable_span_is_normalizer_unavailable_and_warns_with_the_span_error() -> TestResult {
     let (availability, logs) = crate::store::test_capture::capture_warns(|| {

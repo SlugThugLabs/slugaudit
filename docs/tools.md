@@ -39,6 +39,7 @@ Facts that hold for every tool:
 | `bytes_used` | Serialized JSON bytes of this page. |
 | `limited_by` | What cut the page: `none`, `limit`, `page_bytes`, `ceiling`, `match_cap`, `scan_window`, `time_budget`. |
 | `revision_id` | The index revision the answer was read from. |
+| `current_disk_revision_id` | Present on `cursor` continuation calls when readable from `project.db`: the index revision currently on disk while paging the stored result. |
 
 How to page:
 
@@ -69,7 +70,7 @@ The result store budget is 4 times `max_query_response_bytes`. An unfinished res
 
 ## `notices`
 
-`report`, `leads` and `structure` return a `notices` array of strings. It has one line per code language that is not tested. Only Rust is tested. The array is empty when there is nothing to say. See [languages](languages.md) for the exact text.
+`report`, `leads` and `structure` return a `notices` array of strings. It has one line per code language that is not tested. Only Rust is tested (its grammar is compiled into the binary; other languages download grammars on first use). The array is empty when there is nothing to say. See [languages](languages.md) for the exact text.
 
 ## `database_discard`
 
@@ -104,8 +105,7 @@ Key response fields:
 | `diagnostic_count` | Diagnostic evidence rows. |
 | `unsupported_language_unresolved_count` | Unresolved edges from import syntax that is not modeled. |
 | `credential_pattern_file_count` | Files whose path looks like a credential file (`.env`, `*.pem`, `*.key`, `id_rsa`, ...). |
-| `mechanics` | Every mechanic (`entries`), the ones that failed to load (`invalid`), and a one-time `note`. |
-| `mechanics_invalid` | Count of failed entries. |
+| `mechanics` | Every loaded mechanic (`entries`: session first, then built-in) and a one-time `note` on the first `report` of the server session (`null` afterward). |
 
 `completeness` fields:
 
@@ -155,7 +155,6 @@ Key response fields:
 | `files_not_parsed` | Indexed files whose grammar did not run or finish. While above 0, every count is a floor. `report` lists the files. |
 | `page_file_counts` | Rows per file in this page. |
 | `oversized_row` | `true` when the first row alone is bigger than the page. |
-| `mechanics_invalid` | Registered entries that failed to load. |
 | `notices` | Untested-language lines for the languages the counts cover. |
 
 The call-site mechanics (`expect_calls` and the like) match Rust callee names. They read calls in rust, python, javascript, typescript, tsx, go, java and c.
@@ -186,9 +185,9 @@ Parameters:
 | `limit`, `page_bytes` | integer | `add`: size of the first page. `list`: `page_bytes` is the page size. |
 | `cursor` | string | `list` only. |
 
-Entries are kept in server memory until the server exits. Nothing is written to disk. Limit: 64 entries.
+Entries are kept per project in server memory until the server exits (or `project_control` `off`). Nothing is written to disk. Limit: 64 entries.
 
-Key response fields: `action`, `id`, `source`, `mechanics` (the catalogue), `invalid`, `mechanics_invalid`. On `add`, `first_count` is the full `leads` response for the new id. On `list`, `page` is present.
+Key response fields: `action`, `id`, `source`, `mechanics` (the active catalogue). On `add`, `first_count` is the full `leads` response for the new id. On `list`, `page` is present.
 
 Example:
 
@@ -224,7 +223,7 @@ Tables:
 | `evidence` | `id`, `file_id`, `kind`, `start_line`, `end_line`, `payload` (JSON). Kinds: Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Call. |
 | `dependency_edges` | `from_file_id`, `to_file_id`, `raw_import_text`, `resolution_kind` (`Resolved`, `Unresolved`, `External`), `confidence`, `syntax_unmodeled` |
 
-The full schema is the resource `slugaudit://schema.sql`. Join `evidence` to `files` on `file_id`. Read payload keys with `json_extract`, not `LIKE`. Payload keys are listed in `slugaudit://queries/evidence_payload_keys.md`.
+The full schema is the resource `slugaudit://schema.sql` (`PRAGMA user_version = 13`). Join `evidence` to `files` on `file_id`. Read payload keys with `json_extract`, not `LIKE`: expression indexes `idx_evidence_item_name` (`json_extract(payload, '$.name')` for `Structure` and `Symbol`) and `idx_evidence_call_callee` (`json_extract(payload, '$.callee_name')` for `Call`) accelerate exact lookups directly. Payload keys are listed in `slugaudit://queries/evidence_payload_keys.md`.
 
 Helpers: `line_count(text)` and `line_range(text, start, end)` read a file's content by line.
 
@@ -347,6 +346,7 @@ Parameters:
 |---|---|---|
 | `path` | string | Required unless `cursor` is given. |
 | `file` | string | Only findings for this file. |
+| `page_bytes` | integer | Page size in bytes. |
 | `cursor` | string | Previous `page.cursor`. |
 
 Response: `page` and `findings`, each `{id, path, line_start, line_end, severity, category, title, description, detail_clipped, status, source_hash}`, ordered by id. `status` is `current` or `stale`. `description` may be clipped to fit the page (`detail_clipped`).
@@ -387,10 +387,10 @@ Response:
 | `path` | Absolute project root. |
 | `import` | On `on`: `added`, `modified`, `deleted`, `unchanged`, `skipped`, `revision_id`. |
 | `gitignore` | On `on`: `status` (`added`, `already_ignored`, `not_written`), `path`, `error`. |
-| `removed` | On `off`: the paths removed (the `.planning/slugaudit` directory, then `.planning` if it was left empty). |
+| `removed` | On `off`: the paths removed (`.planning/slugaudit`, plus `.planning` only when it held no `README.md` or other files). |
 | `database_discard` | Present when `on` found a damaged database and rebuilt it. |
 
-The project is on while the directory `.planning/slugaudit/` exists. `on` creates it, first creating `.planning/` and a `.planning/README.md` that says what the folder is for when they are missing (an existing README is never changed). `off` deletes the whole directory, including the session's `findings-<id>.db`, and then `.planning` if that leaves it empty. If `.planning/slugaudit` is a symlink, `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
+The project is on while the directory `.planning/slugaudit/` exists. `on` creates it, first setting up `.planning/` and `.planning/README.md` when they are missing (an existing `README.md` is never changed). `off` deletes `.planning/slugaudit/` (including the session's `findings-<id>.db`), while leaving `.planning/README.md` and any other user files in `.planning/` untouched (`.planning` itself is removed only if it was completely empty). If `.planning/slugaudit` is a symlink, `off` removes only the link. If `project.db` is missing or broken but the directory exists, the next call rebuilds it. If the project folder was moved, copied or unpacked elsewhere, the old database is thrown away and rebuilt on the next call.
 
 Example: `{ "action": "on", "path": "/home/you/code/myproject" }`
 
@@ -412,7 +412,7 @@ Response:
 | `phase` | `importing` (no revision yet), `steady_state`, `disabled` (path is not an enabled project), `no_active_project` (no path given), `unknown` (database exists but cannot be read). |
 | `remedy` | The call to make when no project is served. `null` otherwise. |
 | `database` | `{revision_id, file_count}`. `null` when never synced or unreadable. |
-| `detail` | With `verbose`: parser pack version, skipped file count, whether the database read failed, process counters, host memory, mechanic scan cache, result store. |
+| `detail` | With `verbose`: typed `HealthDetail` (`database`, `database_read_failed`, `database_read_error`, `server`, `system_memory`, `system_memory_error`, `result_store`). |
 
 Example: `{ "path": "/home/you/code/myproject", "verbose": true }`
 

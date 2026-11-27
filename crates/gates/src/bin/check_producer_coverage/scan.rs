@@ -70,29 +70,24 @@ fn collect(directory: &Path, root: &Path, sources: &mut Vec<Source>) -> Result<(
     Ok(())
 }
 
-/// Keeps only the production code: items that exist only under `test`
-/// (`#[cfg(test)]`, `#[cfg(all(test, unix))]`; see [`is_test_cfg`]) are
-/// removed so a test fixture cannot be counted as a producer, and `//` line
-/// comments are blanked so a variant's name in a doc comment or a trailing
-/// comment cannot be one either.
-///
-/// Handles the two item shapes the repo uses: a single-line item
-/// (`#[cfg(test)] use …;`, `#[cfg(test)] mod tests;`) and an item with a
-/// braced body (an inline `mod tests { … }`, or a cfg-gated helper `fn`).
-/// Brace depth is counted on code only; a brace inside a test string literal
-/// could confuse the depth, which at worst over-strips — the gate then
-/// reports a variant as uncovered rather than silently accepting a test
-/// fixture as a producer.
+/// Keeps only production code tokens:
+/// 1. Blanks `//` line comments, nested `/* ... */` block comments, `"..."`
+///    strings, `r#"..."#` raw strings, and character literals via
+///    [`strip_non_code`] so variant names inside comments or literals never
+///    count as producers (and braces inside them never skew brace depth).
+/// 2. Drops items that exist only under `test` (`#[cfg(test)]`,
+///    `#[cfg(all(test, unix))]`; see [`is_test_cfg`]).
 ///
 /// # Errors
 ///
 /// Returns a message when the brace depth of a test item overflows.
 pub(super) fn production_code(source: &str) -> Result<String, String> {
-    let mut kept = String::with_capacity(source.len());
-    let mut lines = source.lines();
+    let stripped = strip_non_code(source);
+    let mut kept = String::with_capacity(stripped.len());
+    let mut lines = stripped.lines();
     while let Some(line) = lines.next() {
         if !is_test_cfg(line) {
-            kept.push_str(code_before_line_comment(line));
+            kept.push_str(line);
             kept.push('\n');
             continue;
         }
@@ -100,8 +95,7 @@ pub(super) fn production_code(source: &str) -> Result<String, String> {
         let mut saw_brace = false;
         let mut current = line;
         loop {
-            let code = code_before_line_comment(current);
-            for character in code.chars() {
+            for character in current.chars() {
                 match character {
                     '{' => {
                         depth = depth
@@ -120,7 +114,7 @@ pub(super) fn production_code(source: &str) -> Result<String, String> {
             let ended = if saw_brace {
                 depth <= 0
             } else {
-                code.trim_end().ends_with(';')
+                current.trim_end().ends_with(';')
             };
             if ended {
                 break;
@@ -133,9 +127,182 @@ pub(super) fn production_code(source: &str) -> Result<String, String> {
     Ok(kept)
 }
 
-pub(super) fn code_before_line_comment(line: &str) -> &str {
-    match line.split_once("//") {
-        Some((code, _)) => code,
-        None => line,
+/// Blanks `//` line comments, nested `/* ... */` block comments, and the
+/// interiors of `"..."`, `r#"..."#`, and character literals while preserving
+/// newlines and outer quote delimiters.
+pub(super) fn strip_non_code(mut rest: &str) -> String {
+    let mut out = String::with_capacity(rest.len());
+    let mut prev_is_ident = false;
+    while !rest.is_empty() {
+        if let Some(after_slashes) = rest.strip_prefix("//") {
+            match after_slashes.split_once('\n') {
+                Some((_, next_line)) => {
+                    out.push('\n');
+                    rest = next_line;
+                }
+                None => break,
+            }
+            prev_is_ident = false;
+            continue;
+        }
+        if let Some(after_open) = rest.strip_prefix("/*") {
+            out.push(' ');
+            rest = consume_block_comment(after_open, &mut out);
+            prev_is_ident = false;
+            continue;
+        }
+        if !prev_is_ident && let Some((hashes, body)) = raw_string_open(rest) {
+            out.push('"');
+            rest = consume_raw_string(hashes, body, &mut out);
+            prev_is_ident = false;
+            continue;
+        }
+        if !prev_is_ident
+            && let Some(body) = rest
+                .strip_prefix("b\"")
+                .or_else(|| rest.strip_prefix("c\""))
+        {
+            out.push('"');
+            rest = consume_quoted_string(body, &mut out);
+            prev_is_ident = false;
+            continue;
+        }
+        if let Some(body) = rest.strip_prefix('"') {
+            out.push('"');
+            rest = consume_quoted_string(body, &mut out);
+            prev_is_ident = false;
+            continue;
+        }
+        if !prev_is_ident
+            && let Some(after_char) = rest
+                .strip_prefix('b')
+                .and_then(consume_char_literal)
+                .or_else(|| consume_char_literal(rest))
+        {
+            out.push_str("''");
+            rest = after_char;
+            prev_is_ident = false;
+            continue;
+        }
+        let mut chars = rest.chars();
+        let Some(ch) = chars.next() else { break };
+        out.push(ch);
+        prev_is_ident = ch.is_ascii_alphanumeric() || ch == '_';
+        rest = chars.as_str();
     }
+    out
+}
+
+/// Consumes a nested `/* ... */` block comment after the opening `/*`, keeping
+/// physical line breaks intact.
+fn consume_block_comment<'a>(mut rest: &'a str, out: &mut String) -> &'a str {
+    let mut nesting: Vec<()> = vec![()];
+    while !nesting.is_empty() {
+        if rest.is_empty() {
+            break;
+        }
+        if let Some(after_open) = rest.strip_prefix("/*") {
+            nesting.push(());
+            out.push(' ');
+            rest = after_open;
+        } else if let Some(after_close) = rest.strip_prefix("*/") {
+            nesting.pop();
+            out.push(' ');
+            rest = after_close;
+        } else {
+            let mut chars = rest.chars();
+            let Some(ch) = chars.next() else { break };
+            out.push(if ch == '\n' { '\n' } else { ' ' });
+            rest = chars.as_str();
+        }
+    }
+    rest
+}
+
+/// Recognizes `r"..."`, `r#"..."#`, `br#"..."#`, and `cr#"..."#` at the start
+/// of `rest`, returning `(hash_count, slice_after_opening_quote)`.
+fn raw_string_open(rest: &str) -> Option<(usize, &str)> {
+    let after_prefix = rest
+        .strip_prefix("br")
+        .or_else(|| rest.strip_prefix("cr"))
+        .or_else(|| rest.strip_prefix('r'))?;
+    let hashes = after_prefix.chars().take_while(|c| *c == '#').count();
+    let after_hashes = after_prefix.trim_start_matches('#');
+    let body = after_hashes.strip_prefix('"')?;
+    Some((hashes, body))
+}
+
+/// Consumes a raw string body up to its closing `"` + `hashes` `#` characters,
+/// replacing interior characters with spaces (preserving `\n`).
+fn consume_raw_string<'a>(hashes: usize, mut rest: &'a str, out: &mut String) -> &'a str {
+    let mut closer = String::from("\"");
+    closer.extend(std::iter::repeat_n('#', hashes));
+    while !rest.is_empty() {
+        if let Some(after_close) = rest.strip_prefix(&closer) {
+            out.push('"');
+            return after_close;
+        }
+        let mut chars = rest.chars();
+        let Some(ch) = chars.next() else { break };
+        out.push(if ch == '\n' { '\n' } else { ' ' });
+        rest = chars.as_str();
+    }
+    rest
+}
+
+/// Consumes a `"..."` string body after the opening `"`, handling `\` escapes
+/// and replacing interior characters with spaces (preserving `\n`).
+fn consume_quoted_string<'a>(mut rest: &'a str, out: &mut String) -> &'a str {
+    while !rest.is_empty() {
+        let mut chars = rest.chars();
+        let Some(ch) = chars.next() else { break };
+        rest = chars.as_str();
+        if ch == '\\' {
+            out.push(' ');
+            let mut escaped_chars = rest.chars();
+            if let Some(escaped) = escaped_chars.next() {
+                out.push(if escaped == '\n' { '\n' } else { ' ' });
+                rest = escaped_chars.as_str();
+            }
+        } else if ch == '"' {
+            out.push('"');
+            return rest;
+        } else {
+            out.push(if ch == '\n' { '\n' } else { ' ' });
+        }
+    }
+    rest
+}
+
+/// Consumes a Rust character literal (`'x'`, `'\n'`, `'\x7f'`, `'\u{...}'`),
+/// returning `None` for lifetimes (`'a`, `'static`).
+fn consume_char_literal(rest: &str) -> Option<&str> {
+    let after_open = rest.strip_prefix('\'')?;
+    if let Some(mut escaped) = after_open.strip_prefix('\\') {
+        // An escaped char literal cannot span a newline and closes at the next `'`.
+        let mut chars = escaped.chars();
+        let first = chars.next()?;
+        if first == '\n' {
+            return None;
+        }
+        escaped = chars.as_str();
+        while !escaped.is_empty() {
+            let mut step = escaped.chars();
+            let ch = step.next()?;
+            escaped = step.as_str();
+            if ch == '\'' {
+                return Some(escaped);
+            }
+            if ch == '\n' {
+                return None;
+            }
+        }
+        return None;
+    }
+    let mut chars = after_open.chars();
+    let plain = chars.next()?;
+    if matches!(plain, '\'' | '\\' | '\n') {
+        return None;
+    }
+    chars.as_str().strip_prefix('\'')
 }

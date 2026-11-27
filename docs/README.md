@@ -10,3 +10,4 @@
 | [Configuration](configuration.md) | Profiles, the global `config.json`, and `SLUGAUDIT_*` environment variables. |
 | [Troubleshooting](troubleshooting.md) | Error codes and what to do, offline grammars, damaged databases, logs. |
 | [Privacy and security](privacy-and-security.md) | What SlugAudit reads, writes and sends; no telemetry; not a security product. |
+| [Releasing](RELEASING.md) | Release workflow, published artifacts, provenance attestation, and rebuild verification. |

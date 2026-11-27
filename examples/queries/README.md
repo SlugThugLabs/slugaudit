@@ -2,7 +2,7 @@
 
 Pre-built SQL and Tree-sitter query recipes for AI coding agents and human engineers.
 
-SlugAudit indexes repository symbols, imports, calls, AST shapes, and file metadata into an ephemeral SQLite index (`.planning/slugaudit/project.db`). These queries show how an agent reads codebase facts from the index instead of reading files from disk.
+SlugAudit indexes repository symbols, imports, calls, AST shapes, and file metadata into a disposable local SQLite scratch index (`.planning/slugaudit/project.db`). These queries show how an agent reads codebase facts from the index instead of reading files from disk.
 
 ---
 
@@ -43,15 +43,18 @@ beside their rows:
 | `bytes_used` | Serialized JSON bytes of this page's items. |
 | `limited_by` | What cut the page: `none`, `limit`, `page_bytes`, `ceiling`, `match_cap`, `scan_window` or `time_budget`. |
 | `revision_id` | The index revision of the first call; every page of one result reports it. |
+| `current_disk_revision_id` | Present on `cursor` continuation pages when readable from `project.db`; shows the index revision currently on disk alongside `revision_id`. |
 
 Pages are cut by bytes, not by a row count. A recipe that may return many rows
 pages by repeating the call with only `page.cursor` (plus `page_bytes` to
 resize the page): the cursor names a result stored when the first call ran, so
 rows never skip or repeat, and no `path` is needed. A continuation reads the
-stored copy and does not re-sync. `offset` and `expected_revision` no longer
-exist; sending them is refused with `paging_parameter_removed`. A cursor from
-a previous server run or a foreign one is refused with `unknown_cursor`, and a
-reclaimed result with `result_expired`; ask again without the cursor.
+stored copy, does not re-sync, and reports `page.current_disk_revision_id` so
+you can see whether the index moved since page one. `offset` and
+`expected_revision` no longer exist; sending them is refused with
+`paging_parameter_removed`. A cursor from a previous server run or a foreign
+one is refused with `unknown_cursor`, and a reclaimed result with
+`result_expired`; ask again without the cursor.
 `structure` alone has a second step: when `completeness` is `partial`, make a
 new request with `start_after_file` = `next_start_after_file`.
 
@@ -66,6 +69,7 @@ When asking your AI agent (Claude Code, Cursor, Hermes, Codex, etc.) to audit a 
 {
   "name": "query",
   "arguments": {
+    "path": "/path/to/project",
     "sql": "SELECT f.path, e.start_line, json_extract(e.payload, '$.name') AS name FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND lower(json_extract(e.payload, '$.name')) LIKE '%login%'"
   }
 }
@@ -76,6 +80,7 @@ When asking your AI agent (Claude Code, Cursor, Hermes, Codex, etc.) to audit a 
 {
   "name": "structure",
   "arguments": {
+    "path": "/path/to/project",
     "file": "src/main.rs",
     "query": "(function_item name: (identifier) @name body: (block) @body)"
   }
@@ -87,6 +92,7 @@ When asking your AI agent (Claude Code, Cursor, Hermes, Codex, etc.) to audit a 
 {
   "name": "structure",
   "arguments": {
+    "path": "/path/to/project",
     "language": "rust",
     "pattern": "src/**/*.rs",
     "query": "(function_item name: (identifier) @name)"

@@ -1,32 +1,20 @@
-//! Pass 2 of a full sync: sample the changed files on the shared worker
-//! pool ([`super::file_pool`]).
-//!
-//! `sample_all_with_deadline` feeds `super::sample::to_file_record`. It is
-//! kept apart from `sample.rs`, which owns sampling one file
-//! (read/hash/classify, evidence capping); this module owns the pass over
-//! many files: per-file skips, the import ceiling and progress events.
-//! `publish_attempt` calls it directly.
-//!
-//! Files that individually exceed `limits.max_file_bytes` are **skipped
-//! per-file** rather than failing the publish: such a file cannot be
-//! indexed at all, and letting one oversized generated bundle make the
-//! whole project unqueryable is worse than reporting it. The skip reason
-//! is returned (sorted by path for deterministic report ordering) so the
-//! caller can surface it in the publish report, mirroring how discovery
-//! skips unreadable files. A file that is not valid UTF-8 is skipped the
-//! same way. Only the project-wide total-byte ceiling and hard errors
-//! remain fatal.
+//! Pass 2 of a full sync: sample and parse changed files in bounded 256-file
+//! chunks on a persistent scoped worker pool ([`super::file_pool::with_pool`]).
 
 use super::discovery::{DiscoveredFile, SkippedFile};
 use super::file_pool::{self, Pass};
 use super::publish::PublishError;
-use super::revision_skipped::{SKIP_REASON_NOT_UTF8, SKIP_REASON_OVERSIZE};
-use super::sample::{Sample, SampleError, sample_file};
-use crate::model::{ResourceLimits, SourceIdentity};
+use super::revision::{FileRecord, SKIP_REASON_NOT_UTF8, SKIP_REASON_OVERSIZE};
+use super::sample::{Sample, SampleError, sample_file, to_file_record};
+use crate::model::ResourceLimits;
 use crate::progress::{ProgressEvent, ProgressSink};
 use crate::util::Deadline;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Maximum number of changed files sampled and parsed concurrently in memory
+/// before staging their rows and dropping their `content` and `evidence` buffers.
+pub(super) const PASS2_CHUNK_FILES: usize = 256;
 
 /// The sampling pass, as its log lines and time-budget error name it.
 const SAMPLE_PASS: Pass = Pass {
@@ -34,7 +22,7 @@ const SAMPLE_PASS: Pass = Pass {
     activity: "processing",
 };
 
-/// One file's Pass 2 outcome.
+/// One file's raw sampling outcome before parsing.
 enum Sampled {
     /// The file's content and identity.
     Sample(Sample),
@@ -42,114 +30,90 @@ enum Sampled {
     Skipped(SkippedFile),
 }
 
-/// Samples every discovered file, accumulating the total byte count and
-/// failing closed if the project-wide import ceiling is exceeded — or if
-/// an explicit [`Deadline`] (checked once per file) is spent, so a
-/// pathological repo (a huge tree, a hung filesystem) fails closed with
-/// [`PublishError::TimeBudgetExceeded`] instead of stalling the publish
-/// forever. The deadline is created by the caller so the whole operation
-/// shares one budget across sampling, diffing, revalidation, and retries.
-/// Per-file oversize and non-UTF-8 skips are documented at the module level.
-///
-/// Runs on the shared bounded worker pool ([`file_pool::run`]): a 60 s sync
-/// deadline compounded with fully serialized sampling would make a 60 k-file
-/// first import the single most likely production failure mode. The pool
-/// returns samples in discovered order, so downstream consumers
-/// (`manifest::compare`, `aggregate_manifest_hash`,
-/// `build_upserts_and_deletions`) see the discovered file order. Per-file
-/// `Sampling` events arrive at the sink in worker-completion order rather
-/// than file-index order; the receiving sink (`McpProgressSink` /
-/// `NoopProgressSink`) already tolerates out-of-order updates because file
-/// sampling is intrinsically parallel and the `i/N` ratio is what consumers
-/// display.
-///
-/// The byte-cap check uses `fetch_update` so the limit is enforced across
-/// concurrent workers: a worker that would push the total above
-/// `max_total_import_bytes` fails the run with
-/// [`PublishError::ImportTooLarge`].
-#[cfg(test)]
-pub(super) fn sample_all_with_deadline(
-    discovered: &[DiscoveredFile],
-    limits: &ResourceLimits,
-    sink: &dyn ProgressSink,
-    deadline: &Deadline,
-) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
-    sample_batch(discovered, None, limits, sink, deadline)
+/// One file's Pass 2 chunk outcome: a parsed [`FileRecord`] or a per-file skip.
+pub(super) enum ChunkOutcome {
+    /// Fully sampled and parsed file record ready to stage and drop.
+    Parsed(FileRecord),
+    /// Skipped file whose bytes still match Pass 1's hash (or skipped in standalone test).
+    Skipped(SkippedFile),
 }
 
-/// Pass 2 sampling against Pass 1 stream-hashes (`identities`).
-///
-/// Any file in `discovered` already passed Pass 1 under `limits.max_file_bytes`,
-/// so `SampleError::TooLarge` means the file grew between Pass 1 and Pass 2 and
-/// aborts the attempt with [`PublishError::ChangedDuringSample`]. Likewise, a
-/// `SampleError::NotUtf8` whose sampled bytes no longer hash to Pass 1's hash
-/// aborts with [`PublishError::ChangedDuringSample`] instead of recording Pass
-/// 1's stale hash on a `not_utf8` skip row.
-pub(super) fn sample_pass2_with_deadline(
-    discovered: &[DiscoveredFile],
-    identities: &[SourceIdentity],
-    limits: &ResourceLimits,
-    sink: &dyn ProgressSink,
-    deadline: &Deadline,
-) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
-    let pass1_hashes: HashMap<&str, &str> = identities
-        .iter()
-        .map(|id| (id.relative_path.as_str(), id.content_hash.as_str()))
-        .collect();
-    sample_batch(discovered, Some(&pass1_hashes), limits, sink, deadline)
+/// Shared Pass 2 context across bounded chunks of one publish attempt.
+pub(super) struct Pass2ChunkContext<'a> {
+    pub(super) total_files: usize,
+    pub(super) pass1_hashes: &'a HashMap<&'a str, &'a str>,
+    pub(super) limits: &'a ResourceLimits,
+    pub(super) total_bytes: &'a AtomicU64,
+    pub(super) sink: &'a dyn ProgressSink,
+    pub(super) deadline: &'a Deadline,
 }
 
-fn sample_batch(
-    discovered: &[DiscoveredFile],
-    pass1_hashes: Option<&HashMap<&str, &str>>,
-    limits: &ResourceLimits,
-    sink: &dyn ProgressSink,
-    deadline: &Deadline,
-) -> Result<(Vec<Sample>, Vec<SkippedFile>), PublishError> {
-    let total = discovered.len();
-    let total_bytes = AtomicU64::new(0);
-    let outcomes = file_pool::run(discovered, deadline, SAMPLE_PASS, |idx, file| {
-        let outcome = sample_one(file, pass1_hashes, limits, &total_bytes)?;
-        let current = idx
-            .checked_add(1)
-            .ok_or(PublishError::SamplingIndexOutOfRange { index: idx, total })?;
-        sink.emit(ProgressEvent::Sampling {
-            phase: "publishing",
-            current,
-            total,
-        });
-        Ok(outcome)
-    })?;
-    let mut samples = Vec::with_capacity(outcomes.len());
-    let mut skipped = Vec::new();
-    for outcome in outcomes {
-        match outcome {
-            Sampled::Sample(sample) => samples.push(sample),
-            Sampled::Skipped(skip) => skipped.push(skip),
-        }
-    }
-    // Deterministic report ordering, mirroring `discovery`'s sort of its own
-    // skipped files.
-    skipped.sort_by(|a, b| a.absolute_path.cmp(&b.absolute_path));
-    Ok((samples, skipped))
+/// Runs Pass 2 over `files_to_sample` in bounded [`PASS2_CHUNK_FILES`] chunks
+/// on a single persistent scoped worker pool, invoking `on_chunk` after each
+/// chunk completes so peak memory never scales beyond one 256-file chunk.
+pub(super) fn run_pass2_chunks(
+    files_to_sample: &[DiscoveredFile],
+    ctx: &Pass2ChunkContext<'_>,
+    mut on_chunk: impl FnMut(Vec<ChunkOutcome>) -> Result<(), PublishError>,
+) -> Result<(), PublishError> {
+    #[cfg(test)]
+    let test_ctx = super::analyze::TestWorkerContext::capture();
+    file_pool::with_pool(
+        files_to_sample,
+        ctx.deadline,
+        SAMPLE_PASS,
+        |global_idx, file| {
+            #[cfg(test)]
+            test_ctx.install();
+            let outcome = sample_one(file, ctx.pass1_hashes, ctx.limits, ctx.total_bytes)?;
+            let current =
+                global_idx
+                    .checked_add(1)
+                    .ok_or(PublishError::SamplingIndexOutOfRange {
+                        index: global_idx,
+                        total: ctx.total_files,
+                    })?;
+            ctx.sink.emit(ProgressEvent::Sampling {
+                phase: "publishing",
+                current,
+                total: ctx.total_files,
+            });
+            match outcome {
+                Sampled::Skipped(skip) => Ok(ChunkOutcome::Skipped(skip)),
+                Sampled::Sample(sample) => {
+                    if let Some(&expected_hash) =
+                        ctx.pass1_hashes.get(sample.relative_path.as_str())
+                        && sample.identity.content_hash != expected_hash
+                    {
+                        return Err(PublishError::ChangedDuringSample {
+                            path: sample.relative_path,
+                        });
+                    }
+                    if let Some(elapsed) = ctx.deadline.exceeded() {
+                        return Err(PublishError::time_budget_exceeded(
+                            SAMPLE_PASS.activity,
+                            &sample.relative_path,
+                            elapsed,
+                        ));
+                    }
+                    let record = to_file_record(sample, ctx.limits, ctx.deadline)?;
+                    Ok(ChunkOutcome::Parsed(record))
+                }
+            }
+        },
+        |runner| {
+            while let Some(outcomes) = runner.next_chunk(PASS2_CHUNK_FILES)? {
+                on_chunk(outcomes)?;
+            }
+            Ok(())
+        },
+    )
 }
 
-/// Samples one file and claims its bytes against the import ceiling. A file
-/// over the per-file ceiling or not valid UTF-8 cannot be indexed at all: it
-/// is skipped like discovery skips an unreadable file, and every other file
-/// keeps going. When `pass1_hashes` is present (Pass 2), a file that became
-/// oversized or whose non-UTF-8 bytes no longer match Pass 1's hash fails with
-/// [`PublishError::ChangedDuringSample`].
-///
-/// # Errors
-///
-/// [`PublishError::ImportTooLarge`] when the file's bytes would push the
-/// run past the import ceiling, [`PublishError::ChangedDuringSample`] for a
-/// file deleted or mutated since Pass 1, and the read error for any other read
-/// failure.
+/// Samples one file and claims its bytes against the import ceiling.
 fn sample_one(
     file: &DiscoveredFile,
-    pass1_hashes: Option<&HashMap<&str, &str>>,
+    pass1_hashes: &HashMap<&str, &str>,
     limits: &ResourceLimits,
     total_bytes: &AtomicU64,
 ) -> Result<Sampled, PublishError> {
@@ -165,24 +129,23 @@ fn sample_one(
                 source,
             ));
         }
-        Err(SampleError::TooLarge { .. }) if pass1_hashes.is_some() => {
+        Err(SampleError::TooLarge { .. })
+            if pass1_hashes.contains_key(file.relative_path.as_str()) =>
+        {
             return Err(PublishError::ChangedDuringSample {
-                // KEEP clone: error path returns an owned String from borrowed &DiscoveredFile
                 path: file.relative_path.clone(),
             });
         }
         Err(error @ SampleError::TooLarge { .. }) => (error, SKIP_REASON_OVERSIZE),
         Err(error @ SampleError::NotUtf8 { .. }) => {
-            if let Some(hashes) = pass1_hashes
-                && let SampleError::NotUtf8 {
-                    ref content_hash, ..
-                } = error
-                && hashes
+            if let SampleError::NotUtf8 {
+                ref content_hash, ..
+            } = error
+                && pass1_hashes
                     .get(file.relative_path.as_str())
                     .is_some_and(|&expected| expected != content_hash)
             {
                 return Err(PublishError::ChangedDuringSample {
-                    // KEEP clone: error path returns an owned String from borrowed &DiscoveredFile
                     path: file.relative_path.clone(),
                 });
             }
@@ -190,27 +153,18 @@ fn sample_one(
         }
     };
     Ok(Sampled::Skipped(SkippedFile {
-        // KEEP clone: SkippedFile owns its PathBuf while sample_one borrows &DiscoveredFile
         absolute_path: file.absolute_path.clone(),
         reason: error.to_string(),
         code,
     }))
 }
 
-/// Adds `byte_len` to the running import total. `fetch_update` is the only
-/// correct primitive: a plain load/store would race across workers and let
-/// two threads each push past the cap before either notices.
-///
-/// # Errors
-///
-/// [`PublishError::ImportTooLarge`] when the add would exceed `limit`.
+/// Adds `byte_len` to the running import total across concurrent workers.
 fn claim_bytes(total_bytes: &AtomicU64, byte_len: u64, limit: u64) -> Result<(), PublishError> {
     match total_bytes.fetch_update(Ordering::AcqRel, Ordering::Acquire, |prev| {
-        // A sum past `u64::MAX` is over any ceiling.
         prev.checked_add(byte_len).filter(|next| *next <= limit)
     }) {
         Ok(_) => Ok(()),
-        // `Err` carries the total this claim was refused against.
         Err(total_before) => match total_before.checked_add(byte_len) {
             Some(total) => Err(PublishError::ImportTooLarge { total, limit }),
             None => Err(PublishError::ImportTotalOverflow { limit }),

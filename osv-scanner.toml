@@ -1,0 +1,18 @@
+# OSV-Scanner configuration (`--config=osv-scanner.toml` in `supply-chain.yml`)
+# mirroring the reviewed advisory policy in `deny.toml`.
+# Keep this file and `deny.toml`'s `[advisories] ignore` list in lockstep so
+# `supply-chain.yml` (`osv-scanner`) and `quality.yml` / `advisories.yml`
+# (`cargo-deny`) enforce the same dependency policy.
+#
+# SlugAudit runs inside the host coding harness's workspace boundary:
+# `.planning/slugaudit/project.db` and `results/` are disposable local scratch
+# derived from the indexed repository, never databases received from an
+# untrusted third party.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+reason = "chrono is pulled transitively by rmcp and schemars with no upstream alternative yet"
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0459"
+reason = "project.db is disposable local scratch under the host harness boundary; rusqlite 0.37 -> 0.41 is a breaking API change deferred from this pass"

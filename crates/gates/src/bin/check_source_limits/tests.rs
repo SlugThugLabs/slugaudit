@@ -205,13 +205,13 @@ fn code_after_block_comment_counts() -> TestResult {
 
 #[test]
 fn exception_reason_parsed() -> TestResult {
-    let src = "// slugaudit-line-exception: approved-by=slugthuglabs; reason=foo bar\nfn x() {}\n";
+    let src = "// slugaudit-line-exception: approved-by=split-judge; reason=foo bar\nfn x() {}\n";
     ensure_eq(
         &exception_reason(src)
             .map(|exception| exception.reason)
             .as_deref(),
         &Some("foo bar"),
-        "exception_reason(src) .map(|exception| exception.reason) .as_deref() == Some(\"foo bar\")",
+        "split-judge exception reason is parsed",
     )?;
     Ok(())
 }
@@ -221,28 +221,33 @@ fn exception_reason_absent_returns_none() -> TestResult {
     ensure_eq(
         &exception_reason("fn x() {}\n"),
         &None,
-        "exception_reason(\"fn x() {}\\n\") == None",
+        "absent exception returns None",
     )?;
     Ok(())
 }
 
 #[test]
 fn exception_wrong_approver_returns_none() -> TestResult {
-    let src = "// slugaudit-line-exception: approved-by=human; reason=foo\nfn x() {}\n";
-    ensure_eq(
-        &exception_reason(src),
-        &None,
-        "exception_reason(src) == None",
-    )?;
+    for unapproved in [
+        "// slugaudit-line-exception: approved-by=human; reason=foo\nfn x() {}\n",
+        "// slugaudit-line-exception: approved-by=slugthuglabs; reason=foo\nfn x() {}\n",
+    ] {
+        ensure_eq(
+            &exception_reason(unapproved),
+            &None,
+            "unapproved approver tag returns None",
+        )?;
+    }
     Ok(())
 }
 
 #[test]
 fn a_malformed_annotation_does_not_end_the_scan() -> TestResult {
-    let valid = "// slugaudit-line-exception: approved-by=slugthuglabs; reason=later\n";
+    let valid = "// slugaudit-line-exception: approved-by=split-judge; reason=later\n";
     for malformed in [
-        "// slugaudit-line-exception: approved-by=slugthuglabs; reason=\n",
-        "// slugaudit-line-exception: approved-by=slugthuglabs; why=none\n",
+        "// slugaudit-line-exception: approved-by=split-judge; reason=\n",
+        "// slugaudit-line-exception: approved-by=split-judge; why=none\n",
+        "// slugaudit-line-exception: approved-by=slugthuglabs; reason=legacy\n",
         "// slugaudit-line-exception: approved-by=human-user; date=2026-13x; reason=r\n",
         "// slugaudit-line-exception: approved-by=human-user; no-date\n",
         "// slugaudit-line-exception: approved-by=human-user; date=2026-11-02\n",

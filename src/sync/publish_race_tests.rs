@@ -5,8 +5,8 @@
 use super::*;
 use crate::store::open_read_write;
 use crate::store::test_capture::capture_at_level;
-use crate::store::test_join::join_checked;
 use crate::sync::test_support::{stored_paths, write};
+use crate::util::join_checked;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 /// A file the walk listed and that is deleted before Pass 1 hashes it is a
@@ -212,4 +212,72 @@ fn a_noop_retry_after_losing_the_cas_race_converges_on_the_winners_revision() ->
         "a no-op retry must return the actual current revision, not error or diverge",
     )?;
     Ok(())
+}
+
+/// During Pass 2 (`ProgressEvent::Sampling`), `project.db` must hold no write
+/// transaction so concurrent connections can take `BEGIN IMMEDIATE` with zero
+/// busy wait while changed files are sampled, parsed, and staged.
+#[test]
+fn project_db_remains_write_unlocked_throughout_pass2_sampling() -> TestResult {
+    struct LockProbeSink {
+        db_path: std::path::PathBuf,
+        probed: std::sync::Mutex<Option<TestResult>>,
+    }
+
+    impl crate::progress::ProgressSink for LockProbeSink {
+        fn emit(&self, event: crate::progress::ProgressEvent) {
+            if !matches!(event, crate::progress::ProgressEvent::Sampling { .. }) {
+                return;
+            }
+            let Ok(mut slot) = self.probed.lock() else {
+                return;
+            };
+            if slot.is_some() {
+                return;
+            }
+            let outcome = (|| -> TestResult {
+                let mut other = open_read_write(&self.db_path).check("open second connection")?;
+                other
+                    .busy_timeout(std::time::Duration::ZERO)
+                    .check("zero busy timeout")?;
+                let tx = other
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .check("project.db must not be write-locked during Pass 2")?;
+                let count: i64 = tx
+                    .query_row("SELECT count(*) FROM files", [], |row| row.get(0))
+                    .check("query files under immediate tx")?;
+                ensure_eq(&count, &1, "baseline row visible while Pass 2 stages")?;
+                tx.rollback().check("rollback probe tx")
+            })();
+            *slot = Some(outcome);
+        }
+    }
+
+    let project = tempfile::tempdir().check("project dir")?;
+    write(project.path(), "a.rs", b"pub fn a() {}\n")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let db_path = db_dir.path().join("project.db");
+    let mut connection = open_read_write(&db_path).check("open db")?;
+    publish(
+        &mut connection,
+        project.path(),
+        "1.0.0",
+        &crate::progress::NoopProgressSink,
+    )
+    .check("initial publish")?;
+
+    write(project.path(), "b.rs", b"pub fn b() {}\n")?;
+    let sink = LockProbeSink {
+        db_path: db_path.clone(),
+        probed: std::sync::Mutex::new(None),
+    };
+    let report = publish(&mut connection, project.path(), "1.0.0", &sink)
+        .check("incremental publish with Pass 2 lock probe")?;
+    ensure_eq(&report.added, &1, "b.rs added")?;
+
+    sink.probed
+        .lock()
+        .check("lock probe result")?
+        .take()
+        .check("Sampling event fired during Pass 2")?
 }

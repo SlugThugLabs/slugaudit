@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SlugAudit Universal Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install.sh | bash
+# Usage: curl -q -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install.sh | bash
 
 set -euo pipefail
 
@@ -9,6 +9,37 @@ BINARY_NAME="slugaudit"
 TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 PREVIOUS_PATH="${TARGET_PATH}.prev"
 GITHUB_REPO="SlugThugLabs/slugaudit"
+
+usage() {
+    cat << 'EOF'
+Usage: install.sh [OPTIONS]
+
+Install the SlugAudit binary into ~/.slugthug/slugaudit/slugaudit.
+
+Options:
+  --from-source, --local   Build and install from ./Cargo.toml in the current directory
+  -h, --help               Show this help message and exit
+EOF
+}
+
+FROM_SOURCE=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --from-source|--local)
+            FROM_SOURCE=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
 
 # Temp dir and staging files; removed on every exit path.
 TMP_DIR=""
@@ -78,11 +109,15 @@ ARCH="$(uname -m)"
 
 mkdir -p "${INSTALL_DIR}"
 
-if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -Eq '^name = "slugaudit-mcp-rust"$' Cargo.toml 2>/dev/null; then
+if [ "${FROM_SOURCE}" -eq 1 ]; then
+    if ! command -v cargo >/dev/null 2>&1 || [ ! -f "Cargo.toml" ] || ! grep -Eq '^name = "slugaudit-mcp-rust"$' Cargo.toml 2>/dev/null; then
+        echo "Error: --from-source requires cargo and a slugaudit-mcp-rust Cargo.toml in the current directory." >&2
+        exit 1
+    fi
     echo "==> Building directly from local repository with cargo..."
     TARGET_DIR="${CARGO_TARGET_DIR:-target}"
     BUILT_BIN="${TARGET_DIR}/release/slugaudit"
-    cargo build --release --locked --bin slugaudit
+    TSLP_LINK_MODE=static TSLP_LANGUAGES=rust cargo build --release --locked --bin slugaudit
     if [ ! -f "${BUILT_BIN}" ]; then
         echo "Error: expected built binary at ${BUILT_BIN}, but it was not found." >&2
         exit 1
@@ -90,23 +125,38 @@ if command -v cargo >/dev/null 2>&1 && [ -f "Cargo.toml" ] && grep -Eq '^name = 
     retain_previous
     install_binary "${BUILT_BIN}"
 elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
-    echo "==> Downloading latest release for Linux x86_64..."
+    echo "==> Resolving latest release tag for Linux x86_64..."
     ASSET_NAME="slugaudit-x86_64-unknown-linux-gnu"
-    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/${ASSET_NAME}"
-    CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/latest/download/SHA256SUMS"
+    API_URL="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
+
+    if command -v curl >/dev/null 2>&1; then
+        RELEASE_JSON="$(curl -q -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 30 -- "${API_URL}")"
+    elif command -v wget >/dev/null 2>&1; then
+        RELEASE_JSON="$(wget --https-only --timeout=30 -qO- "${API_URL}")"
+    else
+        echo "Error: curl or wget is required to download SlugAudit." >&2
+        exit 1
+    fi
+
+    TAG="$(printf '%s\n' "${RELEASE_JSON}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    if [ -z "${TAG}" ] || ! printf '%s\n' "${TAG}" | grep -Eq '^v?[0-9]+\.[0-9]+(\.[0-9]+)*$'; then
+        echo "Error: could not determine a valid numeric release tag from ${API_URL}." >&2
+        exit 1
+    fi
+
+    echo "==> Downloading release ${TAG} for Linux x86_64..."
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${TAG}/${ASSET_NAME}"
+    CHECKSUM_URL="https://github.com/${GITHUB_REPO}/releases/download/${TAG}/SHA256SUMS"
     TMP_DIR="$(mktemp -d)"
     TMP_FILE="${TMP_DIR}/${ASSET_NAME}"
     TMP_SUMS="${TMP_DIR}/SHA256SUMS"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 "${DOWNLOAD_URL}" -o "${TMP_FILE}"
-        curl -fsSL --proto '=https' --tlsv1.2 --max-time 300 "${CHECKSUM_URL}" -o "${TMP_SUMS}"
-    elif command -v wget >/dev/null 2>&1; then
+        curl -q -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 300 -o "${TMP_FILE}" -- "${DOWNLOAD_URL}"
+        curl -q -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 --max-time 300 -o "${TMP_SUMS}" -- "${CHECKSUM_URL}"
+    else
         wget --https-only --timeout=300 -qO "${TMP_FILE}" "${DOWNLOAD_URL}"
         wget --https-only --timeout=300 -qO "${TMP_SUMS}" "${CHECKSUM_URL}"
-    else
-        echo "Error: curl or wget is required to download SlugAudit." >&2
-        exit 1
     fi
 
     echo "==> Verifying SHA256 checksum..."
@@ -149,12 +199,12 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
 elif command -v cargo >/dev/null 2>&1; then
     echo "==> Installing via cargo..."
     TMP_DIR="$(mktemp -d)"
-    cargo install --locked --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit --root "${TMP_DIR}"
+    TSLP_LINK_MODE=static TSLP_LANGUAGES=rust cargo install --locked --git "https://github.com/${GITHUB_REPO}.git" --bin slugaudit --root "${TMP_DIR}"
     retain_previous
     install_binary "${TMP_DIR}/bin/slugaudit"
 else
     echo "Error: Pre-built binary currently available for Linux x86_64." >&2
-    echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: cargo install --locked --git https://github.com/${GITHUB_REPO}.git --bin slugaudit" >&2
+    echo "To build on ${OS} (${ARCH}), install Rust (https://rustup.rs) and run: TSLP_LINK_MODE=static TSLP_LANGUAGES=rust cargo install --locked --git https://github.com/${GITHUB_REPO}.git --bin slugaudit" >&2
     exit 1
 fi
 

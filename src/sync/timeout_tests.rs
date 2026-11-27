@@ -7,17 +7,16 @@
 use super::*;
 use crate::model::ResourceLimits;
 use crate::store::open_read_write;
-use crate::sync::discovery::{discover, discover_with_deadline};
-use crate::sync::sample::sample_all_with_deadline;
+use crate::sync::discovery::{discover_and_hash, discover_and_hash_with_deadline};
+use crate::sync::sample_batch::{Pass2ChunkContext, run_pass2_chunks};
 use crate::sync::test_support::{stored_paths, write};
 use crate::util::Deadline;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
+use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 fn tiny_budget() -> Deadline {
-    // `Duration::ZERO` makes `elapsed >= budget` always true, so the abort
-    // is deterministic on any clock granularity — stronger than the
-    // `from_nanos(1)` convention used elsewhere.
     Deadline::after(Duration::ZERO)
 }
 
@@ -26,10 +25,15 @@ fn discovery_times_out_when_the_walk_budget_is_exhausted() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "a.rs", b"fn a() {}")?;
 
-    let error = discover_with_deadline(project.path(), &tiny_budget())
+    let error = discover_and_hash_with_deadline(project.path(), 1024, &tiny_budget())
+        .map(|_| ())
         .check_err("a spent budget must abort discovery")?;
     ensure(
-        matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
+        matches!(
+            error,
+            PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
+                | PublishError::TimeBudgetExceeded { .. }
+        ),
         format!("expected TimeBudgetExceeded, got {error:?}"),
     )?;
     ensure(
@@ -43,7 +47,7 @@ fn discovery_times_out_when_the_walk_budget_is_exhausted() -> TestResult {
 fn discovery_with_a_generous_budget_succeeds() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "a.rs", b"fn a() {}")?;
-    let (files, _skipped) = discover(project.path()).check("discover")?;
+    let (files, _skipped) = discover_and_hash(project.path()).check("discover_and_hash")?;
     ensure_eq(&files.len(), &1, "files.len() == 1")?;
     Ok(())
 }
@@ -52,15 +56,21 @@ fn discovery_with_a_generous_budget_succeeds() -> TestResult {
 fn sampling_times_out_when_the_budget_is_exhausted() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "a.rs", b"fn a() {}")?;
-    let (discovered, _skipped) = discover(project.path()).check("discover")?;
+    let (discovered, _skipped) = discover_and_hash(project.path()).check("discover_and_hash")?;
     let limits = ResourceLimits::default();
+    let empty_hashes = HashMap::new();
+    let total = AtomicU64::new(0);
+    let spent = tiny_budget();
+    let ctx = Pass2ChunkContext {
+        total_files: discovered.len(),
+        pass1_hashes: &empty_hashes,
+        limits: &limits,
+        total_bytes: &total,
+        sink: &crate::progress::NoopProgressSink,
+        deadline: &spent,
+    };
 
-    let result = sample_all_with_deadline(
-        &discovered,
-        &limits,
-        &crate::progress::NoopProgressSink,
-        &tiny_budget(),
-    );
+    let result = run_pass2_chunks(&discovered, &ctx, |_| Ok(()));
     let Err(error) = result else {
         return Err("a spent budget must abort sampling".to_owned()).check("unexpected outcome");
     };
@@ -111,7 +121,7 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() -> TestResult {
     Ok(())
 }
 
-/// `discover_with_deadline` aborts when the budget is exhausted on the
+/// `discover_and_hash_with_deadline` aborts when the budget is exhausted on the
 /// very first iterated entry — exercises the deadline check inside the
 /// `for entry in walker` loop, not just the function entry. The test
 /// seeds a non-empty project, gives it a zero deadline, and asserts the
@@ -119,16 +129,21 @@ fn publish_times_out_when_the_wall_clock_budget_is_exhausted() -> TestResult {
 /// `discovery_times_out_when_the_walk_budget_is_exhausted` (which
 /// aborts at the loop head without iterating).
 #[test]
-fn discover_with_deadline_aborts_mid_walk_when_budget_exhausts() -> TestResult {
+fn discover_and_hash_with_deadline_aborts_mid_walk_when_budget_exhausts() -> TestResult {
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "many.rs", &vec![b'x'; 4096])?;
     write(project.path(), "more.rs", &vec![b'y'; 4096])?;
     write(project.path(), "last.rs", &vec![b'z'; 4096])?;
 
-    let error = discover_with_deadline(project.path(), &tiny_budget())
+    let error = discover_and_hash_with_deadline(project.path(), 8192, &tiny_budget())
+        .map(|_| ())
         .check_err("a spent budget must abort discovery mid-walk")?;
     ensure(
-        matches!(error, DiscoveryError::TimeBudgetExceeded { .. }),
+        matches!(
+            error,
+            PublishError::Discovery(DiscoveryError::TimeBudgetExceeded { .. })
+                | PublishError::TimeBudgetExceeded { .. }
+        ),
         format!("expected TimeBudgetExceeded, got {error:?}"),
     )?;
     Ok(())

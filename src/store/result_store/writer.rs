@@ -1,17 +1,16 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=one materialisation: spec and handle types, begin, push with non-finite marking, batch checkpoint and finish (meta last, commit, admit) share one writer state and one abort rule
-//! Materialising one result: rows go into one private file inside ONE
-//! transaction; `meta` is written last; only after the commit is the result
-//! admitted and made resolvable. Any error drops the writer, closing the
-//! connection of a file that is already unlinked, so nothing is left behind.
-//!
-//! `ROLLBACK` is deliberately not used: it is undefined under
-//! `journal_mode=OFF`, and the file is discarded wholesale instead.
+// slugaudit-line-exception: approved-by=split-judge; reason=one materialisation: spec and handle types, begin, push with non-finite marking, batch checkpoint, test fault seam, and finish (meta last, commit, admit) share one writer state and one abort rule
+//! Materializing one overflow result into an unlinked scratch SQLite file:
+//! rows go into one transaction, `meta` is written last, and only after commit
+//! is the result admitted to the registry. Any error drops the writer and
+//! closes the unlinked descriptor.
 
-use super::cell::{Cell, Materialize, NonFinite};
+#[cfg(test)]
+use super::cell::Materialize;
+use super::cell::{Cell, NonFinite};
 use super::cursor::ResultId;
 use super::error::ResultStoreError;
 use super::registry::{Entry, ResultMeta};
-use super::result_file::{self, MAX_COLUMNS};
+use super::result_file::{self, MAX_COLUMNS, ResultFile};
 use super::store::ResultStore;
 use rusqlite::{Connection, ToSql};
 use uuid::Uuid;
@@ -52,16 +51,57 @@ pub struct ResultHandle {
 pub struct ResultWriter<'s> {
     store: &'s ResultStore,
     id: ResultId,
-    pub(super) conn: Connection,
+    pub(super) conn: ResultFile,
     spec: ResultSpec,
     insert_sql: String,
     next_ord: u64,
     rows_since_check: usize,
     bytes_since_check: usize,
+    #[cfg(test)]
     pub(super) batches: usize,
     failed: bool,
     #[cfg(test)]
-    pub(super) fault: super::fault::Fault,
+    pub(super) fault: Fault,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Fault {
+    #[default]
+    None,
+    MaxPages(u32),
+    FailBeforeBatch(usize),
+    IncompleteMeta,
+}
+
+#[cfg(test)]
+impl ResultWriter<'_> {
+    pub(crate) fn inject(&mut self, fault: Fault) -> Result<(), ResultStoreError> {
+        if let Fault::MaxPages(pages) = fault {
+            self.conn
+                .query_row(&format!("PRAGMA max_page_count={pages}"), [], |_| Ok(()))
+                .map_err(|error| ResultStoreError::from_sqlite("lower max_page_count", error))?;
+        }
+        self.fault = fault;
+        Ok(())
+    }
+
+    fn before_batch(&self) -> Result<(), ResultStoreError> {
+        match self.fault {
+            Fault::FailBeforeBatch(n) if n == self.batches => Err(ResultStoreError::unavailable(
+                "injected batch failure",
+                std::io::Error::other("injected"),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn final_state(&self) -> &'static str {
+        match self.fault {
+            Fault::IncompleteMeta => "incomplete",
+            _ => "complete",
+        }
+    }
 }
 
 impl ResultStore {
@@ -107,19 +147,21 @@ impl ResultStore {
             next_ord: 0,
             rows_since_check: 0,
             bytes_since_check: 0,
+            #[cfg(test)]
             batches: 0,
             failed: false,
             #[cfg(test)]
-            fault: super::fault::Fault::None,
+            fault: Fault::None,
         })
     }
 
-    /// Materialises a typed sequence in one call.
+    /// Materialises a typed sequence in one call (test convenience).
     ///
     /// # Errors
     ///
     /// Anything [`ResultStore::begin`], [`ResultWriter::push`] and
     /// [`ResultWriter::finish`] report.
+    #[cfg(test)]
     pub fn write_all<T: Materialize>(
         &self,
         tool: &str,
@@ -228,12 +270,15 @@ impl ResultWriter<'_> {
     /// After each batch: consult the fault seam, then abort once this file
     /// alone exceeds the whole budget.
     fn checkpoint(&mut self) -> Result<(), ResultStoreError> {
-        self.batches = self
-            .batches
-            .checked_add(1)
-            .ok_or(ResultStoreError::Invalid {
-                reason: "too many batches",
-            })?;
+        #[cfg(test)]
+        {
+            self.batches = self
+                .batches
+                .checked_add(1)
+                .ok_or(ResultStoreError::Invalid {
+                    reason: "too many batches",
+                })?;
+        }
         self.rows_since_check = 0;
         self.bytes_since_check = 0;
         #[cfg(test)]
@@ -266,7 +311,6 @@ impl ResultWriter<'_> {
             project: self.spec.project,
             revision_id: self.spec.revision_id,
             columns: self.spec.columns,
-            // KEEP clone: finish borrows &serde_json::Value while ResultMeta owns it
             completeness: completeness.clone(),
             row_count: self.next_ord,
             created_unix,
@@ -287,7 +331,7 @@ impl ResultWriter<'_> {
     }
 
     fn write_meta(
-        conn: &mut rusqlite::Connection,
+        conn: &mut Connection,
         meta: &ResultMeta,
         state: &str,
     ) -> Result<(), ResultStoreError> {

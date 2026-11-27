@@ -1,10 +1,15 @@
 use super::*;
 use crate::store::connection::{StoreError, open_read_write};
-use crate::store::test_join::join_checked;
+use crate::util::join_checked;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
-fn applies_schema_to_a_fresh_database() -> TestResult {
+fn applies_schema_v13_with_content_as_final_files_column() -> TestResult {
+    ensure_eq(
+        &CURRENT_SCHEMA_VERSION,
+        &13,
+        "CURRENT_SCHEMA_VERSION is bumped to 13",
+    )?;
     let directory = tempfile::tempdir().check("temp dir")?;
     let connection = open_read_write(&directory.path().join("project.db")).check("open")?;
 
@@ -15,7 +20,20 @@ fn applies_schema_to_a_fresh_database() -> TestResult {
             |row| row.get(0),
         )
         .check("query sqlite_master")?;
-    ensure_eq(&table_count, &1, "table_count == 1")?;
+    ensure_eq(&table_count, &1, "files table exists after migration")?;
+
+    let last_col: String = connection
+        .query_row(
+            "SELECT name FROM pragma_table_info('files') ORDER BY cid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .check("read last column of files")?;
+    ensure_eq(
+        &last_col,
+        &"content",
+        "content is the final column of files so metadata scans avoid overflow pages",
+    )?;
 
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -23,7 +41,7 @@ fn applies_schema_to_a_fresh_database() -> TestResult {
     ensure_eq(
         &version,
         &CURRENT_SCHEMA_VERSION,
-        "version == CURRENT_SCHEMA_VERSION",
+        "PRAGMA user_version matches CURRENT_SCHEMA_VERSION",
     )?;
     Ok(())
 }
@@ -41,7 +59,7 @@ fn applying_schema_twice_is_idempotent() -> TestResult {
     ensure_eq(
         &version,
         &CURRENT_SCHEMA_VERSION,
-        "version == CURRENT_SCHEMA_VERSION",
+        "reopening preserves CURRENT_SCHEMA_VERSION",
     )?;
     Ok(())
 }
@@ -59,7 +77,7 @@ fn schema_has_no_risk_pattern_table() -> TestResult {
             |row| row.get(0),
         )
         .check("query sqlite_master")?;
-    ensure_eq(&count, &0, "count == 0")?;
+    ensure_eq(&count, &0, "schema defines no risk_pattern tables")?;
     Ok(())
 }
 
@@ -81,13 +99,13 @@ fn rejects_a_database_from_a_newer_schema_version() -> TestResult {
                 MigrationError::UnsupportedVersion { .. }
             ))
         ),
-        "matches!( reopened, Err(StoreError::Migration( MigrationError::UnsupportedVersion { .. } )) )",
+        "database with future schema version fails with UnsupportedVersion",
     )?;
     ensure(
         reopened
             .check_err("a database from a newer version is refused")?
             .is_corruption(),
-        "reopened .check_err(\"a database from a newer version is refused\")? .is_corruption()",
+        "future schema version marks database for discard and rebuild",
     )?;
     Ok(())
 }
@@ -109,7 +127,7 @@ fn rejects_an_outdated_v1_database_and_marks_as_corruption_for_discard() -> Test
                 supported: CURRENT_SCHEMA_VERSION
             }
         ),
-        "matches!( err, MigrationError::UnsupportedVersion { found: 1, supported: CURRENT_SCHEMA_VERSION } )",
+        "v1 database fails with UnsupportedVersion naming found=1",
     )?;
     ensure(
         err.is_corruption(),
@@ -119,23 +137,23 @@ fn rejects_an_outdated_v1_database_and_marks_as_corruption_for_discard() -> Test
 }
 
 #[test]
-fn rejects_an_outdated_v2_database_and_marks_as_corruption_for_discard() -> TestResult {
+fn rejects_an_outdated_v12_database_and_marks_as_corruption_for_discard() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("project.db");
     let mut connection = open_read_write(&path).check("open database")?;
     connection
-        .pragma_update(None, "user_version", 2_i64)
-        .check("rewind version to v2")?;
-    let err = ensure_current_schema(&mut connection).check_err("must reject v2")?;
+        .pragma_update(None, "user_version", 12_i64)
+        .check("rewind version to v12")?;
+    let err = ensure_current_schema(&mut connection).check_err("must reject v12")?;
     ensure(
         matches!(
             err,
             MigrationError::UnsupportedVersion {
-                found: 2,
+                found: 12,
                 supported: CURRENT_SCHEMA_VERSION
             }
         ),
-        "matches!( err, MigrationError::UnsupportedVersion { found: 2, supported: CURRENT_SCHEMA_VERSION } )",
+        "v12 database fails with UnsupportedVersion naming found=12",
     )?;
     ensure(
         err.is_corruption(),
@@ -197,7 +215,7 @@ fn ensure_current_schema_can_be_invoked_twice_without_error() -> TestResult {
     ensure_eq(
         &version,
         &CURRENT_SCHEMA_VERSION,
-        "version == CURRENT_SCHEMA_VERSION",
+        "repeated ensure_current_schema keeps CURRENT_SCHEMA_VERSION",
     )?;
     Ok(())
 }
@@ -218,7 +236,7 @@ fn pragma_user_version_round_trips_via_optional() -> TestResult {
     ensure_eq(
         &version,
         &CURRENT_SCHEMA_VERSION,
-        "version == CURRENT_SCHEMA_VERSION",
+        "user_version pragma round-trips accurately",
     )?;
     Ok(())
 }
@@ -287,6 +305,10 @@ fn schema_init_does_not_overwrite_a_foreign_version_set_while_it_waited() -> Tes
     let version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .check("version")?;
-    ensure_eq(&version, &99, "version == 99")?;
+    ensure_eq(
+        &version,
+        &99,
+        "foreign user_version is left untouched when rejected",
+    )?;
     Ok(())
 }

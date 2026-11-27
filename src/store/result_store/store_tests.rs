@@ -5,8 +5,8 @@
 use super::super::cell::Take;
 use super::super::harness_tests::{GRACE_SECS, fixture, write_rows};
 use super::*;
-use crate::store::test_capture::capture_at_level;
 use crate::util::ClockError;
+use crate::util::test_capture::capture_at_level;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -75,16 +75,20 @@ fn assert_restart_error(error: &ResultStoreError, mutex: &str) -> TestResult {
     ensure_eq(
         &mapped.code,
         &rmcp::model::ErrorCode::INTERNAL_ERROR,
-        "mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+        "poisoned store mutex maps to an internal MCP error",
     )?;
-    ensure_eq(&mapped.data, &None, "mapped.data == None")?;
+    ensure_eq(
+        &mapped.data,
+        &None,
+        "poisoned store mutex carries no wire code",
+    )?;
     ensure_eq(
         &mapped.message,
         &format!(
             "mutex {mutex} was poisoned by a panic in an earlier holder; \
              restart the SlugAudit server"
         ),
-        "mapped.message == format!( \"mutex {mutex} was poisoned by a panic in an earlier holder; \\ restart the SlugAudit server\" )",
+        "poisoned mutex message names the mutex and advises restarting",
     )?;
 
     Ok(())
@@ -101,9 +105,13 @@ fn assert_clock_error(error: &ResultStoreError) -> TestResult {
     ensure_eq(
         &mapped.code,
         &rmcp::model::ErrorCode::INTERNAL_ERROR,
-        "mapped.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+        "store clock error maps to an internal MCP error",
     )?;
-    ensure_eq(&mapped.data, &None, "mapped.data == None")?;
+    ensure_eq(
+        &mapped.data,
+        &None,
+        "store clock error carries no wire code",
+    )?;
     ensure(
         mapped
             .message
@@ -116,9 +124,39 @@ fn assert_clock_error(error: &ResultStoreError) -> TestResult {
     )?;
     ensure(
         !mapped.message.contains("disk is full"),
-        "!mapped.message.contains(\"disk is full\")",
+        "clock error never blames disk fullness",
     )?;
 
+    Ok(())
+}
+
+#[test]
+fn update_limits_adjusts_budget_and_grace_in_place() -> TestResult {
+    let fx = fixture(1 << 20)?;
+    write_rows(&fx.store, 5, 4).check("write")?;
+    ensure_eq(
+        &fx.store.stats().check("initial stats")?.budget_bytes,
+        &(1 << 20),
+        "initial budget matches fixture ceiling",
+    )?;
+
+    fx.store.update_limits(ResultStoreLimits {
+        max_bytes: 2 << 20,
+        active_grace_secs: 60,
+    });
+    fx.set_time(1_061);
+    let stats = fx.store.stats().check("updated stats")?;
+
+    ensure_eq(
+        &stats.budget_bytes,
+        &(2 << 20),
+        "update_limits updates reported budget_bytes",
+    )?;
+    ensure_eq(
+        &stats.idle.results,
+        &1,
+        "shortened active_grace_secs transitions result to Idle at 61 seconds",
+    )?;
     Ok(())
 }
 
@@ -135,7 +173,7 @@ fn a_poisoned_registry_fails_stats_with_the_restart_error_logged_once() -> TestR
     ensure_eq(
         &lines_containing(&logs, "result store unavailable"),
         &0,
-        "lines_containing(&logs, \"result store unavailable\") == 0",
+        "poisoned registry never logs result store unavailable",
     )?;
     Ok(())
 }
@@ -166,7 +204,7 @@ fn a_poisoned_registry_is_the_error_of_every_refusal_and_no_cursor_is_logged_ref
     ensure_eq(
         &lines_containing(&logs, "larger than the whole budget"),
         &0,
-        "lines_containing(&logs, \"larger than the whole budget\") == 0",
+        "poisoned registry never logs over-budget refusal",
     )?;
     ensure_eq(&lines_containing(&logs, "result_registry"), &3, &logs)?;
     Ok(())
@@ -191,7 +229,7 @@ fn an_unknown_cursor_on_a_healthy_store_is_unknown_and_logged_refused_once() -> 
     ensure_eq(
         &fx.store.stats().check("stats")?.unknown_cursors,
         &1,
-        "fx.store.stats().check(\"stats\")?.unknown_cursors == 1",
+        "unknown cursor increments unknown_cursors counter once",
     )?;
     Ok(())
 }
@@ -235,7 +273,7 @@ fn a_failing_clock_fails_stats_with_the_fix_the_clock_error_logged_once() -> Tes
     ensure_eq(
         &lines_containing(&logs, "result store unavailable"),
         &0,
-        "lines_containing(&logs, \"result store unavailable\") == 0",
+        "clock failure never logs result store unavailable",
     )?;
     Ok(())
 }
@@ -255,4 +293,11 @@ fn a_failing_clock_fails_admission_and_read_page_with_the_fix_the_clock_error() 
     let written = written.check_err("a failing clock fails the write")?;
     assert_clock_error(&written)?;
     Ok(())
+}
+
+impl ResultStore {
+    /// Test helper: reads the tool name of `id` without renewing protection.
+    pub(crate) fn tool_of(&self, id: ResultId) -> Result<String, ResultStoreError> {
+        Ok(self.meta_of(id)?.tool.clone())
+    }
 }

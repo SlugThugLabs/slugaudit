@@ -10,7 +10,6 @@ async fn run_blocking_propagates_a_successful_result() -> TestResult {
         "test",
         || Ok::<_, ErrorData>(42),
         None,
-        None,
     )
     .await;
     ensure_eq(&result.check("ok")?, &42, "result.check(\"ok\")? == 42")?;
@@ -24,7 +23,6 @@ async fn run_blocking_propagates_the_tools_own_typed_error() -> TestResult {
         Arc::clone(&semaphore),
         "test",
         || Err(ErrorData::invalid_params("bad request", None)),
-        None,
         None,
     )
     .await;
@@ -43,7 +41,6 @@ async fn a_panic_inside_the_blocking_closure_surfaces_as_a_typed_error_not_a_cra
         Arc::clone(&semaphore),
         "test",
         || std::panic::resume_unwind(Box::new("boom")),
-        None,
         None,
     )
     .await;
@@ -72,8 +69,6 @@ async fn a_panic_inside_the_blocking_closure_surfaces_as_a_typed_error_not_a_cra
     Ok(())
 }
 
-/// `Semaphore::acquire_owned` fails only once the semaphore is closed. That
-/// arm has its own typed error and must not run the work without a permit.
 #[tokio::test]
 async fn a_closed_semaphore_fails_the_call_with_its_own_typed_error_before_running_the_work()
 -> TestResult {
@@ -89,7 +84,6 @@ async fn a_closed_semaphore_fails_the_call_with_its_own_typed_error_before_runni
             work_ran.store(true, Ordering::SeqCst);
             Ok(())
         },
-        None,
         None,
     )
     .await;
@@ -112,11 +106,6 @@ async fn a_closed_semaphore_fails_the_call_with_its_own_typed_error_before_runni
     Ok(())
 }
 
-/// `Semaphore::acquire` blocks until a permit is free, so the number of
-/// closures observed running concurrently can never exceed the semaphore's
-/// permit count — not a probabilistic property but a guarantee `run_blocking`
-/// must not violate (e.g. by leaking a permit or racing the counter update
-/// outside the permit's held lifetime).
 #[tokio::test]
 async fn the_semaphore_bounds_concurrent_blocking_work() -> TestResult {
     const PERMITS: usize = 2;
@@ -135,13 +124,15 @@ async fn the_semaphore_bounds_concurrent_blocking_work() -> TestResult {
                 Arc::clone(&semaphore),
                 "test",
                 move || {
-                    let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                    let prev = current.fetch_add(1, Ordering::SeqCst);
+                    let now = prev.checked_add(1).ok_or_else(|| {
+                        ErrorData::internal_error("task counter overflowed", None)
+                    })?;
                     peak.fetch_max(now, Ordering::SeqCst);
                     std::thread::sleep(std::time::Duration::from_millis(20));
                     current.fetch_sub(1, Ordering::SeqCst);
                     Ok::<_, ErrorData>(())
                 },
-                None,
                 None,
             )
             .await
@@ -162,29 +153,159 @@ async fn the_semaphore_bounds_concurrent_blocking_work() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn run_blocking_sets_the_completion_flag_when_work_finishes() -> TestResult {
-    let semaphore = Arc::new(Semaphore::new(2));
-    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag_in_work = Arc::clone(&completed);
+type ProgressReader =
+    tokio::io::Lines<tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>;
+type RunningTestServer =
+    rmcp::service::RunningService<rmcp::RoleServer, crate::server::SlugAuditServer>;
 
-    let result = run_blocking(
+async fn connected_progress_peer() -> TestResult<(RunningTestServer, ProgressReader)> {
+    use rmcp::ServiceExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let (server_io, client_io) = tokio::io::duplex(65536);
+    let server = tokio::spawn(async move {
+        crate::server::SlugAuditServer::new()
+            .serve(server_io)
+            .await
+            .check("server handshake")
+    });
+    let (read_half, mut write_half) = tokio::io::split(client_io);
+    let mut lines = BufReader::new(read_half).lines();
+    write_half
+        .write_all(
+            concat!(
+                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+                "\n",
+                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                "\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .check("client handshake write")?;
+    let running = server.await.check("server task")??;
+    lines
+        .next_line()
+        .await
+        .check("initialize read")?
+        .check("initialize line")?;
+    Ok((running, lines))
+}
+
+async fn drain_progress_notifications(
+    lines: &mut ProgressReader,
+) -> TestResult<Vec<(f64, String)>> {
+    let mut notifications = Vec::new();
+    while let Ok(next) =
+        tokio::time::timeout(std::time::Duration::from_millis(80), lines.next_line()).await
+    {
+        let Some(line) = next.check("read notification line")? else {
+            break;
+        };
+        let value: serde_json::Value = serde_json::from_str(&line).check("valid json")?;
+        let fraction = value
+            .pointer("/params/progress")
+            .and_then(serde_json::Value::as_f64)
+            .check("progress fraction")?;
+        let message = value
+            .pointer("/params/message")
+            .and_then(serde_json::Value::as_str)
+            .check("progress message")?
+            .to_owned();
+        notifications.push((fraction, message));
+    }
+    Ok(notifications)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_blocking_delivers_monotonic_in_order_progress_without_premature_completion()
+-> TestResult {
+    use crate::progress::ProgressEvent;
+    use crate::server_progress::{SYNC_PROGRESS_CAP, open_progress_session};
+    use rmcp::model::{NumberOrString, ProgressToken};
+
+    let (running, mut lines) = connected_progress_peer().await?;
+    let peer = running.peer().clone();
+    let (progress, inner_sink) =
+        open_progress_session(Some((peer, ProgressToken(NumberOrString::Number(42)))));
+    let late_sink = Arc::clone(&inner_sink);
+    let semaphore = Arc::new(Semaphore::new(2));
+
+    let answer = run_blocking(
         semaphore,
-        "test_completion_flag",
+        "health",
         move || {
-            let saw_false = !flag_in_work.load(Ordering::Acquire);
-            Ok::<_, ErrorData>(saw_false)
+            inner_sink.emit(ProgressEvent::Started {
+                phase: "ensuring_current",
+            });
+            inner_sink.emit(ProgressEvent::Sampling {
+                phase: "publishing",
+                current: 3,
+                total: 4,
+            });
+            std::thread::sleep(std::time::Duration::from_millis(110));
+            inner_sink.emit(ProgressEvent::Sampling {
+                phase: "publishing",
+                current: 1,
+                total: 4,
+            });
+            inner_sink.emit(ProgressEvent::Completed {
+                phase: "ensuring_current",
+            });
+            Ok::<_, ErrorData>("ok")
         },
-        None,
-        Some(Arc::clone(&completed)),
+        progress,
     )
     .await
     .check("run_blocking succeeds")?;
+    ensure_eq(&answer, &"ok", "answer == \"ok\"")?;
 
-    ensure(result, "flag must stay false while blocking work runs")?;
+    late_sink.emit(ProgressEvent::Completed { phase: "late" });
+
+    let notifications = drain_progress_notifications(&mut lines).await?;
+
+    let messages: Vec<&str> = notifications.iter().map(|(_, msg)| msg.as_str()).collect();
+    ensure_eq(
+        &messages,
+        &[
+            "health queued",
+            "health started",
+            "ensuring_current: started",
+            "publishing: 3/4",
+            "publishing: 1/4",
+            "ensuring_current: completed",
+            "health completed",
+        ],
+        "lifecycle and inner progress messages arrive in exact FIFO order without late stragglers",
+    )?;
+
+    for pair in notifications.windows(2) {
+        let &[(prev, ref prev_msg), (next, ref next_msg)] = pair else {
+            continue;
+        };
+        ensure(
+            prev <= next,
+            format!("progress regressed from {prev} ({prev_msg}) to {next} ({next_msg})"),
+        )?;
+    }
+    let sync_done = notifications
+        .iter()
+        .find(|(_, msg)| msg == "ensuring_current: completed")
+        .check("ensuring_current completed present")?
+        .0;
     ensure(
-        completed.load(Ordering::Acquire),
-        "flag must be tripped to true before run_blocking returns",
+        sync_done <= SYNC_PROGRESS_CAP,
+        format!("inner sync completion must stay <= {SYNC_PROGRESS_CAP}, got {sync_done}"),
+    )?;
+    ensure_eq(
+        &notifications.first().check("first notification")?.0,
+        &0.0,
+        "starts at 0.0",
+    )?;
+    ensure_eq(
+        &notifications.last().check("last notification")?.0,
+        &1.0,
+        "ends at 1.0",
     )?;
     Ok(())
 }

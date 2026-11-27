@@ -1,9 +1,33 @@
-//! Tests for the global config: load, the limit keys, and the precedence of
-//! defaults, the global file, the environment and the session profile.
+//! Tests for `GlobalConfig` schema, capped disk I/O, and load-time validation.
 
 use super::*;
-use crate::store::test_capture::capture_warns;
+use crate::model::AuditProfile;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
+
+/// RAII guard that points the calling thread's global config at a temporary
+/// file and resets `set_global_config_path_for_test(None)` on drop.
+pub(in crate::project) struct GlobalConfigGuard {
+    _dir: Option<tempfile::TempDir>,
+}
+
+impl GlobalConfigGuard {
+    pub(in crate::project) fn with_contents(contents: &str) -> TestResult<Self> {
+        let (dir, path) = config_file(contents)?;
+        set_global_config_path_for_test(Some(path));
+        Ok(Self { _dir: Some(dir) })
+    }
+
+    pub(in crate::project) fn with_path(path: Option<PathBuf>) -> Self {
+        set_global_config_path_for_test(path);
+        Self { _dir: None }
+    }
+}
+
+impl Drop for GlobalConfigGuard {
+    fn drop(&mut self) {
+        set_global_config_path_for_test(None);
+    }
+}
 
 /// A temp dir holding `config.json` with `contents`, and the file's path.
 fn config_file(contents: &str) -> TestResult<(tempfile::TempDir, PathBuf)> {
@@ -13,12 +37,24 @@ fn config_file(contents: &str) -> TestResult<(tempfile::TempDir, PathBuf)> {
     Ok((dir, path))
 }
 
-/// Points this thread's global config at `contents`.
-fn use_global_config(contents: &str) -> TestResult<tempfile::TempDir> {
-    let (dir, path) = config_file(contents)?;
-    set_global_config_path_for_test(Some(path));
-    Ok(dir)
-}
+const ALL_LIMIT_SAMPLES: [(&str, u64); 16] = [
+    ("max_file_bytes", 4_194_304),
+    ("max_parse_bytes", 1_048_576),
+    ("max_parse_wall_clock_ms", 2_500),
+    ("max_total_import_bytes", 67_108_864),
+    ("max_query_response_bytes", 2_097_152),
+    ("default_page_bytes", 16_384),
+    ("max_query_sql_bytes", 25_000),
+    ("max_query_vm_steps", 1_200_000),
+    ("max_query_wall_clock_secs", 15),
+    ("max_query_value_bytes", 524_288),
+    ("max_structure_query_bytes", 8_192),
+    ("max_structure_matches", 1_500),
+    ("max_structure_execution_time_secs", 20),
+    ("max_sync_wall_clock_secs", 45),
+    ("max_result_store_bytes", 16_777_216),
+    ("result_active_grace_secs", 300),
+];
 
 #[test]
 fn an_absent_global_config_is_the_default() -> TestResult {
@@ -29,99 +65,113 @@ fn an_absent_global_config_is_the_default() -> TestResult {
         GlobalConfig::load_from(&missing)
             .check("absent is fine")?
             .is_none(),
-        "GlobalConfig::load_from(&missing) .check(\"absent is fine\")? .is_none()",
+        "missing config file returns None from load_from",
     )?;
-    set_global_config_path_for_test(Some(missing));
+    let guard = GlobalConfigGuard::with_path(Some(missing));
     let config = GlobalConfig::load().check("absent is the default")?;
-    ensure(config.profile.is_none(), "config.profile.is_none()")?;
-    ensure(
-        config.max_file_bytes.is_none(),
-        "config.max_file_bytes.is_none()",
+    ensure_eq(
+        &config,
+        &GlobalConfig::default(),
+        "absent config path resolves to GlobalConfig::default()",
     )?;
-    set_global_config_path_for_test(None);
-    ensure(
-        GlobalConfig::load()
-            .check("no home is the default")?
-            .profile
-            .is_none(),
-        "GlobalConfig::load() .check(\"no home is the default\")? .profile .is_none()",
+    drop(guard);
+    ensure_eq(
+        &GlobalConfig::load().check("no home is the default")?,
+        &GlobalConfig::default(),
+        "unset home path resolves to GlobalConfig::default()",
     )?;
     Ok(())
 }
 
 #[test]
-fn a_valid_global_config_is_applied() -> TestResult {
-    let _dir = use_global_config(r#"{"profile": "audit", "max_file_bytes": 536870912}"#)?;
+fn all_sixteen_documented_limit_keys_deserialize_cleanly() -> TestResult {
+    let mut entries: Vec<String> = vec![r#""profile": "lean""#.to_owned()];
+    entries.extend(
+        ALL_LIMIT_SAMPLES
+            .iter()
+            .map(|(key, val)| format!(r#""{key}": {val}"#)),
+    );
+    let json = format!("{{{}}}", entries.join(", "));
+    let (_dir, path) = config_file(&json)?;
+    let cfg = GlobalConfig::load_from(&path)
+        .check("config loads")?
+        .check("config present")?;
 
-    let limits = resolve_limits(
-        &GlobalConfig::load().check("loads")?,
-        &EnvOverrides::default(),
-        None,
+    ensure_eq(
+        &cfg,
+        &GlobalConfig {
+            profile: Some(AuditProfile::Lean),
+            max_file_bytes: Some(4_194_304),
+            max_parse_bytes: Some(1_048_576),
+            max_parse_wall_clock_ms: Some(2_500),
+            max_total_import_bytes: Some(67_108_864),
+            max_query_response_bytes: Some(2_097_152),
+            default_page_bytes: Some(16_384),
+            max_query_sql_bytes: Some(25_000),
+            max_query_vm_steps: Some(1_200_000),
+            max_query_wall_clock_secs: Some(15),
+            max_query_value_bytes: Some(524_288),
+            max_structure_query_bytes: Some(8_192),
+            max_structure_matches: Some(1_500),
+            max_structure_execution_time_secs: Some(20),
+            max_sync_wall_clock_secs: Some(45),
+            max_result_store_bytes: Some(16_777_216),
+            result_active_grace_secs: Some(300),
+        },
+        "all 16 limit keys and profile deserialize to exact GlobalConfig fields",
     )
-    .check("limits resolve")?;
-
-    ensure_eq(
-        &limits.max_file_bytes,
-        &536_870_912,
-        "limits.max_file_bytes == 536_870_912",
-    )?;
-    ensure_eq(
-        &limits.max_total_import_bytes,
-        &(32 * 1024 * 1024 * 1024),
-        "limits.max_total_import_bytes == 32 * 1024 * 1024 * 1024",
-    )?;
-    Ok(())
 }
 
 #[test]
-fn invalid_json_fails_the_load_naming_the_file() -> TestResult {
-    let (_dir, path) = config_file("invalid json")?;
+fn fail_closed_any_zero_limit_in_config_json_fails_naming_the_key() -> TestResult {
+    for (key, _) in ALL_LIMIT_SAMPLES {
+        let json = format!(r#"{{"{key}": 0}}"#);
+        let (_dir, path) = config_file(&json)?;
+        let error =
+            GlobalConfig::load_from(&path).check_err("a zero limit in config.json must fail")?;
+        ensure(
+            matches!(error, ConfigError::Zero { key: named, path: Some(_) } if named == key),
+            format!("expected ConfigError::Zero naming {key}, got {error:?}"),
+        )?;
+        let message = error.to_string();
+        ensure(
+            message.contains(key) && message.contains("is set to 0"),
+            format!("error message must name {key} and state 0 is unusable: {message}"),
+        )?;
+    }
+    Ok(())
+}
 
-    let error = GlobalConfig::load_from(&path).check_err("malformed must fail")?;
-
+fn assert_parse_error(contents: &str, expected_substring: Option<&str>) -> TestResult {
+    let (_dir, path) = config_file(contents)?;
+    let error = GlobalConfig::load_from(&path).check_err("invalid config JSON must fail")?;
     ensure(
         matches!(error, ConfigError::Parse { .. }),
-        format!("{error}"),
+        format!("expected ConfigError::Parse, got {error:?}"),
     )?;
+    let msg = error.to_string();
     ensure(
-        error.to_string().contains(path.to_str().check("utf-8")?),
-        format!("{error}"),
+        msg.contains(path.to_str().check("utf-8 path")?),
+        format!("parse error must name file path: {msg}"),
     )?;
+    if let Some(needle) = expected_substring {
+        ensure(
+            msg.contains(needle),
+            format!("parse error must contain '{needle}': {msg}"),
+        )?;
+    }
     Ok(())
 }
 
 #[test]
-fn an_unknown_key_fails_the_load_naming_the_key() -> TestResult {
-    let (_dir, path) = config_file(r#"{"max_file_byte": 5}"#)?;
-
-    let error = GlobalConfig::load_from(&path).check_err("unknown key must fail")?;
-
-    ensure(
-        matches!(error, ConfigError::Parse { .. }),
-        format!("{error}"),
+fn malformed_unknown_and_wrongly_typed_json_fail_with_parse_errors() -> TestResult {
+    assert_parse_error("invalid json", None)?;
+    assert_parse_error(r#"{"max_file_byte": 5}"#, Some("max_file_byte"))?;
+    assert_parse_error(
+        r#"{"mechanics": {"version": 1, "entries": []}}"#,
+        Some("unknown field `mechanics`"),
     )?;
-    ensure(
-        error.to_string().contains("max_file_byte"),
-        format!("{error}"),
-    )?;
-    ensure(
-        error.to_string().contains(path.to_str().check("utf-8")?),
-        format!("{error}"),
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_mechanics_key_is_an_unknown_key() -> TestResult {
-    let (_dir, path) = config_file(r#"{"mechanics": {"version": 1, "entries": []}}"#)?;
-
-    let error = GlobalConfig::load_from(&path).check_err("mechanics are session-only")?;
-
-    ensure(
-        error.to_string().contains("unknown field `mechanics`"),
-        format!("{error}"),
-    )?;
-    Ok(())
+    assert_parse_error(r#"{"max_parse_bytes": "big"}"#, None)
 }
 
 #[test]
@@ -132,377 +182,13 @@ fn an_unreadable_config_is_an_io_error_naming_the_file() -> TestResult {
 
     let error = GlobalConfig::load_from(&path).check_err("unreadable must fail")?;
 
-    ensure(matches!(error, ConfigError::Io { .. }), format!("{error}"))?;
+    ensure(
+        matches!(error, ConfigError::Io { .. }),
+        format!("expected ConfigError::Io, got {error:?}"),
+    )?;
     ensure(
         error.to_string().contains(path.to_str().check("utf-8")?),
-        format!("{error}"),
-    )?;
-    Ok(())
-}
-
-#[test]
-fn effective_limits_fails_for_an_invalid_global_config_instead_of_using_defaults() -> TestResult {
-    let _dir = use_global_config("{")?;
-
-    let error = effective_limits(Path::new("/precedence-test/invalid")).check_err("must fail")?;
-
-    ensure(
-        matches!(error, ProjectLimitsError::Config(ConfigError::Parse { .. })),
-        format!("{error}"),
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_per_repo_config_file_is_ignored() -> TestResult {
-    let project = tempfile::tempdir().check("project")?;
-    let activation = project.path().join(".planning/slugaudit");
-    std::fs::create_dir_all(&activation).check("activation dir")?;
-    std::fs::write(activation.join("config.json"), "{ not even json").check("write")?;
-    set_global_config_path_for_test(None);
-
-    let limits = effective_limits(project.path()).check("the per-repo file is never read")?;
-
-    ensure_eq(
-        &limits.default_page_bytes,
-        &resolve_limits(
-            &GlobalConfig::default(),
-            env_overrides().check("env")?,
-            None,
-        )
-        .check("limits")?
-        .default_page_bytes,
-        "limits.default_page_bytes == resolve_limits( &GlobalConfig::default(), env_overrides().check(\"env\")?, None ) .check(\"limits\")? .default_page_bytes",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn the_environment_beats_the_global_file() -> TestResult {
-    let global = GlobalConfig {
-        max_file_bytes: Some(1_000_000),
-        default_page_bytes: Some(4_096),
-        ..Default::default()
-    };
-    let env = EnvOverrides {
-        max_file_bytes: Some(2_000_000),
-        ..Default::default()
-    };
-
-    let limits = resolve_limits(&global, &env, None).check("limits resolve")?;
-
-    ensure_eq(&limits.max_file_bytes, &2_000_000, "env beats the file")?;
-    ensure_eq(
-        &limits.default_page_bytes,
-        &4_096,
-        "the file beats the default",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn the_session_profile_picks_the_base_and_keeps_file_and_env_limits() -> TestResult {
-    let global = GlobalConfig {
-        profile: Some(AuditProfile::Audit),
-        default_page_bytes: Some(4_096),
-        ..Default::default()
-    };
-    let env = EnvOverrides {
-        profile: Some(AuditProfile::Audit),
-        max_file_bytes: Some(2_000_000),
-        ..Default::default()
-    };
-
-    let limits = resolve_limits(&global, &env, Some(AuditProfile::Lean)).check("limits resolve")?;
-
-    let lean = limits_for_profile(AuditProfile::Lean).check("lean")?;
-    ensure_eq(
-        &limits.max_total_import_bytes,
-        &lean.max_total_import_bytes,
-        "the session profile beats the env and file profiles for the base",
-    )?;
-    ensure_eq(
-        &limits.max_file_bytes,
-        &2_000_000,
-        "choosing a profile keeps the env limit",
-    )?;
-    ensure_eq(
-        &limits.default_page_bytes,
-        &4_096,
-        "choosing a profile keeps the file limit",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn the_env_profile_beats_the_file_profile_and_the_default() -> TestResult {
-    let global = GlobalConfig {
-        profile: Some(AuditProfile::Audit),
-        ..Default::default()
-    };
-    let env = EnvOverrides {
-        profile: Some(AuditProfile::Lean),
-        ..Default::default()
-    };
-
-    let limits = resolve_limits(&global, &env, None).check("limits resolve")?;
-
-    ensure_eq(
-        &limits.max_total_import_bytes,
-        &limits_for_profile(AuditProfile::Lean)
-            .check("lean")?
-            .max_total_import_bytes,
-        "limits.max_total_import_bytes == limits_for_profile(AuditProfile::Lean) .check(\"lean\")? .max_total_import_bytes",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn an_environment_response_ceiling_moves_the_result_store_budget_unless_the_file_pinned_it()
--> TestResult {
-    let env = EnvOverrides {
-        max_query_response_bytes: Some(1_000_000),
-        ..Default::default()
-    };
-
-    let derived = resolve_limits(&GlobalConfig::default(), &env, Some(AuditProfile::Lean))
-        .check("limits resolve")?;
-    let pinned = resolve_limits(
-        &GlobalConfig {
-            max_result_store_bytes: Some(777),
-            ..Default::default()
-        },
-        &env,
-        Some(AuditProfile::Lean),
-    )
-    .check("limits resolve")?;
-
-    ensure_eq(
-        &derived.max_result_store_bytes,
-        &4_000_000,
-        "derived.max_result_store_bytes == 4_000_000",
-    )?;
-    ensure_eq(
-        &pinned.max_result_store_bytes,
-        &777,
-        "pinned.max_result_store_bytes == 777",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn the_real_environment_overrides_the_global_file_end_to_end() -> TestResult {
-    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
-    temp_env::with_vars(
-        [
-            ("SLUGAUDIT_PROFILE", Some("lean")),
-            ("SLUGAUDIT_MAX_FILE_BYTES", Some("3000000")),
-        ],
-        || -> TestResult {
-            let env = EnvOverrides::read().check("valid env")?;
-            let global = GlobalConfig {
-                max_file_bytes: Some(1_000_000),
-                ..Default::default()
-            };
-
-            let limits = resolve_limits(&global, &env, None).check("limits resolve")?;
-
-            ensure_eq(
-                &limits.max_file_bytes,
-                &3_000_000,
-                "limits.max_file_bytes == 3_000_000",
-            )?;
-            Ok(())
-        },
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_configured_default_page_size_overrides_the_profile_default() -> TestResult {
-    let (_dir, path) = config_file(r#"{"profile": "lean", "default_page_bytes": 4096}"#)?;
-
-    let cfg = GlobalConfig::load_from(&path)
-        .check("config loads")?
-        .check("config present")?;
-    let applied = cfg
-        .apply_limit_keys(limits_for_profile(AuditProfile::Lean).check("lean")?)
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.default_page_bytes,
-        &4_096,
-        "applied.default_page_bytes == 4_096",
-    )?;
-    ensure_eq(
-        &applied.max_query_response_bytes,
-        &(32 * 1024 * 1024),
-        "applied.max_query_response_bytes == 32 * 1024 * 1024",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_config_file_above_sqlite_max_is_clamped() -> TestResult {
-    let config = GlobalConfig {
-        max_file_bytes: Some(2_000_000_000),
-        ..Default::default()
-    };
-
-    let applied = config
-        .apply_limit_keys(ResourceLimits::default())
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_file_bytes,
-        &crate::model::SQLITE_MAX_VALUE_BYTES,
-        "SQLite cannot store a larger content value; the project limit is clamped",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_configured_max_parse_bytes_overrides_the_profile_default() -> TestResult {
-    let config = GlobalConfig {
-        max_parse_bytes: Some(4_096),
-        ..Default::default()
-    };
-
-    let applied = config
-        .apply_limit_keys(ResourceLimits::default())
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_parse_bytes,
-        &4_096,
-        "applied.max_parse_bytes == 4_096",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_configured_max_parse_bytes_above_max_file_bytes_is_clamped_and_reported() -> TestResult {
-    let config = GlobalConfig {
-        max_file_bytes: Some(10_000),
-        max_parse_bytes: Some(20_000),
-        ..Default::default()
-    };
-
-    let (applied, logs) = capture_warns(|| config.apply_limit_keys(ResourceLimits::default()))?;
-    let applied = applied.check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_parse_bytes,
-        &10_000,
-        "applied.max_parse_bytes == 10_000",
-    )?;
-    ensure(
-        logs.contains("max_parse_bytes exceeds max_file_bytes; clamping"),
-        &logs,
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_configured_max_parse_wall_clock_ms_overrides_the_profile_default() -> TestResult {
-    let config = GlobalConfig {
-        max_parse_wall_clock_ms: Some(250),
-        ..Default::default()
-    };
-
-    let applied = config
-        .apply_limit_keys(ResourceLimits::default())
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_parse_wall_clock_ms,
-        &250,
-        "applied.max_parse_wall_clock_ms == 250",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_configured_max_structure_query_bytes_overrides_the_profile_default() -> TestResult {
-    let config = GlobalConfig {
-        max_structure_query_bytes: Some(512),
-        ..Default::default()
-    };
-
-    let applied = config
-        .apply_limit_keys(ResourceLimits::default())
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_structure_query_bytes,
-        &512,
-        "applied.max_structure_query_bytes == 512",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_non_numeric_max_parse_bytes_is_a_parse_error() -> TestResult {
-    let (_dir, path) = config_file(r#"{"max_parse_bytes": "big"}"#)?;
-
-    let error = GlobalConfig::load_from(&path).check_err("a string is not a byte count")?;
-
-    ensure(
-        matches!(error, ConfigError::Parse { .. }),
-        format!("{error}"),
-    )?;
-    Ok(())
-}
-
-#[test]
-fn a_configured_result_store_budget_and_grace_override_the_profile_defaults() -> TestResult {
-    let config = GlobalConfig {
-        max_result_store_bytes: Some(777),
-        result_active_grace_secs: Some(33),
-        ..Default::default()
-    };
-
-    let applied = config
-        .apply_limit_keys(ResourceLimits::default())
-        .check("apply the config")?;
-
-    ensure_eq(
-        &applied.max_result_store_bytes,
-        &777,
-        "applied.max_result_store_bytes == 777",
-    )?;
-    ensure_eq(
-        &applied.result_active_grace_secs,
-        &33,
-        "applied.result_active_grace_secs == 33",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn env_max_file_bytes_prevents_global_config_from_prematurely_clamping_max_parse_bytes()
--> TestResult {
-    let global = GlobalConfig {
-        max_file_bytes: Some(10_000),
-        ..Default::default()
-    };
-    let env = EnvOverrides {
-        max_file_bytes: Some(10_000_000),
-        ..Default::default()
-    };
-
-    let resolved = resolve_limits(&global, &env, Some(AuditProfile::Lean))
-        .check("resolve_limits with env max_file_bytes")?;
-
-    ensure_eq(
-        &resolved.max_file_bytes,
-        &10_000_000,
-        "resolved.max_file_bytes == 10_000_000",
-    )?;
-    ensure_eq(
-        &resolved.max_parse_bytes,
-        &(2 * 1024 * 1024),
-        "higher-precedence SLUGAUDIT_MAX_FILE_BYTES must not let config.json clamp max_parse_bytes",
+        format!("I/O error must name file path: {error}"),
     )?;
     Ok(())
 }

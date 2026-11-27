@@ -5,8 +5,8 @@
 //! `publish_race_tests.rs` to keep both under the source-size gate.
 use super::*;
 use crate::store::open_read_write;
-use crate::store::test_join::join_checked;
 use crate::sync::test_support::{stored_paths, write};
+use crate::util::join_checked;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 #[test]
@@ -41,35 +41,49 @@ fn is_retryable_is_true_only_for_the_two_documented_race_hazards() -> TestResult
 
 #[test]
 fn sample_all_rejects_strictly_over_the_byte_limit_not_at_or_under_it() -> TestResult {
+    use crate::sync::sample_batch::{Pass2ChunkContext, run_pass2_chunks};
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU64;
+
     let project = tempfile::tempdir().check("project dir")?;
     write(project.path(), "a.rs", b"12345")?;
-    let (discovered, _skipped) = discovery::discover(project.path()).check("discover")?;
+    let (discovered, _skipped) =
+        discovery::discover_and_hash(project.path()).check("discover_and_hash")?;
 
     let generous = crate::util::Deadline::after(std::time::Duration::from_mins(1));
     let exact = ResourceLimits {
         max_total_import_bytes: 5,
         ..ResourceLimits::default()
     };
-    sample_all_with_deadline(
-        &discovered,
-        &exact,
-        &crate::progress::NoopProgressSink,
-        &generous,
-    )
-    .check("a total exactly at the limit must be accepted, not rejected")?;
+    let empty_hashes = HashMap::new();
+    let total_exact = AtomicU64::new(0);
+    let exact_ctx = Pass2ChunkContext {
+        total_files: discovered.len(),
+        pass1_hashes: &empty_hashes,
+        limits: &exact,
+        total_bytes: &total_exact,
+        sink: &crate::progress::NoopProgressSink,
+        deadline: &generous,
+    };
+    run_pass2_chunks(&discovered, &exact_ctx, |_| Ok(()))
+        .check("a total exactly at the limit must be accepted, not rejected")?;
 
     let one_under_needed = ResourceLimits {
         max_total_import_bytes: 4,
         ..ResourceLimits::default()
     };
+    let total_over = AtomicU64::new(0);
+    let over_ctx = Pass2ChunkContext {
+        total_files: discovered.len(),
+        pass1_hashes: &empty_hashes,
+        limits: &one_under_needed,
+        total_bytes: &total_over,
+        sink: &crate::progress::NoopProgressSink,
+        deadline: &generous,
+    };
     ensure(
         matches!(
-            sample_all_with_deadline(
-                &discovered,
-                &one_under_needed,
-                &crate::progress::NoopProgressSink,
-                &generous
-            ),
+            run_pass2_chunks(&discovered, &over_ctx, |_| Ok(())),
             Err(PublishError::ImportTooLarge { .. })
         ),
         "one byte over the limit must be rejected",

@@ -1,95 +1,98 @@
-//! The results directory, this process's owner lock, and the startup sweep.
+//! Results directory setup, exclusive file creation, and session owner lock.
 //!
 //! Layout: `results/<session>.lock` (advisory lock held for the store's life)
-//! and `results/<session>-<result>.db` (unlinked at creation, so a `.db` is
-//! only ever seen if the process died in the instant before the unlink). The
-//! lock is taken BEFORE any `.db` exists. The sweep deletes the files of a
-//! session whose lock it can take (the owner is dead) and of a session with no
-//! lock file; it never touches a live owner's files or its own session's.
+//! and `results/<session>-<result>.db`. The lock is taken before any `.db`
+//! exists and unlinked on [`OwnerLock`] drop.
 
 use super::error::ResultStoreError;
-use super::platform;
-use std::fs::File;
+use super::sweep::{self, SweepOutcome};
+#[cfg(test)]
+use super::sweep::{lock_presence, sweep_orphan};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// Attempts at taking a lock file that a sweeper deleted under us.
 const LOCK_ATTEMPTS: usize = 3;
 
-/// What the startup sweep did; visible in the store stats.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SweepOutcome {
-    /// Files removed (dead owners' databases and lock files, orphans).
-    pub removed_files: usize,
-    /// Sessions whose lock another live process holds; their files were left.
-    pub live_owners_skipped: usize,
-    /// Operations that failed; the sweep continued with the rest.
-    pub errors: usize,
-    /// The first failure's message, kept for the stats.
-    pub first_error: Option<String>,
-}
-
-/// Adds one to a sweep tally. A tally holds at `usize::MAX` and never wraps:
-/// the reported number then means "at least this many", and counting a
-/// directory entry is never a reason to fail the sweep.
-fn tally(count: &mut usize) {
-    // KEEP saturating: a stats tally has a designed ceiling; at usize::MAX it reads "at least this many" and never wraps to a small number
-    *count = count.saturating_add(1);
-}
-
-impl SweepOutcome {
-    /// Counts a failure and logs it once, with its cause.
-    fn failed(&mut self, context: &'static str, error: &io::Error) {
-        tracing::warn!(context, error = %error, "result store sweep problem; paging stays enabled");
-        tally(&mut self.errors);
-        self.first_error
-            .get_or_insert_with(|| format!("{context}: {error}"));
+/// Creates `dir` if missing or accepts an existing directory without creating
+/// missing parents (a missing `.planning/slugaudit` means the project is off).
+pub(super) fn ensure_dir(dir: &Path) -> io::Result<()> {
+    match std::fs::create_dir(dir) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        other => other,
     }
+}
 
-    /// Removes one file; a file that is already gone is not a failure.
-    pub(super) fn remove(&mut self, path: &Path, context: &'static str) {
-        match std::fs::remove_file(path) {
-            Ok(()) => tally(&mut self.removed_files),
+/// Creates a brand-new scratch file; an existing path is an error.
+pub(super) fn create_new_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+fn open_lock_file(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+/// Guard holding this session's OS lock file and unlinking it on drop.
+pub(super) struct OwnerLock {
+    lock: Option<File>,
+    lock_path: PathBuf,
+}
+
+impl Drop for OwnerLock {
+    fn drop(&mut self) {
+        match std::fs::remove_file(&self.lock_path) {
+            Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => self.failed(context, &error),
+            Err(error) => {
+                tracing::warn!(error = %error, "could not remove the result store lock file");
+            }
         }
+        drop(self.lock.take());
     }
 }
 
-/// The directory and the lock this process holds on it.
+/// The directory, owner lock guard, and sweep outcome for an open store.
 pub(super) struct Owner {
     pub(super) dir: PathBuf,
-    pub(super) lock: File,
-    pub(super) lock_path: PathBuf,
+    pub(super) lock: OwnerLock,
     pub(super) sweep: SweepOutcome,
 }
 
-/// Creates the directory, takes the owner lock, then sweeps.
+/// Creates `results/`, takes the owner lock, and sweeps dead-session leftovers.
 pub(super) fn open_owner(runtime_dir: &Path, session: Uuid) -> Result<Owner, ResultStoreError> {
     let dir = runtime_dir.join("results");
-    platform::ensure_dir(&dir)
+    ensure_dir(&dir)
         .map_err(|error| ResultStoreError::unavailable("prepare the results directory", error))?;
     let lock_path = dir.join(format!("{}.lock", session.hyphenated()));
     let lock = take_lock(&lock_path)?;
-    let sweep = sweep(&dir, session);
+    let sweep = sweep::sweep(&dir, session);
     Ok(Owner {
         dir,
-        lock,
-        lock_path,
+        lock: OwnerLock {
+            lock: Some(lock),
+            lock_path,
+        },
         sweep,
     })
 }
 
-/// Opens and exclusively locks the lock file, verifying the path still names
-/// the locked inode (a sweeper may have deleted it between open and lock).
 fn take_lock(path: &Path) -> Result<File, ResultStoreError> {
     for _ in 0..LOCK_ATTEMPTS {
-        let file = platform::open_lock_file(path)
+        let file = open_lock_file(path)
             .map_err(|error| ResultStoreError::unavailable("open the owner lock", error))?;
         file.try_lock()
             .map_err(|error| ResultStoreError::unavailable("take the owner lock", error))?;
-        let current = platform::names_same_file(&file, path)
+        let current = crate::util::same_open_file(&file, path)
             .map_err(|error| ResultStoreError::unavailable("verify the owner lock", error))?;
         if current {
             return Ok(file);
@@ -99,139 +102,6 @@ fn take_lock(path: &Path) -> Result<File, ResultStoreError> {
         "take the owner lock",
         io::Error::other("the lock file was replaced repeatedly"),
     ))
-}
-
-/// `<uuid>.lock` -> the session.
-fn parse_lock(name: &str) -> Option<Uuid> {
-    parse_hyphenated(name.strip_suffix(".lock")?)
-}
-
-/// `<uuid>-<uuid>.db` -> the owning session.
-fn parse_db(name: &str) -> Option<Uuid> {
-    let stem = name.strip_suffix(".db")?;
-    parse_hyphenated(stem.get(..36)?).filter(|_| {
-        stem.get(36..37) == Some("-") && stem.get(37..).and_then(parse_hyphenated).is_some()
-    })
-}
-
-fn parse_hyphenated(text: &str) -> Option<Uuid> {
-    // A name that is not a UUID is a foreign file in the results directory,
-    // which the sweep leaves alone.
-    let Ok(id) = Uuid::parse_str(text) else {
-        return None;
-    };
-    (id.hyphenated().to_string() == text).then_some(id)
-}
-
-/// Removes the leftovers of dead owners and of lock-less sessions.
-fn sweep(dir: &Path, own: Uuid) -> SweepOutcome {
-    let mut outcome = SweepOutcome::default();
-    let listing = match std::fs::read_dir(dir) {
-        Ok(listing) => listing,
-        Err(error) => {
-            outcome.failed("list the results directory", &error);
-            return outcome;
-        }
-    };
-    let (mut locks, mut dbs) = (Vec::new(), Vec::new());
-    for entry in listing {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                outcome.failed("read a results directory entry", &error);
-                continue;
-            }
-        };
-        match entry.file_type() {
-            Ok(kind) if kind.is_file() => {}
-            Ok(_) => continue,
-            Err(error) => {
-                outcome.failed("inspect a results directory entry", &error);
-                continue;
-            }
-        }
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if let Some(session) = parse_lock(&name) {
-            locks.push((session, entry.path()));
-        } else if let Some(session) = parse_db(&name) {
-            dbs.push((session, entry.path()));
-        }
-    }
-    for (session, lock_path) in locks.iter().filter(|(session, _)| *session != own) {
-        sweep_owner(*session, lock_path, &dbs, &mut outcome);
-    }
-    for (session, path) in &dbs {
-        let has_lock = locks.iter().any(|(owner, _)| owner == session);
-        if *session != own && !has_lock {
-            sweep_orphan(path, lock_exists(dir, *session), &mut outcome);
-        }
-    }
-    outcome
-}
-
-/// Re-checks the filesystem before deleting a lock-less session's file: a
-/// live process creates its lock before its first `.db`. Only `NotFound`
-/// means absent; any other error leaves the answer unknown and is returned.
-fn lock_exists(dir: &Path, session: Uuid) -> io::Result<bool> {
-    lock_presence(
-        dir.join(format!("{}.lock", session.hyphenated()))
-            .symlink_metadata(),
-    )
-}
-
-/// Removes a lock-less session's file when its lock is known to be absent. A
-/// failed lock check leaves the file in place and is recorded: a live
-/// session's file must not be deleted on a guess.
-fn sweep_orphan(path: &Path, lock_present: io::Result<bool>, outcome: &mut SweepOutcome) {
-    match lock_present {
-        Ok(false) => outcome.remove(path, "remove an orphaned result file"),
-        Ok(true) => {}
-        Err(error) => outcome.failed("check for a lock before removing a result file", &error),
-    }
-}
-
-/// Maps a lock file's metadata lookup to present, absent (`NotFound`) or the
-/// error.
-fn lock_presence(metadata: io::Result<std::fs::Metadata>) -> io::Result<bool> {
-    match metadata {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-/// Removes a dead owner's files, or skips a live owner.
-fn sweep_owner(
-    session: Uuid,
-    lock_path: &Path,
-    dbs: &[(Uuid, PathBuf)],
-    outcome: &mut SweepOutcome,
-) {
-    let lock = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(lock_path)
-    {
-        Ok(lock) => lock,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
-        Err(error) => return outcome.failed("open another session's lock", &error),
-    };
-    match lock.try_lock() {
-        Ok(()) => {
-            for (owner, path) in dbs {
-                if *owner == session {
-                    outcome.remove(path, "remove a dead owner's result file");
-                }
-            }
-            outcome.remove(lock_path, "remove a dead owner's lock file");
-        }
-        Err(std::fs::TryLockError::WouldBlock) => tally(&mut outcome.live_owners_skipped),
-        Err(std::fs::TryLockError::Error(error)) => {
-            outcome.failed("lock another session's lock", &error);
-        }
-    }
 }
 
 #[cfg(test)]

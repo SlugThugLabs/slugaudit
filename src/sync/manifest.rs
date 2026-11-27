@@ -1,6 +1,5 @@
 //! Manifest comparison: how a stored revision differs from current disk
-//! state ([`compare`]), plus the JSON path-set parameter shared by the
-//! set-based queries in sync.
+//! state ([`compare`]).
 
 use std::collections::BTreeMap;
 
@@ -25,8 +24,7 @@ pub struct FileChange {
 }
 
 /// Compares freshly hashed disk state against what a revision currently has
-/// stored, returning only files that changed. An unchanged file — same
-/// path, same hash — never appears in the result.
+/// stored, returning only files that changed sorted by `relative_path`.
 pub fn compare<'a>(
     stored: impl IntoIterator<Item = (&'a str, &'a str)>,
     current: impl IntoIterator<Item = (&'a str, &'a str)>,
@@ -60,114 +58,6 @@ pub fn compare<'a>(
     changes
 }
 
-/// SQL subquery yielding the paths of the JSON array bound to its single
-/// parameter (built by [`paths_json_array`]).
-///
-/// Every query that filters on a caller-sized set of paths binds ONE JSON
-/// array and reads it through `json_each`, never one `?` per path: SQLite
-/// rejects a statement with more than `SQLITE_MAX_VARIABLE_NUMBER` bound
-/// variables (32766 in the bundled build, probed 2026-10-18: 32766 binds
-/// succeed, 32767 fail with "too many SQL variables"), and a project's first
-/// publish touches every file, so a per-path bind list could not index a
-/// project with more than 32766 files. One parameter keeps the work
-/// set-based and inside the caller's transaction.
-pub(crate) const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
-
-/// Serializes `paths` into the JSON array [`PATH_SET_SUBQUERY`] binds.
-///
-/// The whole array becomes ONE SQL parameter, so every caller must pass a
-/// bounded batch (4096 paths is the existing unit) rather than a set whose
-/// size scales with the project: an unbounded path set allocates and binds
-/// proportionally to it.
-pub(crate) fn paths_json_array<'a>(
-    paths: impl IntoIterator<Item = &'a str>,
-) -> Result<String, rusqlite::Error> {
-    let paths: Vec<&str> = paths.into_iter().collect();
-    serde_json::to_string(&paths).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use slugaudit_test_check::{TestResult, ensure, ensure_eq};
-
-    #[test]
-    fn unchanged_file_produces_no_change() -> TestResult {
-        let changes = compare([("a.rs", "hash1")], [("a.rs", "hash1")]);
-        ensure(changes.is_empty(), "changes.is_empty()")?;
-        Ok(())
-    }
-
-    #[test]
-    fn same_size_content_change_is_modified() -> TestResult {
-        let changes = compare([("a.rs", "hash1")], [("a.rs", "hash2")]);
-        ensure_eq(
-            &changes,
-            &vec![FileChange {
-                relative_path: "a.rs".to_owned(),
-                status: ChangeStatus::Modified,
-            }],
-            "changes == vec![FileChange { relative_path: \"a.rs\".to_owned(), status: ChangeStatus::Modified, }]",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn new_file_is_added() -> TestResult {
-        let changes = compare([], [("a.rs", "hash1")]);
-        ensure_eq(
-            &changes,
-            &vec![FileChange {
-                relative_path: "a.rs".to_owned(),
-                status: ChangeStatus::Added,
-            }],
-            "changes == vec![FileChange { relative_path: \"a.rs\".to_owned(), status: ChangeStatus::Added, }]",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn missing_file_is_deleted() -> TestResult {
-        let changes = compare([("a.rs", "hash1")], []);
-        ensure_eq(
-            &changes,
-            &vec![FileChange {
-                relative_path: "a.rs".to_owned(),
-                status: ChangeStatus::Deleted,
-            }],
-            "changes == vec![FileChange { relative_path: \"a.rs\".to_owned(), status: ChangeStatus::Deleted, }]",
-        )?;
-        Ok(())
-    }
-
-    #[test]
-    fn mixed_changes_are_all_reported_and_sorted() -> TestResult {
-        let changes = compare(
-            [
-                ("deleted.rs", "h1"),
-                ("modified.rs", "h2"),
-                ("same.rs", "h3"),
-            ],
-            [("added.rs", "h4"), ("modified.rs", "h5"), ("same.rs", "h3")],
-        );
-        ensure_eq(
-            &changes,
-            &vec![
-                FileChange {
-                    relative_path: "added.rs".to_owned(),
-                    status: ChangeStatus::Added,
-                },
-                FileChange {
-                    relative_path: "deleted.rs".to_owned(),
-                    status: ChangeStatus::Deleted,
-                },
-                FileChange {
-                    relative_path: "modified.rs".to_owned(),
-                    status: ChangeStatus::Modified,
-                },
-            ],
-            "changes == vec![ FileChange { relative_path: \"added.rs\".to_owned(), status: ChangeStatus::Added, }, FileChange { relative_path: \"deleted.rs\".to_owned(), status: ChangeStatus::Deleted, }, FileChange { relative_path: \"modified.rs\".to_owned(), status: ChangeStatus::Modified, }, ]",
-        )?;
-        Ok(())
-    }
-}
+#[path = "manifest_tests.rs"]
+mod tests;

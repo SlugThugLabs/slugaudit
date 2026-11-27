@@ -1,9 +1,8 @@
 //! Result ids and the cursor codec: `v1.<nonce>.<result-uuid>.<ord>`.
 //!
 //! The position lives in the token, so a repeated call returns the same page.
-//! Decoding is strict: anything but the canonical form is `Unknown`.
+//! Parsing is strict: anything but the canonical form returns `None`.
 
-use super::error::ResultStoreError;
 use std::fmt;
 use uuid::Uuid;
 
@@ -23,7 +22,7 @@ impl fmt::Display for ResultId {
 /// A decoded cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cursor {
-    /// The process that issued it.
+    /// The store instance that issued it.
     pub nonce: Uuid,
     /// The result it reads.
     pub result: ResultId,
@@ -44,16 +43,9 @@ impl fmt::Display for Cursor {
 }
 
 impl Cursor {
-    /// Parses a token.
-    ///
-    /// # Errors
-    ///
-    /// `Unknown` for every malformed token. Not logged here; the store counts it.
-    pub fn decode(token: &str) -> Result<Self, ResultStoreError> {
-        Self::parse(token).ok_or(ResultStoreError::Unknown)
-    }
-
-    pub(super) fn parse(token: &str) -> Option<Self> {
+    /// Parses a canonical cursor token without touching any store counters.
+    #[must_use]
+    pub(crate) fn parse(token: &str) -> Option<Self> {
         if token.len() > MAX_TOKEN_LEN || !token.is_ascii() {
             return None;
         }
@@ -72,7 +64,7 @@ impl Cursor {
 }
 
 /// Only the lowercase hyphenated form is accepted.
-fn canonical_uuid(text: &str) -> Option<Uuid> {
+pub(super) fn canonical_uuid(text: &str) -> Option<Uuid> {
     // Not a UUID means not a cursor; the caller answers `unknown_cursor`.
     let Ok(id) = Uuid::parse_str(text) else {
         return None;

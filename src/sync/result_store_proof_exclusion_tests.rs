@@ -65,7 +65,7 @@ fn result_store_proof_results_dir_and_lock_file_are_not_discovered() -> TestResu
     let paths = stored_paths(&connection)?;
     ensure_eq(&paths, &["lib.rs"], format!("planted files: {planted:?}"))?;
     let (discovered, _skipped) =
-        crate::sync::discovery::discover(project.path()).check("discovery succeeds")?;
+        crate::sync::discovery::discover_and_hash(project.path()).check("discovery succeeds")?;
     let discovered: Vec<String> = discovered
         .into_iter()
         .map(|file| file.relative_path)

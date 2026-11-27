@@ -1,13 +1,73 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=the revision transaction: baseline check, deletions, upserts, edge resolution and the current-pointer swap
-use super::manifest::{PATH_SET_SUBQUERY, paths_json_array};
-use super::revision_edges;
-use super::revision_files;
-use super::revision_skipped::{self, SkippedRecord};
+// slugaudit-line-exception: approved-by=split-judge; reason=atomic project.db revision state transitions, CAS baseline check, deletions, skipped rows, and pointer flip
+//! Atomic revision commit transaction on `project.db`: baseline CAS check,
+//! deletions, staged row copy, skipped existence rows, `unrepresentable_paths`,
+//! dependency edge handoff, and the `is_current` revision pointer flip.
+
+use super::classify::classify;
+use super::revision_edges::{self, EdgeChangeScope, StagedFileEdgeMeta, UpsertedEdgeInput};
+#[cfg(test)]
+use super::revision_rust_meta::any_path_has_stored_rust_path_attr;
+use super::staging::StagingDb;
 use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
-use crate::util;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use crate::util::{self, Deadline};
+#[cfg(test)]
+use rusqlite::TransactionBehavior;
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashSet;
 use thiserror::Error;
+
+/// SQL subquery yielding the paths of the JSON array bound to its single
+/// parameter (built by [`paths_json_array`]) so batch updates never hit
+/// `SQLITE_MAX_VARIABLE_NUMBER` (32,766).
+const PATH_SET_SUBQUERY: &str = "SELECT value FROM json_each(?)";
+
+/// How many deleted paths one edge-nulling statement binds.
+const DELETED_PATH_BATCH: usize = 4096;
+
+/// `files.skip_reason` for a file over the per-file import ceiling.
+pub(super) const SKIP_REASON_OVERSIZE: &str = "oversize";
+/// `files.skip_reason` for a file whose bytes are not valid UTF-8.
+pub(super) const SKIP_REASON_NOT_UTF8: &str = "not_utf8";
+/// `files.skip_reason` for a file discovery could not read.
+pub(super) const SKIP_REASON_UNREADABLE: &str = "unreadable";
+/// `files.skip_reason` for a skipped file whose `stat` failed (`byte_len` NULL).
+pub(super) const SKIP_REASON_STAT_FAILED: &str = "stat_failed";
+
+pub(super) const UPSERT_FILE_SQL: &str = "INSERT INTO files (\
+        path, file_kind, content, content_hash, hash_algorithm, byte_len, \
+        modified_unix_seconds, language, language_detected, parser_availability, \
+        parse_outcome, parse_error_reason, extraction_completeness, last_revision_id, \
+        file_class\
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+     ON CONFLICT(path) DO UPDATE SET \
+        file_kind = excluded.file_kind, \
+        file_class = excluded.file_class, \
+        skip_reason = NULL, \
+        content = excluded.content, \
+        content_hash = excluded.content_hash, \
+        hash_algorithm = excluded.hash_algorithm, \
+        byte_len = excluded.byte_len, \
+        modified_unix_seconds = excluded.modified_unix_seconds, \
+        language = excluded.language, \
+        language_detected = excluded.language_detected, \
+        parser_availability = excluded.parser_availability, \
+        parse_outcome = excluded.parse_outcome, \
+        parse_error_reason = excluded.parse_error_reason, \
+        extraction_completeness = excluded.extraction_completeness, \
+        last_revision_id = excluded.last_revision_id \
+     RETURNING id";
+
+pub(super) const INSERT_EVIDENCE_SQL: &str = "INSERT INTO evidence (\
+        file_id, key, kind, origin, span_availability, \
+        start_byte, end_byte, start_line, start_column, end_line, end_column, payload\
+     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)";
+
+fn paths_json_array<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<String, rusqlite::Error> {
+    let paths: Vec<&str> = paths.into_iter().collect();
+    serde_json::to_string(&paths).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// One file's fully-sampled state entering a revision: identity, content and
@@ -15,8 +75,7 @@ use thiserror::Error;
 pub struct FileRecord {
     /// Project-relative path with `/` separators.
     pub relative_path: String,
-    /// Whether the walk classified the file as binary; binary files keep no
-    /// `content`.
+    /// Whether the walk classified the file as binary (`content` is `None`).
     pub is_binary: bool,
     /// Decoded text content, or `None` for a binary file.
     pub content: Option<String>,
@@ -24,13 +83,11 @@ pub struct FileRecord {
     pub identity: SourceIdentity,
     /// Raw byte length of the file.
     pub byte_len: u64,
-    /// File mtime in unix seconds at sample time, kept for reporting. It is
-    /// never used to skip a read: freshness is decided by content hash.
+    /// File mtime in unix seconds at sample time, kept for reporting only.
     pub modified_unix_seconds: Option<i64>,
     /// Detected language name, or `None` when no grammar matched the path.
     pub language: Option<String>,
-    /// Whether `language` was detected from the file's path; false when
-    /// nothing matched.
+    /// Whether `language` was detected from the file's path.
     pub language_detected: bool,
     /// Parse and extraction status recorded for this revision.
     pub run: ParserRun,
@@ -38,9 +95,18 @@ pub struct FileRecord {
     pub evidence: Vec<EvidenceItem>,
 }
 
+/// Existence row for a discovered-but-skipped file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SkippedRecord {
+    pub(super) relative_path: String,
+    pub(super) reason: String,
+    pub(super) identity: SourceIdentity,
+    pub(super) byte_len: Option<u64>,
+    pub(super) modified_unix_seconds: Option<i64>,
+}
+
 #[derive(Debug, Error)]
-/// Revision publish failures, including the CAS `StaleBaseline` verdict — the
-/// signal to re-sample and retry, never to force the write.
+/// Revision publish failures, including the CAS `StaleBaseline` verdict.
 pub enum RevisionError {
     /// A SQLite operation failed.
     #[error("database error: {0}")]
@@ -53,9 +119,7 @@ pub enum RevisionError {
         /// Static description of the invariant that failed.
         reason: &'static str,
     },
-    /// Another publisher committed between our filesystem sample and this
-    /// write. The caller must re-sample and retry rather than overwrite a
-    /// newer revision with older disk state.
+    /// Another publisher committed between our sample and this write.
     #[error(
         "concurrent publish won the race (expected current {expected}, found {found}); retry the call"
     )]
@@ -76,49 +140,17 @@ pub enum RevisionError {
     },
 }
 
-/// The inputs one publish transaction needs, grouped by role.
-///
-/// Grouped rather than passed positionally for a concrete reason:
-/// `manifest_hash` and `parser_pack_version` are both `&str`, and `deletions`
-/// and `discovered_paths` are both path collections, so a positional call
-/// site can silently swap two same-typed arguments — a mistake the compiler
-/// cannot catch.
+#[cfg(test)]
 pub(super) struct RevisionInputs<'a> {
-    /// The revision this publish expects to still be current (`None` when the
-    /// project has never been published). CAS: a mismatch fails with
-    /// [`RevisionError::StaleBaseline`] rather than overwriting a newer
-    /// revision with older disk state.
     pub(super) expected_current: Option<&'a str>,
-    /// Aggregate hash over the post-update file set:
-    /// `aggregate_manifest_hash` over the sampled *and* skipped set.
     pub(super) manifest_hash: &'a str,
-    /// Parser pack version this revision is pinned against.
     pub(super) parser_pack_version: &'a str,
-    /// Added/modified files with their parsed evidence.
     pub(super) upserts: &'a [FileRecord],
-    /// Project-relative paths no longer on disk; their rows (and cascading
-    /// evidence and edges) are deleted.
     pub(super) deletions: &'a [String],
-    /// Existence rows for the discovered-but-not-indexed files: one
-    /// `file_kind = 'skipped'` row each, so the file is countable instead of
-    /// invisible in every `count(*) FROM files`. Written before edge
-    /// resolution so an import targeting one resolves to a real row.
     pub(super) skipped: &'a [SkippedRecord],
-    /// Project-relative paths the caller walked on disk. Edge resolution
-    /// needs them because a discovered file that sampling skipped (oversize,
-    /// unreadable) exists; importing it must resolve, not read as dead code.
     pub(super) discovered_paths: &'a HashSet<String>,
-    /// Re-resolve stored `Unresolved` edges against the post-transaction
-    /// path set. True when this revision added or removed a path, because
-    /// either can change an unchanged importer's resolution.
     pub(super) re_resolve_unresolved: bool,
-    /// Raw bytes of discovered paths that cannot be represented as UTF-8 text,
-    /// persisted atomically inside the revision transaction after the CAS
-    /// baseline check succeeds.
     pub(super) unrepresentable_paths: &'a HashSet<Vec<u8>>,
-    /// Optional wall-clock deadline enforced inside the write transaction so a
-    /// long publish fails closed rather than holding SQLite's write lock past
-    /// the sync budget.
     pub(super) deadline: Option<&'a util::Deadline>,
 }
 
@@ -132,19 +164,39 @@ pub(super) fn check_deadline(deadline: Option<&util::Deadline>) -> Result<(), Re
     Ok(())
 }
 
-/// Publishes one revision atomically under compare-and-swap: the write
-/// transaction only proceeds if the current revision is still the expected
-/// one (see [`RevisionInputs::expected_current`]). Discovery/hashing happen
-/// outside this lock; CAS is what stops an older sample from committing
-/// after a newer one.
-///
-/// Upserts added/modified files and their evidence, writes the skipped
-/// files' existence rows, deletes removed files (cascading evidence and
-/// dependency edges via foreign keys), and flips `is_current` only as the
-/// transaction's last statements. Nothing here is visible to another
-/// connection until `commit` succeeds. The ordering is load-bearing: the
-/// files, evidence, and skipped rows must all be in place before edge
-/// resolution reads the known-path set, and the pointer swap comes last.
+pub(super) fn validate_record(file: &FileRecord) -> Result<(), RevisionError> {
+    file.run
+        .validate()
+        .map_err(|reason| RevisionError::InvalidParserRun {
+            path: file.relative_path.clone(),
+            reason,
+        })
+}
+
+/// Streams staged `files` and `evidence` rows one file at a time from
+/// `staging` into `tx`, checking `deadline` cooperatively and comparing prior
+/// stored Rust `#[path]` attributes before replacing evidence.
+pub(super) fn copy_staged_files_to_tx(
+    tx: &Transaction<'_>,
+    staging: &StagingDb,
+    staged_metas: &[StagedFileEdgeMeta],
+    revision_db_id: i64,
+    full_rust_reresolve: bool,
+    deadline: Option<&Deadline>,
+) -> Result<Vec<UpsertedEdgeInput>, RevisionError> {
+    let mut edge_inputs = Vec::with_capacity(staged_metas.len());
+    for meta in staged_metas {
+        check_deadline(deadline)?;
+        let rust_path_attr_changed =
+            revision_edges::did_rust_path_attr_change(tx, meta, full_rust_reresolve)?;
+        let file_id = staging.copy_seq_to_tx(tx, meta.seq, revision_db_id)?;
+        edge_inputs.push(meta.to_edge_input(file_id, rust_path_attr_changed));
+    }
+    Ok(edge_inputs)
+}
+
+/// Publishes one revision atomically from in-memory [`FileRecord`]s (test helper).
+#[cfg(test)]
 pub(super) fn publish_revision(
     connection: &mut Connection,
     inputs: &RevisionInputs<'_>,
@@ -162,43 +214,93 @@ pub(super) fn publish_revision(
         deadline,
     } = *inputs;
     check_deadline(deadline)?;
-    // The sequence below is the load-bearing ordering stated in the doc
-    // comment; each step is a private helper in THIS file so the mutation
-    // scope over revision.rs keeps covering the whole publish path.
+    let mut staging = StagingDb::open_in_memory()?;
+    let mut staged_metas = Vec::with_capacity(upserts.len());
+    {
+        let staging_tx = staging.transaction()?;
+        for (idx, file) in upserts.iter().enumerate() {
+            check_deadline(deadline)?;
+            let seq = i64::try_from(idx)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            StagingDb::stage_file(&staging_tx, seq, file)?;
+            staged_metas.push(StagedFileEdgeMeta::from_record(seq, file));
+        }
+        staging_tx.commit()?;
+    }
+
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     assert_baseline(&tx, expected_current)?;
+    let scope =
+        revision_edges::scope_for_test_inputs(&tx, upserts, deletions, re_resolve_unresolved)?;
     let (revision_db_id, revision_id) =
         insert_revision_row(&tx, manifest_hash, parser_pack_version)?;
-
-    apply_deletions(&tx, deletions, deadline)?;
-    let upserted_ids = write_upserts_and_skipped(&tx, upserts, skipped, revision_db_id, deadline)?;
-    super::publish::replace_unrepresentable_paths_in_tx(&tx, unrepresentable_paths)?;
-    let stored = revision_edges::stored_paths(&tx)?;
-    let known_ref: HashSet<&str> = discovered_paths
+    let removed_or_skipped = deletions
         .iter()
-        .chain(&stored)
         .map(String::as_str)
-        .collect();
-    resolve_edges(
+        .chain(skipped.iter().map(|s| s.relative_path.as_str()));
+    let deleted_or_skipped_had_path_attr =
+        any_path_has_stored_rust_path_attr(&tx, removed_or_skipped)?;
+    apply_deletions(&tx, deletions, deadline)?;
+
+    let edge_inputs = copy_staged_files_to_tx(
         &tx,
-        upserts,
-        &upserted_ids,
-        &known_ref,
-        re_resolve_unresolved,
+        &staging,
+        &staged_metas,
+        revision_db_id,
+        scope.any_rust_or_manifest_added_or_deleted(),
         deadline,
     )?;
-    flip_current_revision(&tx, revision_db_id)?;
+    drop(staging);
+
+    check_deadline(deadline)?;
+    upsert_skipped_files(&tx, skipped, revision_db_id, deadline)?;
+    replace_unrepresentable_paths_in_tx(&tx, unrepresentable_paths)?;
+    finish_edges_and_flip(
+        &tx,
+        &edge_inputs,
+        discovered_paths,
+        scope,
+        deleted_or_skipped_had_path_attr,
+        revision_db_id,
+        deadline,
+    )?;
 
     tx.commit()?;
     Ok(revision_id)
 }
 
-/// Inserts the revision row and stamps its derived `revision_id`. The id is
-/// derived from the row's own autoincrement id, which SQLite guarantees
-/// unique — safer than deriving it from `manifest_hash`, which can
-/// legitimately repeat if source reverts to an earlier state.
-fn insert_revision_row(
-    tx: &rusqlite::Transaction<'_>,
+/// Resolves edges against the transaction's complete `files` table and
+/// `discovered_paths`, then flips `is_current` to `revision_db_id`.
+pub(super) fn finish_edges_and_flip(
+    tx: &Transaction<'_>,
+    edge_inputs: &[UpsertedEdgeInput],
+    discovered_paths: &HashSet<String>,
+    scope: EdgeChangeScope,
+    deleted_or_skipped_had_path_attr: bool,
+    revision_db_id: i64,
+    deadline: Option<&Deadline>,
+) -> Result<(), RevisionError> {
+    let path_to_id = revision_edges::load_path_to_id(tx)?;
+    let known_ref: HashSet<&str> = discovered_paths
+        .iter()
+        .map(String::as_str)
+        .chain(path_to_id.keys().map(String::as_str))
+        .collect();
+    revision_edges::resolve_upserted_edges(
+        tx,
+        edge_inputs,
+        &path_to_id,
+        &known_ref,
+        scope,
+        deleted_or_skipped_had_path_attr,
+        deadline,
+    )?;
+    flip_current_revision(tx, revision_db_id)
+}
+
+/// Inserts the revision row and stamps its derived `revision_id`.
+pub(super) fn insert_revision_row(
+    tx: &Transaction<'_>,
     manifest_hash: &str,
     parser_pack_version: &str,
 ) -> Result<(i64, String), RevisionError> {
@@ -222,13 +324,11 @@ fn insert_revision_row(
 }
 
 /// Deletes removed files; their evidence and outgoing edges cascade via
-/// foreign keys. Inbound edges survive as `Unresolved` evidence first: the
-/// import is still written in the importer's source, so dropping the raw
-/// text would erase a fact.
-fn apply_deletions(
-    tx: &rusqlite::Transaction<'_>,
+/// foreign keys while inbound edges survive as `Unresolved`.
+pub(super) fn apply_deletions(
+    tx: &Transaction<'_>,
     deletions: &[String],
-    deadline: Option<&util::Deadline>,
+    deadline: Option<&Deadline>,
 ) -> Result<(), RevisionError> {
     if deletions.is_empty() {
         return Ok(());
@@ -254,57 +354,112 @@ fn apply_deletions(
     Ok(())
 }
 
-/// How many deleted paths one edge-nulling statement binds.
-const DELETED_PATH_BATCH: usize = 4096;
-
-/// Writes upserted files with their evidence, then the skipped files'
-/// existence rows — before edge resolution, so an import targeting a skipped
-/// file resolves to a real `files.id`. Returns the upserted rows' ids in the
-/// same order as `upserts`.
-fn write_upserts_and_skipped(
-    tx: &rusqlite::Transaction<'_>,
-    upserts: &[FileRecord],
-    skipped: &[SkippedRecord],
+/// Writes every skipped file's existence row inside `tx`, clearing any prior
+/// content, evidence, and outgoing edges.
+pub(super) fn upsert_skipped_files(
+    tx: &Transaction<'_>,
+    records: &[SkippedRecord],
     revision_db_id: i64,
-    deadline: Option<&util::Deadline>,
-) -> Result<Vec<i64>, RevisionError> {
-    let mut upserted_ids = Vec::with_capacity(upserts.len());
-    for file in upserts {
-        check_deadline(deadline)?;
-        upserted_ids.push(revision_files::upsert_file(tx, file, revision_db_id)?);
-    }
-    check_deadline(deadline)?;
-    revision_skipped::upsert_skipped_files(tx, skipped, revision_db_id, deadline)?;
-    Ok(upserted_ids)
-}
-
-/// Resolves import edges after every upsert/deletion has landed, against
-/// the complete post-transaction path set — so a file added earlier in this
-/// same revision is a valid resolution target for one added later, and a
-/// discovered-but-skipped file (no `files` row) still counts as existing.
-fn resolve_edges(
-    tx: &rusqlite::Transaction<'_>,
-    upserts: &[FileRecord],
-    upserted_ids: &[i64],
-    known_paths: &HashSet<&str>,
-    re_resolve_unresolved: bool,
-    deadline: Option<&util::Deadline>,
+    deadline: Option<&Deadline>,
 ) -> Result<(), RevisionError> {
-    revision_edges::resolve_revision_edges(
-        tx,
-        upserts,
-        upserted_ids,
-        known_paths,
-        re_resolve_unresolved,
-        deadline,
-    )
+    for record in records {
+        check_deadline(deadline)?;
+        upsert_skipped_file(tx, record, revision_db_id)?;
+    }
+    Ok(())
 }
 
-/// Flips the `is_current` pointer last — two statements: clear the old
-/// current, set this revision. Until the transaction commits, no other
-/// connection sees any of it.
-fn flip_current_revision(
-    tx: &rusqlite::Transaction<'_>,
+fn upsert_skipped_file(
+    tx: &Transaction<'_>,
+    record: &SkippedRecord,
+    revision_db_id: i64,
+) -> Result<(), rusqlite::Error> {
+    let mut upsert_stmt = tx.prepare_cached(
+        "INSERT INTO files (\
+            path, file_kind, skip_reason, content, content_hash, hash_algorithm, byte_len, \
+            modified_unix_seconds, language, language_detected, parser_availability, \
+            parse_outcome, parse_error_reason, extraction_completeness, last_revision_id, \
+            file_class\
+         ) VALUES (?1, 'skipped', ?2, NULL, ?3, ?4, ?5, ?6, NULL, 0, 'Unavailable', \
+                   'NotAttempted', NULL, 'Unavailable', ?7, ?8) \
+         ON CONFLICT(path) DO UPDATE SET \
+            file_kind = 'skipped', \
+            file_class = excluded.file_class, \
+            skip_reason = excluded.skip_reason, \
+            content = NULL, \
+            content_hash = excluded.content_hash, \
+            hash_algorithm = excluded.hash_algorithm, \
+            byte_len = excluded.byte_len, \
+            modified_unix_seconds = excluded.modified_unix_seconds, \
+            language = NULL, \
+            language_detected = 0, \
+            parser_availability = 'Unavailable', \
+            parse_outcome = 'NotAttempted', \
+            parse_error_reason = NULL, \
+            extraction_completeness = 'Unavailable', \
+            last_revision_id = excluded.last_revision_id \
+         RETURNING id",
+    )?;
+    let file_id: i64 = upsert_stmt.query_row(
+        params![
+            record.relative_path,
+            record.reason,
+            record.identity.content_hash,
+            record.identity.hash_algorithm,
+            record.byte_len,
+            record.modified_unix_seconds,
+            revision_db_id,
+            classify(&record.relative_path).as_sql_text(),
+        ],
+        |row| row.get(0),
+    )?;
+    tx.prepare_cached("DELETE FROM evidence WHERE file_id = ?1")?
+        .execute(params![file_id])?;
+    tx.prepare_cached("DELETE FROM dependency_edges WHERE from_file_id = ?1")?
+        .execute(params![file_id])?;
+    Ok(())
+}
+
+/// Replaces the persisted set of discovered non-UTF-8 paths inside an active
+/// revision transaction after the CAS baseline check has succeeded.
+pub(super) fn replace_unrepresentable_paths_in_tx(
+    tx: &Transaction<'_>,
+    paths: &HashSet<Vec<u8>>,
+) -> Result<(), rusqlite::Error> {
+    if stored_unrepresentable_paths(tx)? == *paths {
+        return Ok(());
+    }
+    tx.execute("DELETE FROM unrepresentable_paths", [])?;
+    let mut insert =
+        tx.prepare("INSERT OR IGNORE INTO unrepresentable_paths (path) VALUES (?1)")?;
+    for path in paths {
+        insert.execute([path])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn replace_unrepresentable_paths(
+    connection: &mut Connection,
+    paths: &HashSet<Vec<u8>>,
+) -> Result<(), rusqlite::Error> {
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    replace_unrepresentable_paths_in_tx(&tx, paths)?;
+    tx.commit()
+}
+
+pub(super) fn stored_unrepresentable_paths(
+    connection: &Connection,
+) -> Result<HashSet<Vec<u8>>, rusqlite::Error> {
+    let mut statement = connection.prepare("SELECT path FROM unrepresentable_paths")?;
+    statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))?
+        .collect()
+}
+
+/// Flips the `is_current` pointer last — clear the old current, set this revision.
+pub(super) fn flip_current_revision(
+    tx: &Transaction<'_>,
     revision_db_id: i64,
 ) -> Result<(), RevisionError> {
     tx.execute(
@@ -319,22 +474,14 @@ fn flip_current_revision(
 }
 
 /// Returns the `revision_id` of the current revision, or `None` if no
-/// revision has been published yet. This is the one reader of the
-/// `is_current` pointer; `flip_current_revision` is its writer.
+/// revision has been published yet.
 pub(crate) fn current_revision_id(
     connection: &Connection,
 ) -> Result<Option<String>, rusqlite::Error> {
-    connection
-        .query_row(
-            "SELECT revision_id FROM revisions WHERE is_current = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
+    Ok(current_revision_row(connection)?.map(|(id, _)| id))
 }
 
-/// Like [`current_revision_id`], but also returns the current revision's
-/// `parser_pack_version`, as `(revision_id, parser_pack_version)`.
+/// Like [`current_revision_id`], returning `(revision_id, parser_pack_version)`.
 pub(crate) fn current_revision_row(
     connection: &Connection,
 ) -> Result<Option<(String, String)>, rusqlite::Error> {
@@ -347,8 +494,8 @@ pub(crate) fn current_revision_row(
         .optional()
 }
 
-fn assert_baseline(
-    tx: &rusqlite::Transaction<'_>,
+pub(super) fn assert_baseline(
+    tx: &Transaction<'_>,
     expected_current: Option<&str>,
 ) -> Result<(), RevisionError> {
     let actual = current_revision_id(tx)?;
@@ -362,8 +509,6 @@ fn assert_baseline(
     }
 }
 
-/// Names a revision id for a stale-baseline error; `none` when there is no
-/// current revision.
 pub(super) fn baseline_label(revision_id: Option<&str>) -> String {
     match revision_id {
         Some(id) => id.to_owned(),

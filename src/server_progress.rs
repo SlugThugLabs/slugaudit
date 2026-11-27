@@ -1,31 +1,34 @@
 //! The MCP progress plumbing of a tool call: the caller's progress target,
-//! the sink the sync layer emits [`ProgressEvent`]s into, the throttle on
-//! per-file `Sampling` notifications, and the one function that sends a
-//! `/notifications/progress` notification. `server_runner::run_blocking`
-//! sends its lifecycle notifications through the same function.
+//! the single FIFO drain task that delivers monotonic `/notifications/progress`
+//! updates for one call, the sink the sync layer emits [`ProgressEvent`]s into,
+//! and the throttle on per-file `Sampling` notifications.
 
 use crate::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 use rmcp::model::{ProgressNotificationParam, ProgressToken, RequestMetaObject};
 use rmcp::{Peer, RoleServer};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::mpsc;
+
+/// Caller peer + progress token pair for an in-flight MCP request.
+pub(crate) type ProgressTarget = (Peer<RoleServer>, ProgressToken);
+
+/// Upper bound for pre-tool sync progress so `1.0` is emitted exclusively when
+/// [`ProgressSession::finish`] runs after the tool's own read or scan finishes.
+pub(crate) const SYNC_PROGRESS_CAP: f64 = 0.9;
 
 /// Sends one MCP `/notifications/progress` notification when the caller
 /// requested progress, and nothing otherwise. Best-effort: a send failure is
 /// logged as a warning, never returned, so a broken progress channel can
-/// never turn a successful tool call into an error. Shared by
-/// `run_blocking`'s three lifecycle notifications and [`McpProgressSink`], so
-/// the notification shape and the logged-never-returned contract live in one
-/// place.
+/// never turn a successful tool call into an error.
 pub(crate) async fn notify_progress(
-    progress: Option<&(Peer<RoleServer>, ProgressToken)>,
+    progress: Option<&ProgressTarget>,
     fraction: f64,
     message: String,
 ) {
     if let Some((peer, token)) = progress
         && let Err(error) = peer
             .notify_progress(
-                // KEEP clone: notify_progress borrows &(Peer, ProgressToken) across lifecycle calls while ProgressNotificationParam takes an owned token
                 ProgressNotificationParam::new(token.clone(), fraction)
                     .with_total(1.0)
                     .with_message(message),
@@ -43,46 +46,104 @@ pub(crate) async fn notify_progress(
 pub(crate) fn progress_target(
     meta: &RequestMetaObject,
     peer: &Peer<RoleServer>,
-) -> Option<(Peer<RoleServer>, ProgressToken)> {
-    // KEEP clone: Peer is an Arc-backed handle cloned from &Peer into the returned progress target
+) -> Option<ProgressTarget> {
     meta.get_progress_token().map(|token| (peer.clone(), token))
 }
 
-/// Adapter that translates sync-layer [`ProgressEvent`]s into MCP
-/// `/notifications/progress` notifications. Held as `Arc<dyn
-/// ProgressSink>` and cloned into a tool call's blocking closure;
-/// `emit` spawns a one-shot task per event because `notify_progress`
-/// returns a future that needs an executor to run, and the work being
-/// instrumented runs on a `spawn_blocking` thread which can't await. The
-/// per-event spawn is cheap (small body, only `notify_progress(...).await`),
-/// so the volume of one Started + N Sampling + one Completed per long
-/// call is well within the budget.
-///
-/// `Peer<RoleServer>` is an Arc-like reference that's cheap to clone, so
-/// per-event spawning also avoids needing a shared channel + drain task —
-/// keeping the implementation local and testable in isolation.
-pub(crate) struct McpProgressSink {
-    peer: Peer<RoleServer>,
-    token: ProgressToken,
-    /// Throttle for per-file `Sampling` notifications: at most one goes
-    /// out per window, so a 60 k-file import doesn't spawn 60 k tasks and
-    /// flood the MCP host with notifications the consumer can't use faster
-    /// than ~10/s anyway. `Started`/`Completed` always send.
-    sampling_throttle: Throttle,
-    /// Runtime captured at construction (inside the tool call). `Sampling`
-    /// events are emitted from plain `std::thread::scope` workers that have
-    /// no runtime context, where `tokio::task::spawn` would panic.
-    runtime: tokio::runtime::Handle,
-    /// Tripped by `run_blocking` right before sending `1.0 completed` so
-    /// late-scheduled inner progress tasks never emit stale notifications
-    /// after completion or after the tool response.
+/// One queued progress command for the per-call sequential drain task.
+enum ProgressCommand {
+    /// Send a progress notification whose fraction is clamped monotonically.
+    Emit { fraction: f64, message: String },
+    /// Stop draining queued events so the caller can await task completion.
+    Close,
+}
+
+/// Shared completion-gated handle to the per-call progress FIFO queue.
+#[derive(Clone)]
+struct ProgressSender {
+    sender: mpsc::UnboundedSender<ProgressCommand>,
     completed: Arc<AtomicBool>,
 }
 
+impl ProgressSender {
+    fn emit(&self, fraction: f64, message: String) {
+        if !self.completed.load(Ordering::Acquire)
+            && let Err(error) = self
+                .sender
+                .send(ProgressCommand::Emit { fraction, message })
+        {
+            tracing::warn!(error = %error, "progress drain channel closed; notification dropped");
+        }
+    }
+
+    fn close(&self, warn_on_closed: bool) {
+        self.completed.store(true, Ordering::Release);
+        match (self.sender.send(ProgressCommand::Close), warn_on_closed) {
+            (Err(error), true) => {
+                tracing::warn!(error = %error, "progress drain channel closed before completion");
+            }
+            (Err(error), false) => {
+                tracing::debug!(error = %error, "progress drain channel already closed on drop");
+            }
+            (Ok(()), _) => {}
+        }
+    }
+}
+
+/// Per-call MCP progress session backed by a single FIFO channel and one
+/// background drain task.
+///
+/// Every lifecycle and sync-layer notification for a tool call goes through
+/// one `mpsc` queue drained sequentially by one task, which clamps each
+/// outgoing fraction to `[max_sent_so_far, SYNC_PROGRESS_CAP]`. Closing and
+/// awaiting the session before sending the final `1.0 "{tool} completed"`
+/// notification guarantees strictly in-order, strictly monotonic delivery
+/// with zero premature `1.0` frames and zero late stragglers.
+pub(crate) struct ProgressSession {
+    queue: ProgressSender,
+    target: ProgressTarget,
+    drain_task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl ProgressSession {
+    /// Queues one progress update if the call has not yet completed.
+    pub(crate) fn send(&self, fraction: f64, message: String) {
+        self.queue.emit(fraction, message);
+    }
+
+    /// Gates any late inner emissions, flushes and awaits the drain task, and
+    /// delivers the final `1.0 "{tool_name} completed"` notification.
+    pub(crate) async fn finish(mut self, tool_name: &str) {
+        self.queue.close(true);
+        if let Some(handle) = self.drain_task.take()
+            && let Err(error) = handle.await
+        {
+            tracing::warn!(error = %error, "progress drain task failed");
+        }
+        notify_progress(Some(&self.target), 1.0, format!("{tool_name} completed")).await;
+    }
+}
+
+impl Drop for ProgressSession {
+    fn drop(&mut self) {
+        if self.drain_task.is_some() {
+            self.queue.close(false);
+        }
+    }
+}
+
+/// Adapter that translates sync-layer [`ProgressEvent`]s into ordered updates
+/// on the per-call [`ProgressSession`] channel.
+pub(crate) struct McpProgressSink {
+    queue: ProgressSender,
+    /// Throttle for per-file `Sampling` notifications: at most one goes out
+    /// per window, so a 60 k-file import does not flood the MCP host with
+    /// notifications faster than ~10/s. `Started`/`Completed` always send.
+    sampling_throttle: Throttle,
+}
+
 /// Coalesces events that arrive less than `window` apart: the first event
-/// passes, the rest are dropped until the window elapses. Lock-free, so no
-/// panic elsewhere can poison it, and clock-injected so it is unit-testable
-/// without an MCP peer. Times are whole milliseconds after `origin`.
+/// passes, the rest are dropped until the window elapses.
 #[derive(Debug)]
 struct Throttle {
     window: std::time::Duration,
@@ -103,13 +164,7 @@ impl Throttle {
 
     /// Whether an event at `now` passes. Of two threads racing for the same
     /// window, only the one whose update lands passes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`crate::clock::ClockError`] when the time since `origin` does
-    /// not fit in whole `u64` milliseconds.
     fn should_emit(&self, now: std::time::Instant) -> Result<bool, crate::clock::ClockError> {
-        use std::sync::atomic::Ordering;
         // KEEP saturating: an instant not after the origin sits at offset zero, the first slot; the offset only orders events for coalescing
         let since_origin = now.saturating_duration_since(self.origin);
         let at = crate::clock::duration_millis(
@@ -120,8 +175,6 @@ impl Throttle {
         let window_ms = crate::clock::duration_millis(self.window)?;
         let last = self.last.load(Ordering::SeqCst);
         if last != 0 {
-            // A racing thread may have stored a later time than `at`: that is
-            // a gap of zero, inside any non-empty window.
             let inside_window = match at.checked_sub(last) {
                 Some(gap) => gap < window_ms,
                 None => window_ms > 0,
@@ -137,37 +190,10 @@ impl Throttle {
     }
 }
 
-impl McpProgressSink {
-    fn spawn_notify(&self, fraction: f64, message: String) {
-        if self.completed.load(Ordering::Acquire) {
-            return;
-        }
-        let completed = Arc::clone(&self.completed);
-        // KEEP clone: tokio::spawn requires 'static ownership of the Peer handle and ProgressToken
-        let peer = self.peer.clone();
-        // KEEP clone: tokio::spawn requires 'static ownership of the Peer handle and ProgressToken
-        let token = self.token.clone();
-        // Per-event spawn is intentional: the future body is tiny (just
-        // `notify_progress(...).await`), the throttled volume is small, and
-        // avoiding a channel means the drain logic doesn't need its own
-        // observable state. A send failure is logged by `notify_progress`
-        // and never returned, matching `run_blocking`'s "broken progress
-        // channel can never turn a successful tool call into an error" stance.
-        self.runtime.spawn(async move {
-            if completed.load(Ordering::Acquire) {
-                return;
-            }
-            notify_progress(Some(&(peer, token)), fraction, message).await;
-        });
-    }
-}
-
 impl ProgressSink for McpProgressSink {
     fn emit(&self, event: ProgressEvent) {
         match event {
-            ProgressEvent::Started { phase } => {
-                self.spawn_notify(0.0, format!("{phase}: started"));
-            }
+            ProgressEvent::Started { phase } => self.queue.emit(0.0, format!("{phase}: started")),
             ProgressEvent::Sampling {
                 phase,
                 current,
@@ -176,50 +202,61 @@ impl ProgressSink for McpProgressSink {
                 let Some(fraction) = crate::progress::sampling_fraction(current, total) else {
                     return;
                 };
-                // The last Sampling of a burst is allowed to be dropped:
-                // `Completed` (1.0) always sends, so a consumer never
-                // stalls at a stale intermediate percentage.
+                let scaled = (fraction * SYNC_PROGRESS_CAP).min(SYNC_PROGRESS_CAP);
                 match self
                     .sampling_throttle
                     .should_emit(std::time::Instant::now())
                 {
-                    Ok(true) => {}
-                    Ok(false) => return,
+                    Ok(true) => self
+                        .queue
+                        .emit(scaled, format!("{phase}: {current}/{total}")),
+                    Ok(false) => {}
                     Err(error) => {
                         tracing::warn!(error = %error, "progress throttle clock unusable; sampling update dropped");
-                        return;
                     }
                 }
-                self.spawn_notify(fraction, format!("{phase}: {current}/{total}"));
             }
             ProgressEvent::Completed { phase } => {
-                self.spawn_notify(1.0, format!("{phase}: completed"));
+                self.queue
+                    .emit(SYNC_PROGRESS_CAP, format!("{phase}: completed"));
             }
         }
     }
 }
 
-/// Builds the sink that a tool closure will use to emit progress events
-/// from inside the sync layer. When the caller asked for progress
-/// notifications, this returns an [`McpProgressSink`] bound to that
-/// caller's peer/token; otherwise it returns a [`NoopProgressSink`] so
-/// the sync layer can call `emit` unconditionally without branching.
-pub(crate) fn build_inner_sink(
-    progress: Option<(Peer<RoleServer>, ProgressToken)>,
-    completed: Arc<AtomicBool>,
-) -> Arc<dyn ProgressSink> {
-    match progress {
-        Some((peer, token)) => Arc::new(McpProgressSink {
-            peer,
-            token,
-            runtime: tokio::runtime::Handle::current(),
-            // 100 ms ≈ 10 notifications/second — enough to show a live
-            // i/N ratio without flooding the host on a huge import.
-            sampling_throttle: Throttle::new(std::time::Duration::from_millis(100)),
-            completed,
-        }),
-        None => Arc::new(NoopProgressSink),
-    }
+/// Opens the per-call progress session and builds the inner [`ProgressSink`]
+/// passed into the blocking closure, encapsulating the completion gate inside
+/// the session. When `progress` is `None`, allocates no channel and spawns no
+/// task, returning `(None, NoopProgressSink)`.
+pub(crate) fn open_progress_session(
+    progress: Option<ProgressTarget>,
+) -> (Option<ProgressSession>, Arc<dyn ProgressSink>) {
+    let Some((peer, token)) = progress else {
+        return (None, Arc::new(NoopProgressSink));
+    };
+    let completed = Arc::new(AtomicBool::new(false));
+    let (sender, mut receiver) = mpsc::unbounded_channel::<ProgressCommand>();
+    let drain_target = (peer.clone(), token.clone());
+    let drain_task = tokio::runtime::Handle::current().spawn(async move {
+        let mut max_sent = 0.0_f64;
+        while let Some(ProgressCommand::Emit { fraction, message }) = receiver.recv().await {
+            if fraction.is_finite() {
+                max_sent = fraction.clamp(max_sent, SYNC_PROGRESS_CAP);
+                notify_progress(Some(&drain_target), max_sent, message).await;
+            }
+        }
+    });
+    let queue = ProgressSender { sender, completed };
+    let sink = Arc::new(McpProgressSink {
+        queue: queue.clone(),
+        sampling_throttle: Throttle::new(std::time::Duration::from_millis(100)),
+    });
+    let session = ProgressSession {
+        queue,
+        target: (peer, token),
+        drain_task: Some(drain_task),
+    };
+    (Some(session), sink)
 }
 
 #[cfg(test)]

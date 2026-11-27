@@ -10,7 +10,8 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Output};
 
-/// Every gate that takes `--root`, with its built executable.
+/// Every gate binary takes `--root <dir>` via `gate_common/args.rs` and fails
+/// closed when pointed at an empty directory.
 const ROOTED_GATES: &[(&str, &str)] = &[
     (
         "check_source_limits",
@@ -25,12 +26,6 @@ const ROOTED_GATES: &[(&str, &str)] = &[
         env!("CARGO_BIN_EXE_check_producer_coverage"),
     ),
     ("check_mcp_surface", env!("CARGO_BIN_EXE_check_mcp_surface")),
-];
-
-/// The gates without `--root`; they still own a usage contract.
-const UNROOTED_GATES: &[(&str, &str)] = &[
-    ("check_coverage", env!("CARGO_BIN_EXE_check_coverage")),
-    ("check_performance", env!("CARGO_BIN_EXE_check_performance")),
 ];
 
 const USAGE_EXIT: i32 = 2;
@@ -54,7 +49,7 @@ fn write(root: &Path, relative: &str, content: &str) -> TestResult {
 fn every_gate_rejects_an_unknown_argument_as_a_usage_error() -> TestResult {
     let cwd = tempfile::tempdir().check("create temp dir")?;
 
-    for (name, binary) in ROOTED_GATES.iter().chain(UNROOTED_GATES) {
+    for (name, binary) in ROOTED_GATES {
         let output = run(binary, &["--no-such-flag"], cwd.path())?;
 
         ensure_eq(
@@ -89,7 +84,7 @@ fn every_rooted_gate_fails_closed_on_a_root_with_nothing_to_check() -> TestResul
 }
 
 #[test]
-fn the_source_limit_gate_passes_a_small_file_and_fails_an_oversized_one() -> TestResult {
+fn the_source_limit_gate_enforces_the_200_line_exception_floor_with_no_hard_cap() -> TestResult {
     let project = tempfile::tempdir().check("create temp dir")?;
     let root = project.path().to_str().check("temp path is utf-8")?;
     let gate = env!("CARGO_BIN_EXE_check_source_limits");
@@ -97,11 +92,17 @@ fn the_source_limit_gate_passes_a_small_file_and_fails_an_oversized_one() -> Tes
 
     let small = run(gate, &["--root", root], project.path())?;
     let mut body = String::new();
-    for i in 0..360 {
+    for i in 0..400 {
         writeln!(body, "pub fn f{i}() {{}}").check("write to a String")?;
     }
     write(project.path(), "src/big.rs", &body)?;
-    let big = run(gate, &["--root", root], project.path())?;
+    let unapproved = run(gate, &["--root", root], project.path())?;
+
+    let approved_body = format!(
+        "// slugaudit-line-exception: approved-by=split-judge; reason=single cohesive job\n{body}"
+    );
+    write(project.path(), "src/big.rs", &approved_body)?;
+    let approved = run(gate, &["--root", root], project.path())?;
 
     ensure(
         small.status.success(),
@@ -111,15 +112,22 @@ fn the_source_limit_gate_passes_a_small_file_and_fails_an_oversized_one() -> Tes
         ),
     )?;
     ensure_eq(
-        &big.status.code(),
+        &unapproved.status.code(),
         &Some(1),
-        "a file past 350 code lines must fail",
+        "a file at or above 200 code lines without an approved exception must fail",
     )?;
     ensure(
-        String::from_utf8_lossy(&big.stdout).contains("big.rs"),
+        String::from_utf8_lossy(&unapproved.stdout).contains("big.rs"),
         format!(
             "the failure must name the file, stdout: {}",
-            String::from_utf8_lossy(&big.stdout)
+            String::from_utf8_lossy(&unapproved.stdout)
+        ),
+    )?;
+    ensure(
+        approved.status.success(),
+        format!(
+            "a 400-line file with a split-judge exception must pass (no hard cap), stdout: {}",
+            String::from_utf8_lossy(&approved.stdout)
         ),
     )?;
     Ok(())

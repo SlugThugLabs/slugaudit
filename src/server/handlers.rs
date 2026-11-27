@@ -1,16 +1,10 @@
-// slugaudit-line-exception: approved-by=slugthuglabs; reason=the tool registry: one #[tool_router] impl whose titles, descriptions and annotations are the advertised MCP tool surface
+// slugaudit-line-exception: approved-by=split-judge; reason=Single declarative MCP #[tool_router] handler registry (input_schema helper, register_tools! forwarding macro, and 10-tool wire metadata/description table); length is advertised tool descriptions, not mixed concerns or duplication.
 //! The `#[tool]` handler registry for [`SlugAuditServer`].
 //!
 //! Every handler is declarative: it names the tool and forwards its request
-//! to `crate::tools` through `SlugAuditServer::dispatch`, which owns the
-//! progress sink and the blocking-pool semaphore. The titles, descriptions,
-//! and annotations here are the advertised wire surface — `check_mcp_surface`
-//! snapshots them beside `resources::list()` — so a change to them is
-//! deliberate and recorded. `#[tool_router]` also generates the
-//! `SlugAuditServer::tool_router()` constructor the server struct stores.
-//!
-//! The router constructor is `pub(crate)` because it is built in this child
-//! module and called from `server.rs`, the parent that owns the field.
+//! to `crate::tools` through `SlugAuditServer::dispatch` (or `dispatch_health`
+//! for `health`). The titles, descriptions, and annotations here are the
+//! advertised wire surface checked by `check_mcp_surface`.
 
 use crate::server::SlugAuditServer;
 use crate::tools;
@@ -19,18 +13,10 @@ use rmcp::model::RequestMetaObject;
 use rmcp::{ErrorData, Peer, RoleServer, tool, tool_router};
 use std::sync::Arc;
 
-/// The `inputSchema` of a tool whose arguments are `T`: the schema rmcp's
-/// `schema_for_input` returns (the generated schema without its top-level
-/// `title` and `description`), built without that function's fallible
-/// root-type check, whose failure the `#[tool]` macro would turn into a
-/// panic. This keeps one of rmcp's two panic paths out of this crate's macro
-/// expansion; `schema_for_type` keeps its own internal `expect`s, which only
-/// fire if schema generation or serialization of a fixed, derived type fails.
-/// Every request type's root is an object; the test
-/// `every_input_schema_matches_rmcp_and_has_an_object_root` pins that and
-/// that the result equals rmcp's checked schema, so rmcp drift is caught.
-fn input_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject> {
-    // KEEP clone: schema_for_type returns a shared Arc<JsonObject>; clone to strip title/description without mutating the cached schema
+/// The `inputSchema` of a tool whose arguments are `T`: the generated schema
+/// without its top-level `title` and `description`.
+pub(super) fn input_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::JsonObject>
+{
     let mut schema = rmcp::handler::server::common::schema_for_type::<T>()
         .as_ref()
         .clone();
@@ -39,30 +25,67 @@ fn input_schema<T: schemars::JsonSchema + std::any::Any>() -> Arc<rmcp::model::J
     Arc::new(schema)
 }
 
-#[tool_router(vis = "pub(crate)")]
-impl SlugAuditServer {
-    #[tool(
-        input_schema = input_schema::<tools::ReportRequest>(),
-        title = "Project snapshot",
-        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads. `notices` flags untested languages (only Rust is tested); `languages[].tested` says which.",
-        annotations(read_only_hint = true, destructive_hint = false)
-    )]
-    async fn report(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::ReportRequest>,
-    ) -> Result<Json<tools::ReportResponse>, ErrorData> {
-        self.dispatch(meta, peer, "report", move |sink, manager| {
-            tools::report(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
+macro_rules! register_tools {
+    (@call $self:ident, $fn_name:ident, $meta:ident, $peer:ident, $op:expr, dispatch) => {
+        $self
+            .dispatch($meta, $peer, stringify!($fn_name), $op)
+            .await
+    };
+    (@call $self:ident, $fn_name:ident, $meta:ident, $peer:ident, $op:expr, dispatch_health) => {
+        $self.dispatch_health($meta, $peer, $op).await
+    };
+    (
+        $(
+            $fn_name:ident ( $req:ty => $resp:ty ) via $dispatch:ident {
+                title = $title:literal,
+                read_only = $ro:literal,
+                destructive = $destr:literal,
+                description = $desc:literal $(,)?
+            }
+        ),* $(,)?
+    ) => {
+        #[tool_router(vis = "pub(crate)")]
+        impl SlugAuditServer {
+            $(
+                #[tool(
+                    input_schema = input_schema::<$req>(),
+                    title = $title,
+                    annotations(read_only_hint = $ro, destructive_hint = $destr),
+                    description = $desc
+                )]
+                async fn $fn_name(
+                    &self,
+                    meta: RequestMetaObject,
+                    peer: Peer<RoleServer>,
+                    request: Parameters<$req>,
+                ) -> Result<Json<$resp>, ErrorData> {
+                    register_tools!(
+                        @call self,
+                        $fn_name,
+                        meta,
+                        peer,
+                        move |sink, manager| {
+                            tools::$fn_name(&request, sink.as_ref(), &manager)
+                        },
+                        $dispatch
+                    )
+                }
+            )*
+        }
+    };
+}
 
-    #[tool(
-        input_schema = input_schema::<tools::LeadsRequest>(),
+register_tools! {
+    report(tools::ReportRequest => tools::ReportResponse) via dispatch {
+        title = "Project snapshot",
+        read_only = true,
+        destructive = false,
+        description = "Automatic project snapshot: file/language counts, parser failures, evidence-kind counts, open findings, and inbound/outbound dependency-edge counts. Use this first to understand the project's shape, then query for specifics. No score, no risk leads. `notices` flags untested languages (only Rust is tested); `languages[].tested` says which.",
+    },
+    leads(tools::LeadsRequest => tools::LeadsResponse) via dispatch {
         title = "Mechanical leads",
-        annotations(read_only_hint = true, destructive_hint = false),
+        read_only = true,
+        destructive = false,
         description = "Want somewhere to start? Mechanical facts extracted from the index — \
          call sites by callee name (unwrap, expect, panic, todo, unimplemented, assert), \
          diagnostics, TODO/FIXME/HACK comment markers, and credential-shaped files. Nothing here \
@@ -80,54 +103,30 @@ impl SlugAuditServer {
          first call, so edits made meanwhile never skip or repeat rows. For `mechanic`/`file`/`line` triples \
          with no per-row text, pass `mode: compact`; with only `path` it then enumerates every \
          mechanic in one response under the same completeness fields — the cheap way to see the \
-         whole surface. `notices` names any untested language the counts cover (only Rust is tested)."
-    )]
-    async fn leads(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::LeadsRequest>,
-    ) -> Result<Json<tools::LeadsResponse>, ErrorData> {
-        self.dispatch(meta, peer, "leads", move |sink, manager| {
-            tools::leads(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::MechanicRequest>(),
+         whole surface. `notices` names any untested language the counts cover (only Rust is tested).",
+    },
+    mechanic(tools::MechanicRequest => tools::MechanicResponse) via dispatch {
         title = "Register auditor mechanics",
-        annotations(read_only_hint = false, destructive_hint = false),
+        read_only = false,
+        destructive = false,
         description = "Register, remove, or list your own mechanics. The built-in `leads` \
          mechanics are counting primitives, not a checklist: what counts as a signal in this \
          codebase is your decision, and this is where you record it. `action: add` takes `id` \
          (a-z, 0-9, _; never a built-in's or an existing entry's id), `language`, `query` (a \
          Tree-sitter S-expression with exactly one capture; each distinct captured node is one \
-         row) and `note` (what it counts, in your words); a query that does not compile is \
-         refused with the compiler's message. It returns `first_count`: the `leads` response \
+         row) and `note` (what it counts, in your words); a query that does not compile or whose \
+         trial scan ends `partial` is refused. It returns `first_count`: the `leads` response \
          for that id (counts with `covers`, the first page of rows, `page`, `files_total`, \
-         `files_covered`, `files_not_parsed`). Entries live until this server exits. `leads` and \
-         `report` list every entry with `source` (`session`, `builtin`) and its note, session \
-         first. `action: remove` deletes a registered entry by `id`; built-ins can never be \
-         removed or overridden. `action: list` returns every mechanic plus `invalid`: registered \
-         entries that failed to load, each with its error."
-    )]
-    async fn mechanic(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::MechanicRequest>,
-    ) -> Result<Json<tools::MechanicResponse>, ErrorData> {
-        self.dispatch(meta, peer, "mechanic", move |sink, manager| {
-            tools::mechanic(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::QueryRequest>(),
+         `files_covered`, `files_not_parsed`). Entries are scoped to the project and live until \
+         this server exits or `project_control` `off` runs. `leads` and `report` list every \
+         entry with `source` (`session`, `builtin`) and its note, session first. `action: remove` \
+         deletes a registered entry by `id`; built-ins can never be removed or overridden. \
+         `action: list` returns every session and built-in mechanic, paged by cursor.",
+    },
+    query(tools::QueryRequest => tools::QueryResponse) via dispatch {
         title = "Read-only SQL query",
-        annotations(read_only_hint = true, destructive_hint = false),
+        read_only = true,
+        destructive = false,
         description = "Query the indexed codebase with read-only SQL. Key tables: \
          files (id, path, language, byte_len, content — full text of every indexed file including non-code files), \
          evidence (id, file_id, kind, start_line, end_line [1-based, inclusive], payload; kind is one of Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Call), \
@@ -135,24 +134,12 @@ impl SlugAuditServer {
          To inspect code or file content directly from the DB without filesystem reads, query `files.content` (e.g. `SELECT content FROM files WHERE path = 'src/main.rs'`); `line_count(text)` and `line_range(text, start, end)` read a file by 1-based lines, and an oversized first row is clipped with a `substr` continuation in `clipped_cells`. \
          To link evidence to file paths, always JOIN: `SELECT f.path, e.start_line FROM evidence e JOIN files f ON e.file_id = f.id WHERE e.kind = 'Symbol' AND json_extract(e.payload, '$.name') = 'configure'`. \
          Schema discovery: `SELECT name FROM sqlite_master WHERE type='table'`. \
-         A statement SQLite cannot compile or run fails with code `sql_error`."
-    )]
-    async fn query(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::QueryRequest>,
-    ) -> Result<Json<tools::QueryResponse>, ErrorData> {
-        self.dispatch(meta, peer, "query", move |sink, manager| {
-            tools::query(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::StructureRequest>(),
+         A statement SQLite cannot compile or run fails with code `sql_error`.",
+    },
+    structure(tools::StructureRequest => tools::StructureResponse) via dispatch {
         title = "AST structure query",
-        annotations(read_only_hint = true, destructive_hint = false),
+        read_only = true,
+        destructive = false,
         description = "Inspect and extract code AST structures from a file or across the project using Tree-sitter. \
          Specify `file` to search a single file, or omit `file` and specify `language` (with optional `pattern`) \
          to search across matching project files (a `language` no indexed file has fails with \
@@ -161,92 +148,44 @@ impl SlugAuditServer {
          Examples: Rust `(function_item name: (identifier) @name body: (block) @body)`, \
          Python `(function_definition name: (identifier) @name body: (block) @body)`, \
          TypeScript/JS `(function_declaration name: (identifier) @name)`, \
-         or whole-node `(class_definition) @cls`. `notices` warns when the language is untested (only Rust is)."
-    )]
-    async fn structure(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::StructureRequest>,
-    ) -> Result<Json<tools::StructureResponse>, ErrorData> {
-        self.dispatch(meta, peer, "structure", move |sink, manager| {
-            tools::structure(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::FindingRequest>(),
+         or whole-node `(class_definition) @cls`. `notices` warns when the language is untested (only Rust is).",
+    },
+    finding(tools::FindingRequest => tools::FindingResponse) via dispatch {
         title = "Record a finding",
-        annotations(read_only_hint = false, destructive_hint = false),
+        read_only = false,
+        destructive = false,
         description = "Persist a conclusion you have personally reviewed about a specific file \
          and line range. Supply `path` (any path in the active project, to select the database), \
          `file` (project-relative path of the file), `line_start`/`line_end` (one-based inclusive), \
          plus `severity`, `category`, `title`, and `description` (all your own judgment — SlugAudit \
          never generates these). The finding is bound to the file's current content hash and \
          `finding_read` reports it `stale` the moment that file changes. Findings last until \
-         this server exits. Use this to record reviewed issues, not raw diagnostics."
-    )]
-    async fn finding(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::FindingRequest>,
-    ) -> Result<Json<tools::FindingResponse>, ErrorData> {
-        self.dispatch(meta, peer, "finding", move |sink, manager| {
-            tools::finding(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::FindingReadRequest>(),
+         this server exits. Use this to record reviewed issues, not raw diagnostics.",
+    },
+    finding_read(tools::FindingReadRequest => tools::FindingReadResponse) via dispatch {
         title = "Read session findings",
-        annotations(read_only_hint = true, destructive_hint = false),
+        read_only = true,
+        destructive = false,
         description = "Retrieve the findings recorded in this session (since this server \
          started); a restart begins with none. Each carries `status`: `current` while its file \
          still has the content hash it was written against, `stale` once that file changed or \
          is gone. Supply `path` (any path in the active project) to select the project, and \
          optionally `file` to filter to a specific file. Results are byte-cut pages under the \
-         shared `page`; call again with only `page.cursor` for the next page."
-    )]
-    async fn finding_read(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::FindingReadRequest>,
-    ) -> Result<Json<tools::FindingReadResponse>, ErrorData> {
-        self.dispatch(meta, peer, "finding_read", move |sink, manager| {
-            tools::finding_read(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::FindingClearRequest>(),
+         shared `page`; call again with only `page.cursor` for the next page.",
+    },
+    finding_clear(tools::FindingClearRequest => tools::FindingClearResponse) via dispatch {
         title = "Clear session findings",
-        annotations(read_only_hint = false, destructive_hint = true),
+        read_only = false,
+        destructive = true,
         description = "Delete every finding recorded in this session for the project and report \
          how many were removed (`removed`). Supply `path` (any path in the active project). Use \
          it to start clean when the user asks, for example after switching models mid-session. \
-         A restart of this server already begins with no findings."
-    )]
-    async fn finding_clear(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::FindingClearRequest>,
-    ) -> Result<Json<tools::FindingClearResponse>, ErrorData> {
-        self.dispatch(meta, peer, "finding_clear", move |sink, manager| {
-            tools::finding_clear(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::ProjectControlRequest>(),
+         A restart of this server already begins with no findings.",
+    },
+    project_control(tools::ProjectControlRequest => tools::ProjectControlResponse) via dispatch {
         title = "Enable or disable a project",
-        annotations(read_only_hint = false, destructive_hint = true),
+        read_only = false,
+        destructive = true,
         description = "Enable or disable SlugAudit for a project. Pass `action` = `\"on\"` to enable \
          a project (creates the directory `.planning/slugaudit/`, which is the on switch, builds the database and \
          runs the initial import), or `\"off\"` to disable it (deletes the whole `.planning/slugaudit/` \
@@ -260,45 +199,18 @@ impl SlugAuditServer {
          moved, copied, or re-extracted elsewhere (e.g. unzipped fresh from an archive), a stale \
          `.planning/slugaudit/project.db` is discarded and rebuilt from source automatically — the \
          agent does not need to delete it or re-enable manually. `profile` (`lean`, `audit` or \
-         `adaptive`) sets the resource profile for this session only; it is not saved."
-    )]
-    async fn project_control(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::ProjectControlRequest>,
-    ) -> Result<Json<tools::ProjectControlResponse>, ErrorData> {
-        self.dispatch(meta, peer, "project_control", move |sink, manager| {
-            tools::project_control(&request, sink.as_ref(), Some(&manager))
-        })
-        .await
-    }
-
-    #[tool(
-        input_schema = input_schema::<tools::HealthRequest>(),
+         `adaptive`) sets the resource profile for this session only; it is not saved.",
+    },
+    health(tools::HealthRequest => tools::HealthResponse) via dispatch_health {
         title = "Operational health",
-        annotations(read_only_hint = true, destructive_hint = false),
+        read_only = true,
+        destructive = false,
         description = "What state the server is in and what to do next: `phase`, `remedy` (the \
          call to make when no project is served), and `database.revision_id` / \
          `database.file_count`. Read-only: never syncs, never mutates, and answers a path that \
          is not an enabled project with `phase: disabled` instead of an error. Pass `path` for \
          a project's database state; without it no project is selected. `verbose: true` adds \
          `detail`, the operator view (parser pack version, skipped files, process counters, \
-         host memory, the mechanic scan cache)."
-    )]
-    async fn health(
-        &self,
-        meta: RequestMetaObject,
-        peer: Peer<RoleServer>,
-        request: Parameters<tools::HealthRequest>,
-    ) -> Result<Json<tools::HealthResponse>, ErrorData> {
-        self.dispatch_health(meta, peer, move |sink, manager| {
-            tools::health(&request, sink.as_ref(), &manager)
-        })
-        .await
-    }
+         host memory, result store).",
+    },
 }
-
-#[cfg(test)]
-#[path = "handlers_tests.rs"]
-mod tests;

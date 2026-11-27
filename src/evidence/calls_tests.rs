@@ -1,11 +1,8 @@
-use crate::evidence::tests::field;
 use crate::evidence::{Extraction, WalkInput};
-use crate::model::LineIndex;
+use crate::model::{CallPayload, EvidenceItem, EvidenceKind, EvidencePayload, LineIndex};
 use crate::util::Deadline;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
-/// Parses `source` (unbounded) and runs the Rust call walker over it within
-/// `deadline`.
 fn walk_rust(source: &str, deadline: Option<&Deadline>) -> TestResult<Extraction> {
     let tree = crate::evidence::parse_tree("rust", source, None)
         .map_err(|failure| format!("{failure:?}"))
@@ -19,22 +16,27 @@ fn walk_rust(source: &str, deadline: Option<&Deadline>) -> TestResult<Extraction
     super::extract_rust(&tree, &input).check("extract Rust calls")
 }
 
-fn extract_rust(source: &str) -> TestResult<Vec<crate::model::EvidenceItem>> {
+fn extract_rust(source: &str) -> TestResult<Vec<EvidenceItem>> {
     Ok(walk_rust(source, None)?.items)
 }
 
-/// The `caller` of every call named `callee`, in source order.
-fn callers_of<'a>(
-    calls: &'a [crate::model::EvidenceItem],
-    callee: &str,
-) -> Vec<&'a serde_json::Value> {
-    calls
-        .iter()
-        .filter(|item| *field(&item.payload, "callee_name") == callee)
-        .map(|item| field(&item.payload, "caller"))
-        .collect()
+fn call_payload(item: &EvidenceItem) -> TestResult<&CallPayload> {
+    match &item.payload {
+        EvidencePayload::Call(payload) => Ok(payload),
+        other => Err(format!("expected CallPayload, got {other:?}")).check("call payload"),
+    }
 }
-use crate::model::EvidenceKind;
+
+fn callers_of<'a>(calls: &'a [EvidenceItem], callee: &str) -> TestResult<Vec<Option<&'a str>>> {
+    let mut out = Vec::new();
+    for item in calls {
+        let payload = call_payload(item)?;
+        if payload.callee_name == callee {
+            out.push(payload.caller.as_deref());
+        }
+    }
+    Ok(out)
+}
 
 #[test]
 fn extracts_direct_qualified_and_macro_calls() -> TestResult {
@@ -48,39 +50,35 @@ fn extracts_direct_qualified_and_macro_calls() -> TestResult {
 
     let names: Vec<&str> = calls
         .iter()
-        .map(|item| {
-            field(&item.payload, "callee_name")
-                .as_str()
-                .check("callee_name as string")
-        })
+        .map(|item| Ok(call_payload(item)?.callee_name.as_str()))
         .collect::<TestResult<_>>()?;
     ensure(names.contains(&"helper"), "names.contains(&\"helper\")")?;
     ensure(names.contains(&"start"), "names.contains(&\"start\")")?;
     ensure(names.contains(&"println"), "names.contains(&\"println\")")?;
 
-    let run_call = calls
-        .iter()
-        .find(|item| *field(&item.payload, "callee_name") == "helper")
-        .check("expected run_call helper")?;
-    ensure_eq(
-        field(&run_call.payload, "caller"),
-        &"run",
-        "run_call.payload[\"caller\"] == \"run\"",
+    let run_call = call_payload(
+        calls
+            .iter()
+            .find(|item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == "helper"))
+            .check("expected run_call helper")?,
     )?;
+    ensure_eq(&run_call.caller.as_deref(), &Some("run"), "caller == run")?;
     ensure_eq(
-        field(&run_call.payload, "resolution"),
+        &run_call.resolution.as_str(),
         &"unresolved-syntactic",
-        "run_call.payload[\"resolution\"] == \"unresolved-syntactic\"",
+        "resolution == unresolved-syntactic",
     )?;
 
-    let macro_call = calls
-        .iter()
-        .find(|item| *field(&item.payload, "callee_name") == "println")
-        .check("expected macro_call println")?;
+    let macro_call = call_payload(
+        calls
+            .iter()
+            .find(|item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == "println"))
+            .check("expected macro_call println")?,
+    )?;
     ensure_eq(
-        field(&macro_call.payload, "resolution"),
+        &macro_call.resolution.as_str(),
         &"macro",
-        "macro_call.payload[\"resolution\"] == \"macro\"",
+        "macro_call resolution == macro",
     )?;
     Ok(())
 }
@@ -90,20 +88,13 @@ fn calls_have_spans_and_do_not_include_definition_names() -> TestResult {
     let source = "fn build() { make(); }\nfn make() {}\n";
     let calls = extract_rust(source)?;
     ensure_eq(&calls.len(), &1, "calls.len() == 1")?;
-    let call = &calls.first().check("calls[0] exists")?;
-    ensure_eq(
-        field(&call.payload, "callee_text"),
-        &"make",
-        "call.payload[\"callee_text\"] == \"make\"",
-    )?;
-    ensure_eq(
-        field(&call.payload, "caller"),
-        &"build",
-        "call.payload[\"caller\"] == \"build\"",
-    )?;
+    let call_item = calls.first().check("calls[0] exists")?;
+    let payload = call_payload(call_item)?;
+    ensure_eq(&payload.callee_text.as_str(), &"make", "callee_text")?;
+    ensure_eq(&payload.caller.as_deref(), &Some("build"), "caller")?;
     ensure(
-        matches!(call.span, crate::model::SpanAvailability::Present(_)),
-        "matches!( call.span, crate::model::SpanAvailability::Present(_) )",
+        matches!(call_item.span, crate::model::SpanAvailability::Present(_)),
+        "call span present",
     )?;
     Ok(())
 }
@@ -111,22 +102,16 @@ fn calls_have_spans_and_do_not_include_definition_names() -> TestResult {
 #[test]
 fn turbofish_callees_report_the_inner_function_or_method_name() -> TestResult {
     let source = "fn run(x: &str) {\n    foo::<u8>();\n    x.parse::<u32>();\n}\n";
-
     let calls = extract_rust(source)?;
 
     let named: Vec<(&str, &str, &str)> = calls
         .iter()
         .map(|item| {
+            let p = call_payload(item)?;
             Ok((
-                field(&item.payload, "callee_name")
-                    .as_str()
-                    .check("callee_name")?,
-                field(&item.payload, "callee_text")
-                    .as_str()
-                    .check("callee_text")?,
-                field(&item.payload, "resolution")
-                    .as_str()
-                    .check("resolution")?,
+                p.callee_name.as_str(),
+                p.callee_text.as_str(),
+                p.resolution.as_str(),
             ))
         })
         .collect::<TestResult<_>>()?;
@@ -136,7 +121,7 @@ fn turbofish_callees_report_the_inner_function_or_method_name() -> TestResult {
             ("foo", "foo::<u8>", "unresolved-syntactic"),
             ("parse", "x.parse::<u32>", "unresolved-syntactic"),
         ],
-        "named == [ (\"foo\", \"foo::<u8>\", \"unresolved-syntactic\"), (\"parse\", \"x.parse::<u32>\", \"unresolved-syntactic\"), ]",
+        "turbofish inner callee names",
     )?;
     Ok(())
 }
@@ -144,57 +129,38 @@ fn turbofish_callees_report_the_inner_function_or_method_name() -> TestResult {
 #[test]
 fn a_qualified_turbofish_callee_stays_qualified() -> TestResult {
     let source = "fn run() { std::mem::size_of::<u8>(); }\n";
-
     let calls = extract_rust(source)?;
-
     ensure_eq(&calls.len(), &1, format!("{calls:?}"))?;
+    let payload = call_payload(calls.first().check("calls[0] exists")?)?;
+    ensure_eq(&payload.callee_name.as_str(), &"size_of", "callee_name")?;
     ensure_eq(
-        field(
-            &calls.first().check("calls[0] exists")?.payload,
-            "callee_name",
-        ),
-        &"size_of",
-        "calls[0].payload[\"callee_name\"] == \"size_of\"",
-    )?;
-    ensure_eq(
-        field(
-            &calls.first().check("calls[0] exists")?.payload,
-            "resolution",
-        ),
+        &payload.resolution.as_str(),
         &"qualified-syntactic",
-        "calls[0].payload[\"resolution\"] == \"qualified-syntactic\"",
+        "resolution",
     )?;
-    ensure_eq(
-        field(
-            &calls.first().check("calls[0] exists")?.payload,
-            "confidence",
-        ),
-        &"high",
-        "calls[0].payload[\"confidence\"] == \"high\"",
-    )?;
+    ensure_eq(&payload.confidence.as_str(), &"high", "confidence")?;
     Ok(())
 }
 
 #[test]
 fn a_qualified_call_inside_a_macro_has_the_same_confidence_as_outside() -> TestResult {
     let source = "fn run() { println!(\"{}\", crate::util::now()); }\n";
-
     let calls = extract_rust(source)?;
 
-    let now = calls
-        .iter()
-        .find(|item| *field(&item.payload, "callee_name") == "now")
-        .check("the macro argument call is recovered")?;
+    let now = call_payload(
+        calls
+            .iter()
+            .find(
+                |item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == "now"),
+            )
+            .check("the macro argument call is recovered")?,
+    )?;
     ensure_eq(
-        field(&now.payload, "resolution"),
+        &now.resolution.as_str(),
         &"qualified-syntactic",
-        "now.payload[\"resolution\"] == \"qualified-syntactic\"",
+        "resolution",
     )?;
-    ensure_eq(
-        field(&now.payload, "confidence"),
-        &"high",
-        "now.payload[\"confidence\"] == \"high\"",
-    )?;
+    ensure_eq(&now.confidence.as_str(), &"high", "confidence")?;
     Ok(())
 }
 
@@ -205,10 +171,6 @@ fn malformed_rust_does_not_panic() -> TestResult {
     Ok(())
 }
 
-/// The one fixture with a callee named `unwrap`: a method call reports its
-/// field name as `callee_name` (keeping the receiver in `callee_text`), a call
-/// inside a macro's arguments is found exactly once (also when macros nest),
-/// and text inside a string or a comment is never a call.
 #[test]
 fn method_calls_are_found_once_each_in_code_and_macro_arguments_and_not_in_text() -> TestResult {
     let source = r#"
@@ -222,25 +184,24 @@ fn run(a: Option<u8>, b: Option<u8>) -> u8 {
 }
 "#;
     let calls = extract_rust(source)?;
-    let hits: Vec<_> = calls
+    let hits: Vec<&EvidenceItem> = calls
         .iter()
-        .filter(|item| *field(&item.payload, "callee_name") == "unwrap")
+        .filter(
+            |item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == "unwrap"),
+        )
         .collect();
     ensure_eq(&hits.len(), &8, format!("{calls:?}"))?;
     for call in &hits {
-        ensure_eq(
-            field(&call.payload, "caller"),
-            &"run",
-            "call.payload[\"caller\"] == \"run\"",
-        )?;
+        let payload = call_payload(call)?;
+        ensure_eq(&payload.caller.as_deref(), &Some("run"), "caller == run")?;
         ensure(
             matches!(call.span, crate::model::SpanAvailability::Present(_)),
-            "matches!( call.span, crate::model::SpanAvailability::Present(_) )",
+            "span present",
         )?;
-        let text = field(&call.payload, "callee_text")
-            .as_str()
-            .check("callee_text")?;
-        ensure(text.ends_with("unwrap"), format!("callee_text {text}"))?;
+        ensure(
+            payload.callee_text.ends_with("unwrap"),
+            format!("callee_text {}", payload.callee_text),
+        )?;
     }
     Ok(())
 }
@@ -249,17 +210,13 @@ fn run(a: Option<u8>, b: Option<u8>) -> u8 {
 fn a_call_walk_under_a_spent_deadline_is_timed_out_not_truncated() -> TestResult {
     let source = "fn run() { helper(); }\n";
     let spent = Deadline::after(std::time::Duration::ZERO);
-
     let extraction = walk_rust(source, Some(&spent))?;
-
     ensure(extraction.items.is_empty(), "extraction.items.is_empty()")?;
     ensure(extraction.timed_out, "extraction.timed_out")?;
     ensure(!extraction.truncated, "!extraction.truncated")?;
     Ok(())
 }
 
-/// A call inside a closure reports no caller, inside a macro argument as
-/// outside one: the closure, not the function around it, encloses the call.
 #[test]
 fn a_call_in_a_closure_has_no_caller_inside_and_outside_a_macro() -> TestResult {
     let source = "fn run(v: Vec<u8>) {\n    \
@@ -267,34 +224,37 @@ fn a_call_in_a_closure_has_no_caller_inside_and_outside_a_macro() -> TestResult 
                   println!(\"{:?}\", v.iter().map(|x| wrapped(x)));\n    \
                   direct();\n    \
                   println!(\"{}\", in_macro());\n}\n";
-
     let calls = extract_rust(source)?;
 
-    let null = serde_json::Value::Null;
-    let run = serde_json::Value::from("run");
-    ensure_eq(&callers_of(&calls, "plain"), &[&null], format!("{calls:?}"))?;
+    ensure_eq(&callers_of(&calls, "plain")?, &[None], format!("{calls:?}"))?;
     ensure_eq(
-        &callers_of(&calls, "wrapped"),
-        &[&null],
-        format!("{calls:?}"),
-    )?;
-    ensure_eq(&callers_of(&calls, "direct"), &[&run], format!("{calls:?}"))?;
-    ensure_eq(
-        &callers_of(&calls, "in_macro"),
-        &[&run],
+        &callers_of(&calls, "wrapped")?,
+        &[None],
         format!("{calls:?}"),
     )?;
     ensure_eq(
-        &callers_of(&calls, "for_each"),
-        &[&run],
+        &callers_of(&calls, "direct")?,
+        &[Some("run")],
         format!("{calls:?}"),
     )?;
-    ensure_eq(&callers_of(&calls, "map"), &[&run], format!("{calls:?}"))?;
+    ensure_eq(
+        &callers_of(&calls, "in_macro")?,
+        &[Some("run")],
+        format!("{calls:?}"),
+    )?;
+    ensure_eq(
+        &callers_of(&calls, "for_each")?,
+        &[Some("run")],
+        format!("{calls:?}"),
+    )?;
+    ensure_eq(
+        &callers_of(&calls, "map")?,
+        &[Some("run")],
+        format!("{calls:?}"),
+    )?;
     Ok(())
 }
 
-/// A call reports the innermost named function around it, and a call after
-/// a nested function reports the outer one again.
 #[test]
 fn a_call_reports_the_innermost_enclosing_function() -> TestResult {
     let source = "fn outer() {\n    \
@@ -302,29 +262,16 @@ fn a_call_reports_the_innermost_enclosing_function() -> TestResult {
                   shallow();\n}\n\
                   impl T { fn method(&self) { in_method(); } }\n\
                   const C: u8 = top();\n";
-
     let calls = extract_rust(source)?;
 
+    ensure_eq(&callers_of(&calls, "deep")?, &[Some("inner")], "deep")?;
+    ensure_eq(&callers_of(&calls, "shallow")?, &[Some("outer")], "shallow")?;
     ensure_eq(
-        &callers_of(&calls, "deep"),
-        &[&serde_json::Value::from("inner")],
-        "callers_of(&calls, \"deep\") == [&serde_json::Value::from(\"inner\")]",
+        &callers_of(&calls, "in_method")?,
+        &[Some("method")],
+        "in_method",
     )?;
-    ensure_eq(
-        &callers_of(&calls, "shallow"),
-        &[&serde_json::Value::from("outer")],
-        "callers_of(&calls, \"shallow\") == [&serde_json::Value::from(\"outer\")]",
-    )?;
-    ensure_eq(
-        &callers_of(&calls, "in_method"),
-        &[&serde_json::Value::from("method")],
-        "callers_of(&calls, \"in_method\") == [&serde_json::Value::from(\"method\")]",
-    )?;
-    ensure_eq(
-        &callers_of(&calls, "top"),
-        &[&serde_json::Value::Null],
-        "callers_of(&calls, \"top\") == [&serde_json::Value::Null]",
-    )?;
+    ensure_eq(&callers_of(&calls, "top")?, &[None], "top")?;
     Ok(())
 }
 
@@ -342,7 +289,7 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
             macro_node = Some(node);
             break;
         }
-        crate::evidence::push_children(&mut pending, &node, |child| child);
+        crate::evidence::push_children(&mut pending, node, |child| child);
     }
     let macro_node = macro_node.check("the fixture has a macro")?;
     let spent = Deadline::after(std::time::Duration::ZERO);
@@ -352,11 +299,85 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
         deadline: Some(&spent),
     };
 
-    let recovered = super::macro_calls::extract(&macro_node, &input, Some("run"))
-        .check("recover the macro's calls")?;
+    let recovered =
+        super::macro_calls::extract(macro_node, &input, Some("run")).check("recover calls")?;
 
     ensure(recovered.timed_out, "recovered.timed_out")?;
     ensure(!recovered.capped, "!recovered.capped")?;
     ensure(recovered.rows.is_empty(), "helper() was not recovered")?;
+    Ok(())
+}
+
+#[test]
+fn statement_and_item_macros_recover_nested_calls_with_exact_source_spans() -> TestResult {
+    let source = concat!(
+        "thread_local! {\n",
+        "    static SLOT: Cell<u32> = Cell::new(init_slot());\n",
+        "}\n",
+        "decl_fn! {\n",
+        "    fn generated() {\n",
+        "        inside_generated();\n",
+        "    }\n",
+        "}\n",
+        "fn run() {\n",
+        "    block_macro! {\n",
+        "        let first = step_one();\n",
+        "        crate::pipeline::step_two(first);\n",
+        "    }\n",
+        "}\n",
+    );
+    let calls = extract_rust(source)?;
+
+    for (callee, expected_caller, expected_res, expected_line) in [
+        ("new", None, "qualified-syntactic", 2_i64),
+        ("init_slot", None, "unresolved-syntactic", 2_i64),
+        (
+            "inside_generated",
+            Some("generated"),
+            "unresolved-syntactic",
+            6_i64,
+        ),
+        ("step_one", Some("run"), "unresolved-syntactic", 11_i64),
+        ("step_two", Some("run"), "qualified-syntactic", 12_i64),
+    ] {
+        let hit = calls
+            .iter()
+            .find(
+                |item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == callee),
+            )
+            .check(&format!("recovered macro call `{callee}`"))?;
+        let payload = call_payload(hit)?;
+        ensure_eq(
+            &payload.caller.as_deref(),
+            &expected_caller,
+            format!("caller for `{callee}`"),
+        )?;
+        ensure_eq(
+            &payload.resolution.as_str(),
+            &expected_res,
+            format!("resolution for `{callee}`"),
+        )?;
+        let row = crate::evidence::to_row(hit);
+        ensure_eq(
+            &row.start_line,
+            &Some(expected_line),
+            format!("1-based start_line for `{callee}`"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn string_literal_receiver_with_double_colon_is_not_classified_as_qualified_path() -> TestResult {
+    let source = "fn run() { let _ = \"a::b\".trim(); }\n";
+    let calls = extract_rust(source)?;
+    ensure_eq(&calls.len(), &1usize, "single trim() call")?;
+    let payload = call_payload(calls.first().check("trim call present")?)?;
+    ensure_eq(&payload.callee_name.as_str(), &"trim", "callee_name")?;
+    ensure_eq(
+        &payload.resolution.as_str(),
+        &"unresolved-syntactic",
+        "method call on string literal containing :: is unresolved-syntactic",
+    )?;
     Ok(())
 }

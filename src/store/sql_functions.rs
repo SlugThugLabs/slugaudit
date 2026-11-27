@@ -17,22 +17,22 @@ use rusqlite::functions::{Context, FunctionFlags};
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, Error, Result};
 
-/// Largest TEXT value the line functions accept. Aligned with the smallest
-/// per-profile `max_query_value_bytes` (32 MiB, the Lean profile): a value a
-/// `query` call could return whole under the most conservative profile is
-/// accepted here, while a value synthesized inside SQL (for example
-/// `hex(randomblob(..))`) cannot make the functions scan or copy an
-/// unbounded input. Over-cap input is refused before any scan or slice copy,
-/// with a static error that carries no part of the value.
-const MAX_LINE_FUNCTION_INPUT_BYTES: usize = 32 * 1024 * 1024;
+/// Largest TEXT value the line functions accept (`SQLITE_MAX_VALUE_BYTES`), so
+/// `line_count(content)` and `line_range(content, ...)` work on any indexed
+/// file stored under `Audit` or `Adaptive` profiles.
+const MAX_LINE_FUNCTION_INPUT_BYTES: usize = 1_000_000_000;
 
 /// Registers both functions as deterministic, UTF-8 scalar functions.
 pub(super) fn register(connection: &Connection) -> Result<()> {
+    register_with_cap(connection, MAX_LINE_FUNCTION_INPUT_BYTES)
+}
+
+fn register_with_cap(connection: &Connection, max_input_bytes: usize) -> Result<()> {
     let flags = FunctionFlags::SQLITE_UTF8
         | FunctionFlags::SQLITE_DETERMINISTIC
         | FunctionFlags::SQLITE_INNOCUOUS;
-    connection.create_scalar_function("line_count", 1, flags, |context| {
-        let Some(text) = text_arg(context, 0, "line_count")? else {
+    connection.create_scalar_function("line_count", 1, flags, move |context| {
+        let Some(text) = text_arg(context, 0, "line_count", max_input_bytes)? else {
             return Ok(None);
         };
         let count = i64::try_from(count_lines(text)).map_err(|error| {
@@ -42,8 +42,8 @@ pub(super) fn register(connection: &Connection) -> Result<()> {
         })?;
         Ok(Some(count))
     })?;
-    connection.create_scalar_function("line_range", 3, flags, |context| {
-        let text = text_arg(context, 0, "line_range")?;
+    connection.create_scalar_function("line_range", 3, flags, move |context| {
+        let text = text_arg(context, 0, "line_range", max_input_bytes)?;
         let start = integer_arg(context, 1, "line_range", "start")?;
         let end = integer_arg(context, 2, "line_range", "end")?;
         let (Some(text), Some(start), Some(end)) = (text, start, end) else {
@@ -84,15 +84,20 @@ fn user_error(message: String) -> Error {
 
 /// A TEXT argument, `None` for NULL; any other storage class is an error
 /// rather than a silent coercion.
-fn text_arg<'a>(context: &'a Context<'_>, index: usize, function: &str) -> Result<Option<&'a str>> {
+fn text_arg<'a>(
+    context: &'a Context<'_>,
+    index: usize,
+    function: &str,
+    max_input_bytes: usize,
+) -> Result<Option<&'a str>> {
     match context.get_raw(index) {
         ValueRef::Null => Ok(None),
         ValueRef::Text(bytes) => {
             // Checked on the raw bytes, before `from_utf8` and before either
             // caller scans or copies the value.
-            if bytes.len() > MAX_LINE_FUNCTION_INPUT_BYTES {
+            if bytes.len() > max_input_bytes {
                 return Err(user_error(format!(
-                    "{function}: TEXT argument exceeds the {MAX_LINE_FUNCTION_INPUT_BYTES}-byte \
+                    "{function}: TEXT argument exceeds the {max_input_bytes}-byte \
                      input cap; apply substr() to the value first"
                 )));
             }
@@ -164,7 +169,9 @@ fn slice_lines(text: &str, start: i64, end: i64) -> &str {
     }
     // `begin` and `stop` sit just after a `\n` or at the ends, so both are
     // char boundaries.
-    let slice = &text[begin..stop];
+    let Some(slice) = text.get(begin..stop) else {
+        return "";
+    };
     if let Some(line) = slice.strip_suffix('\n') {
         match line.strip_suffix('\r') {
             Some(without_return) => without_return,

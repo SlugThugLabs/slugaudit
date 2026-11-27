@@ -1,66 +1,55 @@
 # Privacy and security
 
-## SlugAudit is not a security product
+## SlugAudit is not a security boundary
 
-It indexes your code so an AI agent can query it. It does not scan for vulnerabilities, sandbox anything, or defend the index against a hostile user on your machine. The index is your own local scratch file. `leads` reports mechanical facts, and `credential_files` only matches path names. A zero from any tool is not a statement that the code is safe.
+SlugAudit is a local codebase index that saves your AI coding agent context and tokens on repetitive file reads. It is **not** a security scanner, sandbox, or permission boundary:
+
+- **Host coding harness owns permissions.** Your OS and host coding harness (Claude Code, Cursor, Gemini CLI, Codex, Antigravity, etc.) own workspace access control and already grant the model direct read access to the repository's files.
+- **`.planning/slugaudit/` is disposable local scratch.** `project.db`, `findings-<id>.db`, and `results/` hold only derived data from that repository and session notes written by your agent. They are created with your normal default user permissions — SlugAudit does not chmod `0600`, enforce symlink/path jails, or run SQL authorizers to defend its own scratch files against you or the model.
+- **Bounded against accidental runaway work.** SlugAudit bounds resource use so an accidental broad query or pathological file does not hang your session: `query` opens SQLite read-only, accepts a single `SELECT` or `WITH` statement, and enforces SQLite VM-step, wall-clock, and byte ceilings; Tree-sitter parses and structure/mechanic scans run under wall-clock deadlines, depth bounds, and match caps.
+- **Counts are mechanical facts, not safety verdicts.** `leads` counts syntactic patterns, and `credential_files` only matches path names. A zero from any tool is never a statement that code is safe.
 
 ## How it runs
 
-- It is a local program. Your agent starts it and talks to it over standard input and output (stdio). It opens no network port and accepts no network connections.
-- It runs with your user's permissions.
-- It has no telemetry. A search of the source finds no code that reports usage, errors or any other data to anyone. The only network code is listed below.
+- Local process started by your coding client over standard input and output (`stdio`). It opens no listening port and accepts no inbound network connections.
+- Runs as your local user account.
+- Zero telemetry: SlugAudit never reports usage, errors, paths, queries, or code anywhere.
 
 ## What it reads
 
 | What | When |
 |---|---|
-| Every file in an enabled project, except those excluded (see [how it works](how-it-works.md)) | On every tool call. The full text of text files is copied into the index. |
-| `.gitignore`, `.ignore`, `.git/info/exclude`, and your global gitignore | On every tool call, to decide what to skip. |
-| `~/.slugthug/slugaudit/config.json`, if you wrote one | On every call. |
-| The project's `.gitignore` | When you enable a project. |
-| Each agent's config file | When you run `connect`, `disconnect` or `menu`. |
-| Your shell config (`~/.bashrc` or similar) | Only if you accept the PATH prompt in `slugaudit install`. |
+| Regular files in an enabled project, except excluded/ignored paths (see [how it works](how-it-works.md)) | On every tool call except `health` (and cursor continuations). Full UTF-8 text of indexed files is stored in `project.db`. |
+| `.gitignore`, `.ignore`, `.git/info/exclude`, and your global gitignore | On every sync walk, to skip ignored files. |
+| `~/.slugthug/slugaudit/config.json` (optional, read-only) | At startup and when resolving project limits. Tools never write this file. |
+| `<project>/.gitignore` | When enabling a project (`project_control` `"action": "on"`). |
+| Client MCP configuration files | Only when you run `slugaudit connect`, `slugaudit disconnect`, or `slugaudit menu`. |
+| Your shell rc file (`~/.bashrc`, `~/.zshrc`, `~/.config/fish/config.fish`) | Only if you confirm the interactive `PATH` prompt during `slugaudit install`. |
 
-Files that look like credentials (`.env`, `*.pem`, `*.key`, `id_rsa`, ...) are indexed like any other text file if they are not ignored. Their text is stored in the index and an agent can read it with `query`. Add them to `.gitignore` or `.ignore` to keep them out. `report` and `leads` count credential-shaped paths so the agent knows they are there.
+Files matching credential-like path patterns (`.env`, `*.pem`, `*.key`, `id_rsa*`, ...) are indexed like any other non-ignored text file. Add them to `.gitignore` or `.ignore` to exclude them; `report` and `leads` count matching paths so the agent can see when such files are present.
 
 ## What it writes
 
 | What | Where |
 |---|---|
-| The index (a copy of your source text and extracted facts), the session findings database, their WAL files, and stored paged results | `<project>/.planning/slugaudit/` |
-| One line, `.planning/slugaudit/`, appended | `<project>/.gitignore` (when you enable a project) |
-| The `slugaudit` binary and `slugaudit.prev` | `~/.slugthug/slugaudit/` |
-| An MCP server entry named `slugaudit` | Your agent's config, via its CLI or by editing its config file |
-| A PATH line | Your shell config, only if you say yes |
-| Downloaded grammars | The grammar library's cache directory (see [languages](languages.md)) |
+| Derived index (`project.db`), per-session findings (`findings-<id>.db`), lock files, WAL sidecars, and paged result spill files (`results/`) | `<project>/.planning/slugaudit/` |
+| `.planning/README.md` (if absent) and `.planning/slugaudit/` ignore rule | `<project>/.planning/README.md` and `<project>/.gitignore` on `project_control` `on` |
+| `slugaudit` and previous binary `slugaudit.prev` | `~/.slugthug/slugaudit/` (on `install.sh`, `slugaudit install`, or `slugaudit update`) |
+| `"slugaudit"` MCP server entry | Your chosen client's CLI or config file (on `connect` / `disconnect`; `.jsonc` files containing comments are left untouched with manual instructions) |
+| Downloaded non-Rust Tree-sitter grammars | `tree-sitter-language-pack`'s user cache directory (see [languages](languages.md)) |
 
-The runtime directory and the database files are created with your default permissions. SlugAudit does not set or check file modes.
+SlugAudit never modifies your source code. `project_control` with `"action": "off"` deletes the entire `<project>/.planning/slugaudit/` directory.
 
-SlugAudit does not modify your source files. The one edit to a file of yours is the `.gitignore` line above.
+## Outbound network requests
 
-Findings you record are stored in `findings-<id>.db` (one file per server process) beside the index. They are plain text that your agent wrote, and they last until the server process exits.
+SlugAudit makes **no** network requests during normal Rust MCP tool calls (Rust's Tree-sitter grammar is compiled statically into the binary). Outbound HTTPS requests happen only in three explicit cases:
 
-## What it sends over the network
+| Trigger | Destination | What is sent |
+|---|---|---|
+| First-use non-Rust grammar download | `github.com/xberg-io/tree-sitter-language-pack` releases (or `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL`) | Standard HTTPS GET for the grammar manifest/shared library when an enabled project contains a non-Rust language not yet cached locally. No repository data is sent. |
+| `slugaudit update` | `api.github.com` and `github.com/SlugThugLabs/slugaudit/releases` | HTTPS-only `curl -q` GET for the latest release tag, binary, and `SHA256SUMS` (verified before replacing the binary). |
+| `install.sh` | `github.com/SlugThugLabs/slugaudit` releases (or `cargo install --git` fallback) | HTTPS download of the release binary and `SHA256SUMS` (or source crate dependencies when building from source). |
 
-The server itself makes no network calls while answering tools. These are the only places anything touches the network:
+## Your coding agent and model provider
 
-| What | Trigger | Where | What is sent |
-|---|---|---|---|
-| Grammar download | The first time a project contains a language whose grammar is not cached. Done by the `tree-sitter-language-pack` library. | `github.com/xberg-io/tree-sitter-language-pack` release downloads (a manifest, then a grammar bundle) | An ordinary HTTPS download request. No project data is sent. The library uses your `HTTPS_PROXY`-style environment settings and can be pointed at a mirror with `TREE_SITTER_LANGUAGE_PACK_MANIFEST_URL`. |
-| Update | You run `slugaudit update`. Uses `curl`. | `api.github.com` (latest release), then `github.com/SlugThugLabs/slugaudit/releases` (binary and `SHA256SUMS`) | HTTPS GET requests only. HTTP and downgrades are refused. The checksum is verified before the installed binary is touched. |
-| Install | You run `install.sh`. | `github.com/SlugThugLabs/slugaudit/releases/latest/download` (binary and `SHA256SUMS`). With a Rust toolchain and no prebuilt binary, `cargo install --git` fetches the repository and crates. | HTTPS downloads. The script checks the SHA-256 checksum before installing. |
-
-Your source code, queries, findings and paths are never sent anywhere by SlugAudit.
-
-A GitHub request exposes your IP address and request metadata to GitHub, as any download does.
-
-## Your agent is a separate party
-
-SlugAudit answers your agent with your code: file text, symbols, comments and findings. What the agent does with those answers is up to the agent and its model provider. If your agent sends tool results to a hosted model, then the parts of your code that SlugAudit returns go there too. SlugAudit does not control that. The `credential_files` and `credential_pattern_file_count` figures exist so an agent can know such files are in the index.
-
-## Index file safety
-
-- The index is a local file in your project. Add `.planning/slugaudit/` to `.gitignore` (SlugAudit does this for you) so it is not committed.
-- Anyone who can read `.planning/slugaudit/project.db` can read the text of every indexed file. Do not share or upload that folder.
-- `project_control` with `off` deletes the whole `.planning/slugaudit/` directory.
-- The SQL tool is read-only by construction: it accepts only `SELECT` or `WITH`. There is no SQL permission layer beyond that, because the database is your own scratch file.
+SlugAudit returns file text, AST evidence, and session findings to the MCP client that called it. Where those tool responses go next depends on your coding harness and model provider. Ensure `.planning/slugaudit/` stays gitignored (done automatically on `project_control` `on`) so local index files are not committed to version control.

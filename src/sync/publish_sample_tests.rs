@@ -1,4 +1,4 @@
-//! Unit tests for the pure helpers of `publish_sample`.
+//! Unit tests for Pass 2 file selection and Pass 1 hash verification.
 
 use super::*;
 use crate::sync::discovery::{DiscoveredFile, FileKind};
@@ -47,7 +47,7 @@ fn parser_version_change_samples_every_hashed_file() -> TestResult {
     ensure_eq(
         &paths(&picked),
         &vec!["a.rs", "b.rs"],
-        "paths(&picked) == vec![\"a.rs\", \"b.rs\"]",
+        "parser pack version bump selects every hashed file",
     )?;
     Ok(())
 }
@@ -75,7 +75,7 @@ fn unchanged_parser_samples_only_changed_hashed_files() -> TestResult {
     ensure_eq(
         &paths(&picked),
         &vec!["added.rs", "modified.rs"],
-        "paths(&picked) == vec![\"added.rs\", \"modified.rs\"]",
+        "unchanged parser selects only added or modified hashed files",
     )?;
     Ok(())
 }
@@ -87,7 +87,7 @@ fn deleted_change_is_never_sampled() -> TestResult {
     let changes = [change("a.rs", ChangeStatus::Deleted)];
     ensure(
         files_to_sample(&discovered, &identities, &changes, false).is_empty(),
-        "files_to_sample(&discovered, &identities, &changes, false).is_empty()",
+        "deleted paths are never queued for sampling",
     )?;
     Ok(())
 }
@@ -114,7 +114,7 @@ fn mismatched_sample_hash_is_changed_during_sample() -> TestResult {
     let identities = [identity("a.rs", "h1"), identity("b.rs", "h2")];
     match check_samples_match_pass1(&samples, &identities) {
         Err(PublishError::ChangedDuringSample { path }) => {
-            ensure_eq(&path, &"b.rs", "path == \"b.rs\"")?;
+            ensure_eq(&path, &"b.rs", "mismatched hash names the mutated file")?;
         }
         other => {
             return Err(format!("expected ChangedDuringSample, got {other:?}"))

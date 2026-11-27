@@ -1,19 +1,16 @@
-//! The registry of stored results and the admission policy.
+// slugaudit-line-exception: approved-by=split-judge; reason=single result-registry state machine: entry lifecycle classes, space-pressure admission/eviction planning, and StoreStats snapshot read the same Registry fields
+//! Registry of stored results, space-pressure admission policy, and stats
+//! snapshots.
 //!
-//! The map mutex is held for map operations only, never across SQL or file
-//! I/O: every entry owns its connection behind its own mutex, and reclaimed
-//! entries are handed back so the caller drops them (closing the file) after
-//! the map lock is released.
-//!
-//! Admission invariant: the sum of admitted bytes never exceeds the budget.
-//! Transient on-disk bytes while results are still being written are bounded
-//! by (concurrent writers x budget), because each writer aborts itself once its
-//! own file exceeds the whole budget.
+//! The map mutex is held for map operations only, never across SQL or file I/O:
+//! every entry owns its connection behind its own mutex, and reclaimed entries
+//! are dropped by the caller after releasing the map lock.
 
 use super::cursor::ResultId;
 use super::error::ResultStoreError;
+use super::result_file::ResultFile;
+use super::sweep::SweepOutcome;
 use crate::util::tally;
-use rusqlite::Connection;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,13 +20,13 @@ use std::sync::{Arc, Mutex};
 pub enum ResultClass {
     /// Not delivered and read within the grace period: never reclaimed.
     Active,
-    /// Not delivered and older than the grace period: reclaimable, second.
+    /// Not delivered and older than the grace period: reclaimable second.
     Idle,
-    /// The last page was served: reclaimable first.
+    /// Last page already served: reclaimable first.
     Delivered,
 }
 
-/// What a result is, written once at materialisation.
+/// Metadata written once at materialization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResultMeta {
     /// The tool that produced it.
@@ -44,19 +41,52 @@ pub struct ResultMeta {
     pub completeness: serde_json::Value,
     /// Exact number of rows.
     pub row_count: u64,
-    /// Unix seconds at materialisation.
+    /// Unix seconds at materialization.
     pub created_unix: i64,
 }
 
-/// Maximum open result-store entries retained at once so many small results
-/// cannot exhaust `RLIMIT_NOFILE` before hitting the byte budget.
+/// Results and bytes held in one [`ResultClass`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClassStats {
+    /// Number of results.
+    pub results: usize,
+    /// Their measured bytes.
+    pub bytes: u64,
+}
+
+/// Snapshot of what the result store holds and has decided so far.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StoreStats {
+    /// Active results (never reclaimed).
+    pub active: ClassStats,
+    /// Idle results (reclaimable second).
+    pub idle: ClassStats,
+    /// Delivered results (reclaimable first).
+    pub delivered: ClassStats,
+    /// `max_result_store_bytes`.
+    pub budget_bytes: u64,
+    /// Sum of admitted bytes; never above the budget.
+    pub admitted_bytes: u64,
+    /// Delivered results reclaimed so far.
+    pub reclaimed_delivered: u64,
+    /// Idle results reclaimed so far.
+    pub reclaimed_idle: u64,
+    /// New results refused with `Full`.
+    pub refused_full: u64,
+    /// New results refused with `TooLarge`.
+    pub refused_too_large: u64,
+    /// Cursors refused as unknown.
+    pub unknown_cursors: u64,
+    /// Cursors refused as expired.
+    pub expired_cursors: u64,
+    /// What the startup sweep did.
+    pub sweep: SweepOutcome,
+}
+
 const MAX_OPEN_RESULTS: usize = 64;
 
-/// One registered result.
 pub(super) struct Entry {
-    // A poisoned connection lock is not recovered: a read of it returns
-    // `ResultStoreError::Lock`.
-    pub(super) conn: Mutex<Connection>,
+    pub(super) conn: Mutex<ResultFile>,
     pub(super) meta: Arc<ResultMeta>,
     pub(super) bytes: u64,
     seq: u64,
@@ -65,7 +95,7 @@ pub(super) struct Entry {
 }
 
 impl Entry {
-    pub(super) fn new(conn: Connection, meta: ResultMeta, bytes: u64, now: i64) -> Self {
+    pub(super) fn new(conn: ResultFile, meta: ResultMeta, bytes: u64, now: i64) -> Self {
         Self {
             conn: Mutex::new(conn),
             meta: Arc::new(meta),
@@ -78,7 +108,6 @@ impl Entry {
 
     pub(super) fn class(&self, now: i64, grace_secs: u64) -> ResultClass {
         let last_access = self.last_access.load(Ordering::Relaxed);
-        // A clock that reads earlier than the last access has not idled.
         let idle_for = (now >= last_access).then_some(now.abs_diff(last_access));
         if self.delivered.load(Ordering::Relaxed) {
             ResultClass::Delivered
@@ -89,7 +118,6 @@ impl Entry {
         }
     }
 
-    /// Serving a page renews protection; the last page marks it delivered.
     pub(super) fn served(&self, now: i64, last_page: bool) {
         self.last_access.store(now, Ordering::Relaxed);
         if last_page {
@@ -102,7 +130,6 @@ impl Entry {
     }
 }
 
-/// Counters of the store's decisions.
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Counters {
     pub(super) reclaimed_delivered: u64,
@@ -113,21 +140,16 @@ pub(super) struct Counters {
     pub(super) expired_cursors: u64,
 }
 
-/// Whether `used` plus `bytes` stays within `budget`; a sum past `u64::MAX`
-/// is over any budget.
 fn fits_budget(used: u64, bytes: u64, budget: u64) -> bool {
     used.checked_add(bytes).is_some_and(|total| total <= budget)
 }
 
-/// A result removed to make room; dropped by the caller outside the lock.
 pub(super) struct Reclaimed {
     pub(super) id: ResultId,
     pub(super) class: ResultClass,
     pub(super) entry: Arc<Entry>,
 }
 
-/// A refused admission: the error and the entry that was not admitted, so the
-/// caller drops it (closing its connection and unlinked file) after the lock.
 pub(super) struct Refused {
     pub(super) error: ResultStoreError,
     pub(super) entry: Box<Entry>,
@@ -142,10 +164,6 @@ pub(super) struct Registry {
 }
 
 impl Registry {
-    /// Admits `entry` under `budget`, reclaiming delivered results oldest
-    /// first, then idle ones oldest first, never active ones. The reclaim set
-    /// is planned before anything is removed, so a result that cannot fit
-    /// destroys nothing.
     pub(super) fn admit(
         &mut self,
         id: ResultId,
@@ -165,9 +183,6 @@ impl Registry {
         let mut reclaimed = Vec::with_capacity(plan.len());
         for (victim, class) in plan {
             if let Some(removed) = self.entries.remove(&victim) {
-                // The plan only names results whose bytes are within
-                // `admitted_bytes`, so a failure here is inconsistent
-                // bookkeeping, not input.
                 let Some(remaining) = self.admitted_bytes.checked_sub(removed.bytes) else {
                     return Err(refused(
                         ResultStoreError::corrupt(
@@ -229,7 +244,6 @@ impl Registry {
             .map(|(id, entry)| (*id, entry.class(now, grace_secs), entry))
             .filter(|(_, class, _)| *class != ResultClass::Active)
             .collect();
-        // Delivered before idle, each oldest first.
         candidates.sort_by_key(|(_, class, entry)| (*class == ResultClass::Idle, entry.age_key()));
         for (id, class, entry) in candidates {
             used = used.checked_sub(entry.bytes).ok_or_else(|| {
@@ -250,6 +264,43 @@ impl Registry {
             .values()
             .filter(|entry| entry.class(now, grace_secs) == class)
             .count()
+    }
+
+    pub(super) fn snapshot(
+        &self,
+        budget_bytes: u64,
+        now: i64,
+        grace_secs: u64,
+        sweep: &SweepOutcome,
+    ) -> Result<StoreStats, ResultStoreError> {
+        let mut stats = StoreStats {
+            budget_bytes,
+            admitted_bytes: self.admitted_bytes,
+            reclaimed_delivered: self.counters.reclaimed_delivered,
+            reclaimed_idle: self.counters.reclaimed_idle,
+            refused_full: self.counters.refused_full,
+            refused_too_large: self.counters.refused_too_large,
+            unknown_cursors: self.counters.unknown_cursors,
+            expired_cursors: self.counters.expired_cursors,
+            sweep: sweep.clone(),
+            ..StoreStats::default()
+        };
+        for entry in self.entries.values() {
+            let slot = match entry.class(now, grace_secs) {
+                ResultClass::Active => &mut stats.active,
+                ResultClass::Idle => &mut stats.idle,
+                ResultClass::Delivered => &mut stats.delivered,
+            };
+            let (Some(results), Some(bytes)) = (
+                slot.results.checked_add(1),
+                slot.bytes.checked_add(entry.bytes),
+            ) else {
+                return Err(ResultStoreError::corrupt("result class totals overflow"));
+            };
+            slot.results = results;
+            slot.bytes = bytes;
+        }
+        Ok(stats)
     }
 }
 

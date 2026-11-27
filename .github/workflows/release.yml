@@ -5,13 +5,12 @@ name: Release
 #
 # Gate ownership, so the other workflows do not have to be read alongside this
 # one: quality.yml runs fmt, clippy, tests, cargo-deny (advisories, bans,
-# sources, licences), coverage and mutation testing on every push/PR;
+# sources, licences), and mutation testing on every push/PR;
 # `.github/workflows/advisories.yml` re-runs the advisory policy on a weekly
 # cron; `.github/workflows/supply-chain.yml` gates the diff of each PR and push
-# to main and scans for secrets. `check_performance` is deliberately in none of
-# them — it is a local-only gate, and quality.yml carries the reason. This
-# workflow only builds the release artifact, produces its supply-chain
-# paperwork, and attaches it to the GitHub Release, so it stays lean and fast.
+# to main and scans for secrets. This workflow only builds the release artifact,
+# produces its supply-chain paperwork, and attaches it to the GitHub Release, so
+# it stays lean and fast.
 #
 # Every third-party `uses:` here is pinned to the full commit SHA behind its
 # release tag, with the version kept as a trailing comment so a human can still
@@ -208,6 +207,38 @@ jobs:
             echo
             echo "================================================================================"
             cat "$RUNNER_TEMP/notices.body"
+            echo
+            echo "================================================================================"
+            echo "MIT License (MIT) — Statically Linked C Grammar"
+            echo "================================================================================"
+            echo
+            echo "Applies to:"
+            echo "  * tree-sitter-rust <https://github.com/tree-sitter/tree-sitter-rust>"
+            echo "    (compiled statically into the binary via tree-sitter-language-pack's"
+            echo "    C build script with TSLP_LINK_MODE=static and TSLP_LANGUAGES=rust,"
+            echo "    outside Cargo's Rust crate graph)"
+            echo
+            echo "The MIT License (MIT)"
+            echo
+            echo "Copyright (c) 2017 Maxim Sokolov"
+            echo
+            echo "Permission is hereby granted, free of charge, to any person obtaining a copy"
+            echo "of this software and associated documentation files (the \"Software\"), to deal"
+            echo "in the Software without restriction, including without limitation the rights"
+            echo "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell"
+            echo "copies of the Software, and to permit persons to whom the Software is"
+            echo "furnished to do so, subject to the following conditions:"
+            echo
+            echo "The above copyright notice and this permission notice shall be included in all"
+            echo "copies or substantial portions of the Software."
+            echo
+            echo "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR"
+            echo "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,"
+            echo "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE"
+            echo "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER"
+            echo "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,"
+            echo "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE"
+            echo "SOFTWARE."
           } > dist/THIRD-PARTY-NOTICES.txt
 
       # Before the upload, not after: a release that exists without an

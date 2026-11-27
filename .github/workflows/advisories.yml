@@ -9,8 +9,8 @@ name: Scheduled advisories
 # The policy is not restated here. `deny.toml` is the single source of truth and
 # `EmbarkStudios/cargo-deny-action` reads it from the checkout, so this job and
 # quality.yml's cargo-deny step cannot drift apart. `cargo-deny check advisories`
-# consumes the RustSec advisory-database, and `[advisories] ignore = []` in
-# `deny.toml` means nothing is suppressed.
+# consumes the RustSec advisory-database under `deny.toml`'s `[advisories]`
+# policy, where any transitive exception must carry a reviewed `reason`.
 #
 # `bans`, `sources` and `licences` deliberately stay on the push/PR path: they
 # are properties of `Cargo.toml`/`Cargo.lock`, which change only when a commit
@@ -58,4 +58,5 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           manifest-path: fuzz/Cargo.toml
+          arguments: --config fuzz/deny.toml
           command: check advisories

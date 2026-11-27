@@ -192,3 +192,19 @@ fn leading_double_colon_is_preserved_for_external_crate_paths() -> TestResult {
     )?;
     Ok(())
 }
+
+#[test]
+fn raw_identifiers_and_nested_wildcards_expand_cleanly() -> TestResult {
+    let targets =
+        parse_rust_import("use crate::r#type::{self, r#match as m, de::*};").check("raw idents")?;
+    ensure_eq(
+        &targets,
+        &vec![
+            target("crate::r#type"),
+            target("crate::r#type::r#match"),
+            target("crate::r#type::de::*"),
+        ],
+        "r# raw identifiers and nested wildcards expand in source order",
+    )?;
+    Ok(())
+}

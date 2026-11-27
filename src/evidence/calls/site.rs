@@ -2,8 +2,9 @@
 //! its macro re-parse, and the embedded call queries — so resolution,
 //! confidence and the payload shape cannot drift between languages.
 
-use crate::model::{EvidenceItem, EvidenceKind, EvidenceOrigin, SpanAvailability};
-use serde_json::json;
+use crate::model::{
+    CallPayload, EvidenceItem, EvidenceKind, EvidenceOrigin, EvidencePayload, SpanAvailability,
+};
 
 /// One call site, in the shape every producer hands to [`call_item`].
 pub(super) struct CallSite {
@@ -20,10 +21,38 @@ pub(super) struct CallSite {
     pub(super) span: SpanAvailability,
 }
 
-/// Whether a callee's text is a `::`-qualified path. Only Rust writes one
-/// today; the rule is shared so every language classifies the same way.
+/// Whether a callee's text contains a `::` path separator outside string
+/// literals (`"a::b".trim()` is an unqualified method call on a string literal,
+/// whereas `crate::util::now` is a qualified Rust path).
 pub(super) fn is_qualified(callee_text: &str) -> bool {
-    callee_text.contains("::")
+    let mut rest = callee_text.as_bytes();
+    let mut in_quote: Option<u8> = None;
+    while let Some((&byte, tail)) = rest.split_first() {
+        if let Some(quote) = in_quote {
+            if byte == b'\\' {
+                rest = match tail.split_first() {
+                    Some((_, after_escaped)) => after_escaped,
+                    None => &[],
+                };
+                continue;
+            }
+            if byte == quote {
+                in_quote = None;
+            }
+            rest = tail;
+            continue;
+        }
+        if byte == b'"' {
+            in_quote = Some(b'"');
+            rest = tail;
+            continue;
+        }
+        if byte == b':' && tail.first() == Some(&b':') {
+            return true;
+        }
+        rest = tail;
+    }
+    false
 }
 
 /// The one `Call` row builder: resolution and confidence from the site's
@@ -42,13 +71,13 @@ pub(super) fn call_item(key: String, site: CallSite) -> EvidenceItem {
         kind: EvidenceKind::Call,
         origin: site.origin,
         span: site.span,
-        payload: json!({
-            "language": site.language,
-            "callee_text": site.callee_text,
-            "callee_name": site.callee_name,
-            "caller": site.caller,
-            "resolution": resolution,
-            "confidence": confidence,
+        payload: EvidencePayload::Call(CallPayload {
+            language: site.language.to_owned(),
+            callee_text: site.callee_text,
+            callee_name: site.callee_name,
+            caller: site.caller,
+            resolution: resolution.to_owned(),
+            confidence: confidence.to_owned(),
         }),
     }
 }

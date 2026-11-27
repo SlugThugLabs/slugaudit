@@ -208,7 +208,9 @@ fn verified_read_detects_rebuilt_database_at_same_revision_id() -> TestResult {
         .check_err("old handle must reject rebuilt database even at rev-1")?;
     ensure_eq(
         &error.data,
-        &crate::error_codes::payload(crate::error_codes::ErrorCode::StaleRevision),
+        &Some(crate::error_codes::payload(
+            crate::error_codes::ErrorCode::StaleRevision,
+        )),
         "rebuilt database returns StaleRevision",
     )?;
     Ok(())

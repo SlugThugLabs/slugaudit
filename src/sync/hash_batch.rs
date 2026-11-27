@@ -1,14 +1,14 @@
-//! Pass 1 of a full sync: stream-hash every discovered file on the shared
-//! worker pool ([`super::file_pool`]).
+//! Pass 1 of a full sync: single-open parallel binary sniff + BLAKE3 stream
+//! hash on the shared worker pool ([`super::file_pool`]).
 //!
-//! Hashes files on disk in fixed 64 KB chunks ([`hash_file`]) to produce
-//! [`SourceIdentity`] without holding entire file texts in memory.
+//! Hashes files on disk in fixed 64 KiB thread-local chunks without holding
+//! entire file texts in memory or opening each file twice.
 
-use super::discovery::{DiscoveredFile, SkippedFile};
+use super::discovery::{DiscoveredFile, DiscoveryError, SkippedFile, WalkedFile, is_vanished};
 use super::file_pool::{self, Pass};
-use super::hash::{HashError, hash_file};
+use super::hash::{HashError, sniff_and_hash_file};
 use super::publish::PublishError;
-use super::revision_skipped::SKIP_REASON_OVERSIZE;
+use super::revision::{SKIP_REASON_OVERSIZE, SKIP_REASON_UNREADABLE};
 use crate::model::SourceIdentity;
 use crate::util::Deadline;
 
@@ -18,57 +18,81 @@ const HASH_PASS: Pass = Pass {
     activity: "hashing",
 };
 
-/// One file's Pass 1 outcome.
-enum Hashed {
-    /// The file's content identity.
-    Identity(SourceIdentity),
-    /// The file is over the per-file ceiling and becomes a skipped row.
+/// One walked file's single-pass sniff + hash outcome.
+enum WalkHashed {
+    /// Binary-classified discovered file paired with its BLAKE3 identity.
+    Classified(DiscoveredFile, SourceIdentity),
+    /// Unreadable or oversize file recorded as a skipped row.
     Skipped(SkippedFile),
 }
 
-/// Hashes every discovered file, in discovered order. A file over
-/// `max_file_bytes` is skipped with an `oversize` reason instead of failing
-/// the pass.
+/// Output of Pass 1 single-open binary sniffing and BLAKE3 stream hashing.
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct SniffedWalk {
+    pub(crate) discovered: Vec<DiscoveredFile>,
+    pub(crate) identities: Vec<SourceIdentity>,
+    pub(crate) skips: Vec<SkippedFile>,
+}
+
+/// Opens each walked regular file once on the bounded worker pool to both
+/// classify binary vs. text and stream-hash its content up to `max_file_bytes`.
 ///
-/// # Errors
-///
-/// [`PublishError::ChangedDuringSample`] for a file deleted since the walk,
-/// the read error for any other unreadable file, or a pool failure (see
-/// [`file_pool::run`]).
-pub(super) fn hash_all_with_deadline(
-    discovered: &[DiscoveredFile],
+/// Unreadable files (e.g. `PermissionDenied`, or a non-regular file swapped in
+/// after the walk) become `unreadable` skips and oversized files become
+/// `oversize` skips; a file that vanished (`NotFound`) since the walk returns
+/// [`PublishError::ChangedDuringSample`] so `publish` retries.
+pub(super) fn sniff_and_hash_walked(
+    walked: &[WalkedFile],
     max_file_bytes: u64,
     deadline: &Deadline,
-) -> Result<(Vec<SourceIdentity>, Vec<SkippedFile>), PublishError> {
-    let outcomes = file_pool::run(discovered, deadline, HASH_PASS, |_, file| {
-        hash_one(file, max_file_bytes)
+) -> Result<SniffedWalk, PublishError> {
+    let outcomes = file_pool::run(walked, deadline, HASH_PASS, |_, file| {
+        sniff_and_hash_one(file, max_file_bytes)
     })?;
+    let mut discovered = Vec::with_capacity(outcomes.len());
     let mut identities = Vec::with_capacity(outcomes.len());
     let mut skips = Vec::new();
     for outcome in outcomes {
         match outcome {
-            Hashed::Identity(identity) => identities.push(identity),
-            Hashed::Skipped(skip) => skips.push(skip),
+            WalkHashed::Classified(file, identity) => {
+                discovered.push(file);
+                identities.push(identity);
+            }
+            WalkHashed::Skipped(skip) => skips.push(skip),
         }
     }
-    Ok((identities, skips))
+    Ok(SniffedWalk {
+        discovered,
+        identities,
+        skips,
+    })
 }
 
-/// Hashes one file: its identity, an oversize skip, or the failure.
-fn hash_one(file: &DiscoveredFile, max_file_bytes: u64) -> Result<Hashed, PublishError> {
-    match hash_file(&file.relative_path, &file.absolute_path, max_file_bytes) {
-        Ok(identity) => Ok(Hashed::Identity(identity)),
-        Err(error @ HashError::TooLarge { .. }) => Ok(Hashed::Skipped(SkippedFile {
-            // KEEP clone: hash_one borrows &DiscoveredFile and returns an owned SkippedFile
+fn sniff_and_hash_one(file: &WalkedFile, max_file_bytes: u64) -> Result<WalkHashed, PublishError> {
+    match sniff_and_hash_file(&file.relative_path, &file.absolute_path, max_file_bytes) {
+        Ok((kind, identity)) => Ok(WalkHashed::Classified(
+            DiscoveredFile {
+                relative_path: file.relative_path.clone(),
+                absolute_path: file.absolute_path.clone(),
+                kind,
+            },
+            identity,
+        )),
+        Err(error @ HashError::TooLarge { .. }) => Ok(WalkHashed::Skipped(SkippedFile {
             absolute_path: file.absolute_path.clone(),
             reason: error.to_string(),
             code: SKIP_REASON_OVERSIZE,
         })),
-        Err(HashError::Read { path, source }) => Err(PublishError::read_after_walk(
-            &file.relative_path,
-            path,
-            source,
-        )),
+        Err(HashError::Read { source, .. }) if is_vanished(&source) => {
+            Err(PublishError::ChangedDuringSample {
+                path: file.relative_path.clone(),
+            })
+        }
+        Err(HashError::Read { path, source }) => Ok(WalkHashed::Skipped(SkippedFile {
+            absolute_path: file.absolute_path.clone(),
+            reason: DiscoveryError::Read { path, source }.to_string(),
+            code: SKIP_REASON_UNREADABLE,
+        })),
     }
 }
 

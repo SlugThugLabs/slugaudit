@@ -15,7 +15,8 @@
       "page_bytes": 1000,
       "bytes_used": 938,
       "limited_by": "page_bytes",
-      "revision_id": "<REVISION_ID>"
+      "revision_id": "<REVISION_ID>",
+      "current_disk_revision_id": "<REVISION_ID>"
     },
     "rows": [
       {

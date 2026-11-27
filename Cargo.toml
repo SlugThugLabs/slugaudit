@@ -34,6 +34,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 slugplan = { version = "0.1.1", git = "https://github.com/SlugThugLabs/slugplan", tag = "v0.1.1" }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "sync", "time"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde"] }
 tree-sitter = "0.26"
 tree-sitter-language-pack = "=1.18.0"
 tracing = "0.1"
@@ -42,7 +43,6 @@ uuid = { version = "1", default-features = false, features = ["v4"] }
 which = "8"
 
 [dev-dependencies]
-criterion = "0.8"
 proptest = "1"
 slugaudit-test-check = { version = "0.0.0", path = "crates/test_check" }
 temp-env = "0.3.6"
@@ -86,39 +86,3 @@ arithmetic_side_effects = "deny"
 cargo = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"
-
-# Criterion benchmarks. Each bench target is its own binary with
-# `harness = false` so criterion provides main(); `cargo test --all-targets`
-# compiles them but never runs them, keeping correctness gates separate
-# from benchmark builds.
-[[bench]]
-name = "discovery"
-path = "benches/discovery.rs"
-harness = false
-
-[[bench]]
-name = "parsing"
-path = "benches/parsing.rs"
-harness = false
-
-[[bench]]
-name = "search"
-path = "benches/search.rs"
-harness = false
-
-# Startup latency (process spawn → first MCP `initialize` response);
-# target: under 1 s. Black-box bench that spawns the
-# compiled `slugaudit` binary so the measured number is the real
-# cold-invoke figure a CI process pays.
-[[bench]]
-name = "startup"
-path = "benches/startup.rs"
-harness = false
-
-# Peak-memory in the steady-state sync pipeline (target: under 512 MB). Reads `/proc/self/status` VmHWM on Linux; reports
-# "unmeasured" on other OSes so the absence is unambiguous rather than
-# silently dropped.
-[[bench]]
-name = "memory"
-path = "benches/memory.rs"
-harness = false

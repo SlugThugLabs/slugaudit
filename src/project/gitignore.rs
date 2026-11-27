@@ -1,76 +1,34 @@
-//! The project-root `.gitignore` guard for activation: append the
-//! `.planning/slugaudit/` rule unless it is already ignored, atomically and
-//! without touching any other byte.
-//!
-//! Kept separate from the activation directory because the guard is non-fatal: a
-//! failure here is reported as [`GitignoreOutcome::NotWritten`] and never
-//! undoes an enable.
+//! Project-root `.gitignore` helper for activation: appends `.planning/slugaudit/`
+//! atomically unless already ignored, reporting [`GitignoreOutcome::NotWritten`]
+//! instead of failing activation when `.gitignore` cannot be read or updated.
 
-use super::root::ProjectRoot;
+use super::activation::ProjectRoot;
 use crate::ignore_rules::ACTIVATION_RELATIVE_DIR;
-use crate::util::{CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped_bytes};
-use std::io::Write;
+use crate::util::{
+    CappedReadError, MAX_FOREIGN_TEXT_BYTES, read_file_capped_bytes, sync_directory,
+    write_atomic_chunks_with,
+};
 use std::path::{Path, PathBuf};
 
-/// The ignore file at the project root. It belongs to the user: SlugAudit
-/// only ever appends one rule to it and never rewrites or removes anything.
 pub(super) const GITIGNORE_FILE: &str = ".gitignore";
 
-/// What [`ensure_gitignore`] did, and to which file.
-///
-/// There is deliberately no error case here. The activation directory is
-/// what makes a project enabled; a `.gitignore` that cannot be read or
-/// written is *reported* to the caller, never fatal to the enable, because a
-/// convenience guard must not undo the primary action.
-///
-/// The file is foreign, user-controlled text, so it is read under the same
-/// 1 MiB cap as other foreign text files (`MAX_FOREIGN_TEXT_BYTES`). A
-/// `.gitignore` over that cap is reported as [`Self::NotWritten`] rather than
-/// read, truncated, or appended to; the project stays enabled either way.
-///
-/// `disable` deliberately does not remove the rule: a `.gitignore` rule can
-/// be hiding paths SlugAudit knows nothing about, and un-hiding them is not
-/// SlugAudit's call.
+/// Outcome of [`ensure_gitignore`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum GitignoreOutcome {
-    /// The rule was appended; the file was created when it was absent.
+    /// The rule was appended (creating `.gitignore` when absent).
     Added(PathBuf),
-    /// A rule that already ignores the directory was present; file untouched.
+    /// A rule ignoring `.planning/slugaudit` was already active; file untouched.
     AlreadyIgnored(PathBuf),
-    /// The file was left untouched, and the project is enabled regardless.
+    /// `.gitignore` was left untouched; activation still succeeded.
     NotWritten {
-        /// The `.gitignore` path that was left untouched.
+        /// Path that was left untouched.
         path: PathBuf,
-        /// Why the rule was not written, reported so the non-fatal failure is
-        /// visible to the caller.
+        /// Reason the rule was not written.
         reason: String,
     },
 }
 
-/// Appends the activation directory to the project-root `.gitignore` unless a
-/// rule that already ignores it is present, so a customer's first
-/// `git status` after `project_control {"action":"on"}` does not show the
-/// index database and its sidecars as untracked files.
-///
-/// Every existing byte survives: the new contents are the old contents plus
-/// the rule, a final line without a newline gets one first, and a file
-/// written with CRLF keeps that convention instead of acquiring a mixed one.
-/// The write is atomic — the complete contents go to a temp file in the same
-/// directory which is then renamed over the path. A failed write therefore
-/// leaves the file byte-identical, which is what
-/// [`GitignoreOutcome::NotWritten`] promises; the trade-off is that a
-/// concurrent writer's change made between the read and the rename is not
-/// merged.
-///
-/// The file is read through `read_file_capped_bytes` with a 1 MiB cap
-/// (`MAX_FOREIGN_TEXT_BYTES`), the same cap used for other foreign text
-/// files. An over-cap file is reported as [`GitignoreOutcome::NotWritten`]
-/// rather than read, and any other read failure is reported the same way:
-/// this guard is non-fatal by design and never undoes the enable. Only a path
-/// with no directory entry counts as missing; the atomic write creates it.
-///
-/// Failure is reported through [`GitignoreOutcome::NotWritten`], never
-/// propagated — see [`GitignoreOutcome`].
+/// Appends `.planning/slugaudit/` to `<root>/.gitignore` unless already ignored.
 #[must_use]
 pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     let path = root.as_path().join(GITIGNORE_FILE);
@@ -86,8 +44,6 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     if ignores_activation_dir(&existing) {
         return GitignoreOutcome::AlreadyIgnored(path);
     }
-    // Match the file's own line-ending convention rather than mixing one into
-    // it, and give a newline-less final line its newline first.
     let newline = if existing.windows(2).any(|window| window == b"\r\n") {
         "\r\n"
     } else {
@@ -98,8 +54,7 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     } else {
         newline
     };
-    let entry = format!("{ACTIVATION_RELATIVE_DIR}/");
-    let addition = format!("{separator}{entry}{newline}");
+    let addition = format!("{separator}{ACTIVATION_RELATIVE_DIR}/{newline}");
     match write_gitignore_atomically(&path, &existing, addition.as_bytes(), sync_directory) {
         Ok(()) => GitignoreOutcome::Added(path),
         Err(error) => GitignoreOutcome::NotWritten {
@@ -109,8 +64,6 @@ pub fn ensure_gitignore(root: &ProjectRoot) -> GitignoreOutcome {
     }
 }
 
-/// Reads the existing `.gitignore` within the size cap. A path with no
-/// directory entry is not a failure: the atomic write creates it.
 fn read_existing_gitignore(path: &Path) -> Result<Vec<u8>, CappedReadError> {
     match read_file_capped_bytes(path, MAX_FOREIGN_TEXT_BYTES) {
         Err(CappedReadError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -120,126 +73,20 @@ fn read_existing_gitignore(path: &Path) -> Result<Vec<u8>, CappedReadError> {
     }
 }
 
-/// Sequence making temp-file names unique within one process.
-static GITIGNORE_TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Writes the existing bytes plus `addition` to a temp file beside the real
-/// `.gitignore` and renames it into place.
-///
-/// The destination is `path` itself, never a resolved link target: the
-/// rename replaces the directory entry. A missing file is created at `path`.
-/// Nothing is renamed until the whole file has been written and synced, so a
-/// failure before the rename — including a deferred write or commit error
-/// surfaced by `sync_all` — leaves the original untouched. The temp file is
-/// removed on failure; a cleanup failure is logged and never replaces the
-/// write error that is already being reported.
-///
-/// After the rename the rule IS in the file, so `sync_dir` (which commits the
-/// rename) failing is logged, not returned: reporting
-/// [`GitignoreOutcome::NotWritten`] for a file that was written would be
-/// false. The cost is that the rename may not survive a crash.
 fn write_gitignore_atomically(
     path: &Path,
     existing: &[u8],
     addition: &[u8],
     sync_dir: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    // No canonicalisation: the rename replaces the path itself, never a
-    // link target.
-    let destination = path;
-    let directory = destination.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the .gitignore path has no parent directory",
-        )
-    })?;
-    let sequence = GITIGNORE_TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let temp = directory.join(format!(
-        ".gitignore.slugaudit.{}.{sequence}.tmp",
-        std::process::id()
-    ));
-
-    // `create_new` fails rather than following a pre-existing path, so this
-    // process can only ever clean up a temp file it created itself.
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    let written = file
-        .write_all(existing)
-        .and_then(|()| file.write_all(addition))
-        .and_then(|()| match std::fs::metadata(destination) {
-            Ok(metadata) => file.set_permissions(metadata.permissions()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        })
-        // `File::drop` discards a failed `close(2)`, so a deferred write or
-        // commit error would be lost and a partial temp file renamed into
-        // place. `sync_all` commits the bytes and metadata and surfaces that
-        // error while the rename can still be skipped.
-        .and_then(|()| file.sync_all());
-    drop(file);
-    let result = written.and_then(|()| std::fs::rename(&temp, destination));
-    if let Err(error) = result {
-        remove_abandoned_temp(&temp);
-        return Err(error);
-    }
-    // Commit the rename itself, as the project config writer does.
-    if let Err(error) = sync_dir(directory) {
-        tracing::warn!(
-            target: "slugaudit::project",
-            path = %directory.display(),
-            %error,
-            "the rule was written but syncing its directory failed; the rename may not survive a crash"
-        );
-    }
-    Ok(())
+    write_atomic_chunks_with(
+        path,
+        &[existing, addition],
+        std::fs::File::sync_all,
+        sync_dir,
+    )
 }
 
-/// Commits the rename: on Unix a directory is opened and `fsync`ed like a
-/// file.
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> std::io::Result<()> {
-    std::fs::File::open(directory).and_then(|handle| handle.sync_all())
-}
-
-/// Windows cannot open a directory as a `File` without extra flags; the
-/// rename itself is still atomic.
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-/// Removes the temp file left by a failed atomic write. The primary error
-/// is already on its way to the caller; a cleanup failure is logged once
-/// and never replaces it.
-fn remove_abandoned_temp(temp: &Path) {
-    match std::fs::remove_file(temp) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => tracing::warn!(
-            target: "slugaudit::project",
-            path = %temp.display(),
-            %error,
-            "failed to remove an abandoned .gitignore temp file"
-        ),
-    }
-}
-
-/// True when the last rule that names the activation directory ignores it.
-///
-/// The rule recognised is exact-path, not glob: a line names the directory
-/// when, with trailing whitespace removed (git ignores it unless escaped), one
-/// leading `/` removed (at the project root it anchors to the same directory)
-/// and trailing `/`s removed, it equals `.planning/slugaudit`. So
-/// `.planning/slugaudit/`, `.planning/slugaudit`, `/.planning/slugaudit/` and
-/// `/.planning/slugaudit` all name it. A `!` before such a line is a negation
-/// that un-ignores it. Git resolves rules last-match-wins, so a negation after
-/// the ignore leaves the directory unignored (the rule is appended again), and
-/// an ignore after a negation wins again. `#` comments name nothing. Broader
-/// patterns (`.planning/`, `**/slugaudit/`, a matching rule in a parent
-/// directory) are not recognised; the duplicate rule that results is
-/// harmless, since gitignore permits repeats.
 fn ignores_activation_dir(contents: &[u8]) -> bool {
     let mut ignored = false;
     for line in String::from_utf8_lossy(contents).lines() {
@@ -251,10 +98,10 @@ fn ignores_activation_dir(contents: &[u8]) -> bool {
             Some(rest) => (true, rest),
             None => (false, rule),
         };
-        let anchored = match pattern.strip_prefix('/') {
-            Some(rest) => rest,
-            None => pattern,
-        };
+        let mut anchored = pattern;
+        if let Some(rest) = pattern.strip_prefix('/') {
+            anchored = rest;
+        }
         if anchored.trim_end_matches('/') == ACTIVATION_RELATIVE_DIR {
             ignored = !negated;
         }

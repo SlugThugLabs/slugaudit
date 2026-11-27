@@ -1,0 +1,6 @@
+# Statically compile Rust (the single tested language) into the binary so Rust
+# parses from first run and offline with zero runtime download. Other languages
+# remain available and download grammars on first use.
+[env]
+TSLP_LINK_MODE = { value = "static", force = true }
+TSLP_LANGUAGES = { value = "rust", force = true }

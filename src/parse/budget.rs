@@ -50,3 +50,7 @@ pub(crate) fn parse_within(parser: &mut Parser, content: &str, spent: impl Fn() 
         None => Parsed::NoTree,
     }
 }
+
+#[cfg(test)]
+#[path = "budget_tests.rs"]
+mod tests;

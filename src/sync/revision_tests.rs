@@ -280,14 +280,14 @@ fn apply_deletions_and_upsert_skipped_files_respect_spent_deadline() -> TestResu
         format!("expected TimeBudgetExceeded from apply_deletions, got {del_err:?}"),
     )?;
 
-    let skipped = vec![super::revision_skipped::SkippedRecord {
+    let skipped = vec![SkippedRecord {
         relative_path: "big.bin".to_owned(),
-        reason: super::revision_skipped::SKIP_REASON_OVERSIZE.to_owned(),
+        reason: SKIP_REASON_OVERSIZE.to_owned(),
         identity: SourceIdentity::new("big.bin".to_owned(), "stat-h".to_owned()),
         byte_len: Some(999),
         modified_unix_seconds: None,
     }];
-    let skip_err = super::revision_skipped::upsert_skipped_files(&tx, &skipped, 1, Some(&expired))
+    let skip_err = upsert_skipped_files(&tx, &skipped, 1, Some(&expired))
         .check_err("upsert_skipped_files must fail on spent deadline")?;
     ensure(
         matches!(skip_err, RevisionError::TimeBudgetExceeded { .. }),

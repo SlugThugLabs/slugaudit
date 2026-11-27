@@ -18,7 +18,7 @@ fn capped_byte_read_returns_a_file_exactly_at_the_cap() -> TestResult {
 
     let bytes = read_file_capped_bytes(&path, 1024).check("at-cap file reads")?;
 
-    ensure_eq(&bytes.len(), &1024, "bytes.len() == 1024")?;
+    ensure_eq(&bytes.len(), &1024, "the entire 1024-byte file is returned")?;
     Ok(())
 }
 
@@ -32,8 +32,8 @@ fn capped_byte_read_reports_an_oversized_file_without_reading_it_whole() -> Test
 
     match error {
         CappedReadError::TooLarge { limit, observed } => {
-            ensure_eq(&limit, &1024, "limit == 1024")?;
-            ensure_eq(&observed, &1025, "observed == 1025")?;
+            ensure_eq(&limit, &1024, "reported limit matches the configured cap")?;
+            ensure_eq(&observed, &1025, "reported observed size matches the file")?;
         }
         other @ CappedReadError::Io(_) => {
             return Err(format!("expected TooLarge, got {other:?}")).check("unexpected outcome");
@@ -54,7 +54,7 @@ fn capped_byte_read_keeps_not_found() -> TestResult {
             ensure_eq(
                 &error.kind(),
                 &std::io::ErrorKind::NotFound,
-                "error.kind() == std::io::ErrorKind::NotFound",
+                "missing file preserves NotFound error kind",
             )?;
         }
         other @ CappedReadError::TooLarge { .. } => {
@@ -151,12 +151,12 @@ fn lock_on_a_poisoned_mutex_is_an_error_naming_the_mutex() -> TestResult {
         &crate::util::LockPoisoned {
             mutex: "util_tests_string",
         },
-        "error == crate::util::LockPoisoned { mutex: \"util_tests_string\" }",
+        "lock error carries the poisoned mutex label",
     )?;
     ensure_eq(
         &error.to_string(),
         &"mutex util_tests_string was poisoned by a panic in an earlier holder",
-        "error.to_string() == \"mutex util_tests_string was poisoned by a panic in an earlier holder\"",
+        "formatted lock error names the poisoned mutex",
     )?;
     Ok(())
 }
@@ -169,7 +169,7 @@ fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> Te
     let poisoned: Mutex<u8> = Mutex::new(2);
     poison(&poisoned)?;
 
-    let (outcome, logs) = crate::store::test_capture::capture_at_level(
+    let (outcome, logs) = crate::util::test_capture::capture_at_level(
         || {
             let first = lock(&healthy, "util_tests_healthy").map(|guard| *guard);
             let second = lock(&poisoned, "util_tests_logged").map(|guard| *guard);
@@ -181,7 +181,7 @@ fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> Te
     ensure_eq(
         &outcome.0.check("the healthy mutex locks")?,
         &1,
-        "outcome.0.check(\"the healthy mutex locks\")? == 1",
+        "healthy mutex returns its guarded value",
     )?;
     outcome.1.check_err("the poisoned mutex fails")?;
     let events: Vec<&str> = logs.lines().collect();
@@ -191,7 +191,7 @@ fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> Te
     ensure(event.contains("util_tests_logged"), &logs)?;
     ensure(
         event.contains("mutex poisoned by a panic in an earlier holder"),
-        "event.contains(\"mutex poisoned by a panic in an earlier holder\")",
+        "error log explains that an earlier holder panicked",
     )?;
     Ok(())
 }
@@ -202,12 +202,16 @@ fn lock_logs_a_poisoned_mutex_once_per_detection_and_a_healthy_one_never() -> Te
 fn lock_on_a_healthy_mutex_returns_a_normal_guard() -> TestResult {
     let mutex: Mutex<Vec<u32>> = Mutex::new(vec![10, 20, 30]);
     let mut guard = lock(&mutex, "util_tests_vec").check("lock the healthy mutex")?;
-    ensure_eq(&*guard, &vec![10, 20, 30], "*guard == vec![10, 20, 30]")?;
+    ensure_eq(
+        &*guard,
+        &vec![10, 20, 30],
+        "guard exposes the initial vector",
+    )?;
     guard.push(40);
     ensure_eq(
         &*guard,
         &vec![10, 20, 30, 40],
-        "*guard == vec![10, 20, 30, 40]",
+        "guard reflects in-place mutation",
     )?;
 
     drop(guard);
@@ -215,7 +219,7 @@ fn lock_on_a_healthy_mutex_returns_a_normal_guard() -> TestResult {
     ensure_eq(
         &*guard2,
         &vec![10, 20, 30, 40],
-        "*guard2 == vec![10, 20, 30, 40]",
+        "subsequent lock sees the persisted mutation",
     )?;
     Ok(())
 }
@@ -232,7 +236,7 @@ fn lock_keeps_failing_on_every_call_after_a_poison() -> TestResult {
         ensure_eq(
             &error.to_string(),
             &"mutex util_tests_i64 was poisoned by a panic in an earlier holder",
-            format!("attempt {attempt}"),
+            format!("attempt {attempt} reports the same poison error"),
         )?;
     }
     Ok(())
@@ -252,28 +256,28 @@ fn a_poisoned_lock_becomes_an_internal_tool_error_that_says_restart() -> TestRes
     ensure_eq(
         &error.code,
         &rmcp::model::ErrorCode::INTERNAL_ERROR,
-        "error.code == rmcp::model::ErrorCode::INTERNAL_ERROR",
+        "poisoned mutex maps to an internal MCP error",
     )?;
     ensure_eq(
         &error.message,
         &"mutex labelled_probe_mutex was poisoned by a panic in an earlier holder; restart the SlugAudit server",
-        "error.message == \"mutex labelled_probe_mutex was poisoned by a panic in an earlier holder; restart the Slug...",
+        "tool error message names the mutex and advises restarting the server",
     )?;
     Ok(())
 }
 
 #[test]
 fn hex_encode_renders_lowercase_hex() -> TestResult {
-    ensure_eq(&hex_encode(b""), &"", "hex_encode(b\"\") == \"\"")?;
+    ensure_eq(&hex_encode(b""), &"", "empty input encodes to empty string")?;
     ensure_eq(
         &hex_encode(b"\x00\xff\x10"),
         &"00ff10",
-        "hex_encode(b\"\\x00\\xff\\x10\") == \"00ff10\"",
+        "boundary bytes encode to lowercase two-digit hex",
     )?;
     ensure_eq(
         &hex_encode(b"hello"),
         &"68656c6c6f",
-        "hex_encode(b\"hello\") == \"68656c6c6f\"",
+        "ASCII text encodes to expected lowercase hex",
     )?;
     Ok(())
 }
@@ -292,7 +296,7 @@ fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs()
     ensure_eq(
         &hex_encode(&every_byte),
         &reference(&every_byte)?,
-        "hex_encode(&every_byte) == reference(&every_byte)?",
+        "all 256 byte values match std::fmt lowercase hex formatting",
     )?;
 
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -308,7 +312,7 @@ fn hex_encode_matches_the_format_macro_for_every_byte_and_pseudo_random_inputs()
         ensure_eq(
             &hex_encode(&input),
             &reference(&input)?,
-            format!("len {len}"),
+            format!("pseudo-random input of length {len} matches reference hex"),
         )?;
     }
     Ok(())
@@ -331,17 +335,17 @@ fn at_least_timestamp_never_drops_below_the_persisted_value() -> TestResult {
     ensure_eq(
         &at_least_timestamp(100, Some(200)),
         &200,
-        "at_least_timestamp(100, Some(200)) == 200",
+        "clock behind persisted value clamps up to persisted value",
     )?;
     ensure_eq(
         &at_least_timestamp(200, Some(100)),
         &200,
-        "at_least_timestamp(200, Some(100)) == 200",
+        "clock ahead of persisted value keeps the newer clock reading",
     )?;
     ensure_eq(
         &at_least_timestamp(100, None),
         &100,
-        "at_least_timestamp(100, None) == 100",
+        "absent persisted value uses the clock reading directly",
     )?;
     Ok(())
 }
@@ -354,12 +358,16 @@ fn at_least_timestamp_never_drops_below_the_persisted_value() -> TestResult {
 #[test]
 fn plain_style_passes_text_through_uncolored() -> TestResult {
     let style = Style::plain();
-    ensure(!style.enabled(), "!style.enabled()")?;
-    ensure_eq(&style.bold("hi"), &"hi", "style.bold(\"hi\") == \"hi\"")?;
-    ensure_eq(&style.dim("hi"), &"hi", "style.dim(\"hi\") == \"hi\"")?;
-    ensure_eq(&style.cyan("hi"), &"hi", "style.cyan(\"hi\") == \"hi\"")?;
-    ensure_eq(&style.green("hi"), &"hi", "style.green(\"hi\") == \"hi\"")?;
-    ensure_eq(&style.yellow("hi"), &"hi", "style.yellow(\"hi\") == \"hi\"")?;
+    ensure(!style.enabled(), "plain style reports coloring disabled")?;
+    ensure_eq(&style.bold("hi"), &"hi", "plain bold adds no ANSI codes")?;
+    ensure_eq(&style.dim("hi"), &"hi", "plain dim adds no ANSI codes")?;
+    ensure_eq(&style.cyan("hi"), &"hi", "plain cyan adds no ANSI codes")?;
+    ensure_eq(&style.green("hi"), &"hi", "plain green adds no ANSI codes")?;
+    ensure_eq(
+        &style.yellow("hi"),
+        &"hi",
+        "plain yellow adds no ANSI codes",
+    )?;
     Ok(())
 }
 
@@ -367,11 +375,11 @@ fn plain_style_passes_text_through_uncolored() -> TestResult {
 fn enabled_style_wraps_text_in_sgr_codes() -> TestResult {
     let style = Style::colored();
 
-    ensure(style.enabled(), "style.enabled()")?;
+    ensure(style.enabled(), "colored style reports coloring enabled")?;
     ensure_eq(
         &style.bold("hi"),
         &"\x1b[1mhi\x1b[0m",
-        "style.bold(\"hi\") == \"\\x1b[1mhi\\x1b[0m\"",
+        "colored bold wraps text in SGR 1 and reset",
     )?;
     Ok(())
 }
@@ -391,7 +399,11 @@ fn style_uses_the_documented_sgr_codes() -> TestResult {
         (style.yellow("x"), "\x1b[33mx\x1b[0m"),
     ];
     for (output, expected) in expectations {
-        ensure_eq(&output, &expected, "output == expected")?;
+        ensure_eq(
+            &output,
+            &expected,
+            "styled output matches documented SGR sequence",
+        )?;
     }
     Ok(())
 }
@@ -400,28 +412,39 @@ fn style_uses_the_documented_sgr_codes() -> TestResult {
 fn input_byte_bound_check_is_utf8_safe_and_exact() -> TestResult {
     ensure(
         !exceeds_input_bytes("é", 2),
-        "!exceeds_input_bytes(\"é\", 2)",
+        "two-byte UTF-8 character fits within a two-byte cap",
     )?;
-    ensure(exceeds_input_bytes("é", 1), "exceeds_input_bytes(\"é\", 1)")?;
+    ensure(
+        exceeds_input_bytes("é", 1),
+        "two-byte UTF-8 character exceeds a one-byte cap",
+    )?;
     ensure(
         !exceeds_input_bytes("abc", 3),
-        "!exceeds_input_bytes(\"abc\", 3)",
+        "three ASCII bytes fit within a three-byte cap",
     )?;
     ensure(
         exceeds_input_bytes("abcd", 3),
-        "exceeds_input_bytes(\"abcd\", 3)",
+        "four ASCII bytes exceed a three-byte cap",
     )?;
     Ok(())
 }
 
 #[test]
 fn redacted_log_ids_are_stable_without_containing_input() -> TestResult {
-    let secret = "/home/alice/private-project";
-    let first = crate::util::redacted_log_id(secret.as_bytes());
-    let second = crate::util::redacted_path(std::path::Path::new(secret));
-    ensure_eq(&first, &second, "first == second")?;
-    ensure_ne(&first, &secret, "first != secret")?;
-    ensure_eq(&first.len(), &64, "first.len() == 64")?;
+    let sample = "/workspace/repo-alpha/src/lib.rs";
+    let first = crate::util::redacted_log_id(sample.as_bytes());
+    let second = crate::util::redacted_path(std::path::Path::new(sample));
+    ensure_eq(
+        &first,
+        &second,
+        "byte and path correlation hashes produce the same digest",
+    )?;
+    ensure_ne(
+        &first,
+        &sample,
+        "correlation digest never equals the raw path",
+    )?;
+    ensure_eq(&first.len(), &64, "BLAKE3 hex digest is 64 characters long")?;
     Ok(())
 }
 
@@ -437,7 +460,7 @@ fn a_capped_read_refuses_an_oversized_file() -> TestResult {
     ensure_eq(
         &error.kind(),
         &std::io::ErrorKind::InvalidData,
-        "error.kind() == std::io::ErrorKind::InvalidData",
+        "oversized text file fails with InvalidData",
     )?;
     ensure(
         error.to_string().contains("over the 1024-byte cap"),
@@ -463,7 +486,11 @@ fn serialized_len_measures_exact_json_bytes() -> TestResult {
     let value = serde_json::json!({"key": "value"});
     let len = crate::util::serialized_len(&value).check("serialized_len must succeed")?;
     let exact = serde_json::to_string(&value).check("to_string")?.len();
-    ensure_eq(&len, &exact, "len == exact")?;
+    ensure_eq(
+        &len,
+        &exact,
+        "streaming length counter matches materialized JSON byte length",
+    )?;
     Ok(())
 }
 
@@ -474,7 +501,7 @@ fn join_thread_returns_the_value_of_a_finished_thread() -> TestResult {
     ensure_eq(
         &crate::util::join_thread(handle).check("thread joins")?,
         &7,
-        "crate::util::join_thread(handle).check(\"thread joins\")? == 7",
+        "joined thread returns its computed value",
     )?;
     Ok(())
 }
@@ -495,9 +522,13 @@ fn join_thread_returns_a_panic_message_for_both_payload_kinds() -> TestResult {
     ensure_eq(
         &literal,
         &"literal message",
-        "literal == \"literal message\"",
+        "static string panic payload is preserved",
     )?;
-    ensure_eq(&formatted, &"formatted 1", "formatted == \"formatted 1\"")?;
+    ensure_eq(
+        &formatted,
+        &"formatted 1",
+        "owned String panic payload is preserved",
+    )?;
     Ok(())
 }
 
@@ -509,7 +540,7 @@ fn a_length_counter_past_the_maximum_fails_the_write_with_its_cause() -> TestRes
     ensure_eq(
         &error.to_string(),
         &"the serialized length overflowed a byte count".to_owned(),
-        "overflow message",
+        "overflow message explains the byte count overflow",
     )?;
     ensure_eq(
         &counter.0,

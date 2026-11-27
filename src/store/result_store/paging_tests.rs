@@ -198,7 +198,7 @@ fn result_store_a_result_without_complete_state_is_not_addressable() -> TestResu
     let fx = fixture(1 << 30)?;
     let mut writer = fx.store.begin(spec(&["id"])).check("begin")?;
     writer
-        .inject(super::fault::Fault::IncompleteMeta)
+        .inject(super::writer::Fault::IncompleteMeta)
         .check("arm")?;
     writer.push(&[Cell::Int(1)]).check("push")?;
 

@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 #[test]
 fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestResult {
@@ -9,7 +10,10 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestRe
         },
         Some("database disk image is malformed".into()),
     ));
-    ensure(corrupt_db.is_corruption(), "corrupt_db.is_corruption()")?;
+    ensure(
+        corrupt_db.is_corruption(),
+        "SQLite DatabaseCorrupt error classifies as corruption",
+    )?;
 
     let corrupt_rev =
         PublishError::Revision(RevisionError::Database(rusqlite::Error::SqliteFailure(
@@ -19,18 +23,21 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestRe
             },
             None,
         )));
-    ensure(corrupt_rev.is_corruption(), "corrupt_rev.is_corruption()")?;
+    ensure(
+        corrupt_rev.is_corruption(),
+        "revision DatabaseCorrupt error classifies as corruption",
+    )?;
 
     ensure(
         !PublishError::Database(rusqlite::Error::QueryReturnedNoRows).is_corruption(),
-        "!PublishError::Database(rusqlite::Error::QueryReturnedNoRows).is_corruption()",
+        "QueryReturnedNoRows is not database corruption",
     )?;
     ensure(
         !PublishError::Revision(RevisionError::Database(
             rusqlite::Error::QueryReturnedNoRows,
         ))
         .is_corruption(),
-        "!PublishError::Revision(RevisionError::Database( rusqlite::Error::QueryReturnedNoRows )) .is_corruption()",
+        "revision QueryReturnedNoRows is not database corruption",
     )?;
     ensure(
         !PublishError::Revision(RevisionError::StaleBaseline {
@@ -38,15 +45,16 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestRe
             found: "rev-2".into(),
         })
         .is_corruption(),
-        "!PublishError::Revision(RevisionError::StaleBaseline { expected: \"rev-1\".into(), found: \"rev-2\".into(), }) .is_corruption()",
+        "CAS StaleBaseline race is not database corruption",
     )?;
     ensure(
         !PublishError::TimeBudgetExceeded {
-            path: String::new(),
+            activity: "diffing",
+            path: None,
             elapsed_ms: 100,
         }
         .is_corruption(),
-        "!PublishError::TimeBudgetExceeded { path: String::new(), elapsed_ms: 100, } .is_corruption()",
+        "TimeBudgetExceeded is not database corruption",
     )?;
     ensure(
         !PublishError::SamplingResultLost {
@@ -54,7 +62,7 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestRe
             reason: "channel closed".into(),
         }
         .is_corruption(),
-        "!PublishError::SamplingResultLost { path: \"a.rs\".into(), reason: \"channel closed\".into(), } .is_corruption()",
+        "SamplingResultLost is not database corruption",
     )?;
     Ok(())
 }
@@ -62,7 +70,8 @@ fn publish_error_corruption_classification_matches_sqlite_corruption() -> TestRe
 #[test]
 fn publish_error_budget_elapsed() -> TestResult {
     let budget_pub = PublishError::TimeBudgetExceeded {
-        path: " a.rs".into(),
+        activity: "processing",
+        path: Some("a.rs".into()),
         elapsed_ms: 42,
     };
     let budget_disc =
@@ -73,17 +82,17 @@ fn publish_error_budget_elapsed() -> TestResult {
     ensure_eq(
         &budget_pub.budget_elapsed_ms(),
         &Some(42),
-        "budget_pub.budget_elapsed_ms() == Some(42)",
+        "publish time budget error exposes elapsed_ms",
     )?;
     ensure_eq(
         &budget_disc.budget_elapsed_ms(),
         &Some(84),
-        "budget_disc.budget_elapsed_ms() == Some(84)",
+        "discovery time budget error exposes elapsed_ms",
     )?;
     ensure_eq(
         &changed.budget_elapsed_ms(),
         &None,
-        "changed.budget_elapsed_ms() == None",
+        "non-budget publish error returns None for budget_elapsed_ms",
     )?;
     Ok(())
 }
@@ -98,7 +107,10 @@ fn a_file_that_vanished_during_discovery_becomes_the_retryable_tree_change() -> 
         matches!(&error, PublishError::ChangedDuringSample { path } if path == "gone.rs"),
         format!("got {error:?}"),
     )?;
-    ensure(is_retryable(&error), "is_retryable(&error)")?;
+    ensure(
+        is_retryable(&error),
+        "vanished file during discovery is retryable",
+    )?;
     Ok(())
 }
 
@@ -125,7 +137,10 @@ fn a_read_after_the_walk_is_a_tree_change_only_when_the_file_is_gone() -> TestRe
                 && source.kind() == std::io::ErrorKind::PermissionDenied),
         format!("got {denied:?}"),
     )?;
-    ensure(!is_retryable(&denied), "!is_retryable(&denied)")?;
+    ensure(
+        !is_retryable(&denied),
+        "permission denied read failure is not retryable",
+    )?;
     Ok(())
 }
 
@@ -135,7 +150,10 @@ fn unrepresentable_paths_storage_and_replacement_roundtrip() -> TestResult {
     let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
 
     let initial = stored_unrepresentable_paths(&connection).check("read empty stored")?;
-    ensure(initial.is_empty(), "initial.is_empty()")?;
+    ensure(
+        initial.is_empty(),
+        "fresh database has no unrepresentable paths",
+    )?;
 
     let mut set_a = HashSet::new();
     set_a.insert(vec![0xFF, 0xFE]);
@@ -143,14 +161,14 @@ fn unrepresentable_paths_storage_and_replacement_roundtrip() -> TestResult {
     ensure_eq(
         &stored_unrepresentable_paths(&connection).check("read unrepresentable")?,
         &set_a,
-        "stored_unrepresentable_paths(&connection).check(\"read unrepresentable\")? == set_a",
+        "inserted unrepresentable path bytes round-trip",
     )?;
 
     replace_unrepresentable_paths(&mut connection, &set_a).check("no-op unrepresentable")?;
     ensure_eq(
         &stored_unrepresentable_paths(&connection).check("read unrepresentable")?,
         &set_a,
-        "stored_unrepresentable_paths(&connection).check(\"read unrepresentable\")? == set_a",
+        "idempotent replacement keeps unrepresentable path bytes intact",
     )?;
 
     let empty = HashSet::new();
@@ -159,7 +177,7 @@ fn unrepresentable_paths_storage_and_replacement_roundtrip() -> TestResult {
         stored_unrepresentable_paths(&connection)
             .check("read cleared")?
             .is_empty(),
-        "stored_unrepresentable_paths(&connection) .check(\"read cleared\")? .is_empty()",
+        "replacing with empty set clears stored unrepresentable paths",
     )?;
     Ok(())
 }
