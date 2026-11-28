@@ -26,7 +26,7 @@ pub(super) fn fetch_source(
     explicit_language: Option<&str>,
     max_parse_bytes: u64,
 ) -> Result<(String, String), ErrorData> {
-    let row: Option<(Option<u64>, Option<String>)> = connection
+    let row: Option<(Option<i64>, Option<String>)> = connection
         .query_row(
             "SELECT octet_length(content), language FROM files WHERE path = ?1",
             [file],
@@ -40,16 +40,24 @@ pub(super) fn fetch_source(
             ErrorCode::FileNotIndexed,
         ));
     };
+    if detected_language.as_deref() == Some(PROSE_LANGUAGE) {
+        return Err(prose_not_parsed_error(PROSE_LANGUAGE));
+    }
     let effective_language = explicit_language.or(detected_language.as_deref());
     if effective_language == Some(PROSE_LANGUAGE) {
         return Err(prose_not_parsed_error(PROSE_LANGUAGE));
     }
-    let content_bytes = content_bytes.ok_or_else(|| {
-        invalid_params_with_code(
-            format!("{file} has no indexed source content"),
-            ErrorCode::FileNotIndexed,
-        )
-    })?;
+    let content_bytes = content_bytes
+        .ok_or_else(|| {
+            invalid_params_with_code(
+                format!("{file} has no indexed source content"),
+                ErrorCode::FileNotIndexed,
+            )
+        })
+        .and_then(|bytes| {
+            u64::try_from(bytes)
+                .map_err(|error| internal_error("reading the indexed file size", error))
+        })?;
     let language = effective_language.map(str::to_owned).ok_or_else(|| {
         invalid_params_with_code(
             format!("{file} has no detected language"),

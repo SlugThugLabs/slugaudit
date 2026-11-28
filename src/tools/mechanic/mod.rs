@@ -189,7 +189,7 @@ pub fn mechanic(
             (Some(id), Some(source), Some(first_count))
         }
         MechanicAction::Remove => {
-            let (id, source) = remove(request, root.as_path(), manager)?;
+            let (id, source) = remove(request, path, root.as_path(), sink, manager)?;
             (Some(id), Some(source), None)
         }
     };

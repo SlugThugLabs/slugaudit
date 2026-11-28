@@ -21,7 +21,7 @@
 //! fixture is built once per process (see `support.rs`) so an iteration
 //! measures the query path rather than a re-sync.
 //!
-//! **Known non-finding.** Tree-sitter 0.26.13 leaks 8 bytes when a query names
+//! **Known non-finding.** Tree-sitter 0.27.2 leaks 8 bytes when a query names
 //! a real node kind with a field that kind does not define — the minimized
 //! input is `(identifier zzz: (identifier) @a)`. The allocation is made and
 //! abandoned inside the dependency's C query compiler (`ts_query_new` →

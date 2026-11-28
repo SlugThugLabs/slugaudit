@@ -43,11 +43,12 @@ curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install
 Connect to your coding client or manage the installation:
 
 ```sh
-slugaudit connect claude      # or: cursor, gemini, agy, codex, opencode, ...
-slugaudit disconnect claude   # alias: slugaudit remove claude
-slugaudit install             # install this binary to ~/.slugthug/slugaudit/
-slugaudit menu                # interactive setup menu
-slugaudit update              # update to the latest Linux x86_64 release
+slugaudit connect claude            # or: cursor, gemini, agy, codex, opencode, ...
+slugaudit disconnect claude         # alias: slugaudit remove claude
+slugaudit install                   # install this binary to ~/.slugthug/slugaudit/
+slugaudit grammar <list|install>    # list or install optional non-Rust grammars
+slugaudit menu                      # interactive setup menu
+slugaudit update                    # update to the latest Linux x86_64 release
 ```
 
 ## Tools
@@ -57,7 +58,7 @@ slugaudit update              # update to the latest Linux x86_64 release
 | `report` | Project snapshot: file and language counts, skipped files, import resolution, notices |
 | `query` | Read-only SQL (`SELECT` / `WITH`) over `files`, `evidence`, `dependency_edges`, and `revisions` |
 | `structure` | Tree-sitter pattern search over one file or all files of a language |
-| `leads` | Unranked counts and file/line rows for mechanical facts (`unwrap`/`expect`/`panic` calls, comment markers, diagnostics, credential-shaped paths) |
+| `leads` | Unranked counts and file/line rows for mechanical facts (`unwrap`/`expect`/`panic`/`unreachable`/`todo`/`unimplemented`/`assert*` calls, comment markers, diagnostics, credential-shaped paths) |
 | `mechanic` | Register, list, or remove session Tree-sitter counters for `leads` |
 | `finding`, `finding_read`, `finding_clear` | Record, read, and clear this session's review findings, bound to each file's content hash |
 | `project_control` | Turn indexing `on` or `off` for a project |

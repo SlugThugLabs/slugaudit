@@ -171,7 +171,7 @@ fn same_line_fn_name(after_attr: &str) -> Option<&str> {
     if end == 0 {
         return None;
     }
-    Some(&name[..end])
+    name.get(..end)
 }
 
 /// `text` after the leading keyword `word`, when `word` is a whole word

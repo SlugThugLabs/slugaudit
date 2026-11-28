@@ -205,13 +205,8 @@ fn enable(
     sink: &dyn crate::progress::ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
-    project::enable(root).map_err(|e| err(format!("enable: {e}")))?;
-    let gitignore = gitignore_report(project::ensure_gitignore(root));
-    project::begin_process_session(root).map_err(|e| err(format!("enable: {e}")))?;
-    if let Some(profile) = profile_override {
-        project::set_session_profile(root.as_path(), profile)?;
-    }
-    let (report, discard) = manager.sync_enabled_project(root, sink)?;
+    let (report, discard, gitignore) = manager.enable_project(root, profile_override, sink)?;
+    let gitignore = gitignore_report(gitignore);
     Ok(Json(ProjectControlResponse {
         status: ProjectControlStatus::Enabled,
         path: root.as_path().to_string_lossy().into_owned(),
@@ -233,10 +228,7 @@ fn disable(
     root: &ProjectRoot,
     manager: &sync::SourceSyncManager,
 ) -> Result<Json<ProjectControlResponse>, ErrorData> {
-    manager.release_disabled_project(root)?;
-    manager.session_mechanics().clear_project(root.as_path())?;
-    project::clear_session_profile(root.as_path())?;
-    let report = project::disable(root).map_err(|e| err(format!("disable: {e}")))?;
+    let report = manager.disable_project(root)?;
     let status = if report.removed.is_empty() {
         ProjectControlStatus::AlreadyDisabled
     } else {
@@ -271,3 +263,7 @@ mod gitignore_tests;
 #[cfg(test)]
 #[path = "project_control_activation_tests.rs"]
 mod activation_tests;
+
+#[cfg(test)]
+#[path = "project_control_grammar_tests.rs"]
+mod grammar_tests;

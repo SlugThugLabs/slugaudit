@@ -162,12 +162,12 @@ fn installed_version_queries_target_binary_when_different_from_running() -> Test
 
     ensure_eq(
         &installed_version(&running, &target),
-        &"1.0.4".to_owned(),
+        &Some("1.0.4".to_owned()),
         "must query target --version instead of CARGO_PKG_VERSION",
     )?;
     ensure_eq(
         &installed_version(&running, &running),
-        &env!("CARGO_PKG_VERSION").to_owned(),
+        &Some(env!("CARGO_PKG_VERSION").to_owned()),
         "same path uses compiled-in version",
     )?;
     Ok(())

@@ -83,7 +83,7 @@ impl ResultStoreSlot {
         *state = None;
         let store = Arc::new(ResultStore::open(
             runtime_dir,
-            crate::util::session_id(),
+            uuid::Uuid::new_v4(),
             effective,
         )?);
         let canonical = canonical_or_raw(runtime_dir);
@@ -132,7 +132,7 @@ impl ResultStoreSlot {
     /// # Errors
     ///
     /// Returns `LockPoisoned` when the slot was poisoned.
-    pub fn store_for_cursor(&self, _token: &str) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
+    pub fn store_for_continuation(&self) -> Result<Option<Arc<ResultStore>>, LockPoisoned> {
         self.current()
     }
 

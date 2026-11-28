@@ -1,16 +1,10 @@
 # cargo-deny policy for the development-only `fuzz/` workspace (`fuzz/Cargo.toml`).
 # Mirrors the root `deny.toml` policy, adding `"NCSA"` to `[licenses].allow` for
-# `libfuzzer-sys` (LLVM-derived C harness shim) and `[bans].skip` entries for
-# `windows-targets` / `windows_*` splits present in `fuzz/Cargo.lock`.
+# `libfuzzer-sys` (LLVM-derived C harness shim).
 
 [advisories]
 version = 2
-ignore = [
-    # Transitive via rmcp and schemars; upstream has no replacement yet ("No safe upgrade is available!").
-    { id = "RUSTSEC-2026-0543", reason = "chrono is pulled transitively by rmcp and schemars with no upstream alternative yet" },
-    # Applies only when opening an untrusted DB + mismatched -wal written by another party; project.db is disposable local scratch under the host harness boundary.
-    { id = "RUSTSEC-2026-0459", reason = "project.db is disposable local scratch under the host harness boundary; rusqlite 0.37 -> 0.41 is a breaking API change deferred from this pass" },
-]
+ignore = []
 
 [licenses]
 version = 2
@@ -37,18 +31,8 @@ wildcards = "deny"
 highlight = "all"
 skip = [
     "syn",
-    "hashbrown",
     "getrandom",
     "windows-sys",
-    "windows-targets",
-    "windows_aarch64_gnullvm",
-    "windows_aarch64_msvc",
-    "windows_i686_gnu",
-    "windows_i686_gnullvm",
-    "windows_i686_msvc",
-    "windows_x86_64_gnu",
-    "windows_x86_64_gnullvm",
-    "windows_x86_64_msvc",
 ]
 
 [sources]

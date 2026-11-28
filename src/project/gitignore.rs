@@ -102,7 +102,11 @@ fn ignores_activation_dir(contents: &[u8]) -> bool {
         if let Some(rest) = pattern.strip_prefix('/') {
             anchored = rest;
         }
-        if anchored.trim_end_matches('/') == ACTIVATION_RELATIVE_DIR {
+        let trimmed = anchored.trim_end_matches('/');
+        if matches!(
+            trimmed,
+            ACTIVATION_RELATIVE_DIR | ".planning" | ".planning/*" | ".planning/**"
+        ) {
             ignored = !negated;
         }
     }

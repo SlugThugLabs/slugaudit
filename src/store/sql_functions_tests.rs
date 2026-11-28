@@ -286,3 +286,32 @@ fn both_functions_are_registered_as_deterministic() -> TestResult {
         .check("an index expression accepts only deterministic functions")?;
     Ok(())
 }
+
+#[test]
+fn slugaudit_path_match_names_first_and_second_non_text_argument_positions() -> TestResult {
+    let conn = connection()?;
+    let first = conn
+        .query_row("SELECT slugaudit_path_match(123, '*.rs')", [], |row| {
+            row.get::<_, bool>(0)
+        })
+        .check_err("non-text first arg must fail")?
+        .to_string();
+    let second = conn
+        .query_row(
+            "SELECT slugaudit_path_match('src/lib.rs', 123)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .check_err("non-text second arg must fail")?
+        .to_string();
+
+    ensure(
+        first.contains("the first argument must be TEXT, got Integer"),
+        &first,
+    )?;
+    ensure(
+        second.contains("the second argument must be TEXT, got Integer"),
+        &second,
+    )?;
+    Ok(())
+}

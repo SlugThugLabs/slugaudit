@@ -39,8 +39,11 @@ pub(super) fn build_completeness(
         .iter()
         .find(|entry| entry.kind == "skipped")
         .map_or(0, |entry| entry.count);
-    let evidence_capped_file_count =
-        count_where(conn, "evidence", Some("key = 'evidence:truncated'"))?;
+    let evidence_capped_file_count = count_where(
+        conn,
+        "evidence",
+        Some("kind = 'Diagnostic' AND key = 'evidence:truncated'"),
+    )?;
     let indexed_files_without_evidence = count_where(
         conn,
         "files f",

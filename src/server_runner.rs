@@ -43,16 +43,16 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
         session_id = %crate::util::session_id(),
     );
     let counters_before = crate::tools::ToolCounters::snapshot();
-    let started = std::time::Instant::now();
     let blocking_span = span.clone();
 
     if let Some(session) = &progress {
         session.send(0.0, format!("{tool_name} queued"));
     }
 
-    let result = acquire_and_run(semaphore, tool_name, work, progress.as_ref(), blocking_span)
-        .instrument(span.clone())
-        .await;
+    let (result, elapsed_ms) =
+        acquire_and_run(semaphore, tool_name, work, progress.as_ref(), blocking_span)
+            .instrument(span.clone())
+            .await;
 
     // Gate any late inner progress events, drain every queued event in FIFO
     // order, and emit the final `1.0 "{tool_name} completed"` notification.
@@ -60,46 +60,61 @@ pub(crate) async fn run_blocking<T: Send + 'static>(
         session.finish(tool_name).await;
     }
 
-    log_completion(&span, counters_before, started, result.as_ref().err());
+    log_completion(&span, counters_before, elapsed_ms, result.as_ref().err());
     result
 }
 
 /// Waits for a permit, then runs `work` on a blocking thread with the
-/// permit and the tool-call span moved into the closure.
+/// permit and the tool-call span moved into the closure, returning the
+/// work duration exclusive of permit-wait and progress-drain latency.
 async fn acquire_and_run<T: Send + 'static>(
     semaphore: Arc<Semaphore>,
     tool_name: &str,
     work: impl FnOnce() -> Result<T, ErrorData> + Send + 'static,
     progress: Option<&ProgressSession>,
     blocking_span: tracing::Span,
-) -> Result<T, ErrorData> {
+) -> (Result<T, ErrorData>, Result<u64, crate::clock::ClockError>) {
     tracing::info!("tool call started");
-    let permit = semaphore
-        .acquire_owned()
-        .await
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    let permit = match semaphore.acquire_owned().await {
+        Ok(permit) => permit,
+        Err(error) => {
+            return (
+                Err(ErrorData::internal_error(error.to_string(), None)),
+                Ok(0),
+            );
+        }
+    };
 
     if let Some(session) = progress {
         session.send(0.0, format!("{tool_name} started"));
     }
 
-    tokio::task::spawn_blocking(move || {
+    let started = std::time::Instant::now();
+    let join_result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let _guard = blocking_span.enter();
         work()
     })
-    .await
-    .map_err(|error| ErrorData::internal_error(format!("tool task failed: {error}"), None))?
+    .await;
+    let elapsed_ms = crate::clock::duration_millis(started.elapsed());
+    let result = match join_result {
+        Ok(outcome) => outcome,
+        Err(error) => Err(ErrorData::internal_error(
+            format!("tool task failed: {error}"),
+            None,
+        )),
+    };
+    (result, elapsed_ms)
 }
 
 /// Logs one completion line per call (`INFO` on success, `WARN` on error).
 fn log_completion(
     span: &tracing::Span,
     counters_before: crate::tools::ToolCounters,
-    started: std::time::Instant,
+    elapsed_ms: Result<u64, crate::clock::ClockError>,
     error: Option<&ErrorData>,
 ) {
-    let elapsed_ms = match crate::clock::duration_millis(started.elapsed()) {
+    let elapsed_ms = match elapsed_ms {
         Ok(elapsed_ms) => elapsed_ms,
         Err(error) => {
             tracing::error!(error = %error, "tool call duration unusable; completion not recorded");

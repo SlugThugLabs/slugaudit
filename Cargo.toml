@@ -27,7 +27,7 @@ path = "src/main.rs"
 blake3 = "1"
 ignore = "0.4"
 rmcp = { version = "3", default-features = false, features = ["server", "macros", "transport-io"] }
-rusqlite = { version = "0.37", features = ["bundled", "hooks", "functions", "limits"] }
+rusqlite = { version = "0.43", default-features = false, features = ["cache", "bundled", "hooks", "functions", "limits"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
@@ -35,8 +35,8 @@ slugplan = { version = "0.1.1", git = "https://github.com/SlugThugLabs/slugplan"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util", "signal", "sync", "time"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde"] }
-tree-sitter = "0.26"
-tree-sitter-language-pack = "=1.18.0"
+tree-sitter = "0.27"
+tree-sitter-language-pack = "=1.28.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
@@ -68,9 +68,15 @@ trivial_casts = "deny"
 trivial_numeric_casts = "deny"
 elided_lifetimes_in_paths = "deny"
 missing_docs = "deny"
+unused_must_use = "deny"
+unexpected_cfgs = "deny"
+non_ascii_idents = "forbid"
+meta_variable_misuse = "deny"
 
 [workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
 print_stdout = "deny"
+dbg_macro = "deny"
 clone_on_ref_ptr = "deny"
 todo = "deny"
 unimplemented = "deny"
@@ -78,11 +84,22 @@ exit = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+panic_in_result_fn = "deny"
+unwrap_in_result = "deny"
 unreachable = "deny"
 disallowed_methods = "deny"
 disallowed_macros = "deny"
+let_underscore_must_use = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 indexing_slicing = "deny"
+string_slice = "deny"
 arithmetic_side_effects = "deny"
+fallible_impl_from = "deny"
+mem_forget = "deny"
+lossy_float_literal = "deny"
+collection_is_never_read = "deny"
+debug_assert_with_mut_call = "deny"
 cargo = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"

@@ -2,7 +2,7 @@
 #
 # Known non-finding, in the dependency rather than in this repository.
 #
-# Tree-sitter 0.26.13's C query compiler leaks one 8-byte allocation when a
+# Tree-sitter 0.27.2's C query compiler leaks one 8-byte allocation when a
 # query names a real node kind with a field name that kind does not define.
 # Minimal reproducer, with no SlugAudit code in the process at all:
 #
@@ -18,13 +18,13 @@
 # wholly inside the dependency:
 #
 #     ___interceptor_malloc
-#     ts_malloc_default                       tree-sitter-0.26.13/src/alloc.c:6
-#     _array__reserve                         tree-sitter-0.26.13/src/array.h:220
-#     ts_query__parse_pattern                 tree-sitter-0.26.13/src/query.c:2745,2857
-#     ts_query_new                            tree-sitter-0.26.13/src/query.c:3069
-#     <tree_sitter::Query>::new_raw           tree-sitter-0.26.13/binding_rust/lib.rs:2361
-#     <tree_sitter::Query>::new               tree-sitter-0.26.13/binding_rust/lib.rs:2345
-#     slugaudit_mcp_rust::tools::structure    src/tools/structure.rs:150
+#     ts_malloc_default                       tree-sitter-0.27.2/src/alloc.c:6
+#     _array__reserve                         tree-sitter-0.27.2/src/array.h:220
+#     ts_query__parse_pattern                 tree-sitter-0.27.2/src/query.c:2859
+#     ts_query_new                            tree-sitter-0.27.2/src/query.c:3080
+#     <tree_sitter::Query>::new_raw           tree-sitter-0.27.2/binding_rust/lib.rs
+#     <tree_sitter::Query>::new               tree-sitter-0.27.2/binding_rust/lib.rs
+#     slugaudit_mcp_rust::tools::structure    src/tools/structure/exec.rs
 #
 # A `structure` call with a typo'd field name leaks 8 bytes; the process is a
 # one-shot MCP server, so the practical impact is bounded (8 bytes per bad

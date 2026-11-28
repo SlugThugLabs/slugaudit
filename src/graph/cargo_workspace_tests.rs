@@ -1,7 +1,53 @@
 use super::*;
 use crate::graph::test_support::paths;
-use crate::graph::{RustModuleParents, resolve_imports_full};
-use slugaudit_test_check::{Check, TestResult, ensure_eq};
+use slugaudit_test_check::{TestResult, ensure, ensure_eq};
+
+fn assert_ws_crates(ws: &WorkspaceCrates, expected: &[(&str, Option<&str>)]) -> TestResult {
+    for &(crate_ident, expected_path) in expected {
+        ensure_eq(
+            &ws.get(crate_ident).map(String::as_str),
+            &expected_path,
+            format!("workspace crate lookup for {crate_ident}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn nested_workspace_crates(
+    root_manifest: &str,
+    fuzz_manifest: &str,
+    extra_manifests: &[(&str, &str)],
+) -> WorkspaceCrates {
+    let known = paths(&[
+        "Cargo.toml",
+        "src/lib.rs",
+        "crates/app/Cargo.toml",
+        "crates/app/src/lib.rs",
+        "fuzz/Cargo.toml",
+        "fuzz/src/lib.rs",
+        "fuzz/targets/one/Cargo.toml",
+        "fuzz/targets/one/src/lib.rs",
+        "fuzz/ignored/Cargo.toml",
+        "fuzz/ignored/src/lib.rs",
+        "fuzz_extra/Cargo.toml",
+        "fuzz_extra/src/lib.rs",
+    ]);
+    let mut manifests = vec![
+        ("Cargo.toml", root_manifest),
+        ("crates/app/Cargo.toml", "[package]\nname = \"app-pkg\"\n"),
+        ("fuzz/Cargo.toml", fuzz_manifest),
+        (
+            "fuzz/targets/one/Cargo.toml",
+            "[package]\nname = \"fuzz-one\"\n",
+        ),
+        (
+            "fuzz/ignored/Cargo.toml",
+            "[package]\nname = \"fuzz-ignored\"\n",
+        ),
+    ];
+    manifests.extend_from_slice(extra_manifests);
+    build_workspace_crates(manifests, &known)
+}
 
 #[test]
 fn parse_cargo_package_name_ignores_comments_and_non_package_tables() -> TestResult {
@@ -65,114 +111,18 @@ fn build_workspace_crates_maps_default_and_custom_libs_and_skips_bin_only() -> T
         ],
         &known,
     );
-    ensure_eq(
-        &ws_crates.get("slugaudit_test_check").map(String::as_str),
-        &Some("crates/test_check/src/lib.rs"),
-        "maps slugaudit_test_check to crates/test_check/src/lib.rs",
-    )?;
-    ensure_eq(
-        &ws_crates.get("custom_pkg").map(String::as_str),
-        &Some("crates/custom/lib/entry.rs"),
-        "maps custom [lib] path relative to member directory",
-    )?;
-    ensure_eq(
-        &ws_crates.get("slugaudit_gates"),
-        &None,
-        "omits binary-only member crate without a library entry in known_paths",
-    )?;
-    Ok(())
-}
-
-#[test]
-fn workspace_crates_resolve_cross_crate_imports_instead_of_external() -> TestResult {
-    let known = paths(&[
-        "Cargo.toml",
-        "src/lib.rs",
-        "src/cli.rs",
-        "crates/test_check/Cargo.toml",
-        "crates/test_check/src/lib.rs",
-        "crates/gates/src/bin/check_x/main.rs",
-    ]);
-    let ws_crates = build_workspace_crates(
-        [
-            ("Cargo.toml", "[package]\nname = \"slugaudit-mcp-rust\"\n"),
-            (
-                "crates/test_check/Cargo.toml",
-                "[package]\nname = \"slugaudit-test-check\"\n",
-            ),
-        ],
-        &known,
-    );
-
-    let edges = resolve_imports_full(
-        "rust",
-        "crates/gates/src/bin/check_x/main.rs",
-        &[
-            "use slugaudit_test_check::Check;".to_owned(),
-            "use slugaudit_mcp_rust::cli;".to_owned(),
-            "use slugaudit_mcp_rust::cli::Command;".to_owned(),
-            "use ::slugaudit_test_check;".to_owned(),
-            "use serde::Serialize;".to_owned(),
-        ],
-        &known,
-        &RustModuleParents::new(),
+    assert_ws_crates(
         &ws_crates,
-    );
-
-    ensure_eq(&edges.len(), &5, "five use statements produce five edges")?;
-    let first = edges.first().check("edge 0")?;
-    ensure_eq(
-        &(
-            first.resolution_kind,
-            first.to_relative_path.as_deref(),
-            first.confidence,
-        ),
-        &(
-            "Resolved",
-            Some("crates/test_check/src/lib.rs"),
-            Some("Low"),
-        ),
-        "use slugaudit_test_check::Check resolves to lib.rs with Low confidence",
-    )?;
-
-    let exact_mod = edges.get(1).check("edge 1")?;
-    ensure_eq(
-        &(exact_mod.to_relative_path.as_deref(), exact_mod.confidence),
-        &(Some("src/cli.rs"), Some("High")),
-        "exact module match in workspace crate carries High confidence",
-    )?;
-
-    let shortened_mod = edges.get(2).check("edge 2")?;
-    ensure_eq(
-        &(
-            shortened_mod.to_relative_path.as_deref(),
-            shortened_mod.confidence,
-        ),
-        &(Some("src/cli.rs"), Some("Low")),
-        "shortened item match in workspace crate carries Low confidence",
-    )?;
-
-    let global_bare = edges.get(3).check("edge 3")?;
-    ensure_eq(
-        &(
-            global_bare.to_relative_path.as_deref(),
-            global_bare.confidence,
-        ),
-        &(Some("crates/test_check/src/lib.rs"), Some("High")),
-        "leading :: bare workspace crate import resolves to lib.rs with High confidence",
-    )?;
-
-    let third_party = edges.get(4).check("edge 4")?;
-    ensure_eq(
-        &third_party.resolution_kind,
-        &"External",
-        "non-workspace crate serde stays External",
-    )?;
-    Ok(())
+        &[
+            ("slugaudit_test_check", Some("crates/test_check/src/lib.rs")),
+            ("custom_pkg", Some("crates/custom/lib/entry.rs")),
+            ("slugaudit_gates", None),
+        ],
+    )
 }
 
 #[test]
-fn build_workspace_crates_honors_members_exclude_globs_and_bin_entries() -> TestResult {
+fn build_workspace_crates_honors_members_and_exclude_globs() -> TestResult {
     let known = paths(&[
         "Cargo.toml",
         "crates/included/Cargo.toml",
@@ -181,14 +131,12 @@ fn build_workspace_crates_honors_members_exclude_globs_and_bin_entries() -> Test
         "crates/ignored_one/src/lib.rs",
         "fuzz/Cargo.toml",
         "fuzz/src/lib.rs",
-        "bins/cli_entry.rs",
-        "bins/sub.rs",
     ]);
     let ws_crates = build_workspace_crates(
         [
             (
                 "Cargo.toml",
-                "[package]\nname = \"root-pkg\"\n[[bin]]\nname = \"cli\"\npath = \"bins/cli_entry.rs\"\n[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"fuzz\", \"crates/ignored*\"]\n",
+                "[package]\nname = \"root-pkg\"\n[workspace]\nmembers = [\"crates/*\"]\nexclude = [\"fuzz\", \"crates/ignored*\"]\n",
             ),
             (
                 "crates/included/Cargo.toml",
@@ -203,49 +151,302 @@ fn build_workspace_crates_honors_members_exclude_globs_and_bin_entries() -> Test
         &known,
     );
 
-    ensure_eq(
-        &ws_crates.get("included_pkg").map(String::as_str),
-        &Some("crates/included/src/lib.rs"),
-        "included member glob registers crates/included",
-    )?;
-    ensure_eq(
-        &ws_crates.get("ignored_pkg"),
-        &None,
-        "exclude glob filters crates/ignored_one",
-    )?;
-    ensure_eq(
-        &ws_crates.get("fuzz_pkg"),
-        &None,
-        "excluded fuzz crate is omitted from workspace libs",
-    )?;
-
-    let edges = resolve_imports_full(
-        "rust",
-        "bins/cli_entry.rs",
+    assert_ws_crates(
+        &ws_crates,
         &[
-            "use crate::sub;".to_owned(),
-            "use crate::RootFlag;".to_owned(),
+            ("included_pkg", Some("crates/included/src/lib.rs")),
+            ("ignored_pkg", None),
+            ("fuzz_pkg", None),
+        ],
+    )
+}
+
+#[test]
+fn double_star_member_glob_requires_segment_boundaries() -> TestResult {
+    let known = paths(&[
+        "Cargo.toml",
+        "a/b/Cargo.toml",
+        "a/b/src/lib.rs",
+        "a/mid/b/Cargo.toml",
+        "a/mid/b/src/lib.rs",
+        "a/xb/Cargo.toml",
+        "a/xb/src/lib.rs",
+        "ax/b/Cargo.toml",
+        "ax/b/src/lib.rs",
+    ]);
+    let ws_crates = build_workspace_crates(
+        [
+            ("Cargo.toml", "[workspace]\nmembers = [\"a/**/b\"]\n"),
+            ("a/b/Cargo.toml", "[package]\nname = \"ab-pkg\"\n"),
+            ("a/mid/b/Cargo.toml", "[package]\nname = \"amidb-pkg\"\n"),
+            ("a/xb/Cargo.toml", "[package]\nname = \"axb-pkg\"\n"),
+            ("ax/b/Cargo.toml", "[package]\nname = \"ax-b-pkg\"\n"),
         ],
         &known,
-        &RustModuleParents::new(),
-        &ws_crates,
     );
+
+    assert_ws_crates(
+        &ws_crates,
+        &[
+            ("ab_pkg", Some("a/b/src/lib.rs")),
+            ("amidb_pkg", Some("a/mid/b/src/lib.rs")),
+            ("axb_pkg", None),
+            ("ax_b_pkg", None),
+        ],
+    )
+}
+
+#[test]
+fn nested_standalone_workspace_keeps_root_and_member_crates() -> TestResult {
+    let root_standalone = nested_workspace_crates(
+        "[package]\nname = \"root-pkg\"\n",
+        "[package]\nname = \"fuzz-pkg\"\n[workspace]\nmembers = [\"targets/*\"]\nexclude = [\"ignored\"]\n",
+        &[],
+    );
+    assert_ws_crates(
+        &root_standalone,
+        &[
+            ("root_pkg", Some("src/lib.rs")),
+            ("app_pkg", Some("crates/app/src/lib.rs")),
+            ("fuzz_pkg", Some("fuzz/src/lib.rs")),
+            ("fuzz_one", Some("fuzz/targets/one/src/lib.rs")),
+            ("fuzz_ignored", None),
+        ],
+    )
+}
+
+#[test]
+fn nested_workspace_exclude_rule_leaves_prefix_sibling_crates_intact() -> TestResult {
+    let both_workspaces = nested_workspace_crates(
+        "[package]\nname = \"root-pkg\"\n[workspace]\nmembers = [\"crates/*\", \"fuzz_extra\"]\nexclude = [\"fuzz\"]\n",
+        "[package]\nname = \"fuzz-pkg\"\n[workspace]\nmembers = [\"targets/*\"]\n",
+        &[(
+            "fuzz_extra/Cargo.toml",
+            "[package]\nname = \"fuzz-extra\"\n",
+        )],
+    );
+    assert_ws_crates(
+        &both_workspaces,
+        &[
+            ("app_pkg", Some("crates/app/src/lib.rs")),
+            ("fuzz_extra", Some("fuzz_extra/src/lib.rs")),
+            ("fuzz_one", Some("fuzz/targets/one/src/lib.rs")),
+            ("fuzz_ignored", None),
+        ],
+    )
+}
+
+#[test]
+fn explicit_test_example_and_bench_paths_register_as_declared_crate_roots() -> TestResult {
+    let known = paths(&[
+        "Cargo.toml",
+        "src/lib.rs",
+        "custom_tests/it_entry.rs",
+        "custom_tests/helper.rs",
+        "custom_examples/demo_entry.rs",
+        "custom_examples/support.rs",
+        "custom_benches/bench_entry.rs",
+        "custom_benches/common.rs",
+    ]);
+    let ws_crates = build_workspace_crates(
+        [(
+            "Cargo.toml",
+            "[package]\nname = \"pkg\"\n\
+             [[test]]\nname = \"it\"\npath = \"custom_tests/it_entry.rs\"\n\
+             [[example]]\nname = \"demo\"\npath = \"custom_examples/demo_entry.rs\"\n\
+             [[bench]]\nname = \"perf\"\npath = \"custom_benches/bench_entry.rs\"\n",
+        )],
+        &known,
+    );
+
+    for target in [
+        "custom_tests/it_entry.rs",
+        "custom_examples/demo_entry.rs",
+        "custom_benches/bench_entry.rs",
+    ] {
+        ensure(
+            ws_crates.is_declared_crate_root(target),
+            format!("{target} must be a declared crate root"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn crate_roots_in_dir_lists_explicit_test_targets() -> TestResult {
+    let known = paths(&[
+        "Cargo.toml",
+        "src/lib.rs",
+        "custom_tests/it_entry.rs",
+        "custom_tests/helper.rs",
+        "tests/common/mod.rs",
+        "tests/group/it.rs",
+        "tests/group/helper.rs",
+    ]);
+    let manifest = concat!(
+        "[package]\nname = \"pkg\"\n",
+        "[[test]]\nname = \"it_custom\"\npath = \"custom_tests/it_entry.rs\"\n",
+        "[[test]]\nname = \"it_group\"\npath = \"tests/group/it.rs\"\n",
+    );
+    let ws = build_workspace_crates([("Cargo.toml", manifest)], &known);
     ensure_eq(
-        &edges.len(),
-        &2,
-        "declared [[bin]] emits two resolved edges",
+        &ws.crate_roots_in_dir("custom_tests"),
+        &vec!["custom_tests/it_entry.rs"],
+        "custom_tests root",
     )?;
-    let bin_sub = edges.first().check("bin edge 0")?;
     ensure_eq(
-        &(bin_sub.to_relative_path.as_deref(), bin_sub.confidence),
-        &(Some("bins/sub.rs"), Some("High")),
-        "declared [[bin]] path resolves sibling module under bins/",
+        &ws.crate_roots_in_dir("tests/group"),
+        &vec!["tests/group/it.rs"],
+        "tests/group root",
     )?;
-    let bin_root = edges.get(1).check("bin edge 1")?;
+    Ok(())
+}
+
+#[test]
+fn resolve_crate_ident_supports_direct_renamed_dependency_and_scopes_to_package() -> TestResult {
+    let known = paths(&[
+        "Cargo.toml",
+        "crates/core-api/Cargo.toml",
+        "crates/core-api/src/lib.rs",
+        "crates/app/Cargo.toml",
+        "crates/app/src/lib.rs",
+        "crates/other/Cargo.toml",
+        "crates/other/src/lib.rs",
+    ]);
+    let ws = build_workspace_crates(
+        [
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+            (
+                "crates/core-api/Cargo.toml",
+                "[package]\nname = \"core-api\"\n",
+            ),
+            (
+                "crates/app/Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\napi_v2 = { package = \"core-api\", path = \"../core-api\" }\n",
+            ),
+            ("crates/other/Cargo.toml", "[package]\nname = \"other\"\n"),
+        ],
+        &known,
+    );
+
+    ensure(
+        ws.has_crate_or_alias_ident("api_v2"),
+        "renamed alias is tracked by has_crate_or_alias_ident",
+    )?;
     ensure_eq(
-        &(bin_root.to_relative_path.as_deref(), bin_root.confidence),
-        &(Some("bins/cli_entry.rs"), Some("Low")),
-        "declared [[bin]] path anchors crate:: items to bins/cli_entry.rs",
+        &ws.resolve_crate_ident("crates/app/src/lib.rs", "api_v2")
+            .map(String::as_str),
+        &Some("crates/core-api/src/lib.rs"),
+        "app crate resolves api_v2 alias",
+    )?;
+    ensure_eq(
+        &ws.resolve_crate_ident("crates/other/src/lib.rs", "api_v2")
+            .map(String::as_str),
+        &None,
+        "sibling crate without alias does not resolve api_v2",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn resolve_crate_ident_supports_workspace_dependencies_inheritance_and_package_rename() -> TestResult
+{
+    let known = paths(&[
+        "Cargo.toml",
+        "crates/core-api/Cargo.toml",
+        "crates/core-api/src/lib.rs",
+        "crates/app/Cargo.toml",
+        "crates/app/src/lib.rs",
+        "crates/custom/Cargo.toml",
+        "crates/custom/src/lib.rs",
+        "crates/other/Cargo.toml",
+        "crates/other/src/lib.rs",
+    ]);
+    let ws = build_workspace_crates(
+        [
+            (
+                "Cargo.toml",
+                "[workspace]\nmembers = [\"crates/*\"]\n\
+                 [workspace.dependencies]\n\
+                 api-v2 = { package = \"core-api\", path = \"crates/core-api\" }\n",
+            ),
+            (
+                "crates/core-api/Cargo.toml",
+                "[package]\nname = \"core-api\"\n",
+            ),
+            (
+                "crates/app/Cargo.toml",
+                "[package]\nname = \"app\"\n[dependencies]\napi-v2 = { workspace = true }\n",
+            ),
+            (
+                "crates/custom/Cargo.toml",
+                "[package]\nname = \"custom\"\n[dependencies]\ncustom_api = { package = \"api-v2\", workspace = true }\n",
+            ),
+            ("crates/other/Cargo.toml", "[package]\nname = \"other\"\n"),
+        ],
+        &known,
+    );
+
+    ensure_eq(
+        &ws.resolve_crate_ident("crates/app/src/lib.rs", "api_v2")
+            .map(String::as_str),
+        &Some("crates/core-api/src/lib.rs"),
+        "inherited workspace dep resolves under normalized alias",
+    )?;
+    ensure_eq(
+        &ws.resolve_crate_ident("crates/custom/src/lib.rs", "custom_api")
+            .map(String::as_str),
+        &Some("crates/core-api/src/lib.rs"),
+        "renamed inherited workspace dep resolves under custom_api",
+    )?;
+    ensure_eq(
+        &ws.resolve_crate_ident("crates/other/src/lib.rs", "custom_api")
+            .map(String::as_str),
+        &None,
+        "other crate without workspace inheritance does not resolve custom_api",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn resolve_crate_ident_supports_target_cfg_dependencies_and_lib_name_fallback() -> TestResult {
+    let known = paths(&[
+        "Cargo.toml",
+        "crates/core-api/Cargo.toml",
+        "crates/core-api/src/lib.rs",
+        "crates/app/Cargo.toml",
+        "crates/app/src/lib.rs",
+    ]);
+    let ws = build_workspace_crates(
+        [
+            ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+            (
+                "crates/core-api/Cargo.toml",
+                "[package]\nname = \"core-api\"\n[lib]\nname = \"core_lib\"\n",
+            ),
+            (
+                "crates/app/Cargo.toml",
+                "[package]\nname = \"app\"\n\
+                 [dependencies]\n\
+                 pkg_alias = { package = \"core-api\" }\n\
+                 [target.'cfg(unix)'.dependencies]\n\
+                 unix_api = { package = \"core-api\", path = \"../core-api\" }\n",
+            ),
+        ],
+        &known,
+    );
+
+    ensure_eq(
+        &ws.resolve_crate_ident("crates/app/src/lib.rs", "pkg_alias")
+            .map(String::as_str),
+        &Some("crates/core-api/src/lib.rs"),
+        "package rename without path resolves via libs_by_pkg_name when [lib].name differs",
+    )?;
+    ensure_eq(
+        &ws.resolve_crate_ident("crates/app/src/lib.rs", "unix_api")
+            .map(String::as_str),
+        &Some("crates/core-api/src/lib.rs"),
+        "target cfg renamed dependency resolves",
     )?;
     Ok(())
 }

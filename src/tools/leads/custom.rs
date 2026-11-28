@@ -10,6 +10,7 @@ use crate::tools::mechanic::scan::{self as mechanic_scan, ScanEnd};
 use crate::tools::page::Completeness;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
+use std::collections::HashSet;
 use std::time::Instant;
 
 /// One entry's complete count under a pattern.
@@ -116,12 +117,16 @@ pub(super) fn scan_entries(
             Ok(())
         })?
     };
-    let counts = build_counts(catalog, scanned, &tallies, read)?;
+    let covered_on_stop = match &end {
+        ScanEnd::Finished => None,
+        ScanEnd::Stopped(stop) => Some(&stop.covered_languages),
+    };
+    let counts = build_counts(catalog, scanned, &tallies, read, covered_on_stop)?;
     let completeness = match end {
         ScanEnd::Finished => Completeness::Complete,
         ScanEnd::Stopped(stop) => Completeness::Partial {
             limited_by: stop.limited_by,
-            resume_after_file: stop.resume_after_file,
+            resume_after_file: None,
             files_scanned: stop.files_scanned,
             files_total: stop.files_total,
         },
@@ -138,6 +143,7 @@ fn build_counts(
     scanned: &[usize],
     tallies: &[Tally],
     read: &LanguagesRead,
+    covered_on_stop: Option<&HashSet<String>>,
 ) -> Result<Vec<MechanicCount>, ErrorData> {
     scanned
         .iter()
@@ -149,13 +155,19 @@ fn build_counts(
             let tally = tallies
                 .get(index)
                 .ok_or_else(|| index_out_of_range("tallies", index, tallies.len()))?;
+            let covers = match covered_on_stop {
+                Some(covered) if !covered.contains(registered.entry.language.as_str()) => {
+                    Vec::new()
+                }
+                _ => read.covers_language(&registered.entry.language),
+            };
             Ok(MechanicCount {
                 mechanic: registered.entry.id.clone(),
                 source: registered.source,
                 note: Some(registered.entry.note.clone()),
                 count: tally.count,
                 files: tally.files,
-                covers: read.covers_language(&registered.entry.language),
+                covers,
             })
         })
         .collect()
@@ -177,4 +189,17 @@ pub(super) fn index_out_of_range(what: &str, index: usize, len: usize) -> ErrorD
         "indexing custom mechanics",
         format!("{what} index {index} is out of range for length {len}"),
     )
+}
+
+#[cfg(test)]
+pub(in crate::tools) fn scan_entries_for_test(
+    tx: &Transaction<'_>,
+    catalog: &Catalog,
+    scanned: &[usize],
+    glob: Option<&str>,
+    deadline: Option<Instant>,
+) -> Result<(Vec<MechanicCount>, Completeness), ErrorData> {
+    let read = super::coverage::languages_read(tx, glob)?;
+    let out = scan_entries(tx, catalog, scanned, false, glob, deadline, &read)?;
+    Ok((out.counts, out.completeness))
 }

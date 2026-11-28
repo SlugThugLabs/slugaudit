@@ -4,9 +4,11 @@ use slugaudit_test_check::{Check, TestResult};
 use std::fs;
 use std::path::Path;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction, params};
 use tempfile::TempDir;
 
+use super::FileRecord;
+use super::revision_edge_invalidation::{EdgeChangeScope, is_cargo_toml_path};
 use crate::progress::NoopProgressSink;
 use crate::store::open_read_write;
 use crate::sync::publish::publish;
@@ -79,4 +81,35 @@ pub(crate) fn stored_paths(connection: &Connection) -> TestResult<Vec<String>> {
         .check("query")?
         .collect::<Result<_, _>>()
         .check("collect")
+}
+
+/// Derives [`EdgeChangeScope`] for `publish_revision` test inputs by checking
+/// which `upserts` are newly added vs already stored in `files`.
+pub(super) fn scope_for_test_inputs(
+    tx: &Transaction<'_>,
+    upserts: &[FileRecord],
+    deletions: &[String],
+    re_resolve_unresolved: bool,
+) -> Result<EdgeChangeScope, rusqlite::Error> {
+    let mut scope = EdgeChangeScope {
+        cargo_toml_touched: upserts.iter().any(|f| is_cargo_toml_path(&f.relative_path))
+            || deletions.iter().any(|p| is_cargo_toml_path(p)),
+        ..EdgeChangeScope::default()
+    };
+    if !re_resolve_unresolved {
+        return Ok(scope);
+    }
+    let mut exists_stmt =
+        tx.prepare_cached("SELECT EXISTS(SELECT 1 FROM files WHERE path = ?1)")?;
+    for file in upserts {
+        let already_exists: bool =
+            exists_stmt.query_row(params![file.relative_path], |row| row.get(0))?;
+        if !already_exists {
+            scope.record_path(&file.relative_path, true);
+        }
+    }
+    for path in deletions {
+        scope.record_path(path, false);
+    }
+    Ok(scope)
 }

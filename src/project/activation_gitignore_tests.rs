@@ -73,6 +73,11 @@ fn an_equivalent_rule_is_recognised_and_not_duplicated() -> TestResult {
         ".planning/slugaudit",
         "/.planning/slugaudit/",
         "/.planning/slugaudit",
+        ".planning/",
+        ".planning",
+        "/.planning/",
+        ".planning/*",
+        ".planning/**",
     ] {
         let directory = tempfile::tempdir().check("temp dir")?;
         let contents = format!("{rule}\n");

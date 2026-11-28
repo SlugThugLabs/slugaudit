@@ -56,6 +56,11 @@ pub(super) fn validate_content(
             limits.max_structure_query_bytes
         )));
     }
+    if request.file.is_some() && request.pattern.is_some() {
+        return Err(invalid_input(
+            "pattern applies only to multi-file queries; omit it with `file`",
+        ));
+    }
     if request.file.is_some() && request.start_after_file.is_some() {
         return Err(invalid_input(
             "start_after_file applies only to multi-file queries; omit it with `file`",

@@ -315,7 +315,7 @@ impl ResultWriter<'_> {
             row_count: self.next_ord,
             created_unix,
         };
-        Self::write_meta(&mut self.conn, &meta, state)?;
+        Self::write_meta(&mut self.conn, state)?;
         self.conn
             .execute_batch("COMMIT")
             .map_err(|error| ResultStoreError::from_sqlite("commit the result", error))?;
@@ -330,43 +330,12 @@ impl ResultWriter<'_> {
         Ok(handle)
     }
 
-    fn write_meta(
-        conn: &mut Connection,
-        meta: &ResultMeta,
-        state: &str,
-    ) -> Result<(), ResultStoreError> {
-        let columns = serde_json::to_string(&meta.columns)
-            .map_err(|error| ResultStoreError::json("encode the column names", error))?;
-        let completeness = serde_json::to_string(&meta.completeness)
-            .map_err(|error| ResultStoreError::json("encode the completeness", error))?;
-        let row_count = i64::try_from(meta.row_count).map_err(|_| ResultStoreError::Invalid {
-            reason: "too many rows",
-        })?;
-        let put = |key: &str, value: &dyn ToSql| {
-            conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-                rusqlite::params![key, value],
-            )
-            .map(drop)
-            .map_err(|error| ResultStoreError::from_sqlite("write result metadata", error))
-        };
-        put("tool", &meta.tool)?;
-        put("project", &meta.project)?;
-        put("revision_id", &meta.revision_id)?;
-        put("columns", &columns)?;
-        put("completeness", &completeness)?;
-        put("created_unix", &meta.created_unix)?;
-        put("row_count", &row_count)?;
-        put("bytes", &0_i64)?;
-        put("state", &state)?;
-        // The size is only known once everything else is in place.
-        let bytes = i64::try_from(result_file::measure_bytes(conn)?).map_err(|_| {
-            ResultStoreError::Invalid {
-                reason: "result too large to measure",
-            }
-        })?;
-        conn.execute("UPDATE meta SET value = ?1 WHERE key = 'bytes'", [bytes])
-            .map_err(|error| ResultStoreError::from_sqlite("write result metadata", error))?;
+    fn write_meta(conn: &mut Connection, state: &str) -> Result<(), ResultStoreError> {
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('state', ?1)",
+            [state],
+        )
+        .map_err(|error| ResultStoreError::from_sqlite("write result metadata", error))?;
         Ok(())
     }
 }

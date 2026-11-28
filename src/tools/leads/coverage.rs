@@ -39,7 +39,7 @@ impl LanguagesRead {
 
 fn path_glob_clause(glob: Option<&str>) -> &'static str {
     if glob.is_some() {
-        " AND path GLOB ?1"
+        " AND slugaudit_path_match(path, ?1)"
     } else {
         ""
     }
@@ -75,7 +75,7 @@ fn distinct_languages(
 
 pub(super) fn files_not_parsed(tx: &Transaction<'_>, glob: Option<&str>) -> Result<i64, ErrorData> {
     let sql = format!(
-        "SELECT count(*) FROM files WHERE {PARSER_FAILURE_PREDICATE} AND language IS NOT NULL{}",
+        "SELECT count(*) FROM files WHERE {PARSER_FAILURE_PREDICATE}{}",
         path_glob_clause(glob)
     );
     tx.query_row(&sql, params_from_iter(glob.iter()), |row| row.get(0))

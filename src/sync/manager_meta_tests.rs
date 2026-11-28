@@ -237,14 +237,16 @@ fn a_missing_project_table_surfaces_the_reading_error() -> TestResult {
 #[test]
 fn a_failed_metadata_write_surfaces_the_recording_error() -> TestResult {
     let (_dir, mut connection) = open_temp_db()?;
-    connection.authorizer(Some(
-        |context: rusqlite::hooks::AuthContext<'_>| match context.action {
-            rusqlite::hooks::AuthAction::Insert {
-                table_name: "project",
-            } => rusqlite::hooks::Authorization::Deny,
-            _ => rusqlite::hooks::Authorization::Allow,
-        },
-    ));
+    connection
+        .authorizer(Some(
+            |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+                rusqlite::hooks::AuthAction::Insert {
+                    table_name: "project",
+                } => rusqlite::hooks::Authorization::Deny,
+                _ => rusqlite::hooks::Authorization::Allow,
+            },
+        ))
+        .check("install insert authorizer")?;
 
     assert_other_meta_error(
         ensure_project_row(&mut connection, Path::new("/tmp/example-project")),
@@ -258,17 +260,19 @@ fn a_failed_metadata_write_surfaces_the_recording_error() -> TestResult {
 #[test]
 fn a_failed_metadata_read_surfaces_the_reading_error() -> TestResult {
     let (_dir, mut connection) = open_temp_db()?;
-    connection.authorizer(Some(
-        |context: rusqlite::hooks::AuthContext<'_>| match context.action {
-            rusqlite::hooks::AuthAction::Read {
-                table_name,
-                column_name,
-            } if table_name == "project" && column_name == "root_path" => {
-                rusqlite::hooks::Authorization::Deny
-            }
-            _ => rusqlite::hooks::Authorization::Allow,
-        },
-    ));
+    connection
+        .authorizer(Some(
+            |context: rusqlite::hooks::AuthContext<'_>| match context.action {
+                rusqlite::hooks::AuthAction::Read {
+                    table_name,
+                    column_name,
+                } if table_name == "project" && column_name == "root_path" => {
+                    rusqlite::hooks::Authorization::Deny
+                }
+                _ => rusqlite::hooks::Authorization::Allow,
+            },
+        ))
+        .check("install read authorizer")?;
 
     assert_other_meta_error(
         ensure_project_row(&mut connection, Path::new("/tmp/example-project")),

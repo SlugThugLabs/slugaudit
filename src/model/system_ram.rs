@@ -75,8 +75,80 @@ fn detect_from(meminfo: std::io::Result<String>) -> Result<SystemMemoryInfo, Mem
         }
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        match windows_cim_memory() {
+            Ok(info) => return Ok(info),
+            Err(reason) => causes.push(format!("windows CIM memory: {reason}")),
+        }
+    }
+
     Err(MemoryDetectError {
         causes: causes.join("; "),
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_cim_memory() -> Result<SystemMemoryInfo, String> {
+    let ps_exe = match std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root).join("System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+        })
+        .filter(|path| path.is_file())
+    {
+        Some(path) => path,
+        None => std::path::PathBuf::from("powershell.exe"),
+    };
+    let mut command = std::process::Command::new(ps_exe);
+    command.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$os = Get-CimInstance Win32_OperatingSystem; Write-Output \"$($os.TotalVisibleMemorySize) $($os.FreePhysicalMemory)\"",
+    ]);
+    let output = crate::util::run_bounded_command(
+        "windows_memory",
+        &mut command,
+        Some((64 * 1024, false)),
+        8 * 1024,
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!("powershell exited with {}", output.status));
+    }
+    parse_windows_cim_kib(&output.stdout)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn parse_windows_cim_kib(stdout: &[u8]) -> Result<SystemMemoryInfo, String> {
+    let text = std::str::from_utf8(stdout)
+        .map_err(|error| format!("output is not valid UTF-8: {error}"))?;
+    let mut parts = text.split_whitespace();
+    let total_kib = parts
+        .next()
+        .ok_or_else(|| "missing total memory KiB".to_owned())?
+        .parse::<u64>()
+        .map_err(|error| format!("invalid total memory KiB: {error}"))?;
+    let free_kib = parts
+        .next()
+        .ok_or_else(|| "missing free memory KiB".to_owned())?
+        .parse::<u64>()
+        .map_err(|error| format!("invalid free memory KiB: {error}"))?;
+    if total_kib == 0 {
+        return Err("total memory reported as 0".to_owned());
+    }
+    let total_bytes = total_kib
+        .checked_mul(1024)
+        .ok_or_else(|| "total memory byte count overflowed".to_owned())?;
+    let available_bytes = free_kib
+        .min(total_kib)
+        .checked_mul(1024)
+        .ok_or_else(|| "available memory byte count overflowed".to_owned())?;
+    Ok(SystemMemoryInfo {
+        total_bytes,
+        available_bytes,
     })
 }
 

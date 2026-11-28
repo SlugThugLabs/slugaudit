@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=split-judge; reason=Single responsibility: executing a structure Tree-sitter query across files within time and match budgets while streaming matches and recording resume boundaries.
 //! Budgeted Tree-sitter parsing, `QueryCursor` capture execution, and match
 //! streaming over `(path, content)` pairs for `structure`.
 
@@ -16,8 +17,10 @@ use tree_sitter::{Parser, Query, QueryCursor, Tree};
 #[derive(Default)]
 pub(super) struct RunOutput {
     pub(super) files_scanned: usize,
+    pub(super) untouched_start: usize,
     pub(super) unparsed_files: Vec<String>,
     pub(super) parse_timed_out_file: Option<String>,
+    pub(super) timed_out_resume_file: Option<String>,
     pub(super) budget_resume_after: Option<String>,
     pub(super) query_match_limit_hit: bool,
     pub(super) match_limit_resume_after: Option<String>,
@@ -70,31 +73,30 @@ struct Run<'q, 'w, 's> {
     output: RunOutput,
 }
 
-impl Run<'_, '_, '_> {
-    fn past_deadline(&self) -> bool {
-        self.deadline.is_some_and(|limit| Instant::now() >= limit)
-    }
+fn deadline_spent(deadline: Option<Instant>) -> bool {
+    deadline.is_some_and(|limit| Instant::now() >= limit)
+}
 
+impl Run<'_, '_, '_> {
     fn scan_files(
         &mut self,
         parser: &mut Parser,
         files: &[(String, String)],
     ) -> Result<(), ErrorData> {
-        if !files.is_empty() && self.past_deadline() {
+        if !files.is_empty() && deadline_spent(self.deadline) {
             self.timed_out = true;
             return Ok(());
         }
         let deadline = self.deadline;
-        for (file_path, content) in files {
-            if self.past_deadline() {
-                self.record_timeout(file_path, content.len(), "before parse");
+        for (idx, (file_path, content)) in files.iter().enumerate() {
+            if deadline_spent(deadline) {
+                self.record_timeout(idx, file_path, content.len(), "before parse");
                 return Ok(());
             }
-            let spent = || deadline.is_some_and(|limit| Instant::now() >= limit);
-            let tree = match parse_within(parser, content, spent) {
+            let tree = match parse_within(parser, content, || deadline_spent(deadline)) {
                 Parsed::Tree(tree) => tree,
                 Parsed::Cancelled => {
-                    self.record_timeout(file_path, content.len(), "during parse");
+                    self.record_timeout(idx, file_path, content.len(), "during parse");
                     return Ok(());
                 }
                 Parsed::NoTree if self.mode.single_file => {
@@ -105,19 +107,30 @@ impl Run<'_, '_, '_> {
                 }
                 Parsed::NoTree => {
                     self.output.unparsed_files.push(file_path.clone());
-                    self.finish_file(file_path)?;
+                    self.advance_completed(idx, file_path, false)?;
                     continue;
                 }
             };
-            if !self.scan_tree(file_path, content, &tree)? {
+            if !self.scan_tree(idx, file_path, content, &tree)? {
                 return Ok(());
             }
-            self.finish_file(file_path)?;
+            self.advance_completed(idx, file_path, true)?;
         }
         Ok(())
     }
 
-    fn record_timeout(&mut self, file_path: &str, content_bytes: usize, stage: &'static str) {
+    fn advance_untouched_past(&mut self, idx: usize) {
+        // KEEP saturating: idx is a slice index well below usize::MAX
+        self.output.untouched_start = idx.saturating_add(1);
+    }
+
+    fn record_timeout(
+        &mut self,
+        idx: usize,
+        file_path: &str,
+        content_bytes: usize,
+        stage: &'static str,
+    ) {
         if self.mode.single_file {
             self.timed_out = true;
             return;
@@ -129,6 +142,7 @@ impl Run<'_, '_, '_> {
                 stage,
                 "structure: execution budget reached after earlier files; resuming before this file",
             );
+            self.output.untouched_start = idx;
             self.output.budget_resume_after = self.last_completed_file.take();
             return;
         }
@@ -138,51 +152,48 @@ impl Run<'_, '_, '_> {
             stage,
             "structure: first file exhausted the execution budget; marking timed out so scan can advance",
         );
-        self.output.parse_timed_out_file = Some(file_path.to_owned());
+        self.advance_untouched_past(idx);
+        self.output.timed_out_resume_file = Some(file_path.to_owned());
+        if stage != "during query cursor" {
+            self.output.parse_timed_out_file = Some(file_path.to_owned());
+        }
     }
 
-    fn finish_file(&mut self, file_path: &str) -> Result<(), ErrorData> {
+    fn advance_completed(
+        &mut self,
+        idx: usize,
+        file_path: &str,
+        counted: bool,
+    ) -> Result<(), ErrorData> {
         self.last_completed_file = Some(file_path.to_owned());
-        self.output.files_scanned = self.output.files_scanned.checked_add(1).ok_or_else(|| {
-            ErrorData::internal_error("structure: the scanned-file count overflowed", None)
-        })?;
+        self.advance_untouched_past(idx);
+        if counted {
+            self.output.files_scanned =
+                self.output.files_scanned.checked_add(1).ok_or_else(|| {
+                    ErrorData::internal_error("structure: the scanned-file count overflowed", None)
+                })?;
+        }
         Ok(())
     }
 
     fn scan_tree(
         &mut self,
+        idx: usize,
         file_path: &str,
         content: &str,
         tree: &Tree,
     ) -> Result<bool, ErrorData> {
-        let capture_names = self.query.capture_names();
-        let lines = LineIndex::new(content).map_err(|error| {
-            ErrorData::internal_error(format!("structure match position: {error}"), None)
-        })?;
-        let mut file_matches: Vec<StoredMatch> = Vec::new();
-        let full_text = self.mode.full_text;
-        let outcome = run_budgeted_captures(
+        let (file_matches, outcome) = collect_tree_matches(
             &mut self.cursor,
             self.query,
-            tree.root_node(),
-            content.as_bytes(),
+            self.mode.full_text,
             self.deadline,
-            |query_match, capture_index| {
-                let capture = capture_at(query_match, capture_index)?;
-                let found = node_to_match(
-                    file_path,
-                    capture.node,
-                    content,
-                    &lines,
-                    capture_names.get(capture.index as usize).copied(),
-                    full_text,
-                )?;
-                file_matches.push(StoredMatch { found });
-                Ok::<(), ErrorData>(())
-            },
+            file_path,
+            content,
+            tree,
         )?;
         if outcome.timed_out {
-            self.record_timeout(file_path, content.len(), "during query cursor");
+            self.record_timeout(idx, file_path, content.len(), "during query cursor");
             return Ok(false);
         }
         for stored in &file_matches {
@@ -195,6 +206,7 @@ impl Run<'_, '_, '_> {
                 "structure: QueryCursor exceeded match limit (65,536 active states); marking result partial",
             );
             self.output.query_match_limit_hit = true;
+            self.advance_untouched_past(idx);
             if !self.mode.single_file {
                 self.output.match_limit_resume_after = Some(file_path.to_owned());
             }
@@ -202,4 +214,41 @@ impl Run<'_, '_, '_> {
         }
         Ok(true)
     }
+}
+
+fn collect_tree_matches(
+    cursor: &mut QueryCursor,
+    query: &Query,
+    full_text: bool,
+    deadline: Option<Instant>,
+    file_path: &str,
+    content: &str,
+    tree: &Tree,
+) -> Result<(Vec<StoredMatch>, crate::tools::grammar::CursorScanOutcome), ErrorData> {
+    let capture_names = query.capture_names();
+    let lines = LineIndex::new(content).map_err(|error| {
+        ErrorData::internal_error(format!("structure match position: {error}"), None)
+    })?;
+    let mut file_matches: Vec<StoredMatch> = Vec::new();
+    let outcome = run_budgeted_captures(
+        cursor,
+        query,
+        tree.root_node(),
+        content.as_bytes(),
+        deadline,
+        |query_match, capture_index| {
+            let capture = capture_at(query_match, capture_index)?;
+            let found = node_to_match(
+                file_path,
+                capture.node,
+                content,
+                &lines,
+                capture_names.get(capture.index as usize).copied(),
+                full_text,
+            )?;
+            file_matches.push(StoredMatch { found });
+            Ok::<(), ErrorData>(())
+        },
+    )?;
+    Ok((file_matches, outcome))
 }

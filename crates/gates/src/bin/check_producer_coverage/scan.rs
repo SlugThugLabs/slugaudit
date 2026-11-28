@@ -80,7 +80,7 @@ fn collect(directory: &Path, root: &Path, sources: &mut Vec<Source>) -> Result<(
 ///
 /// # Errors
 ///
-/// Returns a message when the brace depth of a test item overflows.
+/// Returns a message when the delimiter depth of a test item overflows.
 pub(super) fn production_code(source: &str) -> Result<String, String> {
     let stripped = strip_non_code(source);
     let mut kept = String::with_capacity(stripped.len());
@@ -92,29 +92,41 @@ pub(super) fn production_code(source: &str) -> Result<String, String> {
             continue;
         }
         let mut depth: i64 = 0;
+        let mut paren_depth: i64 = 0;
+        let mut bracket_depth: i64 = 0;
         let mut saw_brace = false;
         let mut current = line;
-        loop {
-            for character in current.chars() {
+        'skip: loop {
+            for (byte_idx, character) in current.char_indices() {
                 match character {
                     '{' => {
-                        depth = depth
-                            .checked_add(1)
-                            .ok_or_else(|| "brace depth overflowed".to_owned())?;
+                        step_depth(&mut depth, 1, "brace")?;
                         saw_brace = true;
                     }
                     '}' => {
-                        depth = depth
-                            .checked_sub(1)
-                            .ok_or_else(|| "brace depth underflowed".to_owned())?;
+                        if !saw_brace && depth == 0 {
+                            let remainder = current
+                                .get(byte_idx..)
+                                .ok_or_else(|| "invalid UTF-8 boundary".to_owned())?;
+                            kept.push_str(remainder);
+                            break 'skip;
+                        }
+                        step_depth(&mut depth, -1, "brace")?;
                     }
+                    '(' => step_depth(&mut paren_depth, 1, "paren")?,
+                    ')' => step_depth(&mut paren_depth, -1, "paren")?,
+                    '[' => step_depth(&mut bracket_depth, 1, "bracket")?,
+                    ']' => step_depth(&mut bracket_depth, -1, "bracket")?,
                     _ => {}
                 }
             }
+            let trimmed = current.trim_end();
             let ended = if saw_brace {
                 depth <= 0
             } else {
-                current.trim_end().ends_with(';')
+                paren_depth <= 0
+                    && bracket_depth <= 0
+                    && (trimmed.ends_with(';') || trimmed.ends_with(','))
             };
             if ended {
                 break;
@@ -125,6 +137,18 @@ pub(super) fn production_code(source: &str) -> Result<String, String> {
         kept.push('\n');
     }
     Ok(kept)
+}
+
+fn step_depth(depth: &mut i64, delta: i64, kind: &str) -> Result<(), String> {
+    *depth = depth.checked_add(delta).ok_or_else(|| {
+        let direction = if delta > 0 {
+            "overflowed"
+        } else {
+            "underflowed"
+        };
+        format!("{kind} depth {direction}")
+    })?;
+    Ok(())
 }
 
 /// Blanks `//` line comments, nested `/* ... */` block comments, and the

@@ -23,6 +23,8 @@ pub(super) struct Cut {
     pub(super) size: PageSize,
     pub(super) requested_bytes: Option<usize>,
     pub(super) ceiling: usize,
+    pub(super) store_limits: Option<crate::store::ResultStoreLimits>,
+    pub(super) discard_on_partial: bool,
 }
 
 pub(super) fn page(
@@ -34,6 +36,8 @@ pub(super) fn page(
     let mut spec = PageSpec::typed::<StoredLead>(TOOL, cut.size.bytes);
     spec.requested_page_bytes = cut.requested_bytes;
     spec.ceiling = cut.ceiling;
+    spec.store_limits = cut.store_limits;
+    spec.discard_on_partial = cut.discard_on_partial;
     let served = paginate_rows::<Extras, StoredLead, _, _>(
         manager,
         &spec,

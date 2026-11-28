@@ -85,8 +85,8 @@ fn a_freshly_enabled_project_reports_no_parser_failure_for_its_generated_gitigno
     )?;
     ensure_eq(
         &response.completeness.prose_files_not_parsed,
-        &2,
-        "the generated .gitignore and .planning/README.md are the only prose files not parsed",
+        &1,
+        "the generated .gitignore is the only prose file not parsed (.planning/ is excluded)",
     )?;
     Ok(())
 }
@@ -129,11 +129,9 @@ fn an_untested_language_is_flagged_and_gets_exactly_one_notice() -> TestResult {
     )?;
     ensure_eq(
         &response.notices,
-        &[
-            "python: 1 file uses an untested grammar (downloaded on first use). \
-             Only Rust is tested; treat python results as best-effort.",
-        ],
-        "response.notices == [ \"python: 1 file uses an untested grammar (downloaded on first use). \\ Only Rust is tested; treat python results as best-effort.\" ]",
+        &["python: 1 file uses an untested grammar. \
+             Only Rust is tested; treat python results as best-effort."],
+        "response.notices == [ \"python: 1 file uses an untested grammar. \\ Only Rust is tested; treat python results as best-effort.\" ]",
     )?;
     Ok(())
 }

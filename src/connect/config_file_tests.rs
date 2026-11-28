@@ -489,3 +489,27 @@ fn a_config_write_whose_temp_path_exceeds_the_limit_fails_without_a_stray_temp()
     )?;
     Ok(())
 }
+
+#[test]
+fn has_slugaudit_returns_false_for_empty_and_whitespace_plain_json_files() -> TestResult {
+    let directory = tempfile::tempdir().check("temp dir")?;
+    let json_cfg = directory.path().join("mcp.json");
+    for empty_body in ["", "   \n\t  "] {
+        std::fs::write(&json_cfg, empty_body).check("write empty json")?;
+        let found = has_slugaudit(&json_cfg, &["mcpServers"]).check("empty json must not fail")?;
+        ensure(
+            !found,
+            format!("empty/whitespace JSON {empty_body:?} must report false"),
+        )?;
+    }
+
+    std::fs::write(&json_cfg, "{").check("write malformed json")?;
+    let err = has_slugaudit(&json_cfg, &["mcpServers"])
+        .check_err("non-empty malformed JSON must still fail")?;
+    ensure_eq(
+        &err.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "malformed JSON keeps InvalidData",
+    )?;
+    Ok(())
+}

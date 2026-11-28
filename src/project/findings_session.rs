@@ -112,10 +112,15 @@ fn take_own_lock_with(
         let id = uuid::Uuid::new_v4().simple().to_string();
         let lock_path = dir.join(lock_name(&id));
         // Owner decision (2026-10-31): the lock only tells a live session's findings file from a dead one; each agent session keeps its own findings and never wipes another's.
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(false).write(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            // FILE_SHARE_READ | FILE_SHARE_WRITE (disallow delete while held).
+            options.share_mode(0x0000_0001 | 0x0000_0002);
+        }
+        let lock = options
             .open(&lock_path)
             .map_err(|source| session_error(&lock_path, source))?;
         after_create(&lock_path)?;
@@ -192,6 +197,8 @@ fn reap_if_dead(dir: &Path, id: &str) -> Result<(), ActivationError> {
     }
     let findings = dir.join(db_name(id));
     remove_database_files(&findings).map_err(|source| session_error(&findings, source))?;
+    #[cfg(not(unix))]
+    drop(lock);
     match std::fs::remove_file(&lock_path) {
         Ok(()) => {}
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}

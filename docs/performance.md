@@ -33,8 +33,6 @@ One thread, warm cache, nothing changed:
 |---|---|---|
 | Small | 2,000 files, 30 MB | about 45 ms |
 | Medium | 10,000 files, 160 MB | about 0.23 s |
-| Large | about 40,000 files, 350 MB | about 0.7 s |
-| Linux kernel size | about 82,000 files, 1.4 GB | about 1.9 s |
 
 These are estimates from the per-file numbers. Your machine will differ.
 

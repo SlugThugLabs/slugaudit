@@ -29,8 +29,18 @@ fn expected_path(
     inline_dir: &str,
     inline_segments: &[&str],
 ) -> RustModPathPayload {
+    expected_path_with_extras(path_attr, &[], inline_dir, inline_segments)
+}
+
+fn expected_path_with_extras(
+    path_attr: Option<&str>,
+    extra_path_attrs: &[&str],
+    inline_dir: &str,
+    inline_segments: &[&str],
+) -> RustModPathPayload {
     RustModPathPayload {
         path_attr: path_attr.map(str::to_owned),
+        extra_path_attrs: extra_path_attrs.iter().map(|s| (*s).to_owned()).collect(),
         inline_dir: inline_dir.to_owned(),
         inline_depth: inline_segments.len(),
         inline_segments: inline_segments.iter().map(|s| (*s).to_owned()).collect(),
@@ -308,6 +318,61 @@ fn rust_mod_path_emits_metadata_for_plain_external_mod_under_inline_path() -> Te
         &find_module(&modules, "plain_child")?.rust_mod_path,
         &Some(expected_path(None, "plain_outer", &["plain_outer"])),
         "plain external mod without #[path] ancestor gets rust_mod_path with None path_attr",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_mod_path_collects_multiple_cfg_attr_paths_deduped_in_source_order() -> TestResult {
+    let source = concat!(
+        "#[cfg_attr(target_os = \"linux\", path = \"linux.rs\")]\n",
+        "#[cfg_attr(windows, path = \"windows.rs\")]\n",
+        "#[cfg_attr(target_os = \"freebsd\", path = \"linux.rs\")]\n",
+        "#[cfg_attr(target_os = \"macos\", path = \"macos.rs\")]\n",
+        "mod os;\n",
+    );
+    let modules = rust_module_items(source)?;
+    let os_mod = find_module(&modules, "os")?;
+    ensure_eq(
+        &os_mod.rust_mod_path,
+        &Some(expected_path_with_extras(
+            Some("linux.rs"),
+            &["windows.rs", "macos.rs"],
+            "",
+            &[],
+        )),
+        "multiple cfg_attr path targets preserve first in path_attr and deduplicated rest in extra_path_attrs",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn rust_mod_path_payload_json_backwards_compatible_with_extra_path_attrs() -> TestResult {
+    let legacy_json =
+        r#"{"path_attr":"foo.rs","inline_dir":"","inline_depth":0,"inline_segments":[]}"#;
+    let decoded: RustModPathPayload =
+        serde_json::from_str(legacy_json).check("deserialize legacy RustModPathPayload JSON")?;
+    ensure_eq(
+        &decoded,
+        &expected_path(Some("foo.rs"), "", &[]),
+        "legacy JSON without extra_path_attrs deserializes with empty extra_path_attrs",
+    )?;
+    let encoded_single =
+        serde_json::to_string(&decoded).check("serialize single-path RustModPathPayload")?;
+    ensure(
+        !encoded_single.contains("extra_path_attrs"),
+        "empty extra_path_attrs is omitted during serialization",
+    )?;
+
+    let multi = expected_path_with_extras(Some("unix.rs"), &["win.rs"], "inner", &["inner"]);
+    let encoded_multi =
+        serde_json::to_string(&multi).check("serialize multi-path RustModPathPayload")?;
+    let roundtrip: RustModPathPayload =
+        serde_json::from_str(&encoded_multi).check("roundtrip multi-path JSON")?;
+    ensure_eq(
+        &roundtrip,
+        &multi,
+        "multi-path payload roundtrips through JSON",
     )?;
     Ok(())
 }

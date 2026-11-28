@@ -479,3 +479,39 @@ fn path_config_reports_shell_config_home_missing_when_home_is_unset() -> TestRes
     )?;
     Ok(())
 }
+
+#[test]
+fn add_to_path_reports_helpful_message_when_entry_already_present() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let bin_dir = temp.path().join("slugaudit");
+    let rc_path = temp.path().join(".bashrc");
+
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+        ],
+        || -> TestResult {
+            let mut first_err = Vec::new();
+            add_to_path_to(&bin_dir, &mut first_err).check("first add succeeds")?;
+            let first_msg = String::from_utf8(first_err).check("utf-8 stderr")?;
+            ensure(
+                first_msg.contains("Added SlugAudit to your PATH in"),
+                format!("first call reports addition: {first_msg}"),
+            )?;
+
+            let mut second_err = Vec::new();
+            add_to_path_to(&bin_dir, &mut second_err).check("second add succeeds")?;
+            let second_msg = String::from_utf8(second_err).check("utf-8 stderr")?;
+            ensure(
+                second_msg.contains("already in your PATH config")
+                    && second_msg.contains(&rc_path.display().to_string())
+                    && second_msg.contains("open a new shell or reload it"),
+                format!("idempotent call must emit helpful feedback: {second_msg}"),
+            )?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}

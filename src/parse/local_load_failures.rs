@@ -76,6 +76,29 @@ pub(crate) fn install_test_set(set: std::sync::Arc<LocalLoadFailures>) {
     TEST_FAILURES.with(|cell| *cell.borrow_mut() = set);
 }
 
+#[cfg(test)]
+pub(crate) fn clear_local_load_failures() {
+    install_test_set(std::sync::Arc::new(LocalLoadFailures::new()));
+}
+
+#[cfg(test)]
+pub(crate) struct LocalLoadFailuresGuard;
+
+#[cfg(test)]
+impl LocalLoadFailuresGuard {
+    pub(crate) fn clear() -> Self {
+        clear_local_load_failures();
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for LocalLoadFailuresGuard {
+    fn drop(&mut self) {
+        clear_local_load_failures();
+    }
+}
+
 /// Records a permanent local (non-fetch) grammar load failure for `language`.
 ///
 /// # Errors

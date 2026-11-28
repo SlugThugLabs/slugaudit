@@ -219,3 +219,77 @@ fn verify_checksum_reports_a_missing_sha256sum_as_a_tool_spawn_failure() -> Test
     )?;
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn installed_version_returns_none_when_distinct_target_fails_or_prints_unexpected_output()
+-> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let running = temp.path().join("running-slugaudit");
+    std::fs::write(&running, "#!/bin/sh\necho 'slugaudit 9.9.9'\n").check("write running")?;
+
+    let valid = temp.path().join("valid-target");
+    std::fs::write(&valid, "#!/bin/sh\necho 'slugaudit 1.0.4'\n").check("write valid target")?;
+    std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o755))
+        .check("chmod valid")?;
+    ensure_eq(
+        &installed_version(&running, &valid),
+        &Some("1.0.4".to_owned()),
+        "valid distinct target returns Some(version)",
+    )?;
+    ensure_eq(
+        &installed_version(&running, &running),
+        &Some(env!("CARGO_PKG_VERSION").to_owned()),
+        "same binary path returns Some(CARGO_PKG_VERSION)",
+    )?;
+
+    let failing = temp.path().join("failing-target");
+    std::fs::write(&failing, "#!/bin/sh\nexit 1\n").check("write failing target")?;
+    std::fs::set_permissions(&failing, std::fs::Permissions::from_mode(0o755))
+        .check("chmod failing")?;
+    ensure_eq(
+        &installed_version(&running, &failing),
+        &None,
+        "non-zero exit from target returns None instead of running version",
+    )?;
+
+    let garbled = temp.path().join("garbled-target");
+    std::fs::write(&garbled, "#!/bin/sh\necho 'unexpected output'\n").check("write garbled")?;
+    std::fs::set_permissions(&garbled, std::fs::Permissions::from_mode(0o755))
+        .check("chmod garbled")?;
+    ensure_eq(
+        &installed_version(&running, &garbled),
+        &None,
+        "unexpected --version output from target returns None",
+    )?;
+
+    let missing = temp.path().join("missing-target");
+    ensure_eq(
+        &installed_version(&running, &missing),
+        &None,
+        "unreadable/missing target binary returns None",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn update_decision_for_treats_missing_installed_version_as_incomparable() -> TestResult {
+    ensure_eq(
+        &update_decision_for(None, "1.0.10").check("None resolves to Incomparable")?,
+        &UpdateDecision::Incomparable,
+        "missing installed version is Incomparable rather than UpToDate",
+    )?;
+    ensure_eq(
+        &update_decision_for(Some("1.0.10"), "1.0.10").check("equal versions")?,
+        &UpdateDecision::UpToDate,
+        "matching installed version is UpToDate",
+    )?;
+    let err = update_decision_for(None, "1.0.0-rc1")
+        .check_err("non-numeric latest must still be rejected when current is None")?;
+    ensure(
+        matches!(err, UpdateError::InvalidReleaseVersion(_)),
+        format!("expected InvalidReleaseVersion, got {err:?}"),
+    )?;
+    Ok(())
+}

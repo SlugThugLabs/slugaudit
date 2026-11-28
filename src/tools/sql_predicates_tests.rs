@@ -99,21 +99,62 @@ fn credential_path_predicate_rejects_public_keys_and_lookalikes() -> TestResult 
 }
 
 #[test]
-fn pattern_to_glob_collapses_globstars_and_escapes_literal_brackets() -> TestResult {
+fn path_match_handles_globstars_wildcards_and_substrings() -> TestResult {
+    use crate::util::search_path_matches;
+    for (candidate, pattern, expected) in [
+        ("src/lib.rs", "src/**/*.rs", true),
+        ("src/a/b/lib.rs", "src/**/*.rs", true),
+        ("other/lib.rs", "src/**/*.rs", false),
+        ("lib.rs", "**/lib.rs", true),
+        ("src/lib.rs", "**/lib.rs", true),
+        ("src/a/lib.rs", "**/lib.rs", true),
+        ("src/my_lib.rs", "**/lib.rs", false),
+        ("src/auth/login.rs", "*auth*", true),
+        ("src/lib.rs", "*.rs", true),
+        ("src/users/[slug]/mod.rs", "users/[slug]", true),
+    ] {
+        ensure_eq(
+            &search_path_matches(candidate, pattern),
+            &expected,
+            format!("search_path_matches({candidate:?}, {pattern:?})"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn parser_failure_predicate_excludes_prose_and_counts_null_and_failed_indexed_files() -> TestResult
+{
+    let connection = rusqlite::Connection::open_in_memory().check("in-memory database")?;
+    connection
+        .execute_batch(
+            "CREATE TABLE files (file_kind TEXT, language TEXT, parser_availability TEXT, \
+             parse_outcome TEXT);",
+        )
+        .check("create files table")?;
+    for row in [
+        ("indexed", None, "Unavailable", "NotAttempted"),
+        ("indexed", Some("prose"), "Unavailable", "NotAttempted"),
+        ("indexed", Some("rust"), "Available", "Failed"),
+        ("indexed", Some("rust"), "LoadFailed", "NotAttempted"),
+        ("indexed", Some("rust"), "Available", "Succeeded"),
+        ("skipped", None, "Unavailable", "NotAttempted"),
+    ] {
+        connection
+            .execute("INSERT INTO files VALUES (?1, ?2, ?3, ?4)", row)
+            .check("insert row")?;
+    }
+    let matched: i64 = connection
+        .query_row(
+            &format!("SELECT count(*) FROM files WHERE {PARSER_FAILURE_PREDICATE}"),
+            [],
+            |row| row.get(0),
+        )
+        .check("count parser failures")?;
     ensure_eq(
-        &pattern_to_glob("src/**/*.rs"),
-        &"src/*.rs",
-        "middle globstar collapses to single slash wildcard",
-    )?;
-    ensure_eq(
-        &pattern_to_glob("**/lib.rs"),
-        &"lib.rs".to_owned(),
-        "leading **/ strips cleanly",
-    )?;
-    ensure_eq(
-        &pattern_to_glob("users/[slug]"),
-        &"*users/[[]slug]*",
-        "substring mode escapes literal open bracket",
+        &matched,
+        &3,
+        "predicate counts NULL-language, Failed, and LoadFailed indexed rows while excluding prose, succeeded, and skipped rows",
     )?;
     Ok(())
 }

@@ -9,10 +9,12 @@ mod generic_imports;
 mod normalize;
 mod parse_worker;
 mod rust_bindings;
+mod rust_comment;
 mod rust_doc;
 mod rust_items;
 mod rust_mod_paths;
 mod rust_path_attr;
+mod rust_visibility;
 mod sql;
 
 /// How deep SlugAudit's own tree walkers descend before they stop.
@@ -252,6 +254,7 @@ pub(super) enum NoTree {
 
 /// Parses `source` as `language` within what is left of `deadline` (`None`:
 /// unbounded), enforcing cancellation through [`crate::parse::budget::parse_within`].
+#[cfg(test)]
 pub(super) fn parse_tree(
     language: &str,
     source: &str,

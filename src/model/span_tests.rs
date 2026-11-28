@@ -100,9 +100,9 @@ fn legacy_position(source: &str, byte: usize) -> TestResult<Position> {
         .rev()
         .find(|candidate| source.is_char_boundary(*candidate))
         .check("a char boundary at or below the offset")?;
+    let prefix = source.get(..floor).check("prefix slice")?;
     Ok(Position {
-        line: position_u32(source[..floor].bytes().filter(|b| *b == b'\n').count())
-            .check("legacy line")?,
+        line: position_u32(prefix.bytes().filter(|b| *b == b'\n').count()).check("legacy line")?,
         column: char_column(source, byte).check("legacy column")?,
     })
 }

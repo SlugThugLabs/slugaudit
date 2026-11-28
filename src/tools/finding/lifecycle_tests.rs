@@ -204,8 +204,8 @@ fn the_legacy_findings_db_and_unlocked_leftovers_are_deleted_at_the_first_touch_
         connection
             .execute(
                 "INSERT INTO findings (path, source_hash, line_start, line_end, severity, \
-                 category, title, description, created_at_unix, evidence_revision) \
-                 VALUES ('lib.rs', 'h', 1, 1, 'low', 'c', 'old conclusion', 'd', 0, 'r')",
+                 category, title, description) \
+                 VALUES ('lib.rs', 'h', 1, 1, 'low', 'c', 'old conclusion', 'd')",
                 [],
             )
             .check("old finding")?;

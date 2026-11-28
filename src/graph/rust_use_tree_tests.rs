@@ -87,12 +87,13 @@ fn comments_trailing_commas_aliases_and_dedup_work_together() -> TestResult {
 }
 
 #[test]
-fn extern_crate_and_malformed_use_are_unmodeled() -> TestResult {
+fn malformed_use_and_empty_inputs_are_unmodeled() -> TestResult {
     for raw in [
         "",
-        "extern crate alloc;",
         "pubfn use x;",
         "use;",
+        "extern crate;",
+        "extern crate alloc",
         "use crate::foo::{a;",
         "use crate::foo::{a} extra;",
     ] {
@@ -101,6 +102,37 @@ fn extern_crate_and_malformed_use_are_unmodeled() -> TestResult {
             format!("{raw:?} must be unmodeled"),
         )?;
     }
+    Ok(())
+}
+
+#[test]
+fn extern_crate_declarations_are_modeled() -> TestResult {
+    ensure_eq(
+        &parse_rust_import("extern crate alloc;").check("extern crate alloc")?,
+        &vec![target("alloc")],
+        "extern crate alloc; emits crate name",
+    )?;
+    ensure_eq(
+        &parse_rust_import("extern crate my_crate as mc;").check("extern crate alias")?,
+        &vec![target("my_crate")],
+        "extern crate my_crate as mc; emits original crate name",
+    )?;
+    ensure_eq(
+        &parse_rust_import("pub extern crate core;").check("pub extern crate")?,
+        &vec![target("core")],
+        "pub extern crate core; emits crate name",
+    )?;
+    ensure_eq(
+        &parse_rust_import("#[macro_use] extern crate log;").check("attr extern crate")?,
+        &vec![target("log")],
+        "attributed extern crate emits crate name",
+    )?;
+    let self_alias =
+        parse_rust_import("extern crate self as my_self;").check("extern crate self")?;
+    ensure(
+        self_alias.is_empty(),
+        "extern crate self as my_self; is modeled with zero targets",
+    )?;
     Ok(())
 }
 

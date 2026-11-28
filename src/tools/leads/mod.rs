@@ -77,9 +77,10 @@ fn leads_with_optional_limits(
             (loaded_limits, catalog)
         }
     };
-    run_leads(request, paging, &resolved_limits, &catalog, manager)
+    run_leads(request, paging, &resolved_limits, &catalog, false, manager)
 }
 
+#[cfg(test)]
 pub(in crate::tools) fn leads_with_catalog(
     request: &LeadsRequest,
     limits: &ResourceLimits,
@@ -89,7 +90,19 @@ pub(in crate::tools) fn leads_with_catalog(
 ) -> Result<LeadsResponse, ErrorData> {
     validate_leads_request(request)?;
     let paging = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
-    run_leads(request, paging, limits, catalog, manager)
+    run_leads(request, paging, limits, catalog, false, manager)
+}
+
+pub(in crate::tools) fn trial_leads_with_catalog(
+    request: &LeadsRequest,
+    limits: &ResourceLimits,
+    catalog: &Catalog,
+    sink: &dyn ProgressSink,
+    manager: &sync::SourceSyncManager,
+) -> Result<LeadsResponse, ErrorData> {
+    validate_leads_request(request)?;
+    let paging = page_request(request.cursor.as_deref(), request.path.as_deref(), sink)?;
+    run_leads(request, paging, limits, catalog, true, manager)
 }
 
 fn run_leads(
@@ -97,6 +110,7 @@ fn run_leads(
     paging: PageRequest<'_>,
     limits: &ResourceLimits,
     catalog: &Catalog,
+    discard_on_partial: bool,
     manager: &sync::SourceSyncManager,
 ) -> Result<LeadsResponse, ErrorData> {
     let size = PageSize::resolve(request.page_bytes, limits)?;
@@ -105,6 +119,9 @@ fn run_leads(
         size,
         requested_bytes: request.page_bytes,
         ceiling: limits.max_query_response_bytes,
+        store_limits: matches!(paging, PageRequest::Fresh { .. })
+            .then(|| crate::store::ResultStoreLimits::from(limits)),
+        discard_on_partial,
     };
     let scope = match paging {
         PageRequest::Cursor(_) => None,

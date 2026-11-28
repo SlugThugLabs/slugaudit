@@ -331,16 +331,16 @@ fn query_cursor_match_limit_overflow_marks_structure_completeness_partial() -> T
         &multi_resp.page.completeness,
         &Some(crate::tools::Completeness::Partial {
             limited_by: PageLimit::QueryMatchLimit,
-            resume_after_file: Some("b_dense.rs".to_owned()),
+            resume_after_file: None,
             files_scanned: 1,
             files_total: 2,
         }),
-        "multi-file match-limit overflow reports QueryMatchLimit and advances past b_dense.rs",
+        "multi-file match-limit overflow reports QueryMatchLimit and omits resume_after_file on the last file",
     )?;
     ensure_eq(
         &multi_resp.next_start_after_file.as_deref(),
-        &Some("b_dense.rs"),
-        "next_start_after_file advances past the overflowing file",
+        &None,
+        "next_start_after_file is None when no files remain after b_dense.rs",
     )?;
     Ok(())
 }

@@ -4,7 +4,7 @@
 use super::{StructureMatch, StructureResponse};
 use crate::error_codes::store_error;
 use crate::store::{Cell, Materialize, ResultStoreError, StoredRow};
-use crate::tools::page::{Completeness, Page, PageLimit};
+use crate::tools::page::Page;
 use crate::tools::paginate::{CutStep, ServedRows, byte_cut_step};
 use crate::tools::untested_language_notices;
 use rmcp::ErrorData;
@@ -174,22 +174,9 @@ pub(super) fn structure_response(
 ) -> Json<StructureResponse> {
     let matches = served.rows;
     let extra = served.meta;
-    let more_pages = served.page.cursor.is_some();
-    let partial_limit = match &served.page.completeness {
-        Some(Completeness::Partial { limited_by, .. }) => Some(*limited_by),
-        _ => None,
-    };
-    let limited_by = if more_pages {
-        served.page.limited_by
-    } else {
-        match partial_limit {
-            Some(limit) => limit,
-            None => PageLimit::None,
-        }
-    };
     tracing::info!(
         match_count = matches.len(),
-        limited_by = ?limited_by,
+        limited_by = ?served.page.limited_by,
         files_not_scanned = extra.files_not_scanned,
         unparsed = extra.unparsed_files.len(),
         over_parse_limit = extra.files_over_parse_limit,
@@ -199,8 +186,6 @@ pub(super) fn structure_response(
     );
     let page = Page {
         total: None,
-        complete: !more_pages && partial_limit.is_none(),
-        limited_by,
         ..served.page
     };
     Json(StructureResponse {

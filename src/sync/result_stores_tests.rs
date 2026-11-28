@@ -1,6 +1,7 @@
 use super::*;
 use crate::store::{Cell, ResultSpec, Take};
-use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
+use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq, ensure_ne};
+use std::path::PathBuf;
 
 fn sample_spec() -> ResultSpec {
     ResultSpec {
@@ -57,8 +58,8 @@ fn opening_project_b_replaces_project_a_store_in_single_slot() -> TestResult {
     )?;
 
     let resolved_for_a = slot
-        .store_for_cursor(&token_a)
-        .check("resolve cursor A")?
+        .store_for_continuation()
+        .check("resolve active store")?
         .check("active store B returned")?;
     let _err = resolved_for_a
         .decode_cursor(&token_a)
@@ -178,6 +179,94 @@ fn re_fetching_store_updates_its_limits_in_place() -> TestResult {
         &second.stats().check("updated stats")?.budget_bytes,
         &8_000_000,
         "re-fetching updates the live ResultStore byte budget",
+    )?;
+    Ok(())
+}
+
+fn lock_files_in(results_dir: &Path) -> TestResult<Vec<PathBuf>> {
+    let mut locks = Vec::new();
+    for entry in std::fs::read_dir(results_dir).check("read results directory")? {
+        let entry = entry.check("results directory entry")?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "lock") {
+            locks.push(path);
+        }
+    }
+    locks.sort();
+    Ok(locks)
+}
+
+#[test]
+fn holding_old_store_across_results_removal_and_reopen_preserves_new_lock() -> TestResult {
+    let slot = ResultStoreSlot::default();
+    let dir = tempfile::tempdir().check("tempdir")?;
+    let limits = ResultStoreLimits {
+        max_bytes: 16 * 1024 * 1024,
+        active_grace_secs: 900,
+    };
+
+    let old_store = slot
+        .for_dir_with_limits(dir.path(), limits)
+        .check("initial open")?;
+    let results_dir = dir.path().join("results");
+    let old_locks = lock_files_in(&results_dir)?;
+    ensure_eq(
+        &old_locks.len(),
+        &1,
+        "initial open creates one owner lock file",
+    )?;
+    let old_lock = old_locks.first().check("initial lock path")?.clone();
+
+    std::fs::remove_dir_all(&results_dir).check("external removal of results/")?;
+
+    let new_store = slot
+        .for_dir_with_limits(dir.path(), limits)
+        .check("reopen succeeds while old Arc<ResultStore> is still held")?;
+    let new_locks = lock_files_in(&results_dir)?;
+    ensure_eq(
+        &new_locks.len(),
+        &1,
+        "reopened store creates one owner lock file",
+    )?;
+    let new_lock = new_locks.first().check("reopened lock path")?.clone();
+    ensure_ne(
+        &new_lock,
+        &old_lock,
+        "reopened store uses a distinct UUID lock path",
+    )?;
+    ensure(
+        new_lock.is_file(),
+        "reopened store lock file exists before dropping old store",
+    )?;
+
+    drop(old_store);
+
+    ensure(
+        new_lock.is_file(),
+        "dropping old Arc<ResultStore> does not unlink reopened store's lock file",
+    )?;
+    let mut writer = new_store.begin(sample_spec()).check("begin on new store")?;
+    writer.push(&[Cell::Int(7)]).check("push on new store")?;
+    let handle = writer
+        .finish(&serde_json::json!({"kind": "complete"}))
+        .check("finish on new store")?;
+    let token = new_store.cursor(handle.id, 0).to_string();
+    let decoded = new_store.decode_cursor(&token).check("decode new cursor")?;
+    let page = new_store
+        .read_page(decoded.result, decoded.ord, |_| Take::Yes)
+        .check("read new page")?;
+    ensure_eq(
+        &page.rows.first().check("row")?.cells,
+        &vec![Cell::Int(7)],
+        "reopened store remains operational after dropping old store",
+    )?;
+    let live = slot
+        .get_dir(dir.path())
+        .check("get active store")?
+        .check("slot holds reopened store")?;
+    ensure(
+        Arc::ptr_eq(&live, &new_store),
+        "slot continues holding the reopened store",
     )?;
     Ok(())
 }

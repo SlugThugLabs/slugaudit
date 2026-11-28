@@ -9,7 +9,6 @@ use super::stored::{Extras, Feed, to_i64};
 use super::{LeadMode, MechanicCount};
 use crate::tools::mechanic::catalog::Catalog;
 use crate::tools::paginate::{Produced, RowSink};
-use crate::tools::sql_predicates::pattern_to_glob;
 use crate::tools::untested_language_notices;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
@@ -31,8 +30,7 @@ pub(super) fn produce(
     scope: &Scope<'_>,
     limit: Option<usize>,
 ) -> Result<Produced<Extras>, ErrorData> {
-    let glob = scope.pattern.map(pattern_to_glob);
-    let glob_ref = glob.as_deref();
+    let glob_ref = scope.pattern;
     let read = languages_read(tx, glob_ref)?;
     let scanned = scanned_entries(scope);
     let retain_rows = matches!(

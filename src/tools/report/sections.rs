@@ -121,8 +121,10 @@ fn parser_failures(
         "SELECT path, parse_outcome, parse_error_reason, extraction_completeness, parser_availability \
          FROM files WHERE {PARSER_FAILURE_PREDICATE} ORDER BY path LIMIT ?1"
     ))?;
+    let limit = i64::try_from(MAX_PARSER_FAILURE_FILES)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     let files = stmt
-        .query_map([MAX_PARSER_FAILURE_FILES], |row| {
+        .query_map([limit], |row| {
             Ok(ParserFailureFile {
                 path: row.get(0)?,
                 parse_outcome: row.get(1)?,

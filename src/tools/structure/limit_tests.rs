@@ -491,3 +491,70 @@ fn an_unrepresentable_execution_budget_means_no_deadline_not_a_panic() -> TestRe
     ensure_eq(&response.matches.len(), &1, "response.matches.len() == 1")?;
     Ok(())
 }
+
+#[test]
+fn query_match_limit_omits_resume_after_file_only_when_no_files_remain() -> TestResult {
+    let mut dense = String::from("pub fn dense() {\n");
+    for _ in 0..370 {
+        dense.push_str("    let _ = 0;\n");
+    }
+    dense.push_str("}\n");
+    let query = "(block (let_declaration) @hit (let_declaration) @hit)";
+
+    let tail_project = activated_project("a_clean.rs", b"pub fn clean() { let _ = 0; }\n")?;
+    std::fs::write(tail_project.path().join("b_dense.rs"), dense.as_bytes())
+        .check("write b_dense.rs")?;
+    let tail_req = Parameters(StructureRequest {
+        path: tail_project.path().to_string_lossy().into_owned(),
+        language: Some("rust".to_owned()),
+        query: query.to_owned(),
+        ..Default::default()
+    });
+    let tail_resp = run_with(&tail_req, &ResourceLimits::default(), usize::MAX)?;
+    ensure_eq(
+        &tail_resp.files_not_scanned,
+        &0,
+        "no files left after b_dense.rs",
+    )?;
+    ensure_eq(
+        &tail_resp.next_start_after_file,
+        &None,
+        "last file overflow must not emit stale next_start_after_file",
+    )?;
+    ensure_eq(
+        &tail_resp.page.completeness,
+        &Some(crate::tools::Completeness::Partial {
+            limited_by: PageLimit::QueryMatchLimit,
+            resume_after_file: None,
+            files_scanned: 1,
+            files_total: 2,
+        }),
+        "last file overflow must set resume_after_file to None",
+    )?;
+
+    std::fs::write(
+        tail_project.path().join("c_tail.rs"),
+        b"pub fn tail() { let _ = 0; let _ = 1; }\n",
+    )
+    .check("write c_tail.rs")?;
+    let mid_resp = run_with(&tail_req, &ResourceLimits::default(), usize::MAX)?;
+    ensure_eq(
+        &mid_resp.files_not_scanned,
+        &1,
+        "c_tail.rs remains unscanned",
+    )?;
+    ensure_eq(
+        &mid_resp.next_start_after_file.as_deref(),
+        &Some("b_dense.rs"),
+        "non-last file overflow must emit next_start_after_file",
+    )?;
+    let mut resume_req = tail_req;
+    resume_req.0.start_after_file = mid_resp.next_start_after_file;
+    let resumed = run_with(&resume_req, &ResourceLimits::default(), usize::MAX)?;
+    ensure(
+        resumed.page.complete,
+        "resuming past b_dense.rs completes on c_tail.rs",
+    )?;
+    ensure_eq(&resumed.matches.len(), &2, "c_tail.rs matches are returned")?;
+    Ok(())
+}

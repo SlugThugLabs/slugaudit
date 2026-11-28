@@ -72,7 +72,7 @@ fn run(
             out.timed_out = true;
             break;
         }
-        for capture in found.captures {
+        for capture in found.captures() {
             match call_site(entry, capture.node, source, lines, &functions) {
                 Ok(Some(site)) => {
                     let key = format!("call:{}", out.items.len());

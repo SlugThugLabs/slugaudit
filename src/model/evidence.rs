@@ -74,6 +74,10 @@ pub struct RustModPathPayload {
     /// Explicit `#[path = "..."]` / `#[cfg_attr(..., path = "...")]` value, or
     /// `None` for standard Rust module lookup.
     pub path_attr: Option<String>,
+    /// Additional `#[cfg_attr(..., path = "...")]` / `#[path = "..."]` targets
+    /// on the same `mod` beyond `path_attr`, deduplicated in source order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_path_attrs: Vec<String>,
     /// Joined ancestor inline `mod` directory prefix (empty at file top level).
     pub inline_dir: String,
     /// Number of enclosing inline `mod` blocks.
@@ -115,6 +119,10 @@ pub struct ImportPayload {
     pub alias: Option<String>,
     /// `true` for wildcard/glob imports (`use foo::*`, `import *`).
     pub is_wildcard: bool,
+    /// Enclosing inline `mod` names from outermost to innermost for Rust
+    /// imports inside inline `mod foo { ... }` blocks; omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inline_segments: Vec<String>,
 }
 
 /// Typed `evidence.payload` for [`EvidenceKind::Export`].
@@ -244,6 +252,7 @@ impl EvidencePayload {
                 items: Vec::new(),
                 alias: None,
                 is_wildcard: false,
+                inline_segments: Vec::new(),
             }),
             EvidenceKind::Export => Self::Export(ExportPayload {
                 name: "f".into(),

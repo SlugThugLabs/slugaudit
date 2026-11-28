@@ -8,10 +8,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
 
+/// The executable filename installed inside `~/.slugthug/slugaudit/`.
+pub(crate) const INSTALLED_BINARY_NAME: &str = if cfg!(windows) {
+    "slugaudit.exe"
+} else {
+    "slugaudit"
+};
+
 /// The name retained for the binary a replacement install or update displaces.
 /// Both `slugaudit install` and `slugaudit update` publish it next to the
 /// binary they replace, so a revert is a copy in the same directory.
-pub const PREVIOUS_BINARY_NAME: &str = "slugaudit.prev";
+pub const PREVIOUS_BINARY_NAME: &str = if cfg!(windows) {
+    "slugaudit.exe.prev"
+} else {
+    "slugaudit.prev"
+};
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 

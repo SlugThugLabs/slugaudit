@@ -5,6 +5,7 @@ use std::thread;
 
 #[test]
 fn tracks_per_language_on_current_thread_and_across_threads() -> TestResult {
+    let _failures_guard = super::LocalLoadFailuresGuard::clear();
     ensure(
         !GLOBAL_FAILURES
             .contains("no_such_language_for_global_failures_test")

@@ -27,7 +27,8 @@ history conflicts with the owner, the owner wins.
   `SLUGAUDIT_*` environment variables. The tools never write them, and the
   model-facing instructions don't mention them.
   <!-- Owner decision (2026-10-31): the human can set base defaults. The model sets its own session settings through the tools and does not need to know the global file exists. -->
-- Other languages' grammars are downloaded on first use.
+- Other languages' grammars download automatically on first use under the
+  fetch cool-down gate.
 - How the MCP server itself works (starting, the stdio transport, the
   session lifecycle, shutdown) is set by the MCP spec and handled by the
   `rmcp` SDK. That is not SlugAudit. SlugAudit is what runs on it: the
@@ -40,7 +41,6 @@ history conflicts with the owner, the owner wins.
 - Every tool answer matches the code on disk at the moment of the call.
 - No hangs, no panics, no silent errors. Reads, memory, and time are
   bounded. A page says when an answer is incomplete.
-- Target: comfortable up to ~40k files on a normal laptop.
 - No file watcher.
   <!-- Owner decision (2026-10-31): checking every file's hash on every call makes a watcher duplicate work. -->
 - No guards against threats nobody reported, and no protecting SlugAudit's

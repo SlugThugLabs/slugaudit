@@ -35,39 +35,28 @@ impl NodeMeta<'_> {
     }
 }
 
-/// Extracts the trimmed `visibility_modifier` slice (`"pub"`, `"pub(crate)"`,
-/// `"pub(super)"`, `"pub(in ...)"`) of a Rust item or field `node`, or `None`
-/// when the declaration is private.
-pub(super) fn rust_visibility(
-    node: Node<'_>,
-    source: &str,
-    out: &mut Extraction,
-) -> Option<String> {
-    let vis_node = named_children(node).find(|child| child.kind() == "visibility_modifier")?;
-    match node_text(source, vis_node.start_byte(), vis_node.end_byte()) {
-        Ok(text) => {
-            let trimmed = text.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_owned())
-        }
-        Err(error) => {
-            tracing::warn!(%error, "Rust visibility modifier skipped; extraction is partial");
-            out.truncated = true;
-            None
-        }
-    }
+/// True when `kind` is a Rust comment or outer doc-comment CST node.
+pub(super) fn is_rust_comment_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "line_comment" | "block_comment" | "line_outer_doc_comment" | "block_outer_doc_comment"
+    )
 }
 
-/// Classifies a Rust `line_comment` or `block_comment` as `"Doc"`, `"Line"`, or
-/// `"Block"`. Both outer (`///`, `/**`) and inner (`//!`, `/*!`) doc comments
-/// classify as `"Doc"` in `Comment` evidence rows.
-pub(super) fn classify_rust_comment(kind: &str, text: &str) -> &'static str {
-    if is_outer_rust_doc_comment(kind, text) || is_inner_rust_doc_comment(kind, text) {
-        "Doc"
-    } else if kind == "block_comment" {
-        "Block"
-    } else {
-        "Line"
+/// Returns the first non-extra sibling after `node`'s leading `attributes`
+/// child, or `node` itself when no `attributes` child is present.
+pub(super) fn declaration_start_node(node: Node<'_>) -> Node<'_> {
+    let Some(attributes) = named_children(node).find(|child| child.kind() == "attributes") else {
+        return node;
+    };
+    let mut next = attributes.next_sibling();
+    while let Some(sibling) = next {
+        if !sibling.is_extra() {
+            return sibling;
+        }
+        next = sibling.next_sibling();
     }
+    node
 }
 
 /// Accumulates adjacent outer Rust doc comments (`///` and `/** ... */`) and
@@ -90,35 +79,14 @@ impl<'tree> SiblingTracker<'tree> {
         source: &str,
         out: &mut Extraction,
     ) -> Option<NodeMeta<'tree>> {
-        if let Some(prev_row) = self.doc_last_end_row {
-            let adjacent = prev_row
-                .checked_add(1)
-                .is_some_and(|next_row| child.start_position().row <= next_row);
-            if !adjacent {
-                self.clear_docs();
-            }
-        }
+        self.clear_if_gap(child.start_position().row);
         match child.kind() {
-            "line_comment" | "block_comment" => {
-                match node_text(source, child.start_byte(), child.end_byte()) {
-                    Ok(text) if is_outer_rust_doc_comment(child.kind(), text) => {
-                        self.doc_lines.push(text.trim_end().to_owned());
-                        self.doc_last_end_row = Some(content_end_row(child, source));
-                    }
-                    Ok(_) => self.clear_docs(),
-                    Err(error) => {
-                        tracing::warn!(%error, "Rust comment skipped; extraction is partial");
-                        out.truncated = true;
-                        self.clear_docs();
-                    }
-                }
+            kind if is_rust_comment_kind(kind) => {
+                self.push_comment(child, source, out);
                 None
             }
             "attribute_item" => {
-                self.attrs.push(child);
-                if !self.doc_lines.is_empty() {
-                    self.doc_last_end_row = Some(content_end_row(child, source));
-                }
+                self.push_attr(child, source);
                 None
             }
             "inner_attribute_item" => {
@@ -126,10 +94,72 @@ impl<'tree> SiblingTracker<'tree> {
                 self.attrs.clear();
                 None
             }
-            _ => Some(NodeMeta {
-                outer_doc: self.take_doc(),
-                outer_attrs: std::mem::take(&mut self.attrs),
-            }),
+            _ => {
+                if let Some(attrs) = named_children(child).find(|node| node.kind() == "attributes")
+                {
+                    self.push_attributes_node(attrs, source, out);
+                    let start = declaration_start_node(child);
+                    let mut extra = attrs.next_sibling();
+                    while let Some(sib) = extra.filter(|s| s.id() != start.id()) {
+                        if sib.is_extra() && is_rust_comment_kind(sib.kind()) {
+                            self.push_comment(sib, source, out);
+                        }
+                        extra = sib.next_sibling();
+                    }
+                    self.clear_if_gap(start.start_position().row);
+                }
+                Some(NodeMeta {
+                    outer_doc: self.take_doc(),
+                    outer_attrs: std::mem::take(&mut self.attrs),
+                })
+            }
+        }
+    }
+
+    pub(super) fn push_attributes_node(
+        &mut self,
+        attrs: Node<'tree>,
+        source: &str,
+        out: &mut Extraction,
+    ) {
+        for attr_child in named_children(attrs) {
+            self.clear_if_gap(attr_child.start_position().row);
+            if is_rust_comment_kind(attr_child.kind()) {
+                self.push_comment(attr_child, source, out);
+            } else if attr_child.kind() == "attribute_item" {
+                self.push_attr(attr_child, source);
+            }
+        }
+    }
+
+    fn clear_if_gap(&mut self, row: usize) {
+        let gap = self
+            .doc_last_end_row
+            .is_some_and(|prev| prev.checked_add(1).is_none_or(|next| row > next));
+        if gap {
+            self.clear_docs();
+        }
+    }
+
+    fn push_comment(&mut self, child: Node<'tree>, source: &str, out: &mut Extraction) {
+        match node_text(source, child.start_byte(), child.end_byte()) {
+            Ok(text) if is_outer_rust_doc_comment(child.kind(), text) => {
+                self.doc_lines.push(text.trim_end().to_owned());
+                self.doc_last_end_row = Some(content_end_row(child, source));
+            }
+            Ok(_) => self.clear_docs(),
+            Err(error) => {
+                tracing::warn!(%error, "Rust comment skipped; extraction is partial");
+                out.truncated = true;
+                self.clear_docs();
+            }
+        }
+    }
+
+    fn push_attr(&mut self, child: Node<'tree>, source: &str) {
+        self.attrs.push(child);
+        if !self.doc_lines.is_empty() {
+            self.doc_last_end_row = Some(content_end_row(child, source));
         }
     }
 
@@ -150,32 +180,24 @@ impl<'tree> SiblingTracker<'tree> {
 }
 
 pub(super) fn is_outer_rust_doc_comment(kind: &str, text: &str) -> bool {
-    let is_line_doc =
-        kind == "line_comment" && text.starts_with("///") && !text.starts_with("////");
-    let is_block_doc = kind == "block_comment"
-        && text.starts_with("/**")
-        && text != "/**/"
-        && !text.starts_with("/***");
-    is_line_doc || is_block_doc
-}
-
-fn is_inner_rust_doc_comment(kind: &str, text: &str) -> bool {
-    (kind == "line_comment" && text.starts_with("//!"))
-        || (kind == "block_comment" && text.starts_with("/*!"))
+    matches!(kind, "line_outer_doc_comment" | "block_outer_doc_comment")
+        || (kind == "line_comment" && text.starts_with("///") && !text.starts_with("////"))
+        || (kind == "block_comment"
+            && text.starts_with("/**")
+            && text != "/**/"
+            && !text.starts_with("/***"))
 }
 
 /// Last 0-based source row containing real bytes of `node`, excluding any
 /// trailing `\n` that `tree-sitter-rust`'s `line_comment` token swallowed.
 pub(super) fn content_end_row(node: Node<'_>, source: &str) -> usize {
-    let end_byte = node.end_byte();
-    let end_row = node.end_position().row;
-    if end_byte > node.start_byte()
+    let (end_byte, end_row) = (node.end_byte(), node.end_position().row);
+    let has_trailing_nl = end_byte > node.start_byte()
         && end_byte
             .checked_sub(1)
             .and_then(|last| source.as_bytes().get(last))
-            == Some(&b'\n')
-        && let Some(prev) = end_row.checked_sub(1)
-    {
+            == Some(&b'\n');
+    if has_trailing_nl && let Some(prev) = end_row.checked_sub(1) {
         return prev;
     }
     end_row

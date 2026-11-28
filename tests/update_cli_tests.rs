@@ -14,12 +14,15 @@ use std::process::{Command, Output};
 
 const ASSET: &str = "slugaudit-x86_64-unknown-linux-gnu";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-const OLD_BINARY: &str = "the installed binary before the update";
 const NEW_BINARY: &str = "the verified release asset";
 const MATCHING_DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const MISMATCHING_DIGEST: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 const API_URL: &str = "https://api.github.com/repos/SlugThugLabs/slugaudit/releases/latest";
+
+fn old_binary_script() -> String {
+    format!("#!/bin/sh\necho 'slugaudit {CURRENT_VERSION}'\n")
+}
 
 struct UpdateSandbox {
     _temp: tempfile::TempDir,
@@ -39,7 +42,7 @@ impl UpdateSandbox {
         fs::create_dir_all(&install_dir).check("create install dir")?;
         fs::create_dir_all(&bin_dir).check("create bin dir")?;
         let target = install_dir.join("slugaudit");
-        fs::write(&target, OLD_BINARY).check("plant the installed binary")?;
+        write_executable(&target, &old_binary_script())?;
 
         Ok(UpdateSandbox {
             curl_log: temp.path().join("curl-argv.log"),
@@ -131,7 +134,7 @@ fn run_update_reports_the_exact_up_to_date_message_without_fetching() -> TestRes
     )?;
     ensure_eq(
         &fs::read(&sandbox.target).check("read the installed binary")?,
-        &OLD_BINARY.as_bytes(),
+        &old_binary_script().as_bytes(),
         "the up-to-date branch must not replace the binary",
     )?;
     ensure(
@@ -183,7 +186,7 @@ fn run_update_replaces_the_target_with_the_newer_release_asset() -> TestResult {
     )?;
     ensure_eq(
         &fs::read(sandbox.previous()).check("read the retained binary")?,
-        &OLD_BINARY.as_bytes(),
+        &old_binary_script().as_bytes(),
         "the displaced binary must be retained for a revert",
     )?;
     let curl = fs::read_to_string(&sandbox.curl_log).check("read the fake curl log")?;
@@ -263,7 +266,7 @@ fn run_update_refuses_non_numeric_remote_release_without_downloading() -> TestRe
     )?;
     ensure_eq(
         &fs::read(&sandbox.target).check("read the installed binary")?,
-        &OLD_BINARY.as_bytes(),
+        &old_binary_script().as_bytes(),
         "a refused remote tag must leave the target untouched",
     )?;
     ensure(
@@ -304,12 +307,56 @@ fn run_update_checksum_mismatch_leaves_target_untouched() -> TestResult {
     )?;
     ensure_eq(
         &fs::read(&sandbox.target).check("read the installed binary")?,
-        &OLD_BINARY.as_bytes(),
+        &old_binary_script().as_bytes(),
         "a failed verification must leave the target untouched",
     )?;
     ensure(
         !sandbox.previous().exists(),
         "nothing may be retained when nothing is replaced",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn run_update_replaces_broken_target_binary_when_version_probe_fails() -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    const BROKEN_TARGET: &[u8] = b"corrupted non-executable binary";
+    let sandbox = UpdateSandbox::new()?;
+    fs::write(&sandbox.target, BROKEN_TARGET).check("overwrite target with broken bytes")?;
+    let mut permissions = fs::metadata(&sandbox.target)
+        .check("stat broken target")?
+        .permissions();
+    permissions.set_mode(0o644);
+    fs::set_permissions(&sandbox.target, permissions).check("make broken target non-executable")?;
+    sandbox.plant_curl(&format!("v{CURRENT_VERSION}"), MATCHING_DIGEST)?;
+    sandbox.plant_sha256sum(MATCHING_DIGEST)?;
+
+    let output = sandbox.run()?;
+
+    ensure(
+        output.status.success(),
+        format!("update over broken target failed: {}", text(&output.stderr)),
+    )?;
+    ensure_eq(
+        &text(&output.stdout),
+        &format!(
+            "The installed binary's version at {path} could not be determined; \
+             fetching v{CURRENT_VERSION} anyway.\n\
+             Updating slugaudit -> {CURRENT_VERSION} at {path}...\n\
+             Done. Restart any running AI sessions so they launch the new binary.\n",
+            path = sandbox.target.display()
+        ),
+        "prints exact broken-target Incomparable message and updates without claiming UpToDate",
+    )?;
+    ensure_eq(
+        &fs::read(&sandbox.target).check("read replaced target")?,
+        &NEW_BINARY.as_bytes(),
+        "replaces broken target with verified release asset",
+    )?;
+    ensure_eq(
+        &fs::read(sandbox.previous()).check("read retained broken target")?,
+        &BROKEN_TARGET,
+        "retains broken target at slugaudit.prev",
     )?;
     Ok(())
 }

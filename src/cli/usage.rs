@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=split-judge; reason=Single responsibility: defining the single-source CommandDoc catalog and formatting general --help and subcommand Topic help text.
 //! The `--help` usage text and the styling that renders it.
 //!
 //! Every command is documented once, in a [`CommandDoc`]. The general help
@@ -74,6 +75,16 @@ const DISCONNECT: CommandDoc = CommandDoc {
 the connected agents to pick from.",
 };
 
+const GRAMMAR: CommandDoc = CommandDoc {
+    name: "grammar",
+    invocation: "grammar <list|install>",
+    aliases: &[],
+    summary: "List or install optional non-Rust grammars",
+    detail: "List locally installed grammars (`grammar list`) or download an optional\n\
+non-Rust Tree-sitter grammar from GitHub after confirmation\n\
+(`grammar install <LANGUAGE> [--yes|-y]`).",
+};
+
 const UPDATE: CommandDoc = CommandDoc {
     name: "update",
     invocation: "update",
@@ -101,11 +112,12 @@ const HELP: CommandDoc = CommandDoc {
 };
 
 /// Every command, in the order the general help lists them.
-const COMMANDS: [&CommandDoc; 8] = [
+const COMMANDS: [&CommandDoc; 9] = [
     &MENU,
     &INSTALL,
     &CONNECT,
     &DISCONNECT,
+    &GRAMMAR,
     &UPDATE,
     &SERVE,
     &VERSION,
@@ -134,30 +146,47 @@ const NAME_WIDTH: usize = 14;
 ///
 /// Crate-internal: [`usage`] is the public entry point, and nothing outside
 /// this module reads the unstyled text.
+#[cfg(test)]
 pub(crate) fn usage_text() -> String {
+    format_usage(None)
+}
+
+fn format_heading(style: Option<&Style>, heading: &str) -> String {
+    match style {
+        Some(style) => style.bold(&style.cyan(heading)),
+        None => heading.to_owned(),
+    }
+}
+
+fn format_usage(style: Option<&Style>) -> String {
+    let title = "slugaudit — searchable, trustworthy codebase evidence over MCP";
     let mut lines = vec![
-        "slugaudit — searchable, trustworthy codebase evidence over MCP".to_owned(),
+        style.map_or_else(|| title.to_owned(), |s| s.bold(title)),
         String::new(),
-        "USAGE:".to_owned(),
-        row("", "Run the MCP server (stdio transport)"),
+        format_heading(style, "USAGE:"),
+        row("", SERVE.summary),
     ];
     lines.extend(COMMANDS.iter().map(|doc| row(doc.invocation, doc.summary)));
     lines.push(String::new());
-    lines.push("COMMANDS:".to_owned());
+    lines.push(format_heading(style, "COMMANDS:"));
     for doc in COMMANDS {
         for (index, line) in doc.detail.lines().enumerate() {
             let name = if index == 0 { doc.name } else { "" };
             lines.push(format!("    {name:<NAME_WIDTH$}{line}"));
         }
     }
+    push_help_options(&mut lines, style);
+    lines.push("    -V, -v, --version  Print the version.".to_owned());
     lines.push(String::new());
-    lines.push("OPTIONS:".to_owned());
-    lines.push("    -h, --help      Show this message.".to_owned());
-    lines.push("    -V, --version   Print the version.".to_owned());
-    lines.push(String::new());
-    lines.push("EXAMPLES:".to_owned());
+    lines.push(format_heading(style, "EXAMPLES:"));
     lines.extend(EXAMPLES.iter().map(|(command, what)| row(command, what)));
     lines.join("\n") + "\n"
+}
+
+fn push_help_options(lines: &mut Vec<String>, style: Option<&Style>) {
+    lines.push(String::new());
+    lines.push(format_heading(style, "OPTIONS:"));
+    lines.push("    -h, --help         Show this message.".to_owned());
 }
 
 /// One `    slugaudit <invocation>  <text>` row.
@@ -174,24 +203,7 @@ pub fn usage() -> String {
 /// Renders [`usage_text`] with `style`. Split from [`usage`] so both branches can be
 /// driven with a fixed style instead of whatever stdout happens to be.
 pub(super) fn render_usage(style: &Style) -> String {
-    if !style.enabled() {
-        return usage_text();
-    }
-    let headings = ["USAGE:", "COMMANDS:", "OPTIONS:", "EXAMPLES:"];
-    let text = usage_text();
-    let mut out = String::with_capacity(text.len());
-    for (i, line) in text.lines().enumerate() {
-        let trimmed = line.trim_end();
-        if i == 0 {
-            out.push_str(&style.bold(trimmed));
-        } else if headings.contains(&trimmed) {
-            out.push_str(&style.bold(&style.cyan(trimmed)));
-        } else {
-            out.push_str(trimmed);
-        }
-        out.push('\n');
-    }
-    out
+    format_usage(style.enabled().then_some(style))
 }
 
 /// A subcommand that has its own `--help` text.
@@ -205,36 +217,51 @@ pub enum Topic {
     Disconnect,
     /// `slugaudit install`.
     Install,
+    /// `slugaudit grammar`.
+    Grammar,
     /// `slugaudit menu`.
     Menu,
     /// `slugaudit update`.
     Update,
+    /// `slugaudit version`.
+    Version,
+    /// `slugaudit help`.
+    Help,
 }
+
+const TOPICS: [(Topic, &CommandDoc); 9] = [
+    (Topic::Serve, &SERVE),
+    (Topic::Connect, &CONNECT),
+    (Topic::Disconnect, &DISCONNECT),
+    (Topic::Install, &INSTALL),
+    (Topic::Grammar, &GRAMMAR),
+    (Topic::Menu, &MENU),
+    (Topic::Update, &UPDATE),
+    (Topic::Version, &VERSION),
+    (Topic::Help, &HELP),
+];
 
 impl Topic {
     /// The topic for a subcommand name, or `None` for a name without one.
     pub(super) fn for_command(name: &str) -> Option<Self> {
-        match name {
-            "serve" => Some(Self::Serve),
-            "connect" => Some(Self::Connect),
-            "disconnect" | "remove" => Some(Self::Disconnect),
-            "install" => Some(Self::Install),
-            "menu" => Some(Self::Menu),
-            "update" => Some(Self::Update),
-            _ => None,
-        }
+        TOPICS.iter().find_map(|&(topic, doc)| {
+            (doc.name == name
+                || doc
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.split_whitespace().next() == Some(name)))
+            .then_some(topic)
+        })
     }
 
     /// The documentation entry for this subcommand.
-    const fn doc(self) -> &'static CommandDoc {
-        match self {
-            Self::Serve => &SERVE,
-            Self::Connect => &CONNECT,
-            Self::Disconnect => &DISCONNECT,
-            Self::Install => &INSTALL,
-            Self::Menu => &MENU,
-            Self::Update => &UPDATE,
+    fn doc(self) -> &'static CommandDoc {
+        for &(topic, doc) in &TOPICS {
+            if topic == self {
+                return doc;
+            }
         }
+        &SERVE
     }
 
     /// The usage text for this subcommand, built from its [`CommandDoc`].
@@ -245,9 +272,7 @@ impl Topic {
         lines.extend(invocations.map(|invocation| format!("    slugaudit {invocation}")));
         lines.push(String::new());
         lines.push(doc.detail.to_owned());
-        lines.push(String::new());
-        lines.push("OPTIONS:".to_owned());
-        lines.push("    -h, --help      Show this message.".to_owned());
+        push_help_options(&mut lines, None);
         lines.join("\n") + "\n"
     }
 }

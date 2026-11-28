@@ -75,6 +75,25 @@ fn a_multi_file_scan_skips_a_file_over_max_parse_bytes_and_counts_it() -> TestRe
         &0,
         "response.files_not_scanned == 0",
     )?;
+    ensure(
+        !response.page.complete,
+        "skipped oversize file must mark page incomplete",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::ParseSkipped,
+        "response.page.limited_by == PageLimit::ParseSkipped",
+    )?;
+    ensure_eq(
+        &response.page.completeness,
+        &Some(crate::tools::Completeness::Partial {
+            limited_by: PageLimit::ParseSkipped,
+            resume_after_file: None,
+            files_scanned: 1,
+            files_total: 2,
+        }),
+        "oversize file skip reports ParseSkipped partial completeness",
+    )?;
     Ok(())
 }
 
@@ -188,8 +207,8 @@ fn a_parse_cancelled_at_the_deadline_returns_earlier_matches_flagged_as_partial(
     )?;
     ensure_eq(
         &second.next_start_after_file.as_deref(),
-        &Some("big.rs"),
-        "resuming again advances past big.rs",
+        &None,
+        "no files remain after big.rs so next_start_after_file is None",
     )?;
     ensure_eq(
         &second.page.limited_by,
@@ -266,5 +285,52 @@ fn a_multi_file_deadline_between_files_returns_a_resumable_partial_page() -> Tes
         "limited_by reports TimeBudget",
     )?;
     ensure(!response.page.complete, "unscanned files remain")?;
+    ensure(
+        response.files_not_scanned > 0,
+        "mid-window deadline reports remaining files_not_scanned",
+    )?;
+    ensure(
+        response.bytes_not_scanned > 0,
+        "mid-window deadline reports remaining bytes_not_scanned",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn query_cursor_timeout_leaves_parse_timed_out_file_none() -> TestResult {
+    let mut dense = String::new();
+    for fn_idx in 0..50 {
+        dense.push_str("pub fn dense_");
+        dense.push_str(&fn_idx.to_string());
+        dense.push_str("() {\n");
+        for _ in 0..35 {
+            dense.push_str("    let _ = 0;\n");
+        }
+        dense.push_str("}\n");
+    }
+    let project = activated_project("dense.rs", dense.as_bytes())?;
+    let limits = ResourceLimits {
+        max_structure_execution_time: Duration::from_millis(20),
+        ..ResourceLimits::default()
+    };
+    let request = Parameters(StructureRequest {
+        path: project.path().to_string_lossy().into_owned(),
+        language: Some("rust".to_owned()),
+        query: "(block (let_declaration) @a (let_declaration) @b (let_declaration) @c)".to_owned(),
+        ..Default::default()
+    });
+
+    let response = call(&request, &limits).check("cursor timeout returns partial result")?;
+
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::TimeBudget,
+        "query cursor timeout reports TimeBudget",
+    )?;
+    ensure_eq(
+        &response.parse_timed_out_file,
+        &None,
+        "query cursor timeout must not be misreported as parse_timed_out_file",
+    )?;
     Ok(())
 }

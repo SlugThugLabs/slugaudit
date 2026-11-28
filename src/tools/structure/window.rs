@@ -2,7 +2,6 @@
 
 use super::source::{INDEXED_WITH_CONTENT, SELECT_CONTENT_SQL};
 use crate::tools::context::internal_error;
-use crate::tools::sql_predicates::pattern_to_glob;
 use rmcp::ErrorData;
 
 pub(super) const MAX_MULTI_FILE_TOTAL_BYTES: usize = 64 * 1024 * 1024;
@@ -43,9 +42,10 @@ fn file_filter(
     let mut sql = format!("language = ?1 AND {INDEXED_WITH_CONTENT}");
     let mut params = vec![language.to_owned()];
     if let Some(pattern) = pattern {
-        params.push(pattern_to_glob(pattern));
-        sql.push_str(" AND path GLOB ?");
+        params.push(pattern.to_owned());
+        sql.push_str(" AND slugaudit_path_match(path, ?");
         sql.push_str(&params.len().to_string());
+        sql.push(')');
     }
     if let Some(after) = after {
         params.push(after.to_owned());
@@ -89,8 +89,10 @@ pub(super) fn fetch_sources_for_language(
         let path: String = row
             .get(0)
             .map_err(|error| internal_error("reading an indexed file path", error))?;
-        let size: u64 = row
+        let size_raw: i64 = row
             .get(1)
+            .map_err(|error| internal_error("reading an indexed file's size", error))?;
+        let size = u64::try_from(size_raw)
             .map_err(|error| internal_error("reading an indexed file's size", error))?;
         if size > per_file_limit {
             files_over_parse_limit = files_over_parse_limit.checked_add(1).ok_or_else(|| {
@@ -142,13 +144,18 @@ fn count_unscanned(
     after: Option<&str>,
 ) -> Result<(usize, u64), ErrorData> {
     let (rest, rest_params) = file_filter(language, pattern, after);
-    connection
+    let (count_raw, bytes_raw) = connection
         .query_row(
             &format!(
                 "SELECT COUNT(*), COALESCE(SUM(octet_length(content)), 0) FROM files WHERE {rest}"
             ),
             rusqlite::params_from_iter(rest_params.iter()),
-            |row| Ok((row.get::<_, usize>(0)?, row.get::<_, u64>(1)?)),
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
         )
-        .map_err(|error| internal_error("counting files past the scan window", error))
+        .map_err(|error| internal_error("counting files past the scan window", error))?;
+    let count = usize::try_from(count_raw)
+        .map_err(|error| internal_error("counting files past the scan window", error))?;
+    let bytes = u64::try_from(bytes_raw)
+        .map_err(|error| internal_error("counting bytes past the scan window", error))?;
+    Ok((count, bytes))
 }

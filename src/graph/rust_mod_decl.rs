@@ -3,7 +3,7 @@
 //! ambiguous dual-file `Low` confidence tagging).
 
 use super::resolver::{self, KnownPaths};
-use super::rust_mod_parents::{join_inline_segments, resolve_rust_path_attr_segments};
+use super::rust_path_attr::{join_inline_segments, resolve_rust_path_attr_segments_in_context};
 use super::rust_paths::effective_rust_module_dir;
 use super::{ResolvedEdge, WorkspaceCrates};
 use std::collections::HashSet;
@@ -18,6 +18,7 @@ pub(crate) fn resolve_rust_mod_declaration<S: BuildHasher>(
     path_attr: Option<&str>,
     inline_segments: &[String],
     known_paths: &HashSet<&str, S>,
+    workspace_crates: &WorkspaceCrates,
 ) -> ResolvedEdge {
     resolve_rust_mod_declaration_dyn(
         declaring_relative_path,
@@ -25,6 +26,7 @@ pub(crate) fn resolve_rust_mod_declaration<S: BuildHasher>(
         path_attr,
         inline_segments,
         known_paths,
+        workspace_crates,
     )
 }
 
@@ -34,14 +36,22 @@ fn resolve_rust_mod_declaration_dyn(
     path_attr: Option<&str>,
     inline_segments: &[String],
     known_paths: &dyn KnownPaths,
+    workspace_crates: &WorkspaceCrates,
 ) -> ResolvedEdge {
     let candidates = match path_attr {
-        Some(attr) => path_attr_candidates(declaring_relative_path, attr, inline_segments),
+        Some(attr) => path_attr_candidates(
+            declaring_relative_path,
+            attr,
+            inline_segments,
+            known_paths,
+            workspace_crates,
+        ),
         None => named_mod_candidates(
             declaring_relative_path,
             mod_name,
             inline_segments,
             known_paths,
+            workspace_crates,
         ),
     };
     let resolution = resolver::pick(&candidates, known_paths);
@@ -58,10 +68,16 @@ fn path_attr_candidates(
     declaring_relative_path: &str,
     attr: &str,
     inline_segments: &[String],
+    known_paths: &dyn KnownPaths,
+    workspace_crates: &WorkspaceCrates,
 ) -> Vec<String> {
-    let Some(child_path) =
-        resolve_rust_path_attr_segments(declaring_relative_path, attr, inline_segments)
-    else {
+    let Some(child_path) = resolve_rust_path_attr_segments_in_context(
+        declaring_relative_path,
+        attr,
+        inline_segments,
+        known_paths,
+        workspace_crates,
+    ) else {
         return Vec::new();
     };
     if Path::new(attr).extension().is_some() {
@@ -79,6 +95,7 @@ fn named_mod_candidates(
     mod_name: &str,
     inline_segments: &[String],
     known_paths: &dyn KnownPaths,
+    workspace_crates: &WorkspaceCrates,
 ) -> Vec<String> {
     let trimmed = mod_name.trim();
     let clean_name = match trimmed.strip_prefix("r#") {
@@ -89,8 +106,7 @@ fn named_mod_candidates(
     {
         return Vec::new();
     }
-    let empty_crates = WorkspaceCrates::new();
-    let mod_dir = effective_rust_module_dir(declaring_relative_path, known_paths, &empty_crates);
+    let mod_dir = effective_rust_module_dir(declaring_relative_path, known_paths, workspace_crates);
     let Some(base_dir) = join_inline_segments(&mod_dir, inline_segments.iter().map(String::as_str))
     else {
         return Vec::new();
@@ -100,3 +116,7 @@ fn named_mod_candidates(
     };
     vec![format!("{joined}.rs"), format!("{joined}/mod.rs")]
 }
+
+#[cfg(test)]
+#[path = "rust_mod_decl_tests.rs"]
+mod tests;

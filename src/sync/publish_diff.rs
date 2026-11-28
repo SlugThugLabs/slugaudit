@@ -3,7 +3,6 @@
 //! rows, including `LoadFailed` grammar retry detection.
 
 use super::discovery;
-use super::hash::aggregate_manifest_hash;
 use super::manifest::{self, ChangeStatus, FileChange};
 use super::publish::PublishError;
 use super::revision::{SKIP_REASON_NOT_UTF8, SKIP_REASON_STAT_FAILED, SkippedRecord};
@@ -16,7 +15,6 @@ use std::path::Path;
 
 pub(super) struct Diff {
     pub(super) changes: Vec<FileChange>,
-    pub(super) manifest_hash: String,
     pub(super) added: usize,
     pub(super) modified: usize,
     pub(super) deleted: usize,
@@ -86,16 +84,19 @@ pub(super) fn diff_against_stored(
     deadline: &Deadline,
 ) -> Result<Diff, PublishError> {
     check_deadline(deadline)?;
-    let stored = stored_hashes(connection)?;
-    let stored_refs: Vec<(&str, &str)> = stored
+    let load_failed_due = crate::parse::fetch_gate::load_failed_retry_due()?;
+    let stored_state = load_stored_state(connection, load_failed_due)?;
+    let stored_refs: Vec<(&str, &str)> = stored_state
+        .stored
         .iter()
         .map(|row| (row.path.as_str(), row.content_hash.as_str()))
         .collect();
     let current_refs = current_hashes(identities, skipped);
     let mut changes = manifest::compare(stored_refs, current_refs.clone());
-    add_classification_drift_changes(&mut changes, &stored, discovered, skipped);
-    if crate::parse::fetch_gate::load_failed_retry_due()? {
-        add_load_failed_retries(&mut changes, &current_refs, &load_failed_paths(connection)?)?;
+    add_classification_drift_changes(&mut changes, &stored_state.stored, discovered, skipped);
+    add_available_grammar_retries(&mut changes, &current_refs, &stored_state.unavailable)?;
+    if load_failed_due {
+        add_load_failed_retries(&mut changes, &current_refs, &stored_state.load_failed)?;
     }
     let added = count_changes(&changes, ChangeStatus::Added);
     let modified = count_changes(&changes, ChangeStatus::Modified);
@@ -104,12 +105,10 @@ pub(super) fn diff_against_stored(
         .iter()
         .filter(|(path, _)| !touched.contains(path))
         .count();
-    let manifest_hash = aggregate_manifest_hash(current_refs);
     Ok(Diff {
         deleted: count_changes(&changes, ChangeStatus::Deleted),
         unchanged,
         changes,
-        manifest_hash,
         added,
         modified,
     })
@@ -199,6 +198,71 @@ fn stored_row_drifted(
         && row.skip_reason.as_deref() == Some(SKIP_REASON_NOT_UTF8))
 }
 
+fn language_retry_ready<'a>(
+    lang: &'a str,
+    retry_due: bool,
+    require_available: bool,
+    ready_by_lang: &mut HashMap<&'a str, bool>,
+) -> Result<bool, LockPoisoned> {
+    if let Some(&ready) = ready_by_lang.get(lang) {
+        return Ok(ready);
+    }
+    let ready = (!require_available || crate::parse::language_available(lang))
+        && (retry_due || crate::parse::fetch_gate::is_grammar_installed(lang)?)
+        && !crate::parse::local_load_failures::is_locally_failed(lang)?;
+    ready_by_lang.insert(lang, ready);
+    Ok(ready)
+}
+
+fn collect_retry_paths<'a, V>(
+    changes: &mut Vec<FileChange>,
+    current: &[(&str, &str)],
+    candidates: &'a HashMap<String, V>,
+    retry_due: bool,
+    require_available: bool,
+    lang_of: impl Fn(&'a V) -> Option<&'a str>,
+) -> Result<(), LockPoisoned> {
+    let already: HashSet<&str> = changes
+        .iter()
+        .map(|change| change.relative_path.as_str())
+        .collect();
+    let mut ready_by_lang: HashMap<&'a str, bool> = HashMap::new();
+    let mut retries = Vec::new();
+    for (path, _) in current {
+        let Some(value) = candidates.get(*path) else {
+            continue;
+        };
+        if already.contains(*path) {
+            continue;
+        }
+        if let Some(lang) = lang_of(value)
+            && !language_retry_ready(lang, retry_due, require_available, &mut ready_by_lang)?
+        {
+            continue;
+        }
+        retries.push((*path).to_owned());
+    }
+    extend_modified_changes(changes, retries);
+    Ok(())
+}
+
+/// Marks still-present `Unavailable` files as `Modified` when their language is
+/// known to the pack, ready to fetch or already installed, and not locally
+/// failed.
+pub(crate) fn add_available_grammar_retries(
+    changes: &mut Vec<FileChange>,
+    current: &[(&str, &str)],
+    unavailable: &HashMap<String, String>,
+) -> Result<(), LockPoisoned> {
+    if unavailable.is_empty() {
+        return Ok(());
+    }
+    let retry_due = crate::parse::fetch_gate::load_failed_retry_due()?;
+    collect_retry_paths(changes, current, unavailable, retry_due, true, |lang| {
+        Some(lang.as_str())
+    })
+}
+
 /// Marks still-present `LoadFailed` files as `Modified` once the grammar fetch
 /// gate is open, skipping languages that suffered a permanent local load error.
 pub(super) fn add_load_failed_retries(
@@ -209,39 +273,88 @@ pub(super) fn add_load_failed_retries(
     if load_failed.is_empty() {
         return Ok(());
     }
-    let already: HashSet<&str> = changes
-        .iter()
-        .map(|change| change.relative_path.as_str())
-        .collect();
-    let mut retries = Vec::new();
-    for (path, _) in current {
-        let Some(language) = load_failed.get(*path) else {
-            continue;
-        };
-        if already.contains(*path) {
-            continue;
-        }
-        if let Some(lang) = language.as_deref()
-            && crate::parse::local_load_failures::is_locally_failed(lang)?
-        {
-            continue;
-        }
-        retries.push((*path).to_owned());
-    }
-    extend_modified_changes(changes, retries);
-    Ok(())
+    let retry_due = crate::parse::fetch_gate::load_failed_retry_due()?;
+    collect_retry_paths(
+        changes,
+        current,
+        load_failed,
+        retry_due,
+        false,
+        Option::as_deref,
+    )
 }
 
-fn load_failed_paths(
+struct StoredState {
+    stored: Vec<StoredRow>,
+    unavailable: HashMap<String, String>,
+    load_failed: HashMap<String, Option<String>>,
+}
+
+fn load_stored_state(
     connection: &Connection,
-) -> Result<HashMap<String, Option<String>>, rusqlite::Error> {
-    let mut statement = connection
-        .prepare("SELECT path, language FROM files WHERE parser_availability = 'LoadFailed'")?;
-    statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-        })?
-        .collect()
+    include_load_failed: bool,
+) -> Result<StoredState, rusqlite::Error> {
+    let mut statement = connection.prepare(
+        "SELECT path, content_hash, file_kind, skip_reason, content IS NULL, \
+                CASE WHEN (file_kind = 'indexed' AND parser_availability = 'Unavailable' \
+                           AND parse_outcome = 'NotAttempted' AND parse_error_reason IS NULL \
+                           AND language IS NOT NULL AND language <> 'prose') \
+                       OR (?1 AND parser_availability = 'LoadFailed') \
+                     THEN language ELSE NULL END, \
+                CASE WHEN file_kind = 'indexed' AND parser_availability = 'Unavailable' \
+                          AND parse_outcome = 'NotAttempted' AND parse_error_reason IS NULL \
+                          AND language IS NOT NULL AND language <> 'prose' \
+                     THEN 1 \
+                     WHEN ?1 AND parser_availability = 'LoadFailed' \
+                     THEN 2 \
+                     ELSE 0 END \
+         FROM files",
+    )?;
+    let mut rows = statement.query([include_load_failed])?;
+    let mut stored = Vec::new();
+    let mut unavailable = HashMap::new();
+    let mut load_failed = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let path: String = row.get(0)?;
+        let content_hash: String = row.get(1)?;
+        let file_kind: String = row.get(2)?;
+        let skip_reason: Option<String> = row.get(3)?;
+        let content_is_null: bool = row.get(4)?;
+        let retry_lang: Option<String> = row.get(5)?;
+        let retry_kind: i64 = row.get(6)?;
+
+        match retry_kind {
+            1 => {
+                if let Some(lang) = retry_lang {
+                    unavailable.insert(path.clone(), lang);
+                }
+            }
+            2 => {
+                load_failed.insert(path.clone(), retry_lang);
+            }
+            _ => {}
+        }
+
+        stored.push(StoredRow {
+            path,
+            content_hash,
+            file_kind,
+            skip_reason,
+            content_is_null,
+        });
+    }
+    Ok(StoredState {
+        stored,
+        unavailable,
+        load_failed,
+    })
+}
+
+#[cfg(test)]
+fn unavailable_language_paths(
+    connection: &Connection,
+) -> Result<HashMap<String, String>, rusqlite::Error> {
+    Ok(load_stored_state(connection, false)?.unavailable)
 }
 
 fn check_deadline(deadline: &Deadline) -> Result<(), PublishError> {
@@ -253,23 +366,6 @@ fn check_deadline(deadline: &Deadline) -> Result<(), PublishError> {
         }),
         None => Ok(()),
     }
-}
-
-fn stored_hashes(connection: &Connection) -> Result<Vec<StoredRow>, rusqlite::Error> {
-    let mut stored_statement = connection
-        .prepare("SELECT path, content_hash, file_kind, skip_reason, content IS NULL FROM files")?;
-    let stored_rows = stored_statement
-        .query_map([], |row| {
-            Ok(StoredRow {
-                path: row.get(0)?,
-                content_hash: row.get(1)?,
-                file_kind: row.get(2)?,
-                skip_reason: row.get(3)?,
-                content_is_null: row.get(4)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(stored_rows)
 }
 
 fn current_hashes<'a>(

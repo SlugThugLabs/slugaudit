@@ -13,13 +13,13 @@ use crate::store::StoredRow;
 use crate::sync::SourceSyncManager;
 use crate::tools::context::internal_error;
 use crate::tools::page::{Completeness, Page, PageSize};
-use crate::tools::paginate::{PageRequest, PageSpec, Produced, RowSink, paginate_rows};
+use crate::tools::paginate::{PageRequest, PageSpec, Produced, RowSink, paginate_rows_with_setup};
 use crate::tools::tool_limits::deadline_after;
 use rmcp::ErrorData;
 use rusqlite::Transaction;
 use rusqlite::limits::Limit;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Instant;
 
 const WRAPPER_OVERHEAD_BYTES: u64 = 64;
@@ -59,15 +59,36 @@ fn apply_engine_limits(tx: &Transaction<'_>, limits: &ResourceLimits) -> Result<
     Ok(())
 }
 
-fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8> {
-    let abort_reason = Arc::new(AtomicU8::new(ABORT_NONE));
-    let handler_reason = Arc::clone(&abort_reason);
+struct BudgetControl {
+    abort_reason: Arc<AtomicU8>,
+    armed: Arc<AtomicBool>,
+    deadline: Arc<std::sync::Mutex<Option<Instant>>>,
+}
+
+struct DisarmGuard(Arc<AtomicBool>);
+
+impl Drop for DisarmGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+fn install_budget(
+    conn: &mut rusqlite::Connection,
+    limits: &ResourceLimits,
+    budget: &BudgetControl,
+) -> Result<(), ErrorData> {
+    let handler_reason = Arc::clone(&budget.abort_reason);
+    let armed = Arc::clone(&budget.armed);
+    let deadline_slot = Arc::clone(&budget.deadline);
     let mut steps = 0_u32;
     let max_steps = limits.max_query_vm_steps;
-    let deadline = deadline_after(limits.max_query_wall_clock);
-    tx.progress_handler(
+    conn.progress_handler(
         PROGRESS_INTERVAL,
         Some(move || {
+            if !armed.load(Ordering::Relaxed) {
+                return false;
+            }
             let Some(counted) = steps
                 .checked_add(PROGRESS_INTERVAL.unsigned_abs())
                 .filter(|counted| *counted <= max_steps)
@@ -76,18 +97,15 @@ fn install_budget(tx: &Transaction<'_>, limits: &ResourceLimits) -> Arc<AtomicU8
                 return true;
             };
             steps = counted;
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let deadline = deadline_slot.lock().map_or(None, |guard| *guard);
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
                 handler_reason.store(ABORT_WALL_CLOCK, Ordering::Relaxed);
                 return true;
             }
             false
         }),
-    );
-    abort_reason
-}
-
-fn clear_budget(tx: &Transaction<'_>) {
-    tx.progress_handler(0, None::<fn() -> bool>);
+    )
+    .map_err(|error| internal_error("installing the query budget", error))
 }
 
 fn wrapped_sql(body: &str) -> String {
@@ -104,19 +122,29 @@ pub(super) fn run_query(
 ) -> Result<(Collected, Page), ErrorData> {
     let mut builder = PageBuilder::new();
     let spec = PageSpec {
-        tool: "query",
-        columns: Vec::new(),
-        page_bytes: size.bytes,
         requested_page_bytes: requested_bytes,
         ceiling: limits.max_query_response_bytes,
-        max_rows: None,
+        store_limits: matches!(request, PageRequest::Fresh { .. })
+            .then(|| crate::store::ResultStoreLimits::from(limits)),
+        ..PageSpec::dynamic("query", size.bytes)
     };
-    let served = paginate_rows(
+    let budget = BudgetControl {
+        abort_reason: Arc::new(AtomicU8::new(ABORT_NONE)),
+        armed: Arc::new(AtomicBool::new(false)),
+        deadline: Arc::new(std::sync::Mutex::new(None)),
+    };
+    let setup_budget = BudgetControl {
+        abort_reason: Arc::clone(&budget.abort_reason),
+        armed: Arc::clone(&budget.armed),
+        deadline: Arc::clone(&budget.deadline),
+    };
+    let served = paginate_rows_with_setup(
         manager,
         &spec,
         request,
+        move |conn| install_budget(conn, limits, &setup_budget),
         |tx, rows| {
-            stream_rows(tx, trimmed, limits, rows)?;
+            stream_rows(tx, trimmed, limits, &budget, rows)?;
             Ok(Produced {
                 completeness: Completeness::Complete,
                 extra: (),
@@ -137,14 +165,18 @@ fn stream_rows(
     tx: &Transaction<'_>,
     trimmed: &str,
     limits: &ResourceLimits,
+    budget: &BudgetControl,
     rows: &mut RowSink<'_, '_>,
 ) -> Result<(), ErrorData> {
     apply_engine_limits(tx, limits)?;
-    let abort_reason = install_budget(tx, limits);
-    let outcome = single_statement_body(tx, trimmed, &abort_reason)
-        .and_then(|body| push_all(tx, &body, limits, &abort_reason, rows));
-    clear_budget(tx);
-    outcome
+    {
+        let mut slot = crate::util::lock(&budget.deadline, "query_deadline")?;
+        *slot = deadline_after(limits.max_query_wall_clock);
+    }
+    budget.armed.store(true, Ordering::Relaxed);
+    let _disarm = DisarmGuard(Arc::clone(&budget.armed));
+    let body = single_statement_body(tx, trimmed, &budget.abort_reason)?;
+    push_all(tx, &body, limits, &budget.abort_reason, rows)
 }
 
 fn push_all(
@@ -157,11 +189,7 @@ fn push_all(
     let mut statement = tx
         .prepare(&wrapped_sql(body))
         .map_err(|error| refuse_wrapped(&error, abort_reason))?;
-    let names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
     rows.set_columns(names)?;
     let value_cap = limits.max_query_value_bytes;
     let column_count = statement.column_count();

@@ -212,3 +212,78 @@ fn disconnecting_cli_direct_with_fallback_returns_cli_error_when_json_absent() -
     )?;
     Ok(())
 }
+
+#[test]
+fn disconnecting_cli_direct_agent_with_entry_in_config_and_missing_cli_errors() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let empty_bin = tempfile::tempdir().check("empty bin")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let home = temp.path();
+
+    let claude = find_agent("claude").check("claude is registered")?;
+    let claude_cfg = claude.config.resolve(home).check("claude config path")?;
+    std::fs::write(
+        &claude_cfg,
+        r#"{"mcpServers":{"slugaudit":{"command":"/bin/slugaudit"}}}"#,
+    )
+    .check("write claude config")?;
+
+    let codex = find_agent("codex").check("codex is registered")?;
+    let codex_cfg = codex.config.resolve(home).check("codex config path")?;
+    std::fs::create_dir_all(codex_cfg.parent().check("codex parent")?).check("mkdir codex")?;
+    std::fs::write(
+        &codex_cfg,
+        "[mcp_servers.slugaudit]\ncommand = \"/bin/slugaudit\"\n",
+    )
+    .check("write codex config")?;
+
+    temp_env::with_var(
+        "PATH",
+        Some(empty_bin.path().as_os_str()),
+        || -> TestResult {
+            let claude_err = disconnect_agent(&claude, Some(home))
+                .check_err("claude with config entry and missing CLI must fail")?;
+            ensure(
+                matches!(
+                    &claude_err,
+                    ConnectError::DisconnectCliMissing { cli, path, .. }
+                        if cli == "claude" && path == &claude_cfg.display().to_string()
+                ),
+                format!("expected DisconnectCliMissing for claude, got {claude_err:?}"),
+            )?;
+
+            let codex_err = disconnect_agent(&codex, Some(home))
+                .check_err("codex with config entry and missing CLI must fail")?;
+            ensure(
+                matches!(
+                    &codex_err,
+                    ConnectError::DisconnectCliMissing { cli, path, .. }
+                        if cli == "codex" && path == &codex_cfg.display().to_string()
+                ),
+                format!("expected DisconnectCliMissing for codex, got {codex_err:?}"),
+            )?;
+            Ok(())
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn disconnecting_cli_direct_agent_without_entry_and_missing_cli_is_nothing_to_do() -> TestResult {
+    let _guard = crate::util::TEST_ENV_LOCK.lock().check("env lock")?;
+    let empty_bin = tempfile::tempdir().check("empty bin")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let claude = find_agent("claude").check("claude is registered")?;
+
+    let outcome = temp_env::with_var("PATH", Some(empty_bin.path().as_os_str()), || {
+        disconnect_agent(&claude, Some(temp.path()))
+    })
+    .check("claude without config or CLI reports NothingToDo")?;
+
+    ensure_eq(
+        &outcome,
+        &DisconnectOutcome::NothingToDo,
+        "absent config and missing CLI reports NothingToDo",
+    )?;
+    Ok(())
+}

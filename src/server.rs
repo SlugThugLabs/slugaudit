@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=split-judge; reason=Single responsibility: defining the MCP ServerHandler surface for SlugAuditServer with its initialization instructions, resource URI validation, and semaphore-bounded tool dispatch wrappers.
 //! MCP server surface: the tool contracts and their registration.
 //!
 //! This file declares *what* the tools are and *how* they're registered
@@ -78,10 +79,9 @@ const INSTRUCTIONS: &str = "SlugAudit is an index of this project's code — sym
     Resolved, Unresolved or External (`syntax_unmodeled` = 1: import syntax not parsed); \
     `report.import_resolution` gives the split. Recipes and schema: `slugaudit://queries/README.md`, \
     `slugaudit://schema.sql`.\n\n\
-    GRAMMARS: grammars are downloaded on first use and are untested except Rust's. Offline, \
-    those files stay searchable by `content` but have no evidence until a retry (after 10 minutes or \
-    a restart); the first failed fetch can block a call for about 60 s. Markdown, reStructuredText, \
-    AsciiDoc, Org, plain-text and ignore-list files are `language = 'prose'`: stored, never parsed.\n\n\
+    GRAMMARS: Rust is tested; other languages are best-effort and flagged in `notices`. \
+    Markdown, reStructuredText, AsciiDoc, Org, plain-text and ignore files are \
+    `language = 'prose'`: stored, never parsed.\n\n\
     OTHER TOOLS: `report` is the project snapshot. `structure` runs a Tree-sitter query (at least \
     one capture) on one `file` or a whole `language`. `finding` records a conclusion you reviewed, \
     bound to the file hash (stale on change) and lasting this session; `finding_read` \

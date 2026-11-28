@@ -484,6 +484,68 @@ fn verify_client_uses_verify_cli_and_skips_detection_only_clis() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn disconnect_one_to_propagates_probe_error_for_manual_agent() -> TestResult {
+    let temp = tempfile::tempdir().check("tempdir")?;
+    let home = temp.path();
+    let goose = find_agent("goose").check("goose is registered")?;
+    let cfg = goose.config.resolve(home).check("goose config path")?;
+    std::fs::create_dir_all(&cfg).check("plant directory at goose config path")?;
+
+    let mut out = Vec::new();
+    let err = disconnect_one_to(goose, Some(home), &mut out)
+        .check_err("unreadable manual config must propagate ProbeFailure")?;
+    ensure(
+        matches!(&err, ConnectError::Probe(failure) if failure.agent == "goose"),
+        format!("expected ConnectError::Probe for goose, got {err:?}"),
+    )?;
+    let printed = String::from_utf8(out).check("utf-8 output")?;
+    ensure(
+        !printed.contains("Nothing to disconnect."),
+        format!("must not print Nothing to disconnect on probe error: {printed}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn codex_toml_checks_mcp_tables_not_project_paths_and_errors_on_invalid_toml() -> TestResult {
+    let temp = tempfile::tempdir().check("tempdir")?;
+    let home = temp.path();
+    let codex = find_agent("codex").check("codex is registered")?;
+    let cfg = codex.config.resolve(home).check("codex config path")?;
+    std::fs::create_dir_all(cfg.parent().check("parent")?).check("mkdir .codex")?;
+
+    fs::write(
+        &cfg,
+        "[projects.\"/home/user/slugaudit\"]\ntrust_level = \"trusted\"\n",
+    )
+    .check("write projects-only codex config")?;
+    ensure(
+        !codex.is_connected(Some(home)).check("probe codex config")?,
+        "project trust entry mentioning slugaudit must not mark codex connected",
+    )?;
+
+    fs::write(&cfg, "[mcp.slugaudit]\ncommand = \"/bin/slugaudit\"\n")
+        .check("write mcp.slugaudit codex config")?;
+    ensure(
+        codex
+            .is_connected(Some(home))
+            .check("probe mcp.slugaudit")?,
+        "[mcp.slugaudit] marks codex connected",
+    )?;
+
+    fs::write(&cfg, "[broken\n").check("write malformed toml")?;
+    let failure = codex
+        .is_connected(Some(home))
+        .check_err("malformed TOML must fail probe")?;
+    ensure_eq(
+        &failure.source.kind(),
+        &std::io::ErrorKind::InvalidData,
+        "malformed TOML reports InvalidData",
+    )?;
+    Ok(())
+}
+
 #[path = "binary_tests.rs"]
 mod binary_tests;
 

@@ -4,13 +4,16 @@ use crate::model::{
 };
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
-fn extract_rust_evidence(source: &str) -> TestResult<Vec<EvidenceItem>> {
+pub(super) fn extract_rust_evidence(source: &str) -> TestResult<Vec<EvidenceItem>> {
     let (items, truncated) = extract("rust", source).check("extract rust evidence")?;
     ensure(!truncated, "fixture extraction must not truncate")?;
     Ok(items)
 }
 
-fn find_structure<'a>(items: &'a [EvidenceItem], name: &str) -> TestResult<&'a StructurePayload> {
+pub(super) fn find_structure<'a>(
+    items: &'a [EvidenceItem],
+    name: &str,
+) -> TestResult<&'a StructurePayload> {
     items
         .iter()
         .find_map(|item| match &item.payload {
@@ -203,47 +206,6 @@ fn rust_statics_surface_with_visibility_type_annotation_and_doc() -> TestResult 
     ensure_eq(&mutable.kind.as_str(), &"Variable", "static mut kind")?;
     ensure_eq(&mutable.visibility, &None, "private static mut vis")?;
     ensure_eq(&mutable.type_annotation.as_deref(), &Some("usize"), "ty")?;
-    Ok(())
-}
-
-#[test]
-fn rust_destructuring_let_and_parameters_extract_every_bound_identifier_and_types() -> TestResult {
-    let source = concat!(
-        "struct Pair { x: i32, y: i32 }\n",
-        "fn unpack(&self, (left, right): (u32, &str), Pair { x, y: renamed }: Pair) {\n",
-        "    let (first, mut second): (usize, String) = make_pair();\n",
-        "    let Pair { x: px, y } = build();\n",
-        "    let Some(unwrapped) = maybe_val else { return; };\n",
-        "    let _ = ignored_rhs_ident;\n",
-        "}\n",
-    );
-    let items = extract_rust_evidence(source)?;
-    let vars: Vec<(&str, Option<&str>)> = items
-        .iter()
-        .filter(|item| item.origin == EvidenceOrigin::GenericWalker)
-        .filter_map(|item| match &item.payload {
-            EvidencePayload::Symbol(s) if s.kind == "Variable" => {
-                Some((s.name.as_str(), s.type_annotation.as_deref()))
-            }
-            _ => None,
-        })
-        .collect();
-
-    ensure_eq(
-        &vars,
-        &vec![
-            ("left", Some("(u32, &str)")),
-            ("right", Some("(u32, &str)")),
-            ("x", Some("Pair")),
-            ("renamed", Some("Pair")),
-            ("first", Some("(usize, String)")),
-            ("second", Some("(usize, String)")),
-            ("px", None),
-            ("y", None),
-            ("unwrapped", None),
-        ],
-        "every destructured identifier is extracted without struct types, field labels, or wildcard RHS",
-    )?;
     Ok(())
 }
 

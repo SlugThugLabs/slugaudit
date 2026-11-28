@@ -117,6 +117,10 @@ pub enum PageLimit {
     /// matches were dropped (`completeness` is `partial`). Narrow the Tree-sitter
     /// pattern so no match states overflow.
     QueryMatchLimit,
+    /// `structure` only: one or more matching files exceeded `max_parse_bytes`
+    /// (`files_over_parse_limit` > 0) or produced no syntax tree
+    /// (`unparsed_files` non-empty).
+    ParseSkipped,
 }
 
 /// Whether the scan behind a stored result covered everything it set out to.
@@ -130,9 +134,11 @@ pub enum Completeness {
     /// after `resume_after_file`.
     Partial {
         /// The bound that made the scan partial (`scan_window`, `time_budget`,
-        /// or `query_match_limit`).
+        /// `query_match_limit`, or `parse_skipped`).
         limited_by: PageLimit,
-        /// The last file fully scanned without overflow; the new request resumes after it.
+        /// For `structure`, the last file scanned without overflow to pass as
+        /// `start_after_file`; `null` when the tool has no file-resume
+        /// parameter or no further files remain.
         resume_after_file: Option<String>,
         /// Files scanned cleanly before the scan stopped or overflowed.
         files_scanned: u64,

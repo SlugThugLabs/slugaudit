@@ -87,3 +87,60 @@ fn structure_on_a_prose_file_is_refused_as_not_parsed() -> TestResult {
     assert_prose_refusal(&error)?;
     Ok(())
 }
+
+#[test]
+fn structure_on_a_prose_file_with_explicit_code_language_is_refused_as_not_parsed() -> TestResult {
+    let project = activated_project("a.md", b"# title\n")?;
+    let error = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: Some("a.md".to_owned()),
+            language: Some("rust".to_owned()),
+            query: "(source_file) @s".to_owned(),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .check("prose file must be refused even with an explicit code language")?;
+    assert_prose_refusal(&error)?;
+    Ok(())
+}
+
+#[test]
+fn structure_with_both_file_and_pattern_is_refused_as_invalid_input() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
+    let error = structure(
+        &Parameters(StructureRequest {
+            path: project.path().to_string_lossy().into_owned(),
+            file: Some("lib.rs".to_owned()),
+            pattern: Some("*.rs".to_owned()),
+            query: "(identifier) @name".to_owned(),
+            ..Default::default()
+        }),
+        &crate::progress::NoopProgressSink,
+        &crate::sync::SourceSyncManager::default(),
+    )
+    .err()
+    .check("file and pattern together must be refused")?;
+    ensure_eq(
+        &error.code,
+        &rmcp::model::ErrorCode::INVALID_PARAMS,
+        "error.code == INVALID_PARAMS",
+    )?;
+    ensure_eq(
+        &error
+            .data
+            .as_ref()
+            .and_then(|d| d.get("code"))
+            .and_then(serde_json::Value::as_str),
+        &Some("invalid_input"),
+        "error carries invalid_input code",
+    )?;
+    ensure(
+        error.message.contains("pattern"),
+        format!("error message should mention pattern: {}", error.message),
+    )?;
+    Ok(())
+}

@@ -102,8 +102,8 @@ fn rust_self_is_a_low_confidence_heuristic() -> TestResult {
     )?;
     ensure_eq(
         &result.to_relative_path.as_deref(),
-        &Some("src/a/sibling.rs"),
-        "result.to_relative_path.as_deref() == Some(\"src/a/sibling.rs\")",
+        &Some("src/a/b.rs"),
+        "self::sibling in non-mod.rs file must not resolve to sibling file",
     )?;
     Ok(())
 }
@@ -542,5 +542,267 @@ fn rust_crate_shortened_prefix_stamps_low_confidence_while_exact_module_stamps_h
         &(Some("src/a.rs"), Some("Low")),
         "multi-segment shortening crate::a::missing::Item carries Low confidence",
     )?;
+    Ok(())
+}
+
+#[test]
+fn rust_self_in_dual_lib_main_and_sibling_files_never_crosses_modules() -> TestResult {
+    let known = paths(&["src/lib.rs", "src/main.rs", "src/a.rs", "src/sibling.rs"]);
+
+    let main_item = RustResolver.resolve(&refer("self::Item"), "src/main.rs", &known);
+    ensure_eq(
+        &(main_item.to_relative_path.as_deref(), main_item.confidence),
+        &(Some("src/main.rs"), Some("Low")),
+        "self::Item in src/main.rs resolves to src/main.rs, not src/lib.rs",
+    )?;
+
+    let main_bare = RustResolver.resolve(&refer("self"), "src/main.rs", &known);
+    ensure_eq(
+        &(main_bare.to_relative_path.as_deref(), main_bare.confidence),
+        &(Some("src/main.rs"), Some("High")),
+        "bare self in src/main.rs resolves to src/main.rs with High confidence",
+    )?;
+
+    let main_glob = RustResolver.resolve(&refer("self::*"), "src/main.rs", &known);
+    ensure_eq(
+        &(main_glob.to_relative_path.as_deref(), main_glob.confidence),
+        &(Some("src/main.rs"), Some("High")),
+        "self::* in src/main.rs resolves to src/main.rs with High confidence",
+    )?;
+
+    let a_self = RustResolver.resolve(&refer("self::sibling"), "src/a.rs", &known);
+    ensure_eq(
+        &(a_self.to_relative_path.as_deref(), a_self.confidence),
+        &(Some("src/a.rs"), Some("Low")),
+        "self::sibling in src/a.rs never resolves to sibling src/sibling.rs",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn extern_crate_statements_resolve_without_syntax_unmodeled() -> TestResult {
+    use crate::graph::{WorkspaceCrates, build_workspace_crates, resolve_imports_full};
+    use slugaudit_test_check::Check;
+
+    let known = paths(&[
+        "Cargo.toml",
+        "src/lib.rs",
+        "crates/my_crate/Cargo.toml",
+        "crates/my_crate/src/lib.rs",
+    ]);
+    let ws_crates = build_workspace_crates(
+        [
+            ("Cargo.toml", "[package]\nname = \"root\"\n"),
+            (
+                "crates/my_crate/Cargo.toml",
+                "[package]\nname = \"my-crate\"\n",
+            ),
+        ],
+        &known,
+    );
+    let edges = resolve_imports_full(
+        "rust",
+        "src/lib.rs",
+        &[
+            "extern crate alloc;".to_owned(),
+            "extern crate my_crate as mc;".to_owned(),
+            "extern crate self as my_self;".to_owned(),
+        ],
+        &known,
+        &RustModuleParents::new(),
+        &ws_crates,
+    );
+    ensure_eq(
+        &edges.len(),
+        &2,
+        "extern crate self emits 0 edges while alloc and my_crate emit 2 edges",
+    )?;
+
+    let alloc_edge = edges.first().check("missing alloc edge")?;
+    ensure_eq(
+        &(alloc_edge.resolution_kind, alloc_edge.syntax_unmodeled),
+        &("External", false),
+        "extern crate alloc; is External and modeled",
+    )?;
+
+    let ws_edge = edges.get(1).check("missing my_crate edge")?;
+    ensure_eq(
+        &(
+            ws_edge.resolution_kind,
+            ws_edge.to_relative_path.as_deref(),
+            ws_edge.confidence,
+            ws_edge.syntax_unmodeled,
+        ),
+        &(
+            "Resolved",
+            Some("crates/my_crate/src/lib.rs"),
+            Some("High"),
+            false,
+        ),
+        "extern crate my_crate as mc; resolves to workspace crate lib.rs",
+    )?;
+
+    let empty_ws_edges = resolve_imports_full(
+        "rust",
+        "src/lib.rs",
+        &["extern crate self as my_self;".to_owned()],
+        &known,
+        &RustModuleParents::new(),
+        &WorkspaceCrates::new(),
+    );
+    ensure(
+        empty_ws_edges.is_empty(),
+        "extern crate self emits no edges and is not flagged syntax_unmodeled",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn custom_test_targets_resolve_crate_helper_crate_root_item_and_super_root_item() -> TestResult {
+    use crate::graph::build_workspace_crates;
+
+    let known = paths(&[
+        "Cargo.toml",
+        "src/lib.rs",
+        "src/helper.rs",
+        "custom_tests/it_entry.rs",
+        "custom_tests/helper.rs",
+        "tests/helper.rs",
+        "tests/group/it.rs",
+        "tests/group/helper.rs",
+    ]);
+    let ws = build_workspace_crates(
+        [(
+            "Cargo.toml",
+            "[package]\nname = \"app\"\n\
+             [[test]]\nname = \"custom\"\npath = \"custom_tests/it_entry.rs\"\n\
+             [[test]]\nname = \"group\"\npath = \"tests/group/it.rs\"\n",
+        )],
+        &known,
+    );
+    let parents = RustModuleParents::new();
+
+    for (from, spec, want) in [
+        (
+            "custom_tests/it_entry.rs",
+            "crate::helper",
+            "custom_tests/helper.rs",
+        ),
+        (
+            "custom_tests/helper.rs",
+            "crate::helper",
+            "custom_tests/helper.rs",
+        ),
+        (
+            "custom_tests/helper.rs",
+            "crate::RootItem",
+            "custom_tests/it_entry.rs",
+        ),
+        (
+            "custom_tests/helper.rs",
+            "super::RootItem",
+            "custom_tests/it_entry.rs",
+        ),
+        (
+            "tests/group/it.rs",
+            "crate::helper",
+            "tests/group/helper.rs",
+        ),
+        (
+            "tests/group/helper.rs",
+            "crate::helper",
+            "tests/group/helper.rs",
+        ),
+        (
+            "tests/group/helper.rs",
+            "crate::RootItem",
+            "tests/group/it.rs",
+        ),
+        (
+            "tests/group/helper.rs",
+            "super::RootItem",
+            "tests/group/it.rs",
+        ),
+    ] {
+        let res = RustResolver.resolve_with_rust_context(&refer(spec), from, &known, &parents, &ws);
+        ensure_eq(
+            &res.to_relative_path.as_deref(),
+            &Some(want),
+            format!("{from} resolves {spec} to {want}"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn rust_inline_mod_import_resolution_handles_super_self_and_local_paths() -> TestResult {
+    let known = paths(&[
+        "Cargo.toml",
+        "src/lib.rs",
+        "src/helper.rs",
+        "src/sub.rs",
+        "src/foo.rs",
+        "src/foo/sub.rs",
+        "src/foo/inner/sub.rs",
+    ]);
+    let parents = RustModuleParents::new();
+    let ws = WorkspaceCrates::new();
+    let tests_mod = vec!["tests".to_owned()];
+    let inner_mod = vec!["inner".to_owned()];
+
+    for (from, inline, spec, want_path, want_conf) in [
+        ("src/lib.rs", &tests_mod, "super::*", "src/lib.rs", "High"),
+        (
+            "src/lib.rs",
+            &tests_mod,
+            "super::helper::X",
+            "src/helper.rs",
+            "Low",
+        ),
+        ("src/lib.rs", &tests_mod, "super::sub", "src/sub.rs", "High"),
+        ("src/foo.rs", &tests_mod, "super::*", "src/foo.rs", "High"),
+        (
+            "src/foo.rs",
+            &tests_mod,
+            "super::sub::Item",
+            "src/foo/sub.rs",
+            "Low",
+        ),
+        (
+            "src/foo.rs",
+            &tests_mod,
+            "super::super::Bar",
+            "src/lib.rs",
+            "Low",
+        ),
+        (
+            "src/foo.rs",
+            &inner_mod,
+            "self::sub::Thing",
+            "src/foo/inner/sub.rs",
+            "Low",
+        ),
+        (
+            "src/foo.rs",
+            &inner_mod,
+            "sub::Thing",
+            "src/foo/inner/sub.rs",
+            "Low",
+        ),
+    ] {
+        let res = RustResolver::resolve_in_inline_scope(
+            &refer(spec),
+            from,
+            inline,
+            &known,
+            &parents,
+            &ws,
+        );
+        ensure_eq(
+            &(res.kind, res.to_relative_path.as_deref(), res.confidence),
+            &(ResolutionKind::Resolved, Some(want_path), Some(want_conf)),
+            format!("{from} ({inline:?}): {spec} -> {want_path} ({want_conf})"),
+        )?;
+    }
     Ok(())
 }

@@ -5,15 +5,25 @@ use super::WorkspaceCrates;
 use super::resolver::{
     KnownPaths, Resolution, ResolutionKind, normalize_join, parent_dir, pick, unresolved,
 };
-use super::rust_crate_anchor::is_non_stem_crate_root;
+use super::rust_package_root::is_non_stem_crate_root;
 use std::path::Path;
 
 /// File stems that mean "this file *is* its module" rather than "this file
 /// *defines* a child module named after itself".
 const RUST_MODULE_ROOT_STEMS: [&str; 3] = ["mod", "lib", "main"];
 
+/// Joins a relative directory path and a file or subdirectory name with `/`,
+/// omitting the separator when `dir` is empty.
+pub(crate) fn join_dir_file(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
 /// The file stem, or the empty string for a path with none (`..`, `/`).
-pub(super) fn file_stem(relative_path: &str) -> String {
+pub(crate) fn file_stem(relative_path: &str) -> String {
     match Path::new(relative_path).file_stem() {
         Some(stem) => stem.to_string_lossy().into_owned(),
         None => String::new(),
@@ -22,15 +32,13 @@ pub(super) fn file_stem(relative_path: &str) -> String {
 
 /// Syntactic module directory based on stem alone (`mod.rs`, `lib.rs`, `main.rs`
 /// own `parent_dir`; other `.rs` files own `<parent>/<stem>`).
-pub(super) fn rust_module_dir(relative_path: &str) -> String {
+pub(crate) fn rust_module_dir(relative_path: &str) -> String {
     let parent = parent_dir(relative_path);
     let stem = file_stem(relative_path);
     if RUST_MODULE_ROOT_STEMS.contains(&stem.as_str()) {
         parent
-    } else if parent.is_empty() {
-        stem
     } else {
-        format!("{parent}/{stem}")
+        join_dir_file(&parent, &stem)
     }
 }
 
@@ -61,7 +69,7 @@ fn split_glob_suffix(specifier: &str) -> Option<&str> {
 
 /// Strips a trailing glob (`::*`) off a use path, leaving the module path
 /// it globs over.
-pub(super) fn strip_trailing_glob(rest: &str) -> &str {
+pub(crate) fn strip_trailing_glob(rest: &str) -> &str {
     let base = match split_glob_suffix(rest) {
         Some(prefix) => prefix,
         None => rest.trim(),
@@ -71,21 +79,32 @@ pub(super) fn strip_trailing_glob(rest: &str) -> &str {
 
 /// The file that *defines* the module owning `dir` — `dir.rs` or
 /// `dir/mod.rs` for an ordinary module, or the crate root (`lib.rs`/
-/// `main.rs`) when `dir` is a crate's `src`.
+/// `main.rs`, or a declared `[lib].path` / `[[bin]].path` whose `parent_dir`
+/// equals `dir`).
 pub(super) fn resolve_rust_module_file(
     dir: &str,
     known_paths: &dyn KnownPaths,
     forced_confidence: Option<&'static str>,
+    workspace_crates: &WorkspaceCrates,
 ) -> Resolution {
-    if dir.is_empty() {
+    let mut candidates = if dir.is_empty() {
+        Vec::new()
+    } else {
+        vec![
+            format!("{dir}.rs"),
+            format!("{dir}/mod.rs"),
+            format!("{dir}/lib.rs"),
+            format!("{dir}/main.rs"),
+        ]
+    };
+    for root in workspace_crates.crate_roots_in_dir(dir) {
+        if !candidates.iter().any(|candidate| candidate == root) {
+            candidates.push(root.to_owned());
+        }
+    }
+    if candidates.is_empty() {
         return unresolved();
     }
-    let candidates = vec![
-        format!("{dir}.rs"),
-        format!("{dir}/mod.rs"),
-        format!("{dir}/lib.rs"),
-        format!("{dir}/main.rs"),
-    ];
     let resolution = pick(&candidates, known_paths);
     match (resolution.kind, forced_confidence) {
         (ResolutionKind::Resolved, Some(confidence)) => Resolution {
@@ -104,10 +123,16 @@ pub(super) fn resolve_rust_from_base(
     base_dir: &str,
     known_paths: &dyn KnownPaths,
     forced_confidence: Option<&'static str>,
+    workspace_crates: &WorkspaceCrates,
 ) -> Resolution {
     let segments = strip_trailing_glob(rest);
     if segments.is_empty() {
-        return resolve_rust_module_file(base_dir, known_paths, forced_confidence);
+        return resolve_rust_module_file(
+            base_dir,
+            known_paths,
+            forced_confidence,
+            workspace_crates,
+        );
     }
     resolve_rust_path_inner(
         segments,
@@ -136,13 +161,16 @@ pub(super) fn first_resolved(
     rest: &str,
     bases: &[String],
     known_paths: &dyn KnownPaths,
+    workspace_crates: &WorkspaceCrates,
 ) -> Resolution {
     for base in bases {
-        let resolution = resolve_rust_from_base(rest, base, known_paths, Some("Low"));
+        let resolution =
+            resolve_rust_from_base(rest, base, known_paths, Some("Low"), workspace_crates);
         if resolution.kind == ResolutionKind::Resolved {
             return resolution;
         }
-        let module_file = resolve_rust_module_file(base, known_paths, Some("Low"));
+        let module_file =
+            resolve_rust_module_file(base, known_paths, Some("Low"), workspace_crates);
         if module_file.kind == ResolutionKind::Resolved {
             return module_file;
         }

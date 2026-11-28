@@ -24,6 +24,7 @@
 //! cargo test --test large_repo_soak -- --ignored --nocapture
 //! ```
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -37,9 +38,6 @@ use slugaudit_mcp_rust::store::{open_existing, open_read_write};
 use slugaudit_mcp_rust::sync::{SourceSyncManager, SyncedProject, publish};
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq, ensure_ne};
 use tempfile::TempDir;
-
-/// Files the soak project contains (~10k).
-const SOAK_FILES: usize = 10_000;
 
 /// Files the default-suite companion project contains: enough to walk,
 /// hash, parse, publish, and verify multiple module directories quickly.
@@ -55,6 +53,7 @@ struct SoakFixture<'a> {
     root: &'a Path,
     project_path: &'a str,
     files: usize,
+    directories: usize,
     budget: Duration,
     warm_budget: Duration,
     incremental_budget: Duration,
@@ -71,8 +70,9 @@ fn activated_project() -> TestResult<TempDir> {
 }
 
 /// Writes `files` small but genuinely parseable Rust modules spread over
-/// `directories` directories, and returns their project-relative, sorted
-/// paths.
+/// `directories` directories, with each `mod.rs` declaring its submodules and
+/// each submodule importing `super::Record{directory}_0`, and returns their
+/// project-relative, sorted paths.
 fn write_synthetic_project(
     root: &Path,
     files: usize,
@@ -95,11 +95,42 @@ fn write_synthetic_project(
         let relative_directory = format!("src/mod_{directory:03}");
         fs::create_dir_all(root.join(&relative_directory))
             .check("create synthetic module directory")?;
-        for file in 0..files_per_directory {
+
+        let mut mod_decls = String::new();
+        for file in 1..files_per_directory {
+            writeln!(mod_decls, "pub mod file_{file:03};").check("format mod declaration")?;
+        }
+        let mod_relative = format!("{relative_directory}/mod.rs");
+        let mod_source = format!(
+            "//! Synthetic module {directory}/0.\n\
+             use std::collections::HashMap;\n\
+             \n\
+             {mod_decls}\
+             pub struct Record{directory}_0 {{\n\
+             \x20   pub id: u64,\n\
+             \x20   pub labels: HashMap<String, u64>,\n\
+             }}\n\
+             \n\
+             impl Record{directory}_0 {{\n\
+             \x20   pub fn score(&self, seed: u64) -> u64 {{\n\
+             \x20       seed.wrapping_mul({multiplier})\n\
+             \x20           .wrapping_add(self.labels.len() as u64)\n\
+             \x20   }}\n\
+             }}\n\
+             \n\
+             pub fn entry_{directory}_0(seed: u64) -> Record{directory}_0 {{\n\
+             \x20   Record{directory}_0 {{ id: seed, labels: HashMap::new() }}\n\
+             }}\n"
+        );
+        fs::write(root.join(&mod_relative), mod_source).check("write synthetic mod.rs file")?;
+        expected.push(mod_relative);
+
+        for file in 1..files_per_directory {
             let relative = format!("{relative_directory}/file_{file:03}.rs");
             let source = format!(
                 "//! Synthetic module {directory}/{file}.\n\
                  use std::collections::HashMap;\n\
+                 use super::Record{directory}_0;\n\
                  \n\
                  pub struct Record{directory}_{file} {{\n\
                  \x20   pub id: u64,\n\
@@ -115,6 +146,10 @@ fn write_synthetic_project(
                  \n\
                  pub fn entry_{directory}_{file}(seed: u64) -> Record{directory}_{file} {{\n\
                  \x20   Record{directory}_{file} {{ id: seed, labels: HashMap::new() }}\n\
+                 }}\n\
+                 \n\
+                 pub fn parent_record_{directory}_{file}(seed: u64) -> Record{directory}_0 {{\n\
+                 \x20   Record{directory}_0 {{ id: seed, labels: HashMap::new() }}\n\
                  }}\n"
             );
             fs::write(root.join(&relative), source).check("write synthetic source file")?;
@@ -201,6 +236,18 @@ fn verify_cold_sync(
         &stored_paths(&connection)?.as_slice(),
         &expected,
         "the stored path set matches the fixture's file set",
+    )?;
+    // KEEP saturating: floor clamps to 0 if directories exceeds files
+    let min_resolved_edges = fixture.files.saturating_sub(fixture.directories);
+    let resolved_edges = count(
+        &connection,
+        "SELECT COUNT(*) FROM dependency_edges WHERE resolution_kind = 'Resolved'",
+    )?;
+    ensure(
+        resolved_edges >= min_resolved_edges,
+        format!(
+            "expected at least {min_resolved_edges} Resolved dependency_edges rows, got {resolved_edges}"
+        ),
     )?;
     Ok((synced, cold_elapsed))
 }
@@ -293,11 +340,13 @@ fn append_incremental_probe(root: &Path, edited_relative: &str) -> TestResult {
     edited_file.flush().check("flush edited fixture file")
 }
 
-/// Verifies the SQLite `files` table holds `files` rows and the updated text of
-/// `edited_relative` after an incremental publish.
+/// Verifies the SQLite `files` table holds `files` rows, the updated text of
+/// `edited_relative`, and at least `min_resolved_edges` `Resolved` dependency
+/// edges after an incremental publish.
 fn verify_edited_file_in_store(
     database_path: &Path,
     files: usize,
+    min_resolved_edges: usize,
     edited_relative: &str,
 ) -> TestResult {
     let connection = open_existing(database_path).check("reopen published database after edit")?;
@@ -305,6 +354,16 @@ fn verify_edited_file_in_store(
         &count(&connection, "SELECT COUNT(*) FROM files")?,
         &files,
         "file count remains exact after single-file edit",
+    )?;
+    let resolved_edges = count(
+        &connection,
+        "SELECT COUNT(*) FROM dependency_edges WHERE resolution_kind = 'Resolved'",
+    )?;
+    ensure(
+        resolved_edges >= min_resolved_edges,
+        format!(
+            "expected at least {min_resolved_edges} Resolved dependency_edges rows after incremental edit, got {resolved_edges}"
+        ),
     )?;
     let stored_edited_content: String = connection
         .query_row(
@@ -390,7 +449,14 @@ fn verify_single_file_edit_sync(
         &edit_report.revision_id,
         "ensure_current observes the incremental edit's revision without extra churn",
     )?;
-    verify_edited_file_in_store(&synced.database_path, fixture.files, edited_relative)?;
+    // KEEP saturating: floor clamps to 0 if directories exceeds files
+    let min_resolved_edges = fixture.files.saturating_sub(fixture.directories);
+    verify_edited_file_in_store(
+        &synced.database_path,
+        fixture.files,
+        min_resolved_edges,
+        edited_relative,
+    )?;
     Ok((edit_report.revision_id, edit_elapsed))
 }
 
@@ -424,6 +490,7 @@ fn sync_synthetic_project(files: usize, directories: usize) -> TestResult {
         root: project.path(),
         project_path: &project_path,
         files,
+        directories,
         budget,
         warm_budget: budget.min(warm_cap),
         incremental_budget: budget.min(incremental_cap),
@@ -493,10 +560,10 @@ fn a_sixty_four_file_project_syncs_inside_the_default_wall_clock_budget() -> Tes
     sync_synthetic_project(COMPANION_FILES, 8)
 }
 
-/// The 10k-file soak. Deliberately `#[ignore]`d so the full import runs on
-/// demand rather than on every push.
+/// The 10k-file soak: cold import, warm unchanged-tree check, and
+/// single-file incremental edit, run on demand with `--ignored`.
 #[test]
-#[ignore = "10k-file soak; run on demand with `cargo test --test large_repo_soak -- --ignored --nocapture`"]
+#[ignore = "on-demand 10k-file soak; run with --ignored"]
 fn a_ten_thousand_file_project_syncs_inside_the_default_wall_clock_budget() -> TestResult {
-    sync_synthetic_project(SOAK_FILES, 100)
+    sync_synthetic_project(10_000, 100)
 }

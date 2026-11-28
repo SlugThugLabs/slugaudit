@@ -305,8 +305,7 @@ fn same_file_dedup_prefers_higher_confidence() -> TestResult {
 }
 
 #[test]
-fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_idents() -> TestResult
-{
+fn resolve_rust_mod_declaration_handles_files_mod_rs_and_path_attrs() -> TestResult {
     let known = paths(&[
         "src/lib.rs",
         "src/foo.rs",
@@ -314,12 +313,10 @@ fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_id
         "src/foo/a/b.rs",
         "src/foo_tests.rs",
         "src/foo/inner/x.rs",
-        "src/type.rs",
-        "benches/discovery.rs",
-        "benches/common/mod.rs",
     ]);
 
-    let file_edge = resolve_rust_mod_declaration("src/lib.rs", "foo", None, &[], &known);
+    let empty = WorkspaceCrates::new();
+    let file_edge = resolve_rust_mod_declaration("src/lib.rs", "foo", None, &[], &known, &empty);
     ensure_eq(
         &file_edge,
         &ResolvedEdge {
@@ -332,7 +329,7 @@ fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_id
         "mod foo; in src/lib.rs resolves to src/foo.rs",
     )?;
 
-    let dir_edge = resolve_rust_mod_declaration("src/lib.rs", "bar", None, &[], &known);
+    let dir_edge = resolve_rust_mod_declaration("src/lib.rs", "bar", None, &[], &known, &empty);
     ensure_eq(
         &dir_edge.to_relative_path.as_deref(),
         &Some("src/bar/mod.rs"),
@@ -340,15 +337,21 @@ fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_id
     )?;
 
     let nested_inline =
-        resolve_rust_mod_declaration("src/foo.rs", "b", None, &["a".to_owned()], &known);
+        resolve_rust_mod_declaration("src/foo.rs", "b", None, &["a".to_owned()], &known, &empty);
     ensure_eq(
         &nested_inline.to_relative_path.as_deref(),
         &Some("src/foo/a/b.rs"),
         "nested inline mod a { mod b; } in src/foo.rs resolves to src/foo/a/b.rs",
     )?;
 
-    let sibling_path_attr =
-        resolve_rust_mod_declaration("src/foo.rs", "tests", Some("foo_tests.rs"), &[], &known);
+    let sibling_path_attr = resolve_rust_mod_declaration(
+        "src/foo.rs",
+        "tests",
+        Some("foo_tests.rs"),
+        &[],
+        &known,
+        &empty,
+    );
     ensure_eq(
         &sibling_path_attr.to_relative_path.as_deref(),
         &Some("src/foo_tests.rs"),
@@ -361,14 +364,28 @@ fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_id
         Some("x.rs"),
         &["inner".to_owned()],
         &known,
+        &empty,
     );
     ensure_eq(
         &inline_path_attr.to_relative_path.as_deref(),
         &Some("src/foo/inner/x.rs"),
         "inline mod inner { #[path = \"x.rs\"] mod y; } in src/foo.rs resolves under src/foo/inner/",
     )?;
+    Ok(())
+}
 
-    let raw_ident = resolve_rust_mod_declaration("src/lib.rs", "r#type", None, &[], &known);
+#[test]
+fn resolve_rust_mod_declaration_handles_raw_idents_benches_missing_and_ambiguous_targets()
+-> TestResult {
+    let known = paths(&[
+        "src/lib.rs",
+        "src/type.rs",
+        "benches/discovery.rs",
+        "benches/common/mod.rs",
+    ]);
+    let empty = WorkspaceCrates::new();
+
+    let raw_ident = resolve_rust_mod_declaration("src/lib.rs", "r#type", None, &[], &known, &empty);
     ensure_eq(
         &raw_ident,
         &ResolvedEdge {
@@ -382,14 +399,15 @@ fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_id
     )?;
 
     let shared_bench =
-        resolve_rust_mod_declaration("benches/discovery.rs", "common", None, &[], &known);
+        resolve_rust_mod_declaration("benches/discovery.rs", "common", None, &[], &known, &empty);
     ensure_eq(
         &shared_bench.to_relative_path.as_deref(),
         &Some("benches/common/mod.rs"),
         "mod common; in benches/discovery.rs resolves shared benches/common/mod.rs",
     )?;
 
-    let missing = resolve_rust_mod_declaration("src/lib.rs", "nonexistent", None, &[], &known);
+    let missing =
+        resolve_rust_mod_declaration("src/lib.rs", "nonexistent", None, &[], &known, &empty);
     ensure_eq(
         &missing,
         &ResolvedEdge {
@@ -403,7 +421,8 @@ fn resolve_rust_mod_declaration_handles_files_mod_rs_inline_path_attr_and_raw_id
     )?;
 
     let dual_known = paths(&["src/lib.rs", "src/foo.rs", "src/foo/mod.rs"]);
-    let dual_edge = resolve_rust_mod_declaration("src/lib.rs", "foo", None, &[], &dual_known);
+    let dual_edge =
+        resolve_rust_mod_declaration("src/lib.rs", "foo", None, &[], &dual_known, &empty);
     ensure_eq(
         &(
             dual_edge.resolution_kind,

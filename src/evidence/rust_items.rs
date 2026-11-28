@@ -3,10 +3,12 @@
 //! `Symbol`, `Import`, `Comment`, and `Diagnostic` evidence.
 
 use super::rust_bindings::{emit_rust_binding_node, slice_field};
+use super::rust_comment::classify_rust_comment;
 use super::rust_doc::{
-    NodeMeta, SiblingTracker, classify_rust_comment, content_end_row, rust_visibility,
+    NodeMeta, SiblingTracker, content_end_row, declaration_start_node, is_rust_comment_kind,
 };
 use super::rust_mod_paths::{InlineModStack, ModItemDisposition};
+use super::rust_visibility::rust_visibility;
 use super::{Extraction, WalkInput, node_span, node_text, reverse_from};
 use crate::model::{
     CommentPayload, DiagnosticPayload, EvidenceItem, EvidenceKind, EvidenceOrigin, EvidencePayload,
@@ -140,6 +142,37 @@ fn child_scope_for(node: Node<'_>, current: EnclosingScope) -> EnclosingScope {
     }
 }
 
+fn is_attribute_container(kind: &str) -> bool {
+    matches!(
+        kind,
+        "source_file"
+            | "declaration_list"
+            | "block"
+            | "field_declaration_list"
+            | "ordered_field_declaration_list"
+            | "enum_variant_list"
+            | "struct_pattern"
+            | "type_parameters"
+            | "array_expression"
+            | "tuple_expression"
+            | "ERROR"
+    )
+}
+
+pub(super) fn declaration_span(
+    node: Node<'_>,
+    lines: &crate::model::LineIndex<'_>,
+    context: &'static str,
+) -> Result<crate::model::SpanAvailability, PositionOverflow> {
+    let start = declaration_start_node(node);
+    super::range_span(
+        (start.start_byte(), node.end_byte()),
+        (start.start_position().row, node.end_position().row),
+        lines,
+        context,
+    )
+}
+
 fn push_node_children<'tree>(
     pending: &mut Vec<Step<'tree>>,
     node: Node<'tree>,
@@ -149,13 +182,46 @@ fn push_node_children<'tree>(
     out: &mut Extraction,
     counters: &mut Counters,
 ) -> Result<(), PositionOverflow> {
-    let mut named_kids: Vec<Node<'tree>> = Vec::new();
+    let first = pending.len();
+    let mut tracker = SiblingTracker::default();
     let mut cursor = node.walk();
     if cursor.goto_first_child() {
         loop {
             let child = cursor.node();
             if child.is_named() {
-                named_kids.push(child);
+                if is_rust_comment_kind(child.kind()) {
+                    let next_sibling = child.next_named_sibling().or_else(|| {
+                        (node.kind() == "attributes")
+                            .then(|| {
+                                let parent = node.parent()?;
+                                if is_attribute_container(parent.kind()) {
+                                    node.next_named_sibling()
+                                } else {
+                                    Some(parent)
+                                }
+                            })
+                            .flatten()
+                    });
+                    emit_comment(child, next_sibling, input, out, counters)?;
+                    let _step = tracker.step(child, input.source, out);
+                } else if child.kind() == "attributes" {
+                    if is_attribute_container(node.kind()) {
+                        tracker.push_attributes_node(child, input.source, out);
+                    }
+                    pending.push(Step::Visit {
+                        node: child,
+                        depth: child_depth,
+                        scope: child_scope,
+                        meta: NodeMeta::default(),
+                    });
+                } else if let Some(meta) = tracker.step(child, input.source, out) {
+                    pending.push(Step::Visit {
+                        node: child,
+                        depth: child_depth,
+                        scope: child_scope,
+                        meta,
+                    });
+                }
             } else if child.is_missing() {
                 emit_diagnostic(child, input, out, counters)?;
             }
@@ -163,26 +229,6 @@ fn push_node_children<'tree>(
                 break;
             }
         }
-    }
-
-    let first = pending.len();
-    let mut tracker = SiblingTracker::default();
-    for (idx, &child) in named_kids.iter().enumerate() {
-        if matches!(child.kind(), "line_comment" | "block_comment") {
-            let next_sibling = idx.checked_add(1).and_then(|n| named_kids.get(n)).copied();
-            emit_comment(child, next_sibling, input, out, counters)?;
-            let _step = tracker.step(child, input.source, out);
-            continue;
-        }
-        let Some(meta) = tracker.step(child, input.source, out) else {
-            continue;
-        };
-        pending.push(Step::Visit {
-            node: child,
-            depth: child_depth,
-            scope: child_scope,
-            meta,
-        });
     }
     reverse_from(pending, first);
     Ok(())
@@ -227,11 +273,13 @@ fn emit_item_evidence<'tree>(
             Ok(false)
         }
         "mod_item" => emit_mod_item(node, meta, inline_mods, input, out, counters),
-        "macro_definition" => emit_callable_item(node, "Macro", meta, input, out, counters),
+        "macro_definition" | "macro_definition_v2" => {
+            emit_callable_item(node, "Macro", meta, input, out, counters)
+        }
         "type_item" | "associated_type" => emit_type_item(node, meta, input, out, counters),
         "const_item" => emit_const_item(node, meta, input, out, counters),
         "use_declaration" | "extern_crate_declaration" => {
-            emit_import(node, input, out, counters)?;
+            emit_import(node, inline_mods, input, out, counters)?;
             Ok(false)
         }
         _ => Ok(false),
@@ -409,6 +457,9 @@ fn impl_name(node: Node<'_>, source: &str, out: &mut Extraction) -> Option<Strin
 fn item_signature(node: Node<'_>, source: &str, out: &mut Extraction) -> Option<String> {
     let end = if let Some(body) = node.child_by_field_name("body") {
         body.start_byte()
+    } else if node.kind() == "macro_definition_v2" {
+        node.child_by_field_name("rules")
+            .map_or_else(|| node.end_byte(), |rules| rules.start_byte())
     } else if node.kind() == "macro_definition" {
         let mut macro_end = node.end_byte();
         if let Some(pos) = macro_body_start(node) {
@@ -418,7 +469,8 @@ fn item_signature(node: Node<'_>, source: &str, out: &mut Extraction) -> Option<
     } else {
         node.end_byte()
     };
-    match node_text(source, node.start_byte(), end) {
+    let start = declaration_start_node(node).start_byte();
+    match node_text(source, start, end) {
         Ok(raw) => {
             let trimmed = if node.kind() == "function_signature_item" {
                 raw.trim_end().trim_end_matches(';').trim_end()
@@ -478,7 +530,7 @@ fn emit_structure(
         key,
         kind: EvidenceKind::Structure,
         origin: EvidenceOrigin::PackStructure,
-        span: node_span(node, input.lines, "Rust structure")?,
+        span: declaration_span(node, input.lines, "Rust structure")?,
         payload: EvidencePayload::Structure(StructurePayload {
             kind: kind.to_owned(),
             name,
@@ -515,7 +567,7 @@ fn emit_pack_symbol(
         key,
         kind: EvidenceKind::Symbol,
         origin: EvidenceOrigin::PackSymbol,
-        span: node_span(node, input.lines, "Rust symbol")?,
+        span: declaration_span(node, input.lines, "Rust symbol")?,
         payload: EvidencePayload::Symbol(SymbolPayload {
             name,
             kind: kind.to_owned(),
@@ -529,11 +581,13 @@ fn emit_pack_symbol(
 
 fn emit_import(
     node: Node<'_>,
+    inline_mods: &InlineModStack,
     input: &WalkInput<'_>,
     out: &mut Extraction,
     counters: &mut Counters,
 ) -> Result<(), PositionOverflow> {
-    let text = match node_text(input.source, node.start_byte(), node.end_byte()) {
+    let start = declaration_start_node(node).start_byte();
+    let text = match node_text(input.source, start, node.end_byte()) {
         Ok(text) => text.trim().to_owned(),
         Err(error) => {
             tracing::warn!(%error, "Rust import skipped; extraction is partial");
@@ -552,12 +606,13 @@ fn emit_import(
         key,
         kind: EvidenceKind::Import,
         origin: EvidenceOrigin::PackStructure,
-        span: node_span(node, input.lines, "Rust import")?,
+        span: declaration_span(node, input.lines, "Rust import")?,
         payload: EvidencePayload::Import(ImportPayload {
             source: text,
             items: Vec::new(),
             alias: None,
             is_wildcard,
+            inline_segments: inline_mods.segments().to_vec(),
         }),
     });
     Ok(())
@@ -601,9 +656,10 @@ fn emit_comment(
     };
     let end_row = content_end_row(node, input.source);
     let associated_node = next_sibling.and_then(|sib| {
+        let sib_row = declaration_start_node(sib).start_position().row;
         end_row
             .checked_add(1)
-            .is_some_and(|adj| sib.start_position().row <= adj)
+            .is_some_and(|adj| sib_row <= adj)
             .then(|| sib.kind().to_owned())
     });
     let comment_kind = classify_rust_comment(node.kind(), &text);
@@ -661,3 +717,15 @@ fn emit_diagnostic(
 #[cfg(test)]
 #[path = "rust_items_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "rust_items_orchard_tests.rs"]
+mod orchard_tests;
+
+#[cfg(test)]
+#[path = "rust_imports_tests.rs"]
+mod imports_tests;
+
+#[cfg(test)]
+#[path = "rust_pattern_vars_tests.rs"]
+mod pattern_vars_tests;

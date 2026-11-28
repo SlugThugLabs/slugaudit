@@ -7,7 +7,7 @@ use crate::error_codes::{ErrorCode, invalid_params_with_code};
 use crate::progress::ProgressSink;
 use crate::project::{CompiledMechanic, MAX_SESSION_MECHANICS, MechanicEntry};
 use crate::sync;
-use crate::tools::leads::{LeadMode, LeadsRequest, LeadsResponse, leads_with_catalog};
+use crate::tools::leads::{LeadMode, LeadsRequest, LeadsResponse, trial_leads_with_catalog};
 use crate::tools::page::{Completeness, PageLimit};
 use rmcp::ErrorData;
 use std::path::Path;
@@ -83,7 +83,7 @@ pub(super) fn add(
         page_bytes: request.page_bytes,
         legacy_paging: crate::tools::LegacyPaging::default(),
     };
-    let first_count = leads_with_catalog(&first, limits, &catalog, sink, manager)?;
+    let first_count = trial_leads_with_catalog(&first, limits, &catalog, sink, manager)?;
     if let Some(Completeness::Partial { limited_by, .. }) = &first_count.page.completeness {
         let reason = match limited_by {
             PageLimit::QueryMatchLimit => {
@@ -95,7 +95,8 @@ pub(super) fn add(
             | PageLimit::Limit
             | PageLimit::MatchCap
             | PageLimit::ScanWindow
-            | PageLimit::Ceiling => "stopped before every file was scanned",
+            | PageLimit::Ceiling
+            | PageLimit::ParseSkipped => "stopped before every file was scanned",
         };
         return Err(invalid_params_with_code(
             format!(
@@ -107,12 +108,37 @@ pub(super) fn add(
         ));
     }
     let id = entry.id.clone();
-    session.with_entries(project_root, |entries| {
-        check_free(entries, &entry.id)?;
-        entries.push(CompiledMechanic { entry, compiled });
-        Ok::<(), ErrorData>(())
-    })??;
+    commit_entry(manager, project_root, entry, compiled)?;
     Ok((id, MechanicSource::Session, first_count))
+}
+
+fn ensure_project_enabled(project_root: &Path) -> Result<(), ErrorData> {
+    if !project_root.join(".planning").join("slugaudit").is_dir() {
+        return Err(crate::sync::map_activation_error(
+            &crate::project::ActivationError::NotActive,
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn commit_entry(
+    manager: &sync::SourceSyncManager,
+    project_root: &Path,
+    entry: MechanicEntry,
+    compiled: Arc<tree_sitter::Query>,
+) -> Result<(), ErrorData> {
+    let sync_lock = manager.project_sync_lock(project_root)?;
+    let _sync_guard = crate::util::lock(&sync_lock, "project_sync")?;
+    ensure_project_enabled(project_root)?;
+    manager
+        .session_mechanics()
+        .with_entries(project_root, |entries| {
+            ensure_project_enabled(project_root)?;
+            check_free(entries, &entry.id)?;
+            entries.push(CompiledMechanic { entry, compiled });
+            Ok::<(), ErrorData>(())
+        })??;
+    Ok(())
 }
 
 /// Places a candidate where it will be listed: after the session entries.
@@ -127,7 +153,9 @@ fn insert_candidate(catalog: &mut Catalog, entry: MechanicEntry, query: Arc<tree
 /// Removes the session entry `id` for `project_root`. A built-in is refused.
 pub(super) fn remove(
     request: &MechanicRequest,
+    path: &str,
     project_root: &Path,
+    sink: &dyn ProgressSink,
     manager: &sync::SourceSyncManager,
 ) -> Result<(String, MechanicSource), ErrorData> {
     let id = required(request.id.as_ref(), "id", "remove")?;
@@ -137,6 +165,7 @@ pub(super) fn remove(
             ErrorCode::InvalidInput,
         ));
     }
+    crate::tools::context::ensure_synced(path, sink, manager)?;
     let unknown = || {
         invalid_params_with_code(
             format!("no registered mechanic has id `{id}`"),

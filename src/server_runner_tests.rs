@@ -309,3 +309,219 @@ async fn run_blocking_delivers_monotonic_in_order_progress_without_premature_com
     )?;
     Ok(())
 }
+
+fn parse_logged_elapsed_ms(logs: &str, tool: &str) -> TestResult<u64> {
+    let needle = format!("tool=\"{tool}\"");
+    let line = logs
+        .lines()
+        .find(|line| line.contains(&needle) && line.contains("tool call completed"))
+        .check("completion line captured")?;
+    let (_, rest) = line
+        .split_once("elapsed_ms=")
+        .check("elapsed_ms field present")?;
+    let ms_str = rest
+        .split([' ', '}', ','])
+        .next()
+        .check("elapsed_ms token")?;
+    ms_str.parse::<u64>().check("elapsed_ms parses as u64")
+}
+
+#[test]
+fn run_blocking_excludes_semaphore_permit_wait_from_elapsed_ms() -> TestResult {
+    const TOOL: &str = "probe_permit_wait_timing";
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .check("test runtime")?;
+    let wall_started = std::time::Instant::now();
+    let (result, logs) = crate::util::test_capture::capture_at_level(
+        || -> TestResult {
+            runtime.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    let semaphore = Arc::new(Semaphore::new(1));
+                    let held = Arc::clone(&semaphore)
+                        .acquire_owned()
+                        .await
+                        .check("take sole permit")?;
+                    let releaser = tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+                        drop(held);
+                    });
+                    let out = run_blocking(semaphore, TOOL, || Ok::<_, ErrorData>(()), None).await;
+                    releaser.await.check("releaser joins")?;
+                    out.check("run_blocking succeeds")
+                })
+                .await
+                .check("permit-wait test timed out")?
+            })
+        },
+        tracing::Level::INFO,
+    )?;
+    result?;
+    let wall_elapsed = wall_started.elapsed();
+    let elapsed_ms = parse_logged_elapsed_ms(&logs, TOOL)?;
+    ensure(
+        wall_elapsed >= std::time::Duration::from_millis(100),
+        format!("test expected >= 100ms wall wait, got {wall_elapsed:?}"),
+    )?;
+    ensure(
+        elapsed_ms < 60,
+        format!("permit wait (~120ms) must be excluded from elapsed_ms, got {elapsed_ms}ms"),
+    )?;
+    Ok(())
+}
+
+struct DelayedWriteIo {
+    inner: tokio::io::DuplexStream,
+    delay_once: Arc<std::sync::atomic::AtomicBool>,
+    sleep: Option<std::pin::Pin<Box<tokio::time::Sleep>>>,
+}
+
+impl tokio::io::AsyncRead for DelayedWriteIo {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for DelayedWriteIo {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        if self.sleep.is_none()
+            && self
+                .delay_once
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.sleep = Some(Box::pin(tokio::time::sleep(
+                std::time::Duration::from_millis(150),
+            )));
+        }
+        if let Some(sleep) = self.sleep.as_mut() {
+            match std::future::Future::poll(sleep.as_mut(), cx) {
+                std::task::Poll::Pending => return std::task::Poll::Pending,
+                std::task::Poll::Ready(()) => self.sleep = None,
+            }
+        }
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+#[test]
+fn run_blocking_excludes_progress_drain_wait_from_elapsed_ms() -> TestResult {
+    use crate::progress::ProgressEvent;
+    use crate::server_progress::open_progress_session;
+    use rmcp::ServiceExt;
+    use rmcp::model::{NumberOrString, ProgressToken};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    const TOOL: &str = "probe_drain_wait_timing";
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .check("test runtime")?;
+    let wall_started = std::time::Instant::now();
+    let (result, logs) = crate::util::test_capture::capture_at_level(
+        || -> TestResult {
+            runtime.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    let delay_once = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let (server_duplex, client_io) = tokio::io::duplex(65536);
+                    let server_io = DelayedWriteIo {
+                        inner: server_duplex,
+                        delay_once: Arc::clone(&delay_once),
+                        sleep: None,
+                    };
+                    let server = tokio::spawn(async move {
+                        crate::server::SlugAuditServer::new()
+                            .serve(server_io)
+                            .await
+                            .check("server handshake")
+                    });
+                    let (read_half, mut write_half) = tokio::io::split(client_io);
+                    let mut lines = BufReader::new(read_half).lines();
+                    write_half
+                        .write_all(
+                            concat!(
+                                r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#,
+                                "\n",
+                                r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+                                "\n"
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .check("client handshake write")?;
+                    let running = server.await.check("server task")??;
+                    lines
+                        .next_line()
+                        .await
+                        .check("initialize read")?
+                        .check("initialize line")?;
+
+                    let peer = running.peer().clone();
+                    let (progress, inner_sink) = open_progress_session(Some((
+                        peer,
+                        ProgressToken(NumberOrString::Number(99)),
+                    )));
+                    run_blocking(
+                        Arc::new(Semaphore::new(2)),
+                        TOOL,
+                        move || {
+                            delay_once.store(true, Ordering::Release);
+                            inner_sink.emit(ProgressEvent::Started { phase: "step" });
+                            Ok::<_, ErrorData>(())
+                        },
+                        progress,
+                    )
+                    .await
+                    .check("run_blocking succeeds")?;
+                    let notifications = drain_progress_notifications(&mut lines).await?;
+                    ensure(
+                        notifications
+                            .iter()
+                            .any(|(_, msg)| msg == "probe_drain_wait_timing completed"),
+                        format!("completed notification must arrive: {notifications:?}"),
+                    )?;
+                    drop(write_half);
+                    drop(running);
+                    Ok(())
+                })
+                .await
+                .check("progress-drain test timed out")?
+            })
+        },
+        tracing::Level::INFO,
+    )?;
+    result?;
+    let wall_elapsed = wall_started.elapsed();
+    let elapsed_ms = parse_logged_elapsed_ms(&logs, TOOL)?;
+    ensure(
+        wall_elapsed >= std::time::Duration::from_millis(120),
+        format!("test expected >= 120ms progress drain wait, got {wall_elapsed:?}"),
+    )?;
+    ensure(
+        elapsed_ms < 60,
+        format!("progress drain (~150ms) must be excluded from elapsed_ms, got {elapsed_ms}ms"),
+    )?;
+    Ok(())
+}

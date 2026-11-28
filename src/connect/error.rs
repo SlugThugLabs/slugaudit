@@ -71,6 +71,24 @@ pub enum ConnectError {
         /// Why the automated path is refused.
         reason: String,
     },
+    /// The client's config file still registers `slugaudit`, but its CLI
+    /// executable is not on `PATH` and SlugAudit does not rewrite this config.
+    #[error(
+        "cannot disconnect from {agent}: {path} still has `slugaudit`, \
+         but `{cli}` is not on PATH; install `{cli}` and retry, or remove the \
+         `slugaudit` entry from {path} manually"
+    )]
+    DisconnectCliMissing {
+        /// Human-readable client name.
+        agent: String,
+        /// Client CLI executable expected on `PATH`.
+        cli: String,
+        /// Config path (or client target) that still contains `slugaudit`.
+        path: String,
+    },
+    /// Probing a client's local configuration failed.
+    #[error("{0}")]
+    Probe(#[from] super::ProbeFailure),
     /// The config's expected section exists but is not a JSON object.
     #[error(
         "cannot connect: \"{section}\" in the configuration is not an object, so there is \

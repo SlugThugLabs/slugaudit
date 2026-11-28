@@ -4,7 +4,7 @@
 use crate::error_codes::{ErrorCode, invalid_params_with_code};
 use crate::parse::PACK_ALIASES;
 use crate::parse::fetch_gate::{FetchSlot, record_fetch_failure, with_fetch_slot};
-use crate::parse::local_load_failures::record_local_load_failure;
+use crate::parse::local_load_failures::{is_locally_failed, record_local_load_failure};
 use crate::tools::context::internal_error;
 use crate::util::LockPoisoned;
 use rmcp::ErrorData;
@@ -23,6 +23,9 @@ pub(crate) const QUERY_CURSOR_MATCH_LIMIT: u32 = 65_536;
 /// Failure modes when loading a Tree-sitter grammar through the fetch gate.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GrammarLoadError {
+    /// The grammar failed a local load earlier in this process.
+    #[error("grammar failed a local load earlier in this process")]
+    LocalLoadFailed,
     /// The grammar is not cached on disk and an earlier download failed within
     /// the 10-minute process-wide cool-down window.
     #[error("grammar download is blocked by the fetch cooldown")]
@@ -81,6 +84,13 @@ pub(in crate::tools) fn map_grammar_load_error(
         None => body,
     };
     match error {
+        GrammarLoadError::LocalLoadFailed => invalid_params_with_code(
+            with_prefix(format!(
+                "grammar `{language}` failed to load locally earlier in this server process; \
+                 query `files.content` via `query`"
+            )),
+            ErrorCode::GrammarUnavailable,
+        ),
         GrammarLoadError::CooldownBlocked => invalid_params_with_code(
             with_prefix(format!(
                 "grammar `{language}` is temporarily unavailable: an earlier grammar download \
@@ -123,6 +133,9 @@ fn is_local_load_failure(error: &PackError) -> bool {
 /// Loads `language`'s Tree-sitter grammar under [`with_fetch_slot`], recording
 /// fetch or local-load failures on the process-wide gate identically to `sync`.
 pub(crate) fn load_grammar(language: &str) -> Result<tree_sitter::Language, GrammarLoadError> {
+    if is_locally_failed(language).map_err(GrammarLoadError::Lock)? {
+        return Err(GrammarLoadError::LocalLoadFailed);
+    }
     let slot = with_fetch_slot(language, || {
         match tree_sitter_language_pack::get_language(language) {
             Ok(grammar) => Ok(Ok(grammar)),
@@ -168,10 +181,10 @@ pub(crate) fn run_budgeted_captures<'tree, E>(
     mut on_capture: impl FnMut(&QueryMatch<'_, 'tree>, usize) -> Result<(), E>,
 ) -> Result<CursorScanOutcome, E> {
     cursor.set_match_limit(QUERY_CURSOR_MATCH_LIMIT);
-    let mut timed_out = false;
+    let timed_out = std::cell::Cell::new(false);
     let mut check_deadline = |_state: &QueryCursorState| -> ControlFlow<()> {
         if deadline.is_some_and(|limit| Instant::now() >= limit) {
-            timed_out = true;
+            timed_out.set(true);
             ControlFlow::Break(())
         } else {
             ControlFlow::Continue(())
@@ -179,12 +192,23 @@ pub(crate) fn run_budgeted_captures<'tree, E>(
     };
     let options = QueryCursorOptions::new().progress_callback(&mut check_deadline);
     let mut captures = cursor.captures_with_options(query, root, source, options);
+    let mut until_check: u8 = 0;
     while let Some((query_match, capture_index)) = captures.next() {
+        if until_check == 0 {
+            if deadline.is_some_and(|limit| Instant::now() >= limit) {
+                timed_out.set(true);
+                break;
+            }
+            until_check = 63;
+        } else {
+            // KEEP saturating: until_check > 0 in this branch, so saturating_sub(1) is exact
+            until_check = until_check.saturating_sub(1);
+        }
         on_capture(query_match, *capture_index)?;
     }
     drop(captures);
     Ok(CursorScanOutcome {
-        timed_out,
+        timed_out: timed_out.get(),
         match_limit_exceeded: cursor.did_exceed_match_limit(),
     })
 }

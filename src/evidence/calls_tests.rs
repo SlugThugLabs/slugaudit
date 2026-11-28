@@ -299,8 +299,11 @@ fn a_macro_body_re_parse_under_a_spent_deadline_is_timed_out() -> TestResult {
         deadline: Some(&spent),
     };
 
+    let grammar = tree.language();
+    let mut parser_slot = None;
     let recovered =
-        super::macro_calls::extract(macro_node, &input, Some("run")).check("recover calls")?;
+        super::macro_calls::extract(macro_node, &input, Some("run"), &grammar, &mut parser_slot)
+            .check("recover calls")?;
 
     ensure(recovered.timed_out, "recovered.timed_out")?;
     ensure(!recovered.capped, "!recovered.capped")?;
@@ -379,5 +382,134 @@ fn string_literal_receiver_with_double_colon_is_not_classified_as_qualified_path
         &"unresolved-syntactic",
         "method call on string literal containing :: is unresolved-syntactic",
     )?;
+    Ok(())
+}
+
+#[test]
+fn qualified_receiver_method_calls_are_unresolved_syntactic() -> TestResult {
+    let source = "fn run() {\n    Foo::new().expect(\"ok\");\n    crate::get().unwrap();\n}\n";
+    let calls = extract_rust(source)?;
+    for (name, expected_text, expected_res) in [
+        ("new", "Foo::new", "qualified-syntactic"),
+        ("expect", "Foo::new().expect", "unresolved-syntactic"),
+        ("get", "crate::get", "qualified-syntactic"),
+        ("unwrap", "crate::get().unwrap", "unresolved-syntactic"),
+    ] {
+        let hit = calls
+            .iter()
+            .find(|item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == name))
+            .check(&format!("expected call `{name}`"))?;
+        let payload = call_payload(hit)?;
+        ensure_eq(&payload.callee_text.as_str(), &expected_text, name)?;
+        ensure_eq(&payload.resolution.as_str(), &expected_res, name)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn nested_items_inside_function_do_not_inherit_enclosing_caller() -> TestResult {
+    let source = concat!(
+        "fn outer() {\n",
+        "    static S: usize = from_static();\n",
+        "    const C: usize = from_const();\n",
+        "    mod m { const M: usize = from_mod(); fn inner() { from_inner(); } }\n",
+        "    direct();\n",
+        "}\n",
+    );
+    let calls = extract_rust(source)?;
+    ensure_eq(&callers_of(&calls, "from_static")?, &[None], "static")?;
+    ensure_eq(&callers_of(&calls, "from_const")?, &[None], "const")?;
+    ensure_eq(&callers_of(&calls, "from_mod")?, &[None], "mod")?;
+    ensure_eq(
+        &callers_of(&calls, "from_inner")?,
+        &[Some("inner")],
+        "inner fn in mod",
+    )?;
+    ensure_eq(&callers_of(&calls, "direct")?, &[Some("outer")], "direct")?;
+    Ok(())
+}
+
+#[test]
+fn parenthesized_indexed_and_commented_callees_keep_clean_names() -> TestResult {
+    let source = concat!(
+        "fn run(arr: [fn(u8); 1], x: u8) {\n",
+        "    (get_fn())(x);\n",
+        "    arr[0](x);\n",
+        "    foo::bar /* comment */ ();\n",
+        "}\n",
+    );
+    let calls = extract_rust(source)?;
+    let paren = calls
+        .iter()
+        .find(|item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_text == "(get_fn())"))
+        .check("parenthesized callee without leaked args")?;
+    ensure_eq(
+        &call_payload(paren)?.callee_name.as_str(),
+        &"(get_fn())",
+        "paren",
+    )?;
+    let indexed = calls
+        .iter()
+        .find(|item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_text == "arr[0]"))
+        .check("indexed callee without leaked args")?;
+    ensure_eq(
+        &call_payload(indexed)?.callee_name.as_str(),
+        &"arr[0]",
+        "indexed",
+    )?;
+    let commented = calls
+        .iter()
+        .find(|item| matches!(&item.payload, EvidencePayload::Call(c) if c.callee_name == "bar"))
+        .check("commented scoped callee uses name field")?;
+    ensure_eq(
+        &call_payload(commented)?.resolution.as_str(),
+        &"qualified-syntactic",
+        "commented qualified",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn unclosed_utf8_macro_invocation_does_not_truncate_or_chop_utf8() -> TestResult {
+    let extraction = walk_rust("fn run() { println!(\"é", None)?;
+    ensure(
+        !extraction.truncated,
+        "unclosed UTF-8 macro must not truncate",
+    )?;
+    ensure(
+        !extraction.timed_out,
+        "unclosed UTF-8 macro must not time out",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn raw_string_and_char_literal_is_qualified_checks() -> TestResult {
+    use super::site::is_qualified;
+    for unqualified in [
+        r#"r"a::b".trim"#,
+        r##"r#"a"b::c"#.trim"##,
+        r##"br#"a::b"#.trim"##,
+        r#"('"', "a::b")"#,
+        r#"('\'', "a::b")"#,
+        r"b'\''.is_ascii",
+    ] {
+        ensure(
+            !is_qualified(unqualified),
+            format!("expected false for {unqualified}"),
+        )?;
+    }
+    for qualified in [
+        r##"r#"a::b"#::call"##,
+        r#"('"', crate::foo)"#,
+        r"('\'', crate::foo)",
+        "r#match::call",
+        "Foo::<'a>::bar",
+    ] {
+        ensure(
+            is_qualified(qualified),
+            format!("expected true for {qualified}"),
+        )?;
+    }
     Ok(())
 }

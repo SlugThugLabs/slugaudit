@@ -102,7 +102,7 @@ fn detect_returns_positive_cached_memory() -> TestResult {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 #[test]
 fn fail_closed_undetectable_memory_is_an_error_naming_the_cause() -> TestResult {
     let unreadable = std::io::Error::new(std::io::ErrorKind::NotFound, "no meminfo here");
@@ -114,5 +114,21 @@ fn fail_closed_undetectable_memory_is_an_error_naming_the_cause() -> TestResult 
         &"system memory could not be detected: /proc/meminfo: no meminfo here",
         "detection error names the failed memory source and its I/O cause",
     )?;
+    Ok(())
+}
+
+#[test]
+fn parse_windows_cim_kib_parses_total_and_free_kib() -> TestResult {
+    let parsed = parse_windows_cim_kib(b"16777216 8388608\r\n").check("valid CIM KiB")?;
+    ensure_eq(
+        &parsed,
+        &SystemMemoryInfo {
+            total_bytes: 16_777_216 * 1024,
+            available_bytes: 8_388_608 * 1024,
+        },
+        "total and available bytes converted from KiB",
+    )?;
+    let _ = parse_windows_cim_kib(b"0 0").check_err("zero total rejected")?;
+    let _ = parse_windows_cim_kib(b"not-a-number").check_err("garbage rejected")?;
     Ok(())
 }

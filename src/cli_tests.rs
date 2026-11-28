@@ -316,8 +316,11 @@ fn every_subcommand_help_flag_in_any_position_parses_to_that_subcommands_help() 
         ("disconnect", Topic::Disconnect),
         ("remove", Topic::Disconnect),
         ("install", Topic::Install),
+        ("grammar", Topic::Grammar),
         ("menu", Topic::Menu),
         ("update", Topic::Update),
+        ("version", Topic::Version),
+        ("help", Topic::Help),
     ];
     for (name, topic) in cases {
         for flag in ["--help", "-h"] {
@@ -333,6 +336,25 @@ fn every_subcommand_help_flag_in_any_position_parses_to_that_subcommands_help() 
                 )?;
             }
         }
+    }
+    for flag in ["--version", "-V", "-v"] {
+        for help in ["--help", "-h"] {
+            ensure_eq(
+                &parse(&[flag, help]).check("version flag help parses")?,
+                &Command::CommandHelp(Topic::Version),
+                format!("{flag} {help}"),
+            )?;
+        }
+    }
+    for help in [["--help", "--help"], ["-h", "-h"], ["--help", "-h"]] {
+        ensure_eq(
+            &parse(&help).check("repeated help flag parses as Help")?,
+            &Command::Help,
+            format!("{help:?}"),
+        )?;
+    }
+    for bad in [["version", "extra"], ["help", "extra"], ["--help", "extra"]] {
+        parse(&bad).check_err(&format!("{bad:?} must fail"))?;
     }
     Ok(())
 }
@@ -356,14 +378,21 @@ fn every_subcommand_has_its_own_usage_naming_that_subcommand() -> TestResult {
         (Topic::Connect, "slugaudit connect [AGENT]"),
         (Topic::Disconnect, "slugaudit disconnect [AGENT]"),
         (Topic::Install, "slugaudit install"),
+        (Topic::Grammar, "slugaudit grammar <list|install>"),
         (Topic::Menu, "slugaudit menu"),
         (Topic::Update, "slugaudit update"),
+        (Topic::Version, "slugaudit version"),
+        (Topic::Help, "slugaudit help"),
     ] {
         let text = topic_usage(topic);
         ensure(text.starts_with("USAGE:\n"), &text)?;
         ensure(text.contains(needle), format!("{needle}: {text}"))?;
         ensure(text.contains("-h, --help"), &text)?;
     }
+    ensure(
+        topic_usage(Topic::Grammar).contains("[--yes|-y]"),
+        "grammar topic usage documents -y",
+    )?;
     Ok(())
 }
 
@@ -376,13 +405,24 @@ fn general_help_lists_serve_and_shares_every_description_with_the_subcommand_hel
         ),
         &general,
     )?;
+    ensure(
+        general.contains("[--yes|-y]"),
+        "general help documents -y under grammar",
+    )?;
+    ensure(
+        general.contains("-V, -v, --version"),
+        "general help documents -v under OPTIONS",
+    )?;
     for topic in [
         Topic::Serve,
         Topic::Connect,
         Topic::Disconnect,
         Topic::Install,
+        Topic::Grammar,
         Topic::Menu,
         Topic::Update,
+        Topic::Version,
+        Topic::Help,
     ] {
         let own = topic_usage(topic);
         let description = own

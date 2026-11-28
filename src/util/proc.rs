@@ -1,3 +1,4 @@
+// slugaudit-line-exception: approved-by=split-judge; reason=Single responsibility: bounded child-process execution with capped stdio capture, wall-clock timeout, and OS process-group cleanup.
 //! Bounded child-process runner shared by CLI client commands (`connect` /
 //! `disconnect`) and self-update helpers (`curl`, `sha256sum`, `--version`).
 //!
@@ -180,35 +181,67 @@ fn kill_and_reap(label: &str, child: &mut std::process::Child) {
     }
 }
 
-#[cfg(unix)]
-fn kill_process_group(label: &str, pid: u32) -> bool {
-    let target = format!("-{pid}");
-    let run = |program: &str| {
-        Command::new(program)
-            .args(["-9", &target])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-    };
-    let result = match run("kill") {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => run("/bin/kill"),
-        other => other,
-    };
+#[cfg(any(unix, windows))]
+fn run_silent_status(
+    program: &std::ffi::OsStr,
+    args: &[&str],
+) -> std::io::Result<std::process::ExitStatus> {
+    Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+}
+
+#[cfg(any(unix, windows))]
+fn log_kill_result(
+    label: &str,
+    pid: u32,
+    tool: &str,
+    result: std::io::Result<std::process::ExitStatus>,
+) -> bool {
     match result {
         Ok(status) if status.success() => true,
         Ok(status) => {
-            tracing::debug!(label, pid, %status, "kill -9 on child process group exited non-zero");
+            tracing::debug!(label, pid, tool, %status, "process-group kill exited non-zero");
             false
         }
         Err(error) => {
-            tracing::warn!(label, pid, error = %error, "could not invoke kill for child process group");
+            tracing::warn!(label, pid, tool, error = %error, "could not invoke process-group kill");
             false
         }
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(unix)]
+fn kill_process_group(label: &str, pid: u32) -> bool {
+    let target = format!("-{pid}");
+    let args = ["-9", target.as_str()];
+    let result = match run_silent_status(std::ffi::OsStr::new("kill"), &args) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            run_silent_status(std::ffi::OsStr::new("/bin/kill"), &args)
+        }
+        other => other,
+    };
+    log_kill_result(label, pid, "kill -9", result)
+}
+
+#[cfg(windows)]
+fn kill_process_group(label: &str, pid: u32) -> bool {
+    let pid_str = pid.to_string();
+    let program = match std::env::var_os("SystemRoot")
+        .map(|root| std::path::PathBuf::from(root).join("System32\\taskkill.exe"))
+        .filter(|path| path.is_file())
+    {
+        Some(path) => path,
+        None => std::path::PathBuf::from("taskkill"),
+    };
+    let result = run_silent_status(program.as_os_str(), &["/F", "/T", "/PID", &pid_str]);
+    log_kill_result(label, pid, "taskkill", result)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn kill_process_group(_label: &str, _pid: u32) -> bool {
     false
 }

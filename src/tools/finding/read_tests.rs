@@ -419,3 +419,39 @@ fn finding_read_rejects_an_oversized_cursor_with_invalid_params() -> TestResult 
     )?;
     Ok(())
 }
+
+#[test]
+fn finding_read_clips_to_empty_when_page_bytes_is_smaller_than_entry() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn f() {}\n")?;
+    let path = project.path().to_string_lossy().into_owned();
+    let manager = sync::SourceSyncManager::default();
+    let long_desc = "x".repeat(500);
+    super::finding(
+        &Parameters(super::FindingRequest {
+            path: path.clone(),
+            file: "lib.rs".to_owned(),
+            line_start: 1,
+            line_end: 1,
+            severity: "medium".to_owned(),
+            category: "correctness".to_owned(),
+            title: "t".to_owned(),
+            description: long_desc,
+        }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("insert finding")?;
+
+    let mut req = request(&path, None);
+    req.page_bytes = Some(32);
+    let read = finding_read(
+        &Parameters(req),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("finding_read under tiny page_bytes succeeds")?;
+    let first = read.0.findings.first().check("one finding returned")?;
+    ensure_eq(&first.description, &"", "description clipped to empty")?;
+    ensure(first.detail_clipped, "detail_clipped must be true")?;
+    Ok(())
+}

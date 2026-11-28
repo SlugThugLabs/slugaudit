@@ -28,7 +28,7 @@ const EVIDENCE_SQL: FamilySql = FamilySql {
     order: "f.path, e.start_line, e.id",
     row_id: "e.id",
     file_key: "e.file_id",
-    pattern: "f.path GLOB ?",
+    pattern: "slugaudit_path_match(f.path, ?)",
 };
 
 const FILES_SQL: FamilySql = FamilySql {
@@ -38,7 +38,7 @@ const FILES_SQL: FamilySql = FamilySql {
     order: "path",
     row_id: "id",
     file_key: "path",
-    pattern: "path GLOB ?",
+    pattern: "slugaudit_path_match(path, ?)",
 };
 
 impl Family {

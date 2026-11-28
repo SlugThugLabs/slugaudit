@@ -195,8 +195,8 @@ fn the_unhandled_panics_recipe_matches_the_callee_not_the_caller() -> TestResult
     connection
         .execute(
             "INSERT INTO revisions \
-             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
-             VALUES ('r1', 'h', '1.0.0', 0, 1)",
+             (revision_id, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('r1', '1.0.0', 0, 1)",
             [],
         )
         .check("insert revision")?;

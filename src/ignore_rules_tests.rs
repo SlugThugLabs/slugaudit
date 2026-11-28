@@ -31,7 +31,31 @@ fn a_parent_gitignore_is_not_applied_to_a_nested_project() -> TestResult {
 
     ensure(
         indexed.contains("dist/out.rs"),
-        format!("the walker must not apply a parent ignore file: {indexed:?}"),
+        format!("the walker must not apply a parent ignore file outside a git repo: {indexed:?}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_parent_gitignore_inside_a_git_repo_is_applied_to_a_nested_project() -> TestResult {
+    let repo = project()?;
+    fs::create_dir_all(repo.path().join(".git")).check("git dir")?;
+    fs::write(repo.path().join(".gitignore"), "dist/\n").check("repo gitignore")?;
+    let root = repo.path().join("nested-project");
+    fs::create_dir_all(root.join("dist")).check("dist dir")?;
+    fs::write(root.join("dist/out.rs"), "fn out() {}\n").check("dist file")?;
+    fs::create_dir_all(root.join("src")).check("src dir")?;
+    fs::write(root.join("src/lib.rs"), "fn lib() {}\n").check("lib file")?;
+
+    let (files, _skipped) = discover_and_hash(&root).check("discover_and_hash")?;
+    let indexed: std::collections::HashSet<&str> = files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect();
+
+    ensure(
+        !indexed.contains("dist/out.rs") && indexed.contains("src/lib.rs"),
+        format!("the walker must apply an enclosing git repo's .gitignore: {indexed:?}"),
     )?;
     Ok(())
 }
@@ -51,6 +75,9 @@ fn the_walker_does_not_descend_into_excluded_directories() -> TestResult {
     for index in 0..32 {
         fs::write(root.join(format!(".planning/slugaudit/{index:02}.db")), "x").check("data")?;
     }
+    fs::write(root.join(".planning/PLAN.md"), "# plan").check("plan")?;
+    fs::create_dir_all(root.join("target/debug")).check("target dir")?;
+    fs::write(root.join("target/debug/out"), "x").check("target out")?;
     fs::create_dir_all(root.join("src")).check("src dir")?;
     fs::write(root.join("src/lib.rs"), "fn lib() {}\n").check("lib")?;
 
@@ -62,7 +89,8 @@ fn the_walker_does_not_descend_into_excluded_directories() -> TestResult {
     ensure(
         yielded.iter().all(|path| {
             !path.starts_with(root.join(".git"))
-                && !path.starts_with(root.join(".planning/slugaudit"))
+                && !path.starts_with(root.join(".planning"))
+                && !path.starts_with(root.join("target"))
         }),
         format!("excluded subtrees must not be yielded: {yielded:?}"),
     )?;
@@ -74,12 +102,18 @@ fn the_walker_does_not_descend_into_excluded_directories() -> TestResult {
 }
 
 #[test]
-fn the_runtime_data_directory_and_its_descendants_are_excluded() -> TestResult {
+fn git_planning_and_target_directories_are_excluded() -> TestResult {
     for excluded in [
         ".planning/slugaudit",
         ".planning/slugaudit/project.db",
         ".planning/slugaudit/nested/deep.json",
         ".planning\\slugaudit\\project.db",
+        ".planning",
+        ".planning/PLAN.md",
+        ".planning/README.md",
+        "target",
+        "target/debug/slugaudit",
+        "crates/a/target/release/lib.rlib",
     ] {
         ensure(
             is_excluded_path(excluded),
@@ -94,16 +128,12 @@ fn the_runtime_data_directory_and_its_descendants_are_excluded() -> TestResult {
 }
 
 #[test]
-fn a_planning_sibling_sharing_the_runtime_dir_prefix_stays_indexed() -> TestResult {
+fn non_excluded_siblings_and_lookalikes_stay_indexed() -> TestResult {
     for included in [
-        ".planning/slugaudit-notes/x.md",
-        ".planning/slugaudit-notes",
-        ".planning/slugauditx",
-        ".planning/slugauditfoo/y.md",
-        ".planning/other/z.md",
-        ".planning/PLAN.md",
-        ".planning",
+        "planning/notes.md",
+        "src/target_utils.rs",
         "slugaudit/x.md",
+        "src/lib.rs",
     ] {
         ensure(
             !is_excluded_path(included),

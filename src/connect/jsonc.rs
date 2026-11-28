@@ -76,28 +76,10 @@ fn find_string_end(after_open: &str) -> Option<usize> {
     None
 }
 
-/// Finds the byte length of `body + "*/"` starting right after `/*`, treating
-/// paired `"..."` spans (with `\` escapes) as atomic so `"a */ b"` inside a
-/// comment or following an unclosed `/*` does not close the comment early.
+/// Finds the byte length of `body + "*/"` starting right after `/*`.
+/// A JSONC block comment always terminates at the very first `*/`.
 fn find_block_comment_end(after_open: &str) -> Option<usize> {
-    let mut offset = 0_usize;
-    while let Some(tail) = after_open.get(offset..) {
-        let Some(ch) = tail.chars().next() else {
-            break;
-        };
-        if tail.starts_with("*/") {
-            return offset.checked_add(2);
-        }
-        if ch == '"'
-            && let Some(after_quote) = tail.get(1..)
-            && let Some(quoted_len) = find_string_end(after_quote)
-        {
-            offset = offset.checked_add(1)?.checked_add(quoted_len)?;
-            continue;
-        }
-        offset = offset.checked_add(ch.len_utf8())?;
-    }
-    None
+    after_open.find("*/").and_then(|idx| idx.checked_add(2))
 }
 
 fn push_blanked(out: &mut String, span: &str) {

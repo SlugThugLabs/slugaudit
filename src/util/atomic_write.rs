@@ -108,9 +108,29 @@ pub(crate) fn same_open_file(file: &File, path: &Path) -> io::Result<bool> {
 
 #[cfg(not(unix))]
 pub(crate) fn same_open_file(file: &File, path: &Path) -> io::Result<bool> {
-    let _held = file.metadata()?;
+    let held = file.metadata()?;
     match fs::metadata(path) {
-        Ok(named) => Ok(named.is_file()),
+        Ok(named) => {
+            if !held.is_file() || !named.is_file() || held.len() != named.len() {
+                return Ok(false);
+            }
+            match (held.modified(), named.modified()) {
+                (Ok(held_mtime), Ok(named_mtime)) if held_mtime != named_mtime => {
+                    return Ok(false);
+                }
+                (Ok(_), Err(_)) | (Err(_), Ok(_)) => return Ok(false),
+                _ => {}
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt as _;
+                return Ok(held.creation_time() == named.creation_time()
+                    && held.last_write_time() == named.last_write_time()
+                    && held.file_attributes() == named.file_attributes());
+            }
+            #[cfg(not(windows))]
+            Ok(true)
+        }
         Err(error)
             if matches!(
                 error.kind(),

@@ -6,14 +6,7 @@ use super::*;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
 
 pub(super) fn late_spec(tool: &'static str) -> PageSpec {
-    PageSpec {
-        tool,
-        columns: Vec::new(),
-        page_bytes: 1000,
-        requested_page_bytes: None,
-        ceiling: usize::MAX,
-        max_rows: None,
-    }
+    PageSpec::dynamic(tool, 1000)
 }
 
 pub(super) fn produced_totals() -> Produced<Totals> {

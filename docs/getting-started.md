@@ -10,7 +10,7 @@ curl -fsSL https://raw.githubusercontent.com/SlugThugLabs/slugaudit/main/install
 
 What the script does:
 
-- Puts the binary at `~/.slugthug/slugaudit/slugaudit`. Set `SLUGTHUG_HOME` to use another base directory for `slugaudit install` and `connect` (the script itself always uses `~/.slugthug/slugaudit`).
+- Puts the binary at `~/.slugthug/slugaudit/slugaudit` (or `$SLUGTHUG_HOME/slugaudit/slugaudit` when `SLUGTHUG_HOME` is set). Set `SLUGTHUG_HOME` to use another base directory for `install.sh`, `slugaudit install`, and `slugaudit connect`.
 - On Linux x86_64 it downloads the release binary and checks it against the release `SHA256SUMS` (pass `--from-source` inside a checkout to compile from source instead). It fails if the check fails.
 - On other systems it needs `cargo`. It builds from the repository (if you run it inside a checkout with `--from-source`) or runs `cargo install --locked --git` with `TSLP_LINK_MODE=static TSLP_LANGUAGES=rust` so the Rust grammar is compiled statically into the binary.
 - If a binary was already there, the old one is kept as `slugaudit.prev` in the same directory. To revert, copy it back.
@@ -82,9 +82,10 @@ Checks the latest GitHub release. If it is newer, downloads it, verifies the che
 ## Other commands
 
 ```sh
-slugaudit version     # also --version, -V, -v
-slugaudit help        # also --help, -h
-slugaudit             # run the MCP server on stdio (your agent does this)
+slugaudit grammar <list|install>  # list installed grammars or install a non-Rust grammar (`grammar install <LANGUAGE> [--yes|-y]`)
+slugaudit version                 # also --version, -V, -v
+slugaudit help                    # also --help, -h
+slugaudit                         # run the MCP server on stdio (your agent does this)
 ```
 
 ## Turn a project on

@@ -164,6 +164,10 @@ fn a_closed_pipe_is_found_through_every_cli_error_wrapper() -> TestResult {
         is_broken_pipe(&crate::update::UpdateError::Io(broken())),
         "UpdateError::Io wraps BrokenPipe",
     )?;
+    ensure(
+        is_broken_pipe(&crate::grammar_cli::GrammarCliError::Io(broken())),
+        "GrammarCliError::Io wraps BrokenPipe",
+    )?;
     Ok(())
 }
 
@@ -182,6 +186,10 @@ fn a_non_pipe_io_failure_in_a_wrapper_is_not_a_clean_exit() -> TestResult {
     ensure(
         !is_broken_pipe(&crate::update::UpdateError::Io(refused())),
         "UpdateError::Io PermissionDenied is not BrokenPipe",
+    )?;
+    ensure(
+        !is_broken_pipe(&crate::grammar_cli::GrammarCliError::Io(refused())),
+        "GrammarCliError::Io PermissionDenied is not BrokenPipe",
     )?;
     Ok(())
 }

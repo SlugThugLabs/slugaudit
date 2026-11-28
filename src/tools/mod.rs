@@ -133,7 +133,7 @@ pub(in crate::tools) fn untested_language_notices<'a>(
                 None => "uses".to_owned(),
             };
             format!(
-                "{language}: {subject} an untested grammar (downloaded on first use). \
+                "{language}: {subject} an untested grammar. \
                  Only Rust is tested; treat {language} results as best-effort."
             )
         })

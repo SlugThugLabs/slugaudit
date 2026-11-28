@@ -15,8 +15,9 @@ Three rules:
   extractor did not have is `null` (or an empty array), never a missing key,
   except for optional language-specific enrichments noted below
   (`Structure`'s `rust_mod_path`, attached only on external Rust `mod foo;`
-  declarations, and `Diagnostic`'s `original_item_count` / `kept_item_count`
-  when per-file evidence truncation fires).
+  declarations, `Import`'s `inline_segments`, attached only on Rust `Import`
+  items inside inline `mod` blocks, and `Diagnostic`'s `original_item_count` /
+  `kept_item_count` when per-file evidence truncation fires).
 
 ## Structure
 
@@ -43,6 +44,7 @@ other languages.
 | `items` | array of string | named imports (Python and JS/TS); `[]` for Rust, Go, Java, Kotlin, Elixir, bare imports, and `GenericWalker` imports |
 | `alias` | string \| null | e.g. the `np` in `import numpy as np` (Python and single-specifier/namespace JS/TS imports; `null` otherwise) |
 | `is_wildcard` | boolean | `true` for `import *` / `use foo::*` |
+| `inline_segments` | array of string | optional; present only on Rust `Import` items inside inline `mod` blocks (`NULL` via `json_extract` when omitted at file top level or in other languages): enclosing inline `mod` names from outermost to innermost |
 
 ## Export
 

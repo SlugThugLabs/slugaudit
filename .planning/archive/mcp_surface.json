@@ -87,7 +87,7 @@
             "format": "int64"
           },
           "revision_id": {
-            "description": "Revision id the finding was recorded against (`evidence_revision`).",
+            "description": "Revision id the finding was recorded against.",
             "type": "string"
           },
           "source_hash": {
@@ -332,11 +332,11 @@
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\n`query_match_limit`, or `parse_skipped`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
+                        "description": "For `structure`, the last file scanned without overflow to pass as\n`start_after_file`; `null` when the tool has no file-resume\nparameter or no further files remain.",
                         "type": [
                           "string",
                           "null"
@@ -412,6 +412,11 @@
                 "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
                 "type": "string",
                 "const": "query_match_limit"
+              },
+              {
+                "description": "`structure` only: one or more matching files exceeded `max_parse_bytes`\n(`files_over_parse_limit` > 0) or produced no syntax tree\n(`unparsed_files` non-empty).",
+                "type": "string",
+                "const": "parse_skipped"
               }
             ]
           },
@@ -1130,11 +1135,11 @@
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\n`query_match_limit`, or `parse_skipped`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
+                        "description": "For `structure`, the last file scanned without overflow to pass as\n`start_after_file`; `null` when the tool has no file-resume\nparameter or no further files remain.",
                         "type": [
                           "string",
                           "null"
@@ -1210,6 +1215,11 @@
                 "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
                 "type": "string",
                 "const": "query_match_limit"
+              },
+              {
+                "description": "`structure` only: one or more matching files exceeded `max_parse_bytes`\n(`files_over_parse_limit` > 0) or produced no syntax tree\n(`unparsed_files` non-empty).",
+                "type": "string",
+                "const": "parse_skipped"
               }
             ]
           },
@@ -1810,11 +1820,11 @@
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\n`query_match_limit`, or `parse_skipped`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
+                        "description": "For `structure`, the last file scanned without overflow to pass as\n`start_after_file`; `null` when the tool has no file-resume\nparameter or no further files remain.",
                         "type": [
                           "string",
                           "null"
@@ -1890,6 +1900,11 @@
                 "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
                 "type": "string",
                 "const": "query_match_limit"
+              },
+              {
+                "description": "`structure` only: one or more matching files exceeded `max_parse_bytes`\n(`files_over_parse_limit` > 0) or produced no syntax tree\n(`unparsed_files` non-empty).",
+                "type": "string",
+                "const": "parse_skipped"
               }
             ]
           },
@@ -2502,11 +2517,11 @@
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\n`query_match_limit`, or `parse_skipped`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
+                        "description": "For `structure`, the last file scanned without overflow to pass as\n`start_after_file`; `null` when the tool has no file-resume\nparameter or no further files remain.",
                         "type": [
                           "string",
                           "null"
@@ -2582,6 +2597,11 @@
                 "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
                 "type": "string",
                 "const": "query_match_limit"
+              },
+              {
+                "description": "`structure` only: one or more matching files exceeded `max_parse_bytes`\n(`files_over_parse_limit` > 0) or produced no syntax tree\n(`unparsed_files` non-empty).",
+                "type": "string",
+                "const": "parse_skipped"
               }
             ]
           },
@@ -3431,11 +3451,11 @@
                     "type": "object",
                     "properties": {
                       "limited_by": {
-                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\nor `query_match_limit`).",
+                        "description": "The bound that made the scan partial (`scan_window`, `time_budget`,\n`query_match_limit`, or `parse_skipped`).",
                         "$ref": "#/$defs/PageLimit"
                       },
                       "resume_after_file": {
-                        "description": "The last file fully scanned without overflow; the new request resumes after it.",
+                        "description": "For `structure`, the last file scanned without overflow to pass as\n`start_after_file`; `null` when the tool has no file-resume\nparameter or no further files remain.",
                         "type": [
                           "string",
                           "null"
@@ -3511,6 +3531,11 @@
                 "description": "`structure` or custom-mechanic scan: Tree-sitter's per-file `QueryCursor`\nmatch-state limit (`65,536` states) was exceeded on a file, so some\nmatches were dropped (`completeness` is `partial`). Narrow the Tree-sitter\npattern so no match states overflow.",
                 "type": "string",
                 "const": "query_match_limit"
+              },
+              {
+                "description": "`structure` only: one or more matching files exceeded `max_parse_bytes`\n(`files_over_parse_limit` > 0) or produced no syntax tree\n(`unparsed_files` non-empty).",
+                "type": "string",
+                "const": "parse_skipped"
               }
             ]
           },

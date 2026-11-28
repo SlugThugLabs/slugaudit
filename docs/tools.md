@@ -34,10 +34,10 @@ Facts that hold for every tool:
 | `total` | Items the whole request selects. `null` when it cannot be counted (always for `structure`; for `query` when counting ran out of budget). |
 | `complete` | `true` when nothing remains. |
 | `cursor` | Token for the next page. Absent when `complete` is true. Does not survive a server restart. |
-| `completeness` | Absent, `"complete"`, or `partial` (see below). |
+| `completeness` | Absent, `"complete"`, or `{"partial": { ... }}` (see below). |
 | `page_bytes` | The byte budget that applied. |
-| `bytes_used` | Serialized JSON bytes of this page. |
-| `limited_by` | What cut the page: `none`, `limit`, `page_bytes`, `ceiling`, `match_cap`, `scan_window`, `time_budget`. |
+| `bytes_used` | Serialized JSON bytes of this page's items. |
+| `limited_by` | What cut the page: `none`, `limit`, `page_bytes`, `ceiling`, `match_cap`, `scan_window`, `time_budget`, `query_match_limit`, `parse_skipped`. |
 | `revision_id` | The index revision the answer was read from. |
 | `current_disk_revision_id` | Present on `cursor` continuation calls when readable from `project.db`: the index revision currently on disk while paging the stored result. |
 
@@ -53,7 +53,7 @@ Page size:
 - Pass `page_bytes` to ask for more, up to the ceiling `max_query_response_bytes` (32 MiB on `lean`, 256 MiB on `audit`, host-dependent on `adaptive`). A larger value is clamped and `limited_by` says `ceiling`.
 - The first item of a page is always returned, even if it alone is bigger than the page.
 
-`partial` completeness: a `structure` search or a custom-mechanic scan stopped early. The object has `limited_by`, `resume_after_file`, `files_scanned`, `files_total`. Resuming is a new request that syncs again (for `structure`, pass `start_after_file`).
+`{"partial": { ... }}` completeness: a `structure` search or a custom-mechanic scan stopped early or hit a pattern or parse limit. The inner `"partial"` object has `limited_by`, `resume_after_file`, `files_scanned`, `files_total`. Resuming is a new request that syncs again (for `structure`, pass `start_after_file`).
 
 Paging errors:
 
@@ -176,7 +176,7 @@ Parameters:
 
 | Name | Type | Notes |
 |---|---|---|
-| `action` | `add`, `remove`, `list` | Required. |
+| `action` | `add`, `remove`, `list` | Required unless `cursor` is given (`cursor` continues `list`). |
 | `path` | string | Required unless `cursor` is given. |
 | `id` | string | `add`, `remove`. 1-64 characters of `a-z`, `0-9`, `_`. Never a built-in's id or one already in use. |
 | `language` | string | `add`. The lowercase name the index stores (`python`, `rust`, `javascript`, `tsx`). Not a pack alias such as `shell` (use `bash`). Prose is refused. |
@@ -223,7 +223,7 @@ Tables:
 | `evidence` | `id`, `file_id`, `kind`, `start_line`, `end_line`, `payload` (JSON). Kinds: Structure, Import, Export, Comment, Docstring, Symbol, Diagnostic, Call. |
 | `dependency_edges` | `from_file_id`, `to_file_id`, `raw_import_text`, `resolution_kind` (`Resolved`, `Unresolved`, `External`), `confidence`, `syntax_unmodeled` |
 
-The full schema is the resource `slugaudit://schema.sql` (`PRAGMA user_version = 13`). Join `evidence` to `files` on `file_id`. Read payload keys with `json_extract`, not `LIKE`: expression indexes `idx_evidence_item_name` (`json_extract(payload, '$.name')` for `Structure` and `Symbol`) and `idx_evidence_call_callee` (`json_extract(payload, '$.callee_name')` for `Call`) accelerate exact lookups directly. Payload keys are listed in `slugaudit://queries/evidence_payload_keys.md`.
+The full schema is the resource `slugaudit://schema.sql` (`PRAGMA user_version = 14`). Join `evidence` to `files` on `file_id`. Read payload keys with `json_extract`, not `LIKE`: expression indexes `idx_evidence_item_name` (`json_extract(payload, '$.name')` for `Structure` and `Symbol`) and `idx_evidence_call_callee` (`json_extract(payload, '$.callee_name')` for `Call`) accelerate exact lookups directly. Payload keys are listed in `slugaudit://queries/evidence_payload_keys.md`.
 
 Helpers: `line_count(text)` and `line_range(text, start, end)` read a file's content by line.
 
@@ -269,7 +269,7 @@ Parameters:
 | Name | Type | Notes |
 |---|---|---|
 | `path` | string | Required without `cursor`. |
-| `query` | string | Required. Tree-sitter S-expression with at least one `@name` capture. Up to 16384 bytes by default. |
+| `query` | string | Required unless `cursor` is given. Tree-sitter S-expression with at least one `@name` capture. Up to 16384 bytes by default. |
 | `file` | string | Project-relative path of one file. |
 | `language` | string | Grammar name (`rust`, `python`, ...). Required when `file` is omitted. |
 | `pattern` | string | Path filter for multi-file searches, for example `src/**/*.rs`. |

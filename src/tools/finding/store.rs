@@ -10,6 +10,7 @@ use crate::sync::SyncedProject;
 use crate::tools::context::internal_error;
 use rmcp::ErrorData;
 use rusqlite::{OptionalExtension, Statement, Transaction, TransactionBehavior};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Runs `f` inside an immediate transaction on the findings database,
@@ -49,24 +50,38 @@ pub(in crate::tools) fn findings_path_of(tx: &Transaction<'_>) -> Result<PathBuf
 
 /// Looks up the content hash `project.db` holds for a path, to decide
 /// whether a finding is still current.
-pub(super) struct HashLookup<'a>(Statement<'a>);
+pub(super) struct HashLookup<'a> {
+    statement: Statement<'a>,
+    cache: HashMap<String, Option<String>>,
+}
 
 impl<'a> HashLookup<'a> {
     pub(super) fn new(project_tx: &'a Transaction<'_>) -> Result<Self, ErrorData> {
-        project_tx
+        let statement = project_tx
             .prepare("SELECT content_hash FROM files WHERE path = ?1")
-            .map(Self)
-            .map_err(|error| internal_error("preparing the file hash lookup", error))
+            .map_err(|error| internal_error("preparing the file hash lookup", error))?;
+        Ok(Self {
+            statement,
+            cache: HashMap::new(),
+        })
     }
 
-    /// True when `path` is indexed and still has `source_hash`.
-    pub(super) fn is_current(&mut self, path: &str, source_hash: &str) -> Result<bool, ErrorData> {
+    /// True when `path` is indexed and still has `expected_hash`.
+    pub(super) fn is_current(
+        &mut self,
+        path: &str,
+        expected_hash: &str,
+    ) -> Result<bool, ErrorData> {
+        if let Some(cached) = self.cache.get(path) {
+            return Ok(cached.as_deref() == Some(expected_hash));
+        }
         let current: Option<String> = self
-            .0
+            .statement
             .query_row([path], |row| row.get(0))
             .optional()
             .map_err(|error| internal_error("reading a file hash", error))?;
-        Ok(current.as_deref() == Some(source_hash))
+        self.cache.insert(path.to_owned(), current.clone());
+        Ok(current.as_deref() == Some(expected_hash))
     }
 }
 

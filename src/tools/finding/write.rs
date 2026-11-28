@@ -8,7 +8,6 @@ use super::{
 use crate::error_codes::{ErrorCode, invalid_params_with_code};
 use crate::tools::context::internal_error;
 use crate::tools::{check_bytes_limit, check_path_bytes};
-use crate::util;
 use rmcp::ErrorData;
 use rusqlite::{OptionalExtension, Transaction, params};
 
@@ -16,6 +15,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 pub(super) fn validate_text_fields(request: &FindingRequest) -> Result<(), ErrorData> {
     check_path_bytes(&request.path)?;
     check_bytes_limit(&request.file, "file", MAX_FILE_BYTES)?;
+    reject_nul("file", &request.file)?;
     check_field("title", &request.title, MAX_TITLE_CHARS)?;
     check_field("description", &request.description, MAX_DESCRIPTION_CHARS)?;
     check_field("severity", &request.severity, MAX_SEVERITY_CHARS)?;
@@ -35,7 +35,18 @@ pub(super) fn validate_text_fields(request: &FindingRequest) -> Result<(), Error
     Ok(())
 }
 
+fn reject_nul(name: &str, value: &str) -> Result<(), ErrorData> {
+    if value.contains('\0') {
+        return Err(invalid_params_with_code(
+            format!("{name} must not contain NUL bytes"),
+            ErrorCode::InvalidInput,
+        ));
+    }
+    Ok(())
+}
+
 fn check_field(name: &str, value: &str, max_chars: usize) -> Result<(), ErrorData> {
+    reject_nul(name, value)?;
     if value.trim().is_empty() {
         return Err(invalid_params_with_code(
             format!("{name} must not be empty"),
@@ -116,10 +127,10 @@ pub(super) fn insert_finding(
 ) -> Result<FindingResponse, ErrorData> {
     let id = match find_restated(tx, request, &source_hash)? {
         Some(existing) => {
-            refresh_restated(tx, request, revision_id, existing)?;
+            refresh_restated(tx, request, existing)?;
             existing
         }
-        None => insert_new(tx, request, &source_hash, revision_id)?,
+        None => insert_new(tx, request, &source_hash)?,
     };
 
     tracing::info!(
@@ -159,21 +170,19 @@ fn find_restated(
         |row| row.get(0),
     )
     .optional()
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+    .map_err(|error| internal_error("reading stored findings", error))
 }
 
 fn refresh_restated(
     tx: &Transaction<'_>,
     request: &FindingRequest,
-    revision_id: &str,
     id: i64,
 ) -> Result<(), ErrorData> {
     tx.execute(
-        "UPDATE findings SET severity = ?1, description = ?2, evidence_revision = ?3 \
-         WHERE id = ?4",
-        params![request.severity, request.description, revision_id, id],
+        "UPDATE findings SET severity = ?1, description = ?2 WHERE id = ?3",
+        params![request.severity, request.description, id],
     )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    .map_err(|error| internal_error("updating a restated finding", error))?;
     Ok(())
 }
 
@@ -181,19 +190,11 @@ fn insert_new(
     tx: &Transaction<'_>,
     request: &FindingRequest,
     source_hash: &str,
-    revision_id: &str,
 ) -> Result<i64, ErrorData> {
-    let persisted_time: Option<i64> = tx
-        .query_row("SELECT max(created_at_unix) FROM findings", [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-    let created_at = util::at_least_timestamp(util::now_unix()?, persisted_time);
     tx.execute(
         "INSERT INTO findings (\
-            path, source_hash, line_start, line_end, severity, category, title, description, \
-            created_at_unix, evidence_revision\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            path, source_hash, line_start, line_end, severity, category, title, description\
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             request.file,
             source_hash,
@@ -203,10 +204,8 @@ fn insert_new(
             request.category,
             request.title,
             request.description,
-            created_at,
-            revision_id,
         ],
     )
-    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+    .map_err(|error| internal_error("inserting a session finding", error))?;
     Ok(tx.last_insert_rowid())
 }

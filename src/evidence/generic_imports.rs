@@ -92,6 +92,7 @@ fn push_import(
             items: Vec::new(),
             alias: None,
             is_wildcard: text.contains('*'),
+            inline_segments: Vec::new(),
         }),
     });
     Ok(())

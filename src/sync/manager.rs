@@ -233,7 +233,7 @@ impl SourceSyncManager {
 
     /// Returns the per-project singleflight mutex for `root`, pruning expired
     /// weak entries.
-    pub(super) fn project_sync_lock(&self, root: &Path) -> Result<Arc<Mutex<()>>, ErrorData> {
+    pub(crate) fn project_sync_lock(&self, root: &Path) -> Result<Arc<Mutex<()>>, ErrorData> {
         let mut table = crate::util::lock(&self.sync_locks, "project_sync_locks")?;
         table.retain(|_, weak| weak.strong_count() > 0);
         if let Some(lock) = table.get(root).and_then(Weak::upgrade) {
@@ -295,6 +295,12 @@ impl SourceSyncManager {
             .map_err(|error| map_activation_error(&error))?;
         let sync_lock = self.project_sync_lock(root.as_path())?;
         let _sync_guard = crate::util::lock(&sync_lock, "project_sync")?;
+        if !project::database_path(&root)
+            .parent()
+            .is_some_and(Path::is_dir)
+        {
+            return Err(map_activation_error(&project::ActivationError::NotActive));
+        }
         project::begin_process_session(&root).map_err(|error| map_activation_error(&error))?;
 
         let (synced, report) =
@@ -308,6 +314,39 @@ impl SourceSyncManager {
             "ensure_current completed",
         );
         Ok(synced)
+    }
+
+    /// Enables `root` (`.planning/slugaudit`, `.gitignore`, process session,
+    /// optional `profile_override`) and runs the initial import under the
+    /// per-project sync lock.
+    pub(crate) fn enable_project(
+        &self,
+        root: &project::ProjectRoot,
+        profile_override: Option<crate::model::AuditProfile>,
+        sink: &dyn ProgressSink,
+    ) -> Result<
+        (
+            PublishReport,
+            Option<DatabaseDiscard>,
+            project::GitignoreOutcome,
+        ),
+        ErrorData,
+    > {
+        let start = std::time::Instant::now();
+        let sync_lock = self.project_sync_lock(root.as_path())?;
+        let _sync_guard = crate::util::lock(&sync_lock, "project_sync")?;
+        project::enable(root)
+            .map_err(|e| ErrorData::internal_error(format!("enable: {e}"), None))?;
+        let gitignore = project::ensure_gitignore(root);
+        project::begin_process_session(root)
+            .map_err(|e| ErrorData::internal_error(format!("enable: {e}"), None))?;
+        if let Some(profile) = profile_override {
+            project::set_session_profile(root.as_path(), profile)?;
+        }
+        let database_path = project::database_path(root);
+        let (synced, report) =
+            self.run_locked_sync(root, database_path, SyncMode::Enable, start, sink)?;
+        Ok((report, synced.discard, gitignore))
     }
 
     /// Runs the initial import for `project_control` `on` under the per-project
@@ -331,14 +370,19 @@ impl SourceSyncManager {
         Ok((report, synced.discard))
     }
 
-    /// Releases all in-memory manager resources (session mechanics and open
-    /// result stores) for `root` before `project_control` `off` deletes
-    /// `.planning/slugaudit`.
+    /// Releases all in-memory manager resources (session mechanics, open result
+    /// stores, and session profile) and deletes `.planning/slugaudit` for
+    /// `root` under the per-project sync lock so no concurrent
+    /// `ensure_current` can observe the activation directory half-deleted.
     ///
     /// # Errors
     ///
-    /// Returns `ErrorData` if an internal mutex is poisoned.
-    pub fn release_disabled_project(&self, root: &project::ProjectRoot) -> Result<(), ErrorData> {
+    /// Returns `ErrorData` if an internal mutex is poisoned or disabling the
+    /// activation directory fails.
+    pub fn disable_project(
+        &self,
+        root: &project::ProjectRoot,
+    ) -> Result<project::DisableReport, ErrorData> {
         let sync_lock = self.project_sync_lock(root.as_path())?;
         let _sync_guard = crate::util::lock(&sync_lock, "project_sync")?;
         let database_path = project::database_path(root);
@@ -346,7 +390,8 @@ impl SourceSyncManager {
         if let Some(runtime_dir) = database_path.parent() {
             self.result_stores.release_dir(runtime_dir)?;
         }
-        Ok(())
+        project::clear_session_profile(root.as_path())?;
+        project::disable(root).map_err(|e| ErrorData::internal_error(format!("disable: {e}"), None))
     }
 
     fn run_locked_sync(

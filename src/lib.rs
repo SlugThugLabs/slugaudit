@@ -21,6 +21,7 @@
 // it goes through `cli::out` / `cli::err`, which write and flush through
 // `std::io::Write` and return the failure instead of panicking.
 #![deny(clippy::print_stdout)]
+#![deny(clippy::print_stderr)]
 // Production code must not panic on an error value. The workspace lints
 // (`Cargo.toml`) deny panicking calls for every target, tests included.
 // Fallible work returns `Result`, and the only genuinely fatal conditions
@@ -33,6 +34,7 @@ pub(crate) mod clock;
 pub mod connect;
 pub(crate) mod error_codes;
 pub(crate) mod evidence;
+pub mod grammar_cli;
 pub(crate) mod graph;
 pub(crate) mod ignore_rules;
 pub mod install;

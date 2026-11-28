@@ -15,7 +15,9 @@ use update_fetch::{
     ASSET, ASSET_ARCH, ASSET_OS, CHECKSUMS_MAX_BYTES, LatestRelease, download, download_capped,
     fetch_latest_release, platform_supported,
 };
-use update_verify::{UpdateDecision, installed_version, update_decision, verify_checksum};
+#[cfg(test)]
+use update_verify::update_decision;
+use update_verify::{UpdateDecision, installed_version, update_decision_for, verify_checksum};
 
 #[path = "update_fetch.rs"]
 mod update_fetch;
@@ -204,30 +206,49 @@ pub fn run_update() -> Result<(), UpdateError> {
     let current = installed_version(&running, &target);
     let latest = fetch_latest_release()?;
 
-    match update_decision(&current, &latest.version)? {
-        UpdateDecision::UpToDate => {
+    match (
+        current.as_deref(),
+        update_decision_for(current.as_deref(), &latest.version)?,
+    ) {
+        (Some(version), UpdateDecision::UpToDate) => {
             crate::cli::out(format_args!(
-                "slugaudit is already up to date (v{current}).\n"
+                "slugaudit is already up to date (v{version}).\n"
             ))?;
             return Ok(());
         }
-        UpdateDecision::Newer => {
+        (None, UpdateDecision::UpToDate) => {
+            crate::cli::out(format_args!("slugaudit is already up to date.\n"))?;
+            return Ok(());
+        }
+        (_, UpdateDecision::Newer) => {
             crate::cli::out(format_args!(
                 "A newer release (tag {}) is available; fetching...\n",
                 latest.tag
             ))?;
         }
-        UpdateDecision::Incomparable => {
+        (Some(version), UpdateDecision::Incomparable) => {
             crate::cli::out(format_args!(
-                "This build's version ({current}) could not be compared with the \
+                "This build's version ({version}) could not be compared with the \
                  published {tag}; fetching it as though it were newer.\n",
+                tag = latest.tag
+            ))?;
+        }
+        (None, UpdateDecision::Incomparable) => {
+            crate::cli::out(format_args!(
+                "The installed binary's version at {path} could not be determined; \
+                 fetching {tag} anyway.\n",
+                path = target.display(),
                 tag = latest.tag
             ))?;
         }
     }
 
+    let from = match current.as_deref() {
+        Some(version) => format!(" v{version}"),
+        None => String::new(),
+    };
     crate::cli::out(format_args!(
-        "Updating slugaudit v{current} -> {} at {}...\n",
+        "Updating slugaudit{from} -> {} at {}...\n",
         latest.version,
         target.display()
     ))?;

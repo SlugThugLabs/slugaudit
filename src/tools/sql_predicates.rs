@@ -26,7 +26,8 @@ pub(crate) const CREDENTIAL_PATH_PREDICATE: &str = "lower(path) LIKE '%.env' \
 
 /// The `files` predicate for a parser-failure row, shared by `report` and
 /// `leads` (`files_not_parsed`): an indexed non-prose file whose parser was
-/// unavailable or whose parse failed.
+/// unavailable or whose parse failed (including files with no detected
+/// language, `language IS NULL`).
 pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
     AND language IS NOT 'prose' \
     AND (parser_availability != 'Available' OR parse_outcome = 'Failed')";
@@ -34,23 +35,6 @@ pub(crate) const PARSER_FAILURE_PREDICATE: &str = "file_kind = 'indexed' \
 /// Files whose grammar ran to a syntax tree, so evidence walkers read them.
 pub(in crate::tools) const PARSED_FILES: &str = "file_kind = 'indexed' AND language IS NOT NULL \
     AND parse_outcome IN ('Succeeded', 'SyntaxErrors')";
-
-/// Compiles a caller's `pattern` into a SQLite `GLOB` pattern (always bound as
-/// a parameter, never interpolated into SQL). A pattern without `*` or `?` is
-/// treated as a substring match with `[` escaped; `**` globstars collapse to `*`.
-pub(in crate::tools) fn pattern_to_glob(pattern: &str) -> String {
-    if pattern.contains(['*', '?']) {
-        let collapsed = pattern.replace("/**/", "/");
-        let collapsed = match collapsed.strip_prefix("**/") {
-            Some(rest) => rest,
-            None => &collapsed,
-        };
-        collapsed.replace("**", "*")
-    } else {
-        let escaped = pattern.replace('[', "[[]");
-        format!("*{escaped}*")
-    }
-}
 
 #[cfg(test)]
 #[path = "sql_predicates_tests.rs"]

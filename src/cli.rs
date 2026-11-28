@@ -38,6 +38,8 @@ pub enum Command {
     },
     /// Install the binary to the standard local binary path.
     Install,
+    /// Inspect or install optional non-Rust Tree-sitter grammars.
+    Grammar(crate::grammar_cli::GrammarAction),
     /// Open the interactive setup menu.
     Menu,
     /// Check for and apply self-updates.
@@ -74,6 +76,20 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
     {
         return Ok(Command::CommandHelp(topic));
     }
+    if matches!(first.as_str(), "--version" | "-V" | "-v")
+        && rest
+            .iter()
+            .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return Ok(Command::CommandHelp(Topic::Version));
+    }
+    if matches!(first.as_str(), "--help" | "-h")
+        && rest
+            .iter()
+            .all(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return Ok(Command::Help);
+    }
     let args = rest.into_iter();
     match first.as_str() {
         "serve" => no_arguments("serve", args).map(|()| Command::Serve),
@@ -85,13 +101,14 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Command, Str
             agent: single_agent(first.as_str(), args)?,
         }),
         "install" => no_arguments("install", args).map(|()| Command::Install),
+        "grammar" => parse_grammar_args(args).map(Command::Grammar),
         "menu" => no_arguments("menu", args).map(|()| Command::Menu),
         "update" => no_arguments("update", args).map(|()| Command::Update),
         "version" | "--version" | "-V" | "-v" => {
             no_arguments("version", args).map(|()| Command::Version)
         }
         other => Err(format!(
-            "unknown command {other:?}; expected one of: serve, connect, disconnect, install, update, menu, version, help"
+            "unknown command {other:?}; expected one of: serve, connect, disconnect, install, grammar, update, menu, version, help"
         )),
     }
 }
@@ -119,6 +136,46 @@ fn no_arguments(command: &str, mut args: impl Iterator<Item = String>) -> Result
             "`{command}` takes no arguments; unexpected argument {extra:?}"
         )),
         None => Ok(()),
+    }
+}
+
+fn parse_grammar_args(
+    mut args: impl Iterator<Item = String>,
+) -> Result<crate::grammar_cli::GrammarAction, String> {
+    let Some(sub) = args.next() else {
+        return Err("`grammar` requires a subcommand: `list` or `install <LANGUAGE>`".to_owned());
+    };
+    match sub.as_str() {
+        "list" => {
+            no_arguments("grammar list", args)?;
+            Ok(crate::grammar_cli::GrammarAction::List)
+        }
+        "install" => {
+            let mut language: Option<String> = None;
+            let mut yes = false;
+            for arg in args {
+                match arg.as_str() {
+                    "--yes" | "-y" => yes = true,
+                    other if other.starts_with('-') => {
+                        return Err(format!("unknown flag {other:?} for `grammar install`"));
+                    }
+                    _ if language.is_none() => language = Some(arg),
+                    extra => {
+                        return Err(format!(
+                            "`grammar install` takes one language; unexpected argument {extra:?}"
+                        ));
+                    }
+                }
+            }
+            let language = language.ok_or_else(|| {
+                "`grammar install` requires a language name (e.g. `slugaudit grammar install python`)"
+                    .to_owned()
+            })?;
+            Ok(crate::grammar_cli::GrammarAction::Install { language, yes })
+        }
+        other => Err(format!(
+            "unknown `grammar` subcommand {other:?}; expected `list` or `install`"
+        )),
     }
 }
 

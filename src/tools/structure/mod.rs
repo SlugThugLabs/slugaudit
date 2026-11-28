@@ -78,6 +78,8 @@ fn serve(
     spec.requested_page_bytes = request.page_bytes;
     spec.ceiling = limits.max_query_response_bytes;
     spec.max_rows = Some(limits.max_structure_matches.max(1));
+    spec.store_limits = matches!(page_request, super::paginate::PageRequest::Fresh { .. })
+        .then(|| crate::store::ResultStoreLimits::from(limits));
     let served = paginate_rows(
         manager,
         &spec,

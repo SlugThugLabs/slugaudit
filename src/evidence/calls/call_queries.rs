@@ -4,8 +4,7 @@
 //!
 //! Kept apart from `query_calls.rs` — which runs a query and turns each
 //! capture into a call site — so adding a language stays a one-entry edit to
-//! this table plus its `.scm`. Node kinds and field names are checked against
-//! the shipped grammars by `query_calls_tests.rs`.
+//! this table plus its `.scm`.
 //!
 //! A query compiles once per process. A compile failure is a defect in an
 //! embedded `.scm` against the grammar the pack ships, logged once; every

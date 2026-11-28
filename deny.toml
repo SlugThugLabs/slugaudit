@@ -4,12 +4,7 @@
 
 [advisories]
 version = 2
-ignore = [
-    # Transitive via rmcp and schemars; upstream has no replacement yet ("No safe upgrade is available!").
-    { id = "RUSTSEC-2026-0543", reason = "chrono is pulled transitively by rmcp and schemars with no upstream alternative yet" },
-    # Applies only when opening an untrusted DB + mismatched -wal written by another party; project.db is disposable local scratch under the host harness boundary.
-    { id = "RUSTSEC-2026-0459", reason = "project.db is disposable local scratch under the host harness boundary; rusqlite 0.37 -> 0.41 is a breaking API change deferred from this pass" },
-]
+ignore = []
 
 [licenses]
 version = 2
@@ -50,17 +45,15 @@ highlight = "all"
 #   futures-macro): most derive crates have moved to syn 3, but
 #   tracing-attributes and zerocopy-derive still pin syn 2 (upstream has not
 #   moved them).
-# - `hashbrown` 0.15 (hashlink → rusqlite) vs 0.17 (indexmap → serde_json):
-#   two independent `0.x` majors pinned by different crates.
-# - `getrandom` 0.2 (const-random → ahash → language-pack) vs 0.3/0.4
-#   (rand_core → proptest): three `0.x` majors, two disjoint subtrees.
+# - `hashbrown` unified to 0.17.2 across rusqlite/hashlink and indexmap/serde_json.
+# - `getrandom` 0.2 (ring) vs 0.4 (ahash, const-random, tree-sitter-language-pack,
+#   rand_core → proptest): two `0.x` majors, two disjoint subtrees.
 # - `windows-sys`: ring pulls 0.52 and fd-lock 0.59 — two generations of
 #   the windows bindings that never unify. The `windows-targets` and
 #   `windows_*` target crates now resolve to a single version, so they need
 #   no skip entry.
 skip = [
     "syn",
-    "hashbrown",
     "getrandom",
     "windows-sys",
 ]

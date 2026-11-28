@@ -51,9 +51,10 @@ Never indexed:
 | What | Detail |
 |---|---|
 | `.git` | Any path with a `.git` component. |
-| `.planning/slugaudit/` | SlugAudit's own directory. A sibling like `.planning/slugaudit-notes/` is indexed. |
+| `.planning` | Any path with a `.planning` component (including SlugAudit's own `.planning/slugaudit/` data directory). |
+| `target` | Any path with a `target` component (build artifacts). |
 | Scratch and editor files | Names ending in `.claude_output.txt`, `.tmp`, `.bak`, `.swp` or `~`, and names starting with `scratch.`. |
-| Ignored files | Files matched by `.gitignore`, `.ignore`, `.git/info/exclude` and your global gitignore. Nested ignore files apply in their folder. Ignore files above the project root are not applied. The ignore rules apply even when the project is not a git repository. |
+| Ignored files | Files matched by `.gitignore`, `.ignore`, `.git/info/exclude` and your global gitignore. Nested ignore files apply in their folder. Inside a Git repository, parent `.gitignore` files up to the repo root apply; outside a Git repository, ignore files above the project root are not applied. |
 | Symlinks | Symlinks are not followed and not indexed. A symlink to a file or to a folder does not appear in the index at all, not even as a skipped file. |
 | Files with a non-UTF-8 name | They cannot be stored. They are only counted: `report.completeness.unrepresentable_path_count`. |
 
@@ -83,11 +84,11 @@ Indexed with a row, but treated specially:
 |---|---|
 | `lean` | 32 MiB |
 | `audit` | 256 MiB |
-| `adaptive` (the default) | one tenth of the machine's RAM, at least 256 MiB and at most 1,000,000,000 bytes |
+| `adaptive` (the default) | `RAM / 10`, clamped between 32 MiB and 1,000,000,000 bytes (`>= 2.56 GiB` hosts get at least 256 MiB) |
 
-So on a machine with 16 GiB of RAM or more, the default cap is 1,000,000,000 bytes. Nothing larger than 1,000,000,000 bytes can be stored, whatever you configure. Change the cap in [configuration](configuration.md).
+So on a machine with 10 GiB of RAM or more, the default cap is 1,000,000,000 bytes. Nothing larger than 1,000,000,000 bytes can be stored, whatever you configure. Change the cap in [configuration](configuration.md).
 
-There is also a cap on the cumulative byte length of all files sampled in one call, `max_total_import_bytes` (2 GiB on `lean`, 32 GiB on `audit`, on `adaptive` half of the available RAM but at least 4 GiB). If a sync would sample more than that, the call fails with a message stating how many bytes it would load and what the limit is. Changed files are parsed and written in bounded chunks so Tree-sitter ASTs and normalized evidence records do not accumulate across the whole repository in memory at once.
+There is also a cap on the cumulative byte length of all files sampled in one call, `max_total_import_bytes` (2 GiB on `lean`, 32 GiB on `audit`, on `adaptive` available RAM / 2, at least 4 GiB on `>= 8 GiB` hosts, scaled to `max(max_file_bytes, RAM / 2)` on smaller hosts). If a sync would sample more than that, the call fails with a message stating how many bytes it would load and what the limit is. Changed files are parsed and written in bounded chunks so Tree-sitter ASTs and normalized evidence records do not accumulate across the whole repository in memory at once.
 
 ### What a skipped file looks like in answers
 

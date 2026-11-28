@@ -15,13 +15,13 @@ pub(crate) enum Parsed {
     NoTree,
 }
 
-/// Parses `content` through tree-sitter 0.26's `Parser::parse_with_options` +
+/// Parses `content` through tree-sitter 0.27's `Parser::parse_with_options` +
 /// `ParseOptions::progress_callback` (the callback runs periodically during
 /// the parse; `ControlFlow::Break` halts it and the call returns `None`).
 /// `spent` says whether the caller's budget is gone; it is asked on every
 /// callback. A halted parser keeps its partial state to resume, so it is
-/// reset before it is used again. Verified against tree-sitter 0.26.13
-/// (`binding_rust/lib.rs`), 2026-10-25.
+/// reset before it is used again. Verified against tree-sitter 0.27.2
+/// (`binding_rust/lib.rs`), 2026-11-27.
 pub(crate) fn parse_within(parser: &mut Parser, content: &str, spent: impl Fn() -> bool) -> Parsed {
     let bytes = content.as_bytes();
     // tree-sitter reads until it gets an empty chunk, so an offset at or past

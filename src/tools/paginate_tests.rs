@@ -474,6 +474,8 @@ fn paginate_raw_rows_round_trip_without_a_typed_layout() -> TestResult {
         requested_page_bytes: None,
         ceiling: usize::MAX,
         max_rows: None,
+        discard_on_partial: false,
+        store_limits: None,
     };
 
     let served: ServedRows<Vec<Cell>, Totals> = paginate_rows(

@@ -1,4 +1,30 @@
 use super::*;
+use crate::progress::NoopProgressSink;
+use crate::store::open_read_write;
+use crate::sync::publish::publish;
+use crate::sync::test_support::write;
+use rusqlite::Connection;
+use slugaudit_test_check::Check;
+use tempfile::TempDir;
+
+/// Publishes `files` (path, content) into a fresh project and returns the
+/// open database; the project and database directories live as long as it.
+fn published(files: &[(&str, &str)]) -> TestResult<(TempDir, TempDir, Connection)> {
+    let project = tempfile::tempdir().check("project dir")?;
+    let db_dir = tempfile::tempdir().check("db dir")?;
+    let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
+    for (path, content) in files {
+        write(project.path(), path, content.as_bytes())?;
+    }
+    publish(&mut connection, project.path(), "1.0", &NoopProgressSink).check("publish")?;
+    Ok((project, db_dir, connection))
+}
+
+fn count(connection: &Connection, sql: &str) -> TestResult<i64> {
+    connection
+        .query_row(sql, [], |row| row.get(0))
+        .check("count query")
+}
 
 #[test]
 fn prose_files_yield_no_diagnostics_and_stay_queryable() -> TestResult {

@@ -87,7 +87,7 @@ fn an_oversized_file_is_skipped_with_the_hash_error_message() -> TestResult {
     ensure_eq(
         &skip.reason,
         &format!(
-            "{} exceeds the 10-byte per-file hash ceiling; at least 11 bytes were read \
+            "{} exceeds the 10-byte per-file hash ceiling; at least 20 bytes were read \
              before the cap stopped the read",
             project.path().join("big.rs").display()
         ),

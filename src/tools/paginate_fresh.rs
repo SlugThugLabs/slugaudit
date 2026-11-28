@@ -2,7 +2,8 @@
 //! the producer into a [`SinkTarget`], and serves page one either directly from
 //! memory or by spilling into [`ResultStore`].
 
-use super::context::{ensure_synced, internal_error, synced_root, with_verified_read};
+use super::context::{ensure_synced, internal_error, synced_root, with_verified_read_setup};
+use super::page::{Completeness, Page};
 use super::paginate::{PageSpec, Produced};
 use super::paginate_cursor::{Stored, serve_stored};
 use super::paginate_cut::{CutStep, PageContext, ServedMeta, ServedRows, stored_row_from_raw};
@@ -17,16 +18,18 @@ use rusqlite::Transaction;
 use serde::{Serialize, de::DeserializeOwned};
 use std::sync::{Arc, OnceLock};
 
-pub(super) fn fresh_rows<E, R, P, C>(
+pub(super) fn fresh_rows_with_setup<E, R, S, P, C>(
     manager: &SourceSyncManager,
     spec: &PageSpec,
     path: &str,
     progress: &dyn ProgressSink,
+    setup: S,
     produce: P,
     cut_for: impl FnOnce(&PageContext<'_, E>) -> Result<C, ErrorData>,
 ) -> Result<ServedRows<R, E>, ErrorData>
 where
     E: Serialize + DeserializeOwned,
+    S: FnOnce(&mut rusqlite::Connection) -> Result<(), ErrorData>,
     P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
     C: FnMut(&StoredRow, usize, usize) -> Result<CutStep<R>, ErrorData>,
 {
@@ -36,7 +39,10 @@ where
         .database_path
         .parent()
         .ok_or_else(|| internal_error("locating the runtime directory", "no parent directory"))?;
-    let store_limits = crate::store::ResultStoreLimits::from(&super::limits_for_root(root)?);
+    let store_limits = match spec.store_limits {
+        Some(limits) => limits,
+        None => crate::store::ResultStoreLimits::from(&super::limits_for_root(root)?),
+    };
     let opened_store: OnceLock<Arc<ResultStore>> = OnceLock::new();
     let store_session = StoreSession::new(
         manager,
@@ -48,7 +54,7 @@ where
         synced.revision_id.clone(),
     );
     let mut target = SinkTarget::new(&store_session, &spec.columns, spec.page_bytes)?;
-    let produced = with_verified_read(&synced, |tx| {
+    let produced = with_verified_read_setup(&synced, setup, |tx| {
         produce(
             tx,
             &mut RowSink {
@@ -57,6 +63,35 @@ where
         )
     })?;
     let finished = target.finish()?;
+    if spec.discard_on_partial
+        && let Completeness::Partial { limited_by, .. } = &produced.completeness
+    {
+        let limited_by = *limited_by;
+        #[cfg(test)]
+        let columns = finished.columns;
+        drop(finished.mode);
+        return Ok(ServedRows {
+            rows: Vec::new(),
+            page: Page {
+                returned: 0,
+                total: None,
+                complete: false,
+                cursor: None,
+                completeness: Some(produced.completeness),
+                page_bytes: spec.page_bytes,
+                bytes_used: 0,
+                limited_by,
+                revision_id: synced.revision_id,
+                current_disk_revision_id: None,
+                database_discard: synced.discard,
+            },
+            meta: produced.extra,
+            #[cfg(test)]
+            columns,
+            #[cfg(test)]
+            at_ceiling: spec.page_bytes >= spec.ceiling,
+        });
+    }
     let stored = Stored {
         completeness: produced.completeness,
         extra: produced.extra,

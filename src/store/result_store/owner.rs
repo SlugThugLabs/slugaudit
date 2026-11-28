@@ -34,12 +34,15 @@ pub(super) fn create_new_file(path: &Path) -> io::Result<File> {
 }
 
 fn open_lock_file(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        // FILE_SHARE_READ | FILE_SHARE_WRITE (disallow delete while held).
+        options.share_mode(0x0000_0001 | 0x0000_0002);
+    }
+    options.open(path)
 }
 
 /// Guard holding this session's OS lock file and unlinking it on drop.
@@ -50,6 +53,8 @@ pub(super) struct OwnerLock {
 
 impl Drop for OwnerLock {
     fn drop(&mut self) {
+        #[cfg(not(unix))]
+        drop(self.lock.take());
         match std::fs::remove_file(&self.lock_path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -57,6 +62,7 @@ impl Drop for OwnerLock {
                 tracing::warn!(error = %error, "could not remove the result store lock file");
             }
         }
+        #[cfg(unix)]
         drop(self.lock.take());
     }
 }

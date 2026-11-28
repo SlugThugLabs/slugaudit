@@ -10,11 +10,12 @@ use super::{
     CallSite, Caller, call_item, callee_node, caller_below, caller_text, named_children,
     qualified_callee, simple_name,
 };
-use crate::evidence::{NoTree, NodeError, WalkInput, deadline_spent, node_text, parse_tree};
+use crate::evidence::{NodeError, WalkInput, deadline_spent, node_text};
 use crate::model::{EvidenceItem, EvidenceOrigin, PositionOverflow};
+use crate::parse::budget::{Parsed, parse_within};
 use std::cmp::Reverse;
 use std::rc::Rc;
-use tree_sitter::{Node, Tree};
+use tree_sitter::{Language, Node, Parser, Tree};
 
 /// How many macro invocations may nest inside one another before extraction
 /// stops reparsing.
@@ -80,32 +81,53 @@ struct FragmentJob {
     caller: Caller,
 }
 
-/// Recovers the calls in `macro_node`'s token tree.
+/// Recovers the calls in `macro_node`'s token tree, lazily initializing and
+/// reusing `parser_slot` with `grammar` across macro invocations in one file.
 pub(super) fn extract(
     macro_node: Node<'_>,
     input: &WalkInput<'_>,
     caller: Option<&str>,
+    grammar: &Language,
+    parser_slot: &mut Option<Parser>,
 ) -> Result<MacroCalls, PositionOverflow> {
     let mut out = MacroCalls::default();
     let Some(tokens) = named_children(macro_node).find(|n| n.kind() == "token_tree") else {
         return Ok(out);
     };
-    let start = tokens
-        .start_byte()
-        .checked_add(1)
-        .ok_or(PositionOverflow::Arithmetic {
-            operation: "the start of a macro token tree body",
-        })?;
-    let end = tokens
-        .end_byte()
-        .checked_sub(1)
-        .ok_or(PositionOverflow::Arithmetic {
-            operation: "the end of a macro token tree body",
-        })?;
+    let (start, end) = token_tree_bounds(tokens, input.source)?;
     if start >= end {
         return Ok(out);
     }
-    scan(input, (start, end), Ok(caller.map(Rc::from)), &mut out)?;
+    if deadline_spent(input.deadline) {
+        out.timed_out = true;
+        return Ok(out);
+    }
+    if node_text(input.source, start, end).is_ok_and(|body| body.trim().is_empty()) {
+        return Ok(out);
+    }
+    let parser = match parser_slot {
+        Some(existing) => existing,
+        slot @ None => {
+            let mut fresh = Parser::new();
+            if let Err(error) = fresh.set_language(grammar) {
+                tracing::warn!(
+                    language = "rust",
+                    %error,
+                    "evidence walker could not build a parser; extraction is partial"
+                );
+                out.capped = true;
+                return Ok(out);
+            }
+            slot.insert(fresh)
+        }
+    };
+    scan(
+        input,
+        (start, end),
+        Ok(caller.map(Rc::from)),
+        parser,
+        &mut out,
+    )?;
     out.rows
         .sort_by_key(|(row_start, row_end, _)| (*row_start, Reverse(*row_end)));
     Ok(out)
@@ -115,6 +137,7 @@ fn scan(
     context: &WalkInput<'_>,
     initial_range: (usize, usize),
     initial_caller: Caller,
+    parser: &mut Parser,
     out: &mut MacroCalls,
 ) -> Result<(), PositionOverflow> {
     let mut jobs = vec![FragmentJob {
@@ -144,7 +167,7 @@ fn scan(
             continue;
         }
         let Some((tree, fragment)) =
-            parse_best_frame(body, job.range, job.macro_depth, context, out)
+            parse_best_frame(body, job.range, job.macro_depth, context, parser, out)
         else {
             if out.timed_out {
                 break;
@@ -238,23 +261,40 @@ fn parse_best_frame(
     range: (usize, usize),
     macro_depth: u32,
     context: &WalkInput<'_>,
+    parser: &mut Parser,
     out: &mut MacroCalls,
 ) -> Option<(Tree, Fragment)> {
     let mut best: Option<(usize, Tree, Fragment)> = None;
     for spec in FRAMES {
+        if deadline_spent(context.deadline) {
+            out.timed_out = true;
+            break;
+        }
         let fragment = Fragment::new(spec, body, range, macro_depth);
-        let tree = match parse_tree("rust", &fragment.wrapped, context.deadline) {
-            Ok(tree) => tree,
-            Err(why) => {
-                out.timed_out |= why == NoTree::TimedOut;
-                out.capped |= why == NoTree::Failed;
+        let tree = match parse_within(parser, &fragment.wrapped, || {
+            deadline_spent(context.deadline)
+        }) {
+            Parsed::Tree(tree) => tree,
+            Parsed::Cancelled => {
+                out.timed_out = true;
+                break;
+            }
+            Parsed::NoTree => {
+                tracing::warn!(
+                    language = "rust",
+                    "evidence walker parse produced no tree; extraction is partial"
+                );
+                out.capped = true;
                 break;
             }
         };
         if !tree.root_node().has_error() {
             return Some((tree, fragment));
         }
-        let calls = count_frame_calls(tree.root_node(), &fragment);
+        let calls = count_frame_calls(tree.root_node(), &fragment, context.deadline, out);
+        if out.timed_out {
+            break;
+        }
         if best
             .as_ref()
             .is_none_or(|(best_calls, _, _)| calls > *best_calls)
@@ -262,13 +302,25 @@ fn parse_best_frame(
             best = Some((calls, tree, fragment));
         }
     }
+    if out.timed_out {
+        return None;
+    }
     best.map(|(_, tree, fragment)| (tree, fragment))
 }
 
-fn count_frame_calls(root: Node<'_>, fragment: &Fragment) -> usize {
+fn count_frame_calls(
+    root: Node<'_>,
+    fragment: &Fragment,
+    deadline: Option<&crate::util::Deadline>,
+    out: &mut MacroCalls,
+) -> usize {
     let mut count = 0usize;
     let mut pending = vec![(root, 0u32)];
     while let Some((node, depth)) = pending.pop() {
+        if deadline_spent(deadline) {
+            out.timed_out = true;
+            break;
+        }
         if depth >= crate::evidence::MAX_WALK_DEPTH {
             continue;
         }
@@ -286,13 +338,41 @@ fn count_frame_calls(root: Node<'_>, fragment: &Fragment) -> usize {
     count
 }
 
+fn token_tree_bounds(tokens: Node<'_>, source: &str) -> Result<(usize, usize), PositionOverflow> {
+    let raw_start = tokens.start_byte();
+    let raw_end = tokens.end_byte();
+    let Some(slice) = source.as_bytes().get(raw_start..raw_end) else {
+        return Ok((raw_start, raw_end));
+    };
+    let start = if matches!(slice.first(), Some(b'(' | b'[' | b'{')) {
+        raw_start
+            .checked_add(1)
+            .ok_or(PositionOverflow::Arithmetic {
+                operation: "the start of a macro token tree body",
+            })?
+    } else {
+        raw_start
+    };
+    let end = if matches!(slice.last(), Some(b')' | b']' | b'}')) {
+        raw_end.checked_sub(1).ok_or(PositionOverflow::Arithmetic {
+            operation: "the end of a macro token tree body",
+        })?
+    } else {
+        raw_end
+    };
+    Ok((start, end))
+}
+
 fn nested_macro_range(node: Node<'_>, fragment: &Fragment) -> Option<(usize, usize)> {
     if node.kind() != "macro_invocation" {
         return None;
     }
     let tokens = named_children(node).find(|n| n.kind() == "token_tree")?;
-    let start = absolute_offset(fragment, tokens.start_byte().checked_add(1)?)?;
-    let end = absolute_offset(fragment, tokens.end_byte().checked_sub(1)?)?;
+    let Ok((inner_start, inner_end)) = token_tree_bounds(tokens, &fragment.wrapped) else {
+        return None;
+    };
+    let start = absolute_offset(fragment, inner_start)?;
+    let end = absolute_offset(fragment, inner_end)?;
     (end <= fragment.end && start < end).then_some((start, end))
 }
 

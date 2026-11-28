@@ -193,37 +193,65 @@ pub(crate) fn resolve_one(
     resolver.resolve(&reference, importing_relative_path, known_paths)
 }
 
-/// Resolves every reference extracted from one raw import statement,
-/// deduplicating identical targets and identical targetless verdicts in order.
-pub(crate) fn resolve_many(
+/// Resolves every reference extracted from one raw import statement within
+/// optional enclosing inline Rust `mod` segments, deduplicating identical
+/// targets and identical targetless verdicts in order.
+pub(crate) fn resolve_many_scoped(
     language: &str,
     importing_relative_path: &str,
     raw: &str,
+    inline_segments: &[String],
     known_paths: &dyn KnownPaths,
     rust_parents: &RustModuleParents,
     workspace_crates: &WorkspaceCrates,
 ) -> Vec<ExtractedResolution> {
     let resolver = get_resolver(language);
-    let references = resolver.extract_references(raw);
-    if references.is_empty() {
-        if resolver.is_modeled_syntax(raw) {
-            return Vec::new();
+    let is_rust = language == "rust";
+    let references = if is_rust {
+        match RustResolver::parse_references(raw) {
+            Some(refs) if refs.is_empty() => return Vec::new(),
+            Some(refs) => refs,
+            None => {
+                return vec![ExtractedResolution {
+                    resolution: unresolved(),
+                    syntax_unmodeled: true,
+                }];
+            }
         }
-        return vec![ExtractedResolution {
-            resolution: unresolved(),
-            syntax_unmodeled: true,
-        }];
-    }
+    } else {
+        let refs = resolver.extract_references(raw);
+        if refs.is_empty() {
+            if resolver.is_modeled_syntax(raw) {
+                return Vec::new();
+            }
+            return vec![ExtractedResolution {
+                resolution: unresolved(),
+                syntax_unmodeled: true,
+            }];
+        }
+        refs
+    };
 
     let mut dedup = DedupState::new();
     for reference in &references {
-        let resolution = resolver.resolve_with_rust_context(
-            reference,
-            importing_relative_path,
-            known_paths,
-            rust_parents,
-            workspace_crates,
-        );
+        let resolution = if is_rust {
+            RustResolver::resolve_in_inline_scope(
+                reference,
+                importing_relative_path,
+                inline_segments,
+                known_paths,
+                rust_parents,
+                workspace_crates,
+            )
+        } else {
+            resolver.resolve_with_rust_context(
+                reference,
+                importing_relative_path,
+                known_paths,
+                rust_parents,
+                workspace_crates,
+            )
+        };
         dedup.push(resolution, false);
     }
     dedup.results

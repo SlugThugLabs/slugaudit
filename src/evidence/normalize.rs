@@ -251,6 +251,7 @@ fn import_item(
             items: item.items.clone(),
             alias: item.alias.clone(),
             is_wildcard: item.is_wildcard,
+            inline_segments: Vec::new(),
         }),
     })
 }

@@ -316,3 +316,89 @@ fn every_profile_protects_an_unfinished_result_for_900_seconds() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn adaptive_limits_scales_safely_for_small_and_large_hosts() -> TestResult {
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    let one_gib = adaptive_limits(SystemMemoryInfo {
+        total_bytes: GIB,
+        available_bytes: 512 * 1024 * 1024,
+    });
+    ensure_eq(
+        &one_gib.max_file_bytes,
+        &(GIB / 10),
+        "1 GiB host scales max_file_bytes to 10% of total RAM",
+    )?;
+    ensure_eq(
+        &one_gib.max_total_import_bytes,
+        &(512 * 1024 * 1024),
+        "1 GiB host scales max_total_import_bytes to half of total RAM",
+    )?;
+    ensure(
+        one_gib.max_parse_bytes < one_gib.max_file_bytes,
+        "1 GiB host keeps max_parse_bytes below max_file_bytes",
+    )?;
+    ensure(
+        one_gib.max_total_import_bytes >= one_gib.max_file_bytes,
+        "1 GiB host keeps max_total_import_bytes at least max_file_bytes",
+    )?;
+    ensure_eq(
+        &one_gib.max_result_store_bytes,
+        &u64::try_from(one_gib.max_query_response_bytes)
+            .check("fits u64")?
+            .checked_mul(4)
+            .check("four responses fit u64")?,
+        "1 GiB host keeps max_result_store_bytes at four maximal responses",
+    )?;
+
+    let sixteen_gib = adaptive_limits(SystemMemoryInfo {
+        total_bytes: 16 * GIB,
+        available_bytes: 16 * GIB,
+    });
+    ensure_eq(
+        &sixteen_gib.max_file_bytes,
+        &SQLITE_MAX_VALUE_BYTES,
+        "16 GiB host clamps max_file_bytes to SQLITE_MAX_VALUE_BYTES",
+    )?;
+    ensure_eq(
+        &sixteen_gib.max_total_import_bytes,
+        &(8 * GIB),
+        "16 GiB host allocates half of available RAM for imports",
+    )?;
+    ensure(
+        sixteen_gib.max_parse_bytes < sixteen_gib.max_file_bytes,
+        "16 GiB host keeps max_parse_bytes below max_file_bytes",
+    )?;
+    ensure(
+        sixteen_gib.max_total_import_bytes >= sixteen_gib.max_file_bytes,
+        "16 GiB host keeps max_total_import_bytes at least max_file_bytes",
+    )?;
+    ensure_eq(
+        &sixteen_gib.max_result_store_bytes,
+        &u64::try_from(sixteen_gib.max_query_response_bytes)
+            .check("fits u64")?
+            .checked_mul(4)
+            .check("four responses fit u64")?,
+        "16 GiB host keeps max_result_store_bytes at four maximal responses",
+    )?;
+
+    let zero_ram = adaptive_limits(SystemMemoryInfo {
+        total_bytes: 0,
+        available_bytes: 0,
+    });
+    ensure_eq(
+        &zero_ram.max_file_bytes,
+        &(32 * 1024 * 1024),
+        "zero-RAM synthetic input clamps max_file_bytes to 32 MiB",
+    )?;
+    ensure(
+        zero_ram.max_parse_bytes < zero_ram.max_file_bytes,
+        "zero-RAM synthetic input keeps max_parse_bytes below max_file_bytes",
+    )?;
+    ensure(
+        zero_ram.max_total_import_bytes >= zero_ram.max_file_bytes,
+        "zero-RAM synthetic input keeps max_total_import_bytes at least max_file_bytes",
+    )?;
+    Ok(())
+}

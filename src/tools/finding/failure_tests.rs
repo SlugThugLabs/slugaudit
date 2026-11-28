@@ -80,39 +80,27 @@ fn each_findings_write_statement_failure_is_an_internal_error() -> TestResult {
         (
             "restatement lookup",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
-             line_start INTEGER, line_end INTEGER, title TEXT, description TEXT, \
-             created_at_unix INTEGER, evidence_revision TEXT);",
+             line_start INTEGER, line_end INTEGER, title TEXT, description TEXT);",
             None,
             "no such column: category",
         ),
         (
             "restatement update",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
-             line_start INTEGER, line_end INTEGER, category TEXT, title TEXT, description TEXT, \
-             created_at_unix INTEGER, evidence_revision TEXT);",
+             line_start INTEGER, line_end INTEGER, category TEXT, title TEXT, description TEXT);",
             Some(
                 "INSERT INTO findings (path, source_hash, line_start, line_end, category, title, \
-                 description, created_at_unix, evidence_revision) \
-                 VALUES ('lib.rs', 'hash', 1, 1, 'correctness', 'Reviewed conclusion', 'old', 1, \
-                 'rev')",
+                 description) \
+                 VALUES ('lib.rs', 'hash', 1, 1, 'correctness', 'Reviewed conclusion', 'old')",
             ),
             "no such column: severity",
         ),
         (
-            "created_at read",
-            "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
-             line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT, \
-             description TEXT, evidence_revision TEXT);",
-            None,
-            "no such column: created_at_unix",
-        ),
-        (
             "finding insert",
             "CREATE TABLE findings (id INTEGER PRIMARY KEY, path TEXT, source_hash TEXT, \
-             line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT, \
-             description TEXT, created_at_unix INTEGER);",
+             line_start INTEGER, line_end INTEGER, severity TEXT, category TEXT, title TEXT);",
             None,
-            "evidence_revision",
+            "description",
         ),
     ];
 
@@ -153,5 +141,44 @@ fn a_failed_files_read_is_an_internal_error_not_a_bad_input() -> TestResult {
         !error.message.contains("lib.rs"),
         format!("{}", error.message),
     )?;
+    Ok(())
+}
+
+#[test]
+fn finding_rejects_nul_bytes_in_text_fields_as_invalid_input() -> TestResult {
+    let project = activated_project("lib.rs", b"pub fn a() {}\n")?;
+    for field in ["file", "title", "description", "severity", "category"] {
+        for bad in ["\0leading", "mid\0nul"] {
+            let mut request = base_request(&project, "lib.rs");
+            match field {
+                "file" => request.file = bad.to_owned(),
+                "title" => request.title = bad.to_owned(),
+                "description" => request.description = bad.to_owned(),
+                "severity" => request.severity = bad.to_owned(),
+                "category" => request.category = bad.to_owned(),
+                _ => {}
+            }
+            let error = validation_error(request)?;
+            ensure_eq(
+                &error.code,
+                &rmcp::model::ErrorCode::INVALID_PARAMS,
+                "NUL byte must fail as INVALID_PARAMS",
+            )?;
+            ensure_eq(
+                &error
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get("code"))
+                    .and_then(serde_json::Value::as_str),
+                &Some("invalid_input"),
+                "NUL byte error carries invalid_input code",
+            )?;
+            ensure_eq(
+                &error.message.as_ref(),
+                &format!("{field} must not contain NUL bytes").as_str(),
+                format!("unexpected error for {field}: {}", error.message),
+            )?;
+        }
+    }
     Ok(())
 }

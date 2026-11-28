@@ -137,11 +137,9 @@ fn an_untested_language_query_carries_one_notice() -> TestResult {
 
     ensure_eq(
         &response.notices,
-        &[
-            "python: uses an untested grammar (downloaded on first use). \
-             Only Rust is tested; treat python results as best-effort.",
-        ],
-        "response.notices == [ \"python: uses an untested grammar (downloaded on first use). \\ Only Rust is tested; treat python results as best-effort.\" ]",
+        &["python: uses an untested grammar. \
+             Only Rust is tested; treat python results as best-effort."],
+        "response.notices == [ \"python: uses an untested grammar. \\ Only Rust is tested; treat python results as best-effort.\" ]",
     )?;
     Ok(())
 }

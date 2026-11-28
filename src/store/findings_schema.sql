@@ -12,9 +12,7 @@ CREATE TABLE IF NOT EXISTS findings (
     severity TEXT NOT NULL CHECK (length(severity) BETWEEN 1 AND 100),
     category TEXT NOT NULL CHECK (length(category) BETWEEN 1 AND 100),
     title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
-    description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 10000),
-    created_at_unix INTEGER NOT NULL,
-    evidence_revision TEXT NOT NULL
+    description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 10000)
 );
 
-CREATE INDEX IF NOT EXISTS idx_findings_path_hash ON findings (path, source_hash);
+CREATE INDEX IF NOT EXISTS idx_findings_path ON findings (path);

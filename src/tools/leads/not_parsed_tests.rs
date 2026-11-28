@@ -312,3 +312,99 @@ fn the_parsed_and_parser_failure_predicates_never_overlap_and_cover_every_parse(
     )?;
     Ok(())
 }
+
+#[test]
+fn report_and_leads_agree_on_unparsed_file_counts_including_unknown_extensions() -> TestResult {
+    let project = oversize_fixture()?;
+    fs::write(project.path().join("a.md"), "# docs\n").check("write md")?;
+    fs::write(project.path().join(".gitignore"), "target/\n").check("write .gitignore")?;
+    fs::write(project.path().join("c.zzunknown"), "mystery bytes\n").check("write unknown ext")?;
+    let manager = crate::sync::SourceSyncManager::default();
+
+    let report = run_report(&project, &manager)?;
+    let counts = run_leads(leads_request(&project, None), &manager)?;
+
+    ensure_eq(
+        &report.parser_failure_count,
+        &2,
+        "report counts big.rs and c.zzunknown while excluding prose",
+    )?;
+    ensure_eq(
+        &counts.files_not_parsed,
+        &report.parser_failure_count,
+        "leads.files_not_parsed must match report.parser_failure_count",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn custom_mechanic_stopped_at_zero_files_reports_empty_covers() -> TestResult {
+    let project = tempfile::tempdir().check("project dir")?;
+    let config_dir = project.path().join(".planning").join("slugaudit");
+    fs::create_dir_all(&config_dir).check("activate")?;
+    crate::project::write_database_marker(&config_dir)?;
+    fs::write(project.path().join("app.py"), "eval(\"1\")\n").check("write app.py")?;
+    let path = project.path().to_string_lossy().into_owned();
+    let manager = crate::sync::SourceSyncManager::default();
+    crate::tools::mechanic(
+        &Parameters(crate::tools::MechanicRequest {
+            path: Some(path.clone()),
+            action: Some(crate::tools::MechanicAction::Add),
+            cursor: None,
+            legacy_paging: crate::tools::LegacyPaging::default(),
+            id: Some("py_eval".to_owned()),
+            language: Some("python".to_owned()),
+            query: Some(
+                r#"(call function: (identifier) @callee (#eq? @callee "eval"))"#.to_owned(),
+            ),
+            note: Some("eval calls".to_owned()),
+            limit: None,
+            page_bytes: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("add custom mechanic")?;
+
+    let root = crate::tools::project_root(&path).check("project root")?;
+    let mut limits = crate::tools::limits_for_root(&root).check("limits")?;
+    limits.max_structure_execution_time = Duration::ZERO;
+    let catalog =
+        super::super::mechanic::catalog::load(manager.session_mechanics(), root.as_path())
+            .check("load catalog")?;
+    let response = super::leads_with_catalog(
+        &leads_request(&project, Some("py_eval")),
+        &limits,
+        &catalog,
+        &crate::progress::NoopProgressSink,
+        &manager,
+    )
+    .check("zero-budget leads returns partial response")?;
+
+    ensure(
+        matches!(
+            response.page.completeness,
+            Some(crate::tools::Completeness::Partial {
+                files_scanned: 0,
+                ..
+            })
+        ),
+        format!(
+            "expected 0 files scanned partial completeness: {:?}",
+            response.page.completeness
+        ),
+    )?;
+    let custom = response
+        .mechanic_counts
+        .iter()
+        .find(|entry| entry.mechanic == "py_eval")
+        .check("py_eval count entry present")?;
+    ensure(
+        custom.covers.is_empty(),
+        format!(
+            "expected empty covers when 0 files scanned, got {:?}",
+            custom.covers
+        ),
+    )?;
+    Ok(())
+}

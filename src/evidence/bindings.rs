@@ -6,7 +6,7 @@
 
 use crate::model::{
     EvidenceItem, EvidenceKind, EvidenceOrigin, EvidencePayload, LineIndex, PositionOverflow,
-    SymbolPayload,
+    SpanAvailability, SymbolPayload,
 };
 
 use super::{Extraction, TextRangeError, WalkInput, named_children, node_span, node_text};
@@ -103,15 +103,29 @@ pub(super) fn push_binding(
     out: &mut Extraction,
     counter: &mut usize,
 ) -> Result<bool, PositionOverflow> {
+    Ok(push_binding_span(
+        node_span(node, lines, "binding")?,
+        fields,
+        out,
+        counter,
+    ))
+}
+
+pub(super) fn push_binding_span(
+    span: SpanAvailability,
+    fields: &BindingFields<'_>,
+    out: &mut Extraction,
+    counter: &mut usize,
+) -> bool {
     let Some(next) = counter.checked_add(1) else {
         tracing::warn!("binding key counter exhausted; extraction is partial");
         out.truncated = true;
-        return Ok(false);
+        return false;
     };
-    let item = binding_item(node, fields, *counter, lines)?;
+    let item = binding_item(span, fields, *counter);
     *counter = next;
     out.items.push(item);
-    Ok(true)
+    true
 }
 
 fn binding_kind(kind: &str) -> Option<(&'static str, &'static str)> {
@@ -128,17 +142,12 @@ fn binding_kind(kind: &str) -> Option<(&'static str, &'static str)> {
     }
 }
 
-fn binding_item(
-    node: tree_sitter::Node<'_>,
-    fields: &BindingFields<'_>,
-    index: usize,
-    lines: &LineIndex<'_>,
-) -> Result<EvidenceItem, PositionOverflow> {
-    Ok(EvidenceItem {
+fn binding_item(span: SpanAvailability, fields: &BindingFields<'_>, index: usize) -> EvidenceItem {
+    EvidenceItem {
         key: format!("{}:{index}", fields.prefix),
         kind: EvidenceKind::Symbol,
         origin: EvidenceOrigin::GenericWalker,
-        span: node_span(node, lines, "binding")?,
+        span,
         payload: EvidencePayload::Symbol(SymbolPayload {
             name: fields.name.to_owned(),
             kind: fields.sym_kind.to_owned(),
@@ -146,7 +155,7 @@ fn binding_item(
             type_annotation: fields.type_annotation.map(str::to_owned),
             doc: fields.doc.map(str::to_owned),
         }),
-    })
+    }
 }
 
 fn identifier_name(

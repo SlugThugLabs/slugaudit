@@ -138,8 +138,8 @@ fn unsupported_language_unresolved_is_counted_separately_from_supported_language
     connection
         .execute(
             "INSERT INTO revisions \
-             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
-             VALUES ('r1', 'h', '1.0.0', 0, 1)",
+             (revision_id, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('r1', '1.0.0', 0, 1)",
             [],
         )
         .check("insert revision")?;
@@ -320,7 +320,7 @@ fn malformed_language_value_is_reported_instead_of_dropped() -> TestResult {
     let mut connection = open_read_write(&db_dir.path().join("project.db")).check("open db")?;
     connection
         .execute_batch(
-            "INSERT INTO revisions (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) VALUES ('r1', 'h', '1.0.0', 0, 1);\
+            "INSERT INTO revisions (revision_id, parser_pack_version, created_at_unix, is_current) VALUES ('r1', '1.0.0', 0, 1);\
              INSERT INTO files (path, file_kind, content, content_hash, hash_algorithm, byte_len, language, language_detected, parser_availability, parse_outcome, extraction_completeness, last_revision_id) \
              VALUES ('broken.bin', 'indexed', '', 'h', 'blake3', 0, CAST(X'FF' AS BLOB), 1, 'Unavailable', 'Failed', 'Unavailable', 1);"
         )
@@ -483,8 +483,8 @@ pub(super) fn database_with_one_revision() -> TestResult<(tempfile::TempDir, rus
     connection
         .execute(
             "INSERT INTO revisions \
-             (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
-             VALUES ('r1', 'h', '1.0.0', 0, 1)",
+             (revision_id, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('r1', '1.0.0', 0, 1)",
             [],
         )
         .check("insert revision")?;

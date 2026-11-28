@@ -18,7 +18,7 @@
     },
     {
       "name": "leads",
-      "description": "Counts and paged file/line rows for mechanical observations \u2014 call-site shapes (unwrap/expect/panic/todo/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict."
+      "description": "Counts and paged file/line rows for mechanical observations \u2014 call-site shapes (unwrap/expect/panic/unreachable/todo/unimplemented/assert), diagnostics, TODO/FIXME/HACK/XXX comment markers, and credential-shaped paths. Unranked: no severity, no verdict."
     },
     {
       "name": "mechanic",
@@ -38,11 +38,11 @@
     },
     {
       "name": "project_control",
-      "description": "Enable or disable a project \u2014 creates the .planning/slugaudit directory and runs the first import, or deletes that directory."
+      "description": "Enable or disable a project \u2014 creates the .planning/slugaudit directory and runs the first import, or deletes that directory (and .planning when empty)."
     },
     {
       "name": "health",
-      "description": "Server and database state: phase, last-sync timestamp, tool-call counters. Never syncs."
+      "description": "Server and database state: phase, remedy, and database summary (with last-sync timestamp and tool-call counters returned when verbose: true). Never syncs."
     }
   ],
   "homepage": "https://slugthuglabs.dev",

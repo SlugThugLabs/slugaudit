@@ -109,6 +109,7 @@ pub fn finding_read(
             let limits = resolve_limits(path)?;
             spec.page_bytes = PageSize::resolve(request.page_bytes, &limits)?.bytes;
             spec.ceiling = limits.max_query_response_bytes;
+            spec.store_limits = Some(crate::store::ResultStoreLimits::from(&limits));
         }
         PageRequest::Cursor(_) => {
             PageSize::refuse_zero(request.page_bytes)?;

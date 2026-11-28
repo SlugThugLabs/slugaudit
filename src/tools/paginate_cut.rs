@@ -124,7 +124,19 @@ where
     }
 
     pub(super) fn into_served<E>(self, meta: ServedMeta<E>) -> ServedRows<R, E> {
-        let complete = meta.cursor.is_none();
+        let more_pages = meta.cursor.is_some();
+        let partial_limit = match &meta.completeness {
+            crate::tools::page::Completeness::Partial { limited_by, .. } => Some(*limited_by),
+            crate::tools::page::Completeness::Complete => None,
+        };
+        let complete = !more_pages && partial_limit.is_none();
+        let limited_by = if more_pages {
+            compute_limited_by(false, self.stop_limit, meta.at_ceiling)
+        } else if let Some(limit) = partial_limit {
+            limit
+        } else {
+            PageLimit::None
+        };
         let page = Page {
             returned: self.rows.len(),
             total: Some(meta.total_rows),
@@ -133,7 +145,7 @@ where
             completeness: Some(meta.completeness),
             page_bytes: meta.page_bytes,
             bytes_used: self.bytes_used,
-            limited_by: compute_limited_by(complete, self.stop_limit, meta.at_ceiling),
+            limited_by,
             revision_id: meta.revision_id,
             current_disk_revision_id: meta.current_disk_revision_id,
             database_discard: meta.database_discard,

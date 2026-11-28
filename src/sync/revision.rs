@@ -4,10 +4,15 @@
 //! dependency edge handoff, and the `is_current` revision pointer flip.
 
 use super::classify::classify;
-use super::revision_edges::{self, EdgeChangeScope, StagedFileEdgeMeta, UpsertedEdgeInput};
+use super::revision_edge_invalidation::EdgeChangeScope;
+use super::revision_edges::{UpsertedEdgeInput, resolve_upserted_edges};
+use super::revision_graph_context::load_path_to_id;
 #[cfg(test)]
-use super::revision_rust_meta::any_path_has_stored_rust_path_attr;
+use super::revision_path_state::collect_prior_rust_path_state;
+use super::revision_path_state::{PriorPathAttrInvalidation, StagedFileEdgeMeta};
 use super::staging::StagingDb;
+#[cfg(test)]
+use super::test_support::scope_for_test_inputs;
 use crate::model::{EvidenceItem, ParserRun, SourceIdentity};
 use crate::util::{self, Deadline};
 #[cfg(test)]
@@ -143,7 +148,6 @@ pub enum RevisionError {
 #[cfg(test)]
 pub(super) struct RevisionInputs<'a> {
     pub(super) expected_current: Option<&'a str>,
-    pub(super) manifest_hash: &'a str,
     pub(super) parser_pack_version: &'a str,
     pub(super) upserts: &'a [FileRecord],
     pub(super) deletions: &'a [String],
@@ -174,21 +178,20 @@ pub(super) fn validate_record(file: &FileRecord) -> Result<(), RevisionError> {
 }
 
 /// Streams staged `files` and `evidence` rows one file at a time from
-/// `staging` into `tx`, checking `deadline` cooperatively and comparing prior
-/// stored Rust `#[path]` attributes before replacing evidence.
+/// `staging` into `tx`, checking `deadline` cooperatively and recording which
+/// files changed stored Rust `#[path]` attributes.
 pub(super) fn copy_staged_files_to_tx(
     tx: &Transaction<'_>,
     staging: &StagingDb,
     staged_metas: &[StagedFileEdgeMeta],
     revision_db_id: i64,
-    full_rust_reresolve: bool,
+    changed_path_attr_seqs: &HashSet<i64>,
     deadline: Option<&Deadline>,
 ) -> Result<Vec<UpsertedEdgeInput>, RevisionError> {
     let mut edge_inputs = Vec::with_capacity(staged_metas.len());
     for meta in staged_metas {
         check_deadline(deadline)?;
-        let rust_path_attr_changed =
-            revision_edges::did_rust_path_attr_change(tx, meta, full_rust_reresolve)?;
+        let rust_path_attr_changed = changed_path_attr_seqs.contains(&meta.seq);
         let file_id = staging.copy_seq_to_tx(tx, meta.seq, revision_db_id)?;
         edge_inputs.push(meta.to_edge_input(file_id, rust_path_attr_changed));
     }
@@ -203,7 +206,6 @@ pub(super) fn publish_revision(
 ) -> Result<String, RevisionError> {
     let RevisionInputs {
         expected_current,
-        manifest_hash,
         parser_pack_version,
         upserts,
         deletions,
@@ -230,16 +232,14 @@ pub(super) fn publish_revision(
 
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     assert_baseline(&tx, expected_current)?;
-    let scope =
-        revision_edges::scope_for_test_inputs(&tx, upserts, deletions, re_resolve_unresolved)?;
-    let (revision_db_id, revision_id) =
-        insert_revision_row(&tx, manifest_hash, parser_pack_version)?;
+    let scope = scope_for_test_inputs(&tx, upserts, deletions, re_resolve_unresolved)?;
+    let (revision_db_id, revision_id) = insert_revision_row(&tx, parser_pack_version)?;
     let removed_or_skipped = deletions
         .iter()
         .map(String::as_str)
         .chain(skipped.iter().map(|s| s.relative_path.as_str()));
-    let deleted_or_skipped_had_path_attr =
-        any_path_has_stored_rust_path_attr(&tx, removed_or_skipped)?;
+    let prior_rust_paths =
+        collect_prior_rust_path_state(&tx, removed_or_skipped, &staged_metas, deadline)?;
     apply_deletions(&tx, deletions, deadline)?;
 
     let edge_inputs = copy_staged_files_to_tx(
@@ -247,7 +247,7 @@ pub(super) fn publish_revision(
         &staging,
         &staged_metas,
         revision_db_id,
-        scope.any_rust_or_manifest_added_or_deleted(),
+        &prior_rust_paths.changed_staged_seqs,
         deadline,
     )?;
     drop(staging);
@@ -259,8 +259,8 @@ pub(super) fn publish_revision(
         &tx,
         &edge_inputs,
         discovered_paths,
-        scope,
-        deleted_or_skipped_had_path_attr,
+        &scope,
+        &prior_rust_paths.invalidation,
         revision_db_id,
         deadline,
     )?;
@@ -275,24 +275,24 @@ pub(super) fn finish_edges_and_flip(
     tx: &Transaction<'_>,
     edge_inputs: &[UpsertedEdgeInput],
     discovered_paths: &HashSet<String>,
-    scope: EdgeChangeScope,
-    deleted_or_skipped_had_path_attr: bool,
+    scope: &EdgeChangeScope,
+    prior_path_attrs: &PriorPathAttrInvalidation,
     revision_db_id: i64,
     deadline: Option<&Deadline>,
 ) -> Result<(), RevisionError> {
-    let path_to_id = revision_edges::load_path_to_id(tx)?;
+    let path_to_id = load_path_to_id(tx)?;
     let known_ref: HashSet<&str> = discovered_paths
         .iter()
         .map(String::as_str)
         .chain(path_to_id.keys().map(String::as_str))
         .collect();
-    revision_edges::resolve_upserted_edges(
+    resolve_upserted_edges(
         tx,
         edge_inputs,
         &path_to_id,
         &known_ref,
         scope,
-        deleted_or_skipped_had_path_attr,
+        prior_path_attrs,
         deadline,
     )?;
     flip_current_revision(tx, revision_db_id)
@@ -301,7 +301,6 @@ pub(super) fn finish_edges_and_flip(
 /// Inserts the revision row and stamps its derived `revision_id`.
 pub(super) fn insert_revision_row(
     tx: &Transaction<'_>,
-    manifest_hash: &str,
     parser_pack_version: &str,
 ) -> Result<(i64, String), RevisionError> {
     let persisted_time: Option<i64> =
@@ -310,9 +309,9 @@ pub(super) fn insert_revision_row(
         })?;
     let created_at = util::at_least_timestamp(util::now_unix()?, persisted_time);
     tx.execute(
-        "INSERT INTO revisions (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
-         VALUES ('pending', ?1, ?2, ?3, 0)",
-        params![manifest_hash, parser_pack_version, created_at],
+        "INSERT INTO revisions (revision_id, parser_pack_version, created_at_unix, is_current) \
+         VALUES ('pending', ?1, ?2, 0)",
+        params![parser_pack_version, created_at],
     )?;
     let revision_db_id = tx.last_insert_rowid();
     let revision_id = format!("rev-{revision_db_id}");
@@ -400,13 +399,18 @@ fn upsert_skipped_file(
             last_revision_id = excluded.last_revision_id \
          RETURNING id",
     )?;
+    let byte_len = record
+        .byte_len
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     let file_id: i64 = upsert_stmt.query_row(
         params![
             record.relative_path,
             record.reason,
             record.identity.content_hash,
             record.identity.hash_algorithm,
-            record.byte_len,
+            byte_len,
             record.modified_unix_seconds,
             revision_db_id,
             classify(&record.relative_path).as_sql_text(),

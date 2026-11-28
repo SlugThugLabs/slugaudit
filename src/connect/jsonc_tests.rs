@@ -37,9 +37,9 @@ fn jsonc_normalizer_preserves_urls_and_strips_comments_and_trailing_commas() -> 
 }
 
 #[test]
-fn jsonc_block_comments_handle_quoted_close_markers_and_strings_handle_comment_openers()
--> TestResult {
-    let raw = "{\n  /* block comment quoting \"a */ b\" and \"escaped \\\" */ end\" */\n  \"literal_open\": \"/* not a comment\",\n  \"escaped_open\": \"quote \\\" /* still in string\",\n}\n";
+fn jsonc_block_comments_end_at_first_close_marker_and_strings_handle_comment_openers() -> TestResult
+{
+    let raw = "{\n  /* e.g. \"unclosed quote before close */\n  \"bar\": \"baz */ qux\",\n  \"literal_open\": \"/* not a comment\",\n  \"escaped_open\": \"quote \\\" /* still in string\",\n}\n";
     ensure(
         has_jsonc_comments(raw),
         "detects real block comment outside strings",
@@ -53,7 +53,12 @@ fn jsonc_block_comments_handle_quoted_close_markers_and_strings_handle_comment_o
 
     let cleaned = strip_jsonc_comments_and_trailing_commas(raw);
     let parsed: serde_json::Value = serde_json::from_str(&cleaned)
-        .check("quoted */ inside block comment does not cut early")?;
+        .check("unclosed quote inside block comment does not swallow past first */")?;
+    ensure_eq(
+        &parsed.get("bar").and_then(serde_json::Value::as_str),
+        &Some("baz */ qux"),
+        "entry after /* ... \" ... */ parses intact",
+    )?;
     ensure_eq(
         &parsed
             .get("literal_open")
@@ -75,7 +80,7 @@ fn jsonc_block_comments_handle_quoted_close_markers_and_strings_handle_comment_o
 fn jsonc_normalizer_leaves_unclosed_block_comments_and_bare_commas_invalid() -> TestResult {
     for invalid in [
         "{ /* unclosed block comment ",
-        "{ /* unclosed before quoted close \n \"x\": \"a */ b\" }",
+        "{ /* \"a */ b\" */ \"x\": 1 }",
         "{,}",
         "{\"a\": [,]}",
         "{\"a\": [1,,]}",

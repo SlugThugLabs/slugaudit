@@ -42,12 +42,13 @@ fn parse_rust_snippet(raw: &str) -> Option<Tree> {
     })
 }
 
-/// Parses a raw Rust `use` statement into expanded targets via `tree-sitter-rust`.
+/// Parses a raw Rust `use` or `extern crate` statement into expanded targets via
+/// `tree-sitter-rust`.
 ///
-/// Returns `None` for non-`use` items (such as `extern crate`), malformed
-/// `use` trees, or trees exceeding expansion bounds; `Some(vec![])` for valid
-/// empty-brace `use crate::foo::{};`; and `Some(targets)` for valid `use`
-/// trees.
+/// Returns `None` for other items or malformed `use` / `extern crate`
+/// statements, or trees exceeding expansion bounds; `Some(vec![])` for valid
+/// empty-brace `use crate::foo::{};` and `extern crate self as ...;`; and
+/// `Some(targets)` for valid `use` trees and `extern crate <name>;` statements.
 pub(crate) fn parse_rust_import(raw: &str) -> Option<Vec<String>> {
     if raw.trim().is_empty() {
         return None;
@@ -57,12 +58,30 @@ pub(crate) fn parse_rust_import(raw: &str) -> Option<Vec<String>> {
     if root.has_error() {
         return None;
     }
-    let use_decl = single_use_declaration(root)?;
-    let argument = use_decl.child_by_field_name("argument")?;
-    expand_use_argument(argument, raw)
+    let decl = single_import_declaration(root)?;
+    match decl.kind() {
+        "use_declaration" => {
+            let argument = decl.child_by_field_name("argument")?;
+            expand_use_argument(argument, raw)
+        }
+        "extern_crate_declaration" => parse_extern_crate_declaration(decl, raw),
+        _ => None,
+    }
 }
 
-fn single_use_declaration(root: Node<'_>) -> Option<Node<'_>> {
+fn parse_extern_crate_declaration(decl: Node<'_>, source: &str) -> Option<Vec<String>> {
+    let name_node = decl.child_by_field_name("name")?;
+    let crate_name = slice_ident(name_node, source)?;
+    if name_node.kind() == "self" || crate_name == "self" {
+        return Some(Vec::new());
+    }
+    if name_node.kind() == "identifier" {
+        return Some(vec![crate_name.to_owned()]);
+    }
+    None
+}
+
+fn single_import_declaration(root: Node<'_>) -> Option<Node<'_>> {
     let mut found = None;
     let mut cursor = root.walk();
     if cursor.goto_first_child() {
@@ -71,7 +90,9 @@ fn single_use_declaration(root: Node<'_>) -> Option<Node<'_>> {
             if child.is_named() {
                 match child.kind() {
                     "line_comment" | "block_comment" => {}
-                    "use_declaration" if found.is_none() => found = Some(child),
+                    "use_declaration" | "extern_crate_declaration" if found.is_none() => {
+                        found = Some(child);
+                    }
                     _ => return None,
                 }
             }

@@ -14,7 +14,7 @@ pub(in crate::tools) use super::paginate_cut::byte_cut_step;
 #[cfg(test)]
 pub(in crate::tools) use super::paginate_cut::compute_limited_by;
 pub(crate) use super::paginate_cut::{CutStep, ServedRows};
-use super::paginate_fresh::fresh_rows;
+use super::paginate_fresh::fresh_rows_with_setup;
 pub use super::paginate_sink::RowSink;
 #[cfg(test)]
 use crate::error_codes::store_error;
@@ -58,6 +58,13 @@ pub struct PageSpec {
     /// Optional per-page row cap (`max_structure_matches` on `structure`),
     /// enforced on page one and persisted for every cursor continuation.
     pub max_rows: Option<usize>,
+    /// When `true`, a fresh request whose producer reports `Completeness::Partial`
+    /// drops any spilled `ResultWriter` and skips `ResultStore` materialisation,
+    /// returning an empty `ServedRows` with `produced.completeness`.
+    pub(in crate::tools) discard_on_partial: bool,
+    /// Pre-resolved `ResultStore` limits from the caller, avoiding a duplicate
+    /// config lookup inside `paginate_fresh`.
+    pub(in crate::tools) store_limits: Option<crate::store::ResultStoreLimits>,
 }
 
 impl PageSpec {
@@ -71,6 +78,23 @@ impl PageSpec {
             requested_page_bytes: None,
             ceiling: usize::MAX,
             max_rows: None,
+            discard_on_partial: false,
+            store_limits: None,
+        }
+    }
+
+    /// A spec whose columns are declared later by the producer via [`RowSink::set_columns`].
+    #[must_use]
+    pub fn dynamic(tool: &'static str, page_bytes: usize) -> Self {
+        Self {
+            tool,
+            columns: Vec::new(),
+            page_bytes,
+            requested_page_bytes: None,
+            ceiling: usize::MAX,
+            max_rows: None,
+            discard_on_partial: false,
+            store_limits: None,
         }
     }
 }
@@ -97,10 +121,29 @@ where
     P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
     C: FnMut(&StoredRow, usize, usize) -> Result<CutStep<R>, ErrorData>,
 {
+    paginate_rows_with_setup(manager, spec, request, |_| Ok(()), produce, cut_for)
+}
+
+/// Like [`paginate_rows`], but runs `setup` on `&mut Connection` before
+/// starting the fresh read transaction.
+pub(crate) fn paginate_rows_with_setup<E, R, S, P, C>(
+    manager: &SourceSyncManager,
+    spec: &PageSpec,
+    request: PageRequest<'_>,
+    setup: S,
+    produce: P,
+    cut_for: impl FnOnce(&PageContext<'_, E>) -> Result<C, ErrorData>,
+) -> Result<ServedRows<R, E>, ErrorData>
+where
+    E: Serialize + DeserializeOwned,
+    S: FnOnce(&mut rusqlite::Connection) -> Result<(), ErrorData>,
+    P: FnOnce(&Transaction<'_>, &mut RowSink<'_, '_>) -> Result<Produced<E>, ErrorData>,
+    C: FnMut(&StoredRow, usize, usize) -> Result<CutStep<R>, ErrorData>,
+{
     match request {
         PageRequest::Cursor(token) => continue_rows(manager, spec, token, cut_for),
         PageRequest::Fresh { path, sink } => {
-            fresh_rows(manager, spec, path, sink, produce, cut_for)
+            fresh_rows_with_setup(manager, spec, path, sink, setup, produce, cut_for)
         }
     }
 }

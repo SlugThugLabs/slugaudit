@@ -15,6 +15,18 @@ pub(super) const MAX_COLUMNS: usize = 1000;
 /// Open scratch SQLite connection for one materialized result.
 pub(super) struct ResultFile {
     pub(super) conn: Connection,
+    #[cfg(not(unix))]
+    _cleanup: RemoveOnDrop,
+}
+
+#[cfg(not(unix))]
+struct RemoveOnDrop(std::path::PathBuf);
+
+#[cfg(not(unix))]
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        remove_leftover(&self.0);
+    }
 }
 
 impl Deref for ResultFile {
@@ -68,10 +80,15 @@ fn open_result_file(path: &Path) -> Result<ResultFile, ResultStoreError> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .map_err(|error| ResultStoreError::from_sqlite("open a result file", error))?;
+    #[cfg(unix)]
     std::fs::remove_file(path)
         .map_err(|error| ResultStoreError::unavailable("unlink a result file", error))?;
     apply_pragmas(&conn)?;
-    Ok(ResultFile { conn })
+    Ok(ResultFile {
+        conn,
+        #[cfg(not(unix))]
+        _cleanup: RemoveOnDrop(path.to_path_buf()),
+    })
 }
 
 fn remove_leftover(path: &Path) {
@@ -131,8 +148,11 @@ pub(super) fn create_schema(conn: &Connection, columns: usize) -> Result<(), Res
 /// Measures the SQLite file size as `page_count * page_size`.
 pub(super) fn measure_bytes(conn: &Connection) -> Result<u64, ResultStoreError> {
     let read = |name: &str| -> Result<u64, ResultStoreError> {
-        conn.pragma_query_value(None, name, |row| row.get::<_, u64>(0))
-            .map_err(|error| ResultStoreError::from_sqlite("measure a result file", error))
+        let value = conn
+            .pragma_query_value(None, name, |row| row.get::<_, i64>(0))
+            .map_err(|error| ResultStoreError::from_sqlite("measure a result file", error))?;
+        u64::try_from(value)
+            .map_err(|_| ResultStoreError::corrupt("a result file's page metric was negative"))
     };
     read("page_count")?
         .checked_mul(read("page_size")?)

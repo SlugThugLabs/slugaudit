@@ -110,10 +110,12 @@ pub(super) fn parse_binary_version(stdout: &str) -> Option<String> {
 }
 
 /// Returns the version of `target`: the compiled-in version when `target` is
-/// the running binary, otherwise the version reported by `target --version`.
-pub(super) fn installed_version(running: &Path, target: &Path) -> String {
+/// the running binary, otherwise the version reported by `target --version`,
+/// or `None` when a distinct target binary cannot be queried or does not
+/// report a recognizable `slugaudit <ver>` output.
+pub(super) fn installed_version(running: &Path, target: &Path) -> Option<String> {
     if same_binary_path(running, target) {
-        return env!("CARGO_PKG_VERSION").to_owned();
+        return Some(env!("CARGO_PKG_VERSION").to_owned());
     }
     let mut cmd = Command::new(target);
     cmd.arg("--version");
@@ -121,7 +123,7 @@ pub(super) fn installed_version(running: &Path, target: &Path) -> String {
         Ok(stdout) => {
             let text = String::from_utf8_lossy(&stdout);
             if let Some(version) = parse_binary_version(&text) {
-                return version;
+                return Some(version);
             }
             tracing::warn!(
                 path = %target.display(),
@@ -137,7 +139,7 @@ pub(super) fn installed_version(running: &Path, target: &Path) -> String {
             );
         }
     }
-    env!("CARGO_PKG_VERSION").to_owned()
+    None
 }
 
 /// A version string that is not a plain dot-separated numeric version
@@ -174,6 +176,25 @@ pub(crate) enum UpdateDecision {
     /// This build is not a plain dotted version (a dev build) while the
     /// published release is numeric: fetch it anyway without claiming newer.
     Incomparable,
+}
+
+/// Decides whether `latest` should replace an optional installed `current`
+/// version; `None` (unqueryable target binary) resolves to
+/// [`UpdateDecision::Incomparable`] after validating that `latest` is numeric.
+pub(super) fn update_decision_for(
+    current: Option<&str>,
+    latest: &str,
+) -> Result<UpdateDecision, UpdateError> {
+    let Some(current) = current else {
+        let _parts = parse_version(latest)
+            .map_err(|error| UpdateError::InvalidReleaseVersion(error.to_string()))?;
+        tracing::info!(
+            latest,
+            "target binary version could not be determined; fetching release anyway"
+        );
+        return Ok(UpdateDecision::Incomparable);
+    };
+    update_decision(current, latest)
 }
 
 /// Decides whether `latest` should replace `current`. Refuses any non-numeric

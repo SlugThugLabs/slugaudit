@@ -3,6 +3,7 @@
 
 mod atomic_write;
 mod capped_read;
+mod glob;
 mod proc;
 mod style;
 #[cfg(test)]
@@ -18,6 +19,7 @@ pub(crate) use capped_read::{
     CappedReadError, MAX_FOREIGN_TEXT_BYTES, open_regular_file_nonblocking, read_file_capped,
     read_file_capped_bytes,
 };
+pub(crate) use glob::{path_glob_matches, search_path_matches};
 pub(crate) use proc::{BoundedProcError, run_bounded_command};
 pub(crate) use style::Style;
 pub(crate) use time::{BudgetBound, Deadline, at_least_timestamp, now_unix};

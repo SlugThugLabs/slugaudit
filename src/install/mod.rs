@@ -3,9 +3,9 @@
 mod path;
 mod place;
 
+pub(crate) use place::{INSTALLED_BINARY_NAME, place_staged_binary, remove_leftover};
 pub use place::{PREVIOUS_BINARY_NAME, PlaceError};
 use place::{next_staging_seq, stage_copy};
-pub(crate) use place::{place_staged_binary, remove_leftover};
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -20,12 +20,25 @@ fn non_empty_var(name: &str) -> Option<PathBuf> {
         .filter(|path| path.is_absolute())
 }
 
+fn home_from_env() -> Option<PathBuf> {
+    if let Some(home) = non_empty_var("HOME") {
+        return Some(home);
+    }
+    #[cfg(windows)]
+    {
+        non_empty_var("USERPROFILE")
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// The shared home directory for slug-branded products. An empty
 /// `SLUGTHUG_HOME` or `HOME` counts as unset.
 #[must_use]
 pub fn slugthug_home() -> Option<PathBuf> {
-    non_empty_var("SLUGTHUG_HOME")
-        .or_else(|| non_empty_var("HOME").map(|home| home.join(".slugthug")))
+    non_empty_var("SLUGTHUG_HOME").or_else(|| home_from_env().map(|home| home.join(".slugthug")))
 }
 
 /// The dedicated directory for SlugAudit (`~/.slugthug/slugaudit`).
@@ -48,7 +61,7 @@ pub fn slugaudit_dir() -> Option<PathBuf> {
 /// An empty variable counts as unset.
 #[must_use]
 pub fn config_home() -> Option<PathBuf> {
-    non_empty_var("SLUGTHUG_CONFIG_HOME").or_else(|| non_empty_var("HOME"))
+    non_empty_var("SLUGTHUG_CONFIG_HOME").or_else(home_from_env)
 }
 
 #[derive(Debug, Error)]
@@ -187,7 +200,7 @@ pub fn run_install() -> Result<(), InstallError> {
 fn run_install_with(confirm: impl FnOnce(&str) -> bool) -> Result<(), InstallError> {
     let source = running_binary_path(running_binary())?;
     let bin_dir = slugaudit_dir().ok_or(InstallError::NoHome)?;
-    let target = bin_dir.join("slugaudit");
+    let target = bin_dir.join(INSTALLED_BINARY_NAME);
     std::fs::create_dir_all(&bin_dir).map_err(|inner| InstallError::Mkdir {
         path: bin_dir.display().to_string(),
         inner,

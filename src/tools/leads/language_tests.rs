@@ -1,7 +1,7 @@
 //! `leads` over languages other than Rust: call-site mechanics count the
 //! calls of every language with call extraction, and `covers` lists exactly
 //! the languages each count read.
-use super::tests::{activate, count_of, entry, full_rows, request, run};
+use super::tests::{activate, count_of, entry, full_rows, request, run, run_on};
 use crate::tools::query::{QueryRequest, query};
 use rmcp::handler::server::wrapper::Parameters;
 use slugaudit_test_check::{Check, TestResult, ensure, ensure_eq};
@@ -178,11 +178,9 @@ fn leads_notices_the_untested_languages_the_counts_cover() -> TestResult {
 
     ensure_eq(
         &response.notices,
-        &[
-            "python: uses an untested grammar (downloaded on first use). \
-             Only Rust is tested; treat python results as best-effort.",
-        ],
-        "response.notices == [ \"python: uses an untested grammar (downloaded on first use). \\ Only Rust is tested; treat python results as best-effort.\" ]",
+        &["python: uses an untested grammar. \
+             Only Rust is tested; treat python results as best-effort."],
+        "response.notices == [ \"python: uses an untested grammar. \\ Only Rust is tested; treat python results as best-effort.\" ]",
     )?;
     Ok(())
 }
@@ -198,6 +196,88 @@ fn leads_for_a_rust_only_project_has_no_notices() -> TestResult {
     ensure(
         response.notices.is_empty(),
         format!("{:?}", response.notices),
+    )?;
+    Ok(())
+}
+
+fn dense_let_body(statement_count: usize) -> String {
+    let mut source = String::from("pub fn dense() {\n");
+    for _ in 0..statement_count {
+        source.push_str("    let _ = 0;\n");
+    }
+    source.push_str("}\n");
+    source
+}
+
+fn register_custom_mechanic(
+    manager: &crate::sync::SourceSyncManager,
+    path: &str,
+    id: &str,
+    language: &str,
+    query: &str,
+) -> TestResult {
+    crate::tools::mechanic(
+        &Parameters(crate::tools::MechanicRequest {
+            path: Some(path.to_owned()),
+            action: Some(crate::tools::MechanicAction::Add),
+            cursor: None,
+            legacy_paging: crate::tools::LegacyPaging::default(),
+            id: Some(id.to_owned()),
+            language: Some(language.to_owned()),
+            query: Some(query.to_owned()),
+            note: Some("regression fixture".to_owned()),
+            limit: None,
+            page_bytes: None,
+        }),
+        &crate::progress::NoopProgressSink,
+        manager,
+    )
+    .check("register custom mechanic")?;
+    Ok(())
+}
+
+#[test]
+fn early_query_match_limit_stop_marks_only_scanned_languages_in_custom_covers() -> TestResult {
+    let project = python_project()?;
+    fs::write(project.path().join("a_small.rs"), dense_let_body(2)).check("write small rust")?;
+    let path = project.path().to_string_lossy().into_owned();
+    let manager = crate::sync::SourceSyncManager::default();
+    register_custom_mechanic(
+        &manager,
+        &path,
+        "let_quads",
+        "rust",
+        "(block (let_declaration) @hit (let_declaration) @hit)",
+    )?;
+    register_custom_mechanic(
+        &manager,
+        &path,
+        "py_eval",
+        "python",
+        r#"(call function: (identifier) @callee (#eq? @callee "eval"))"#,
+    )?;
+    fs::write(project.path().join("b_dense.rs"), dense_let_body(370)).check("write dense rust")?;
+
+    let response = run_on(&manager, request(project.path(), None))?;
+
+    ensure_eq(
+        &response.page.completeness,
+        &Some(crate::tools::Completeness::Partial {
+            limited_by: crate::tools::PageLimit::QueryMatchLimit,
+            resume_after_file: None,
+            files_scanned: 1,
+            files_total: 3,
+        }),
+        "scan stops on QueryMatchLimit after scanning 1 rust file and 0 python files",
+    )?;
+    ensure_eq(
+        &entry(&response, "let_quads")?.covers,
+        &["rust"],
+        "rust custom mechanic reports covers: [\"rust\"]",
+    )?;
+    ensure(
+        entry(&response, "py_eval")?.covers.is_empty(),
+        "unscanned python custom mechanic reports empty covers",
     )?;
     Ok(())
 }

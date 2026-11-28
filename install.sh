@@ -4,7 +4,11 @@
 
 set -euo pipefail
 
-INSTALL_DIR="${HOME}/.slugthug/slugaudit"
+if [ -n "${SLUGTHUG_HOME:-}" ] && [[ "${SLUGTHUG_HOME}" == /* ]]; then
+    INSTALL_DIR="${SLUGTHUG_HOME}/slugaudit"
+else
+    INSTALL_DIR="${HOME}/.slugthug/slugaudit"
+fi
 BINARY_NAME="slugaudit"
 TARGET_PATH="${INSTALL_DIR}/${BINARY_NAME}"
 PREVIOUS_PATH="${TARGET_PATH}.prev"
@@ -14,7 +18,7 @@ usage() {
     cat << 'EOF'
 Usage: install.sh [OPTIONS]
 
-Install the SlugAudit binary into ~/.slugthug/slugaudit/slugaudit.
+Install the SlugAudit binary into ~/.slugthug/slugaudit/slugaudit (or $SLUGTHUG_HOME/slugaudit/slugaudit).
 
 Options:
   --from-source, --local   Build and install from ./Cargo.toml in the current directory
@@ -138,7 +142,7 @@ elif [ "${OS}" = "Linux" ] && [ "${ARCH}" = "x86_64" ]; then
         exit 1
     fi
 
-    TAG="$(printf '%s\n' "${RELEASE_JSON}" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    TAG="$(printf '%s\n' "${RELEASE_JSON}" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || true)"
     if [ -z "${TAG}" ] || ! printf '%s\n' "${TAG}" | grep -Eq '^v?[0-9]+\.[0-9]+(\.[0-9]+)*$'; then
         echo "Error: could not determine a valid numeric release tag from ${API_URL}." >&2
         exit 1
@@ -218,7 +222,11 @@ if [ -f "${PREVIOUS_PATH}" ]; then
 fi
 echo "Next steps:"
 echo "  1. Add to PATH (if not already present):"
-echo "     export PATH=\"\${HOME}/.slugthug/slugaudit:\${PATH}\""
+if [ -n "${SLUGTHUG_HOME:-}" ]; then
+    echo "     export PATH=\"${INSTALL_DIR}:\${PATH}\""
+else
+    echo "     export PATH=\"\${HOME}/.slugthug/slugaudit:\${PATH}\""
+fi
 echo ""
 echo "  2. Connect to your AI coding agent (Claude Code, Cursor, Codex, Bob, Grok):"
 echo "     ${TARGET_PATH} connect"

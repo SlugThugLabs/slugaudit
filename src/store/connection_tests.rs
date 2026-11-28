@@ -128,8 +128,8 @@ fn insert_a_file_row(connection: &rusqlite::Connection) -> TestResult<i64> {
     connection
         .execute(
             "INSERT INTO revisions \
-                (revision_id, manifest_hash, parser_pack_version, created_at_unix, is_current) \
-             VALUES ('rev-1', 'manifest-hash', 'parser-pack', 0, 1)",
+                (revision_id, parser_pack_version, created_at_unix, is_current) \
+             VALUES ('rev-1', 'parser-pack', 0, 1)",
             [],
         )
         .check("insert the parent revision")?;

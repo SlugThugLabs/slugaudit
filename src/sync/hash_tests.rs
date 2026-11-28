@@ -37,22 +37,6 @@ fn hash_algorithm_is_recorded() -> TestResult {
 }
 
 #[test]
-fn aggregate_hash_is_independent_of_input_order() -> TestResult {
-    let forward = aggregate_manifest_hash([("a.rs", "h1"), ("b.rs", "h2")]);
-    let backward = aggregate_manifest_hash([("b.rs", "h2"), ("a.rs", "h1")]);
-    ensure_eq(&forward, &backward, "forward == backward")?;
-    Ok(())
-}
-
-#[test]
-fn aggregate_hash_changes_when_a_file_hash_changes() -> TestResult {
-    let before = aggregate_manifest_hash([("a.rs", "h1")]);
-    let after = aggregate_manifest_hash([("a.rs", "h2")]);
-    ensure_ne(&before, &after, "before != after")?;
-    Ok(())
-}
-
-#[test]
 fn reads_and_hashes_a_real_file() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("a.rs");
@@ -133,31 +117,39 @@ fn hash_file_one_byte_over_the_cap_reports_the_observed_size() -> TestResult {
 }
 
 #[test]
-fn the_too_large_message_reports_a_lower_bound_not_the_file_size() -> TestResult {
+fn the_too_large_reader_message_reports_a_lower_bound_and_hash_file_fast_skips_by_metadata()
+-> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let path = directory.path().join("large.rs");
-    // The bounded read stops at cap + 1, so the message can only state
-    // how much was read — never the 64-byte file's real size.
     std::fs::write(&path, vec![b'x'; 64]).check("write fixture file")?;
 
-    let error = hash_file("large.rs", &path, 8).check_err("over-cap file is refused")?;
-    let message = error.to_string();
+    let fast_error = hash_file("large.rs", &path, 8).check_err("over-cap file is fast-skipped")?;
+    let fast_message = fast_error.to_string();
+    ensure(
+        fast_message.contains("exceeds the 8-byte per-file hash ceiling")
+            && fast_message.contains("64"),
+        format!("fast metadata skip reports ceiling and file size: {fast_message}"),
+    )?;
+
+    let file = std::fs::File::open(&path).check("open fixture")?;
+    let reader = std::io::Read::take(file, 9);
+    let stream_error = sniff_and_hash_reader(reader, "large.rs", &path, 8)
+        .check_err("over-cap reader is refused")?;
+    let stream_message = stream_error.to_string();
 
     ensure(
-        message.contains("exceeds the 8-byte per-file hash ceiling"),
-        format!("the message must name the ceiling: {message}"),
+        stream_message.contains("exceeds the 8-byte per-file hash ceiling"),
+        format!("the message must name the ceiling: {stream_message}"),
     )?;
     ensure(
-        message.contains("at least 9 bytes were read"),
-        format!("the message must report the bounded read length as a lower bound: {message}"),
+        stream_message.contains("at least 9 bytes were read"),
+        format!(
+            "the message must report the bounded read length as a lower bound: {stream_message}"
+        ),
     )?;
     ensure(
-        !message.contains("is 9 bytes"),
-        format!("the bounded read length must not be presented as the file's size: {message}"),
-    )?;
-    ensure(
-        !message.contains("64"),
-        format!("a value the read never observed must not appear: {message}"),
+        !stream_message.contains("64"),
+        format!("a value the reader never observed must not appear: {stream_message}"),
     )?;
     Ok(())
 }

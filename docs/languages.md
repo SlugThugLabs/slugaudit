@@ -4,7 +4,7 @@
 
 SlugAudit's tests cover Rust. Nothing else is tested.
 
-Rust's Tree-sitter grammar is compiled directly into the `slugaudit` binary, so Rust works immediately and offline with no download. Other languages are parsed with Tree-sitter grammars from `tree-sitter-language-pack` (version 1.18.0), which downloads a grammar the first time a project contains that language. These other languages usually work, but they are untested: treat their results as best-effort and double-check the ones that matter.
+Rust's Tree-sitter grammar is compiled directly into the `slugaudit` binary, so Rust works immediately and offline with no download. Other languages are parsed with Tree-sitter grammars from `tree-sitter-language-pack` (version 1.28.0), which downloads a grammar on first use. These other languages usually work, but they are untested: treat their results as best-effort and double-check the ones that matter.
 
 This is not a promise that Rust is perfect either. It means Rust is the language the test suite exercises.
 
@@ -15,11 +15,11 @@ This is not a promise that Rust is perfect either. It means Rust is the language
 The exact text:
 
 ```
-python: 12 files use an untested grammar (downloaded on first use). Only Rust is tested; treat python results as best-effort.
+python: 12 files use an untested grammar. Only Rust is tested; treat python results as best-effort.
 ```
 
 - In `report`, the count is the language's file count, written as `1 file uses` or `N files use`.
-- In `leads` and `structure`, there is no count: `python: uses an untested grammar (downloaded on first use). Only Rust is tested; treat python results as best-effort.`
+- In `leads` and `structure`, there is no count: `python: uses an untested grammar. Only Rust is tested; treat python results as best-effort.`
 - Prose files (Markdown, text) are not a code language and get no notice.
 - Rust gets no notice.
 
@@ -68,7 +68,7 @@ WHERE parser_availability = 'LoadFailed'
 
 While `leads` shows `files_not_parsed` above 0, every count is a floor.
 
-To use a language with no network at all, get the grammar onto the machine while you have a connection (open any project that contains that language once). Grammars are cached on disk by the library, under your platform cache directory in `tree-sitter-language-pack/v1.18.0/libs`. The library reads `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` to change the cache base directory. This variable belongs to the library, not to SlugAudit.
+To use a language with no network at all, get the grammar onto the machine while you have a connection (`slugaudit grammar install <language>`). Grammars are cached on disk by the library, under your platform cache directory in `tree-sitter-language-pack/v1.28.0/libs`. The library reads `TREE_SITTER_LANGUAGE_PACK_CACHE_DIR` to change the cache base directory. This variable belongs to the library, not to SlugAudit.
 
 ## Report a problem
 

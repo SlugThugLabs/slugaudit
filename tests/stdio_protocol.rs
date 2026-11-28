@@ -1261,3 +1261,324 @@ fn initialize_responds_under_one_second() -> TestResult {
     )?;
     Ok(())
 }
+
+fn activated_dir() -> TestResult<(tempfile::TempDir, String)> {
+    let project = tempfile::tempdir().check("project dir")?;
+    std::fs::create_dir_all(project.path().join(".planning").join("slugaudit"))
+        .check("activate project")?;
+    let path = project.path().to_string_lossy().replace('\\', "/");
+    Ok((project, path))
+}
+
+fn match_files(response: &serde_json::Value) -> TestResult<Vec<&str>> {
+    at(response, "/matches")?
+        .as_array()
+        .check("matches array")?
+        .iter()
+        .map(|entry| at(entry, "/file")?.as_str().check("match file"))
+        .collect()
+}
+
+/// Live stdio coverage for multi-file `structure`, `start_after_file` resume
+/// filtering, and `invalid_input` refusal when both `file` and `pattern` are
+/// supplied.
+#[test]
+fn real_stdio_structure_multi_file_start_after_file_and_file_plus_pattern_refusal() -> TestResult {
+    let (project, project_path) = activated_dir()?;
+    std::fs::write(project.path().join("a.rs"), b"pub fn alpha() {}\n").check("write a.rs")?;
+    std::fs::write(project.path().join("b.rs"), b"pub fn beta() {}\n").check("write b.rs")?;
+
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+
+    let both = server.tool_json(
+        2,
+        "structure",
+        &json!({
+            "path": project_path,
+            "language": "rust",
+            "pattern": "*.rs",
+            "query": "(function_item name: (identifier) @name)",
+        }),
+    )?;
+    ensure_eq(
+        &match_files(&both)?,
+        &["a.rs", "b.rs"],
+        format!("multi-file structure covers both a.rs and b.rs: {both}"),
+    )?;
+
+    let after = server.tool_json(
+        3,
+        "structure",
+        &json!({
+            "path": project_path,
+            "language": "rust",
+            "pattern": "*.rs",
+            "start_after_file": "a.rs",
+            "query": "(function_item name: (identifier) @name)",
+        }),
+    )?;
+    ensure_eq(
+        &match_files(&after)?,
+        &["b.rs"],
+        format!("start_after_file=a.rs returns only matches from b.rs: {after}"),
+    )?;
+    ensure_eq(
+        at(&after, "/matches/0/text")?,
+        &"beta",
+        "start_after_file match text is beta",
+    )?;
+
+    let refused = server.tool_response(
+        4,
+        "structure",
+        &json!({
+            "path": project_path,
+            "file": "a.rs",
+            "pattern": "*.rs",
+            "query": "(function_item name: (identifier) @name)",
+        }),
+    )?;
+    ensure_eq(
+        at(&refused, "/error/data/code")?,
+        &"invalid_input",
+        format!("file + pattern together must return invalid_input: {refused}"),
+    )?;
+    Ok(())
+}
+
+/// Live stdio coverage for `query` PRAGMA refusal, `sql_too_large` over
+/// 200,000 bytes, and row-0 cell clipping under a small `page_bytes` budget.
+#[test]
+fn real_stdio_query_pragma_refusal_sql_too_large_and_cell_clipping() -> TestResult {
+    let (_project, project_path) = ServerProcess::init_project()?;
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+
+    let pragma_resp = server.tool_response(
+        2,
+        "query",
+        &json!({ "path": project_path, "sql": "PRAGMA user_version" }),
+    )?;
+    ensure(
+        at(&pragma_resp, "/error/code")?.is_number(),
+        format!("PRAGMA refusal must return numeric /error/code: {pragma_resp}"),
+    )?;
+    let pragma_msg = at(&pragma_resp, "/error/message")?
+        .as_str()
+        .check("PRAGMA error message is a string")?;
+    ensure(
+        pragma_msg.contains("PRAGMA") && pragma_msg.contains("refused"),
+        format!("PRAGMA error message must mention PRAGMA and refused: {pragma_msg}"),
+    )?;
+
+    let huge_sql = format!("SELECT '{}'", "x".repeat(210_000));
+    let too_large = server.tool_response(
+        3,
+        "query",
+        &json!({ "path": project_path, "sql": huge_sql }),
+    )?;
+    ensure_eq(
+        at(&too_large, "/error/data/code")?,
+        &"sql_too_large",
+        format!("SQL exceeding max_query_sql_bytes must return sql_too_large: {too_large}"),
+    )?;
+
+    let clipped = server.tool_json(
+        4,
+        "query",
+        &json!({
+            "path": project_path,
+            "sql": "SELECT hex(zeroblob(2048)) AS big",
+            "page_bytes": 256,
+        }),
+    )?;
+    let clipped_cells = at(&clipped, "/clipped_cells")?
+        .as_array()
+        .check("clipped_cells array")?;
+    ensure(
+        !clipped_cells.is_empty(),
+        format!("small page_bytes must clip oversized row 0 cell: {clipped}"),
+    )?;
+    ensure_eq(
+        at(&clipped, "/clipped_cells/0/row")?,
+        &0,
+        "clipped cell is on row 0",
+    )?;
+    ensure_eq(
+        at(&clipped, "/clipped_cells/0/column")?,
+        &"big",
+        "clipped cell names column big",
+    )?;
+    ensure_eq(
+        at(&clipped, "/clipped_cells/0/total")?,
+        &4096,
+        "clipped cell reports full 4096-character length",
+    )?;
+    ensure(
+        at(&clipped, "/clipped_cells/0/continue_with")?
+            .as_str()
+            .is_some_and(|expr| expr.starts_with("substr(\"big\", ")),
+        format!("clipped cell carries substr continue_with expression: {clipped}"),
+    )?;
+    Ok(())
+}
+
+fn dense_let_fn(fn_name: &str, statement_count: usize) -> TestResult<String> {
+    use std::fmt::Write as _;
+    let mut source = format!("pub fn {fn_name}() {{\n");
+    for _ in 0..statement_count {
+        writeln!(
+            source,
+            "    let padding_identifier_for_spill_threshold = 0;"
+        )
+        .check("append let statement")?;
+    }
+    source.push_str("}\n");
+    Ok(source)
+}
+
+fn check_health_result_store_empty(
+    server: &mut ServerProcess,
+    id: u64,
+    project_path: &str,
+) -> TestResult {
+    let health = server.tool_json(
+        id,
+        "health",
+        &json!({ "path": project_path, "verbose": true }),
+    )?;
+    let store = at(&health, "/detail/result_store")?;
+    ensure(
+        !store.is_null(),
+        format!("spilled broad mechanic must open result_store before abort: {health}"),
+    )?;
+    ensure_eq(
+        at(store, "/admitted_bytes")?,
+        &0,
+        format!("aborted broad mechanic must admit zero result store bytes: {store}"),
+    )?;
+    for class in ["active", "idle", "delivered"] {
+        ensure_eq(
+            at(store, &format!("/{class}/results"))?,
+            &0,
+            format!("aborted broad mechanic must leave zero {class} results: {store}"),
+        )?;
+    }
+    Ok(())
+}
+
+fn check_results_dir_clean(project_root: &std::path::Path) -> TestResult {
+    let results_dir = project_root
+        .join(".planning")
+        .join("slugaudit")
+        .join("results");
+    if !results_dir.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(&results_dir).check("read results directory")? {
+        let entry = entry.check("read results directory entry")?;
+        let path = entry.path();
+        let is_lock_only = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lock"));
+        ensure(
+            is_lock_only,
+            format!(
+                "results directory must contain zero .db or result files, found {}",
+                path.display()
+            ),
+        )?;
+    }
+    Ok(())
+}
+
+/// Live stdio coverage for `finding` NUL-byte `invalid_input` refusal and
+/// `mechanic add` `mechanic_pattern_too_broad` refusal (when `QueryCursor`
+/// exceeds 65,536 active states after spilling into `ResultStore`), verifying
+/// neither `.planning/slugaudit/results/` nor `health` retains result files.
+#[test]
+fn real_stdio_finding_nul_refusal_and_broad_mechanic_leaves_result_store_clean() -> TestResult {
+    let (project, project_path) = activated_dir()?;
+    std::fs::write(project.path().join("f_00.rs"), dense_let_fn("f_00", 120)?)
+        .check("write f_00.rs")?;
+    for idx in 1..19_u32 {
+        let name = format!("f_{idx:02}.rs");
+        let body = format!("pub fn f_{idx:02}() {{ let _ = {idx}; }}\n");
+        std::fs::write(project.path().join(name), body).check("write small fixture file")?;
+    }
+    std::fs::write(
+        project.path().join("z_overflow.rs"),
+        dense_let_fn("dense", 370)?,
+    )
+    .check("write z_overflow.rs")?;
+
+    let mut server = ServerProcess::spawn()?;
+    server.handshake()?;
+
+    let nul_finding = server.tool_response(
+        2,
+        "finding",
+        &json!({
+            "path": project_path,
+            "file": "f_01.rs",
+            "line_start": 1,
+            "line_end": 1,
+            "severity": "low",
+            "category": "style",
+            "title": "bad\0title",
+            "description": "d",
+        }),
+    )?;
+    ensure_eq(
+        at(&nul_finding, "/error/data/code")?,
+        &"invalid_input",
+        format!("NUL byte in finding title must return invalid_input: {nul_finding}"),
+    )?;
+
+    let report = server.tool_json(3, "report", &json!({ "path": project_path }))?;
+    ensure_eq(
+        at(&report, "/file_count")?,
+        &20,
+        "report indexes all 20 Rust fixture files",
+    )?;
+
+    let broad = server.tool_response(
+        4,
+        "mechanic",
+        &json!({
+            "path": project_path,
+            "action": "add",
+            "id": "let_quads",
+            "language": "rust",
+            "query": "(block (let_declaration) @hit (let_declaration) @hit)",
+            "note": "paired let declarations",
+            "page_bytes": 1,
+        }),
+    )?;
+    ensure_eq(
+        at(&broad, "/error/data/code")?,
+        &"mechanic_pattern_too_broad",
+        format!("overflowing mechanic add must return mechanic_pattern_too_broad: {broad}"),
+    )?;
+
+    check_health_result_store_empty(&mut server, 5, &project_path)?;
+    let listed = server.tool_json(
+        6,
+        "mechanic",
+        &json!({ "path": project_path, "action": "list" }),
+    )?;
+    let ids = at(&listed, "/mechanics")?
+        .as_array()
+        .check("mechanics array")?
+        .iter()
+        .map(|entry| at(entry, "/id")?.as_str().check("mechanic id"))
+        .collect::<TestResult<Vec<&str>>>()?;
+    ensure(
+        !ids.contains(&"let_quads"),
+        format!("refused mechanic must not be registered: {ids:?}"),
+    )?;
+    check_results_dir_clean(project.path())?;
+    drop(server);
+    check_results_dir_clean(project.path())
+}

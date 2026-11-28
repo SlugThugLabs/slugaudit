@@ -54,9 +54,11 @@ pub fn finding_clear(
     } else {
         0
     };
+    let removed = u64::try_from(removed)
+        .map_err(|error| internal_error("counting cleared findings", error))?;
     tracing::info!(removed, "finding_clear completed");
     Ok(Json(FindingClearResponse {
-        removed: removed as u64,
+        removed,
         database_discard: synced.discard,
     }))
 }

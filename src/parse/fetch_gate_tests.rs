@@ -1,3 +1,4 @@
+use super::test_controls::GateResetGuard;
 use super::{
     FetchSlot, GLOBAL_GATE, GateState, load_failed_retry_due, record_fetch_failure, test_controls,
     with_fetch_slot,
@@ -10,6 +11,7 @@ use std::time::Duration;
 
 #[test]
 fn with_fetch_slot_blocks_uncached_during_cooldown_but_allows_cached() -> TestResult {
+    let _gate_guard = GateResetGuard::new();
     test_controls::set_grammar_cached(false);
     record_fetch_failure().check("record fetch failure")?;
 
@@ -158,7 +160,27 @@ fn global_and_host_backed_gate_treat_bundled_rust_as_cached() -> TestResult {
 }
 
 #[test]
+fn uncached_grammars_auto_fetch_when_gate_is_open() -> TestResult {
+    let gate = GateState::new_isolated();
+    let mut ran = false;
+    let slot = gate
+        .with_fetch_slot("python", || {
+            ran = true;
+            Ok(3u8)
+        })
+        .check("uncached language runs automatically")?;
+    ensure_eq(
+        &slot,
+        &FetchSlot::Ran(3u8),
+        "uncached language auto-fetches",
+    )?;
+    ensure(ran, "open gate runs download closure automatically")?;
+    Ok(())
+}
+
+#[test]
 fn record_fetch_failure_never_moves_timestamp_backwards() -> TestResult {
+    let _gate_guard = GateResetGuard::new();
     record_fetch_failure().check("initial failure")?;
     let first = test_controls::current_gate()
         .with_last_failure(|last| *last)
@@ -179,6 +201,8 @@ fn record_fetch_failure_never_moves_timestamp_backwards() -> TestResult {
 
 #[test]
 fn local_load_failure_does_not_close_fetch_gate() -> TestResult {
+    let _gate_guard = GateResetGuard::new();
+    let _failures_guard = crate::parse::local_load_failures::LocalLoadFailuresGuard::clear();
     crate::parse::local_load_failures::record_local_load_failure("rust")
         .check("record rust local failure")?;
     ensure(

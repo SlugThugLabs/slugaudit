@@ -4,11 +4,11 @@ use crate::util::join_checked;
 use slugaudit_test_check::{Check, CheckErr, TestResult, ensure, ensure_eq};
 
 #[test]
-fn applies_schema_v13_with_content_as_final_files_column() -> TestResult {
+fn applies_schema_v14_with_content_as_final_files_column() -> TestResult {
     ensure_eq(
         &CURRENT_SCHEMA_VERSION,
-        &13,
-        "CURRENT_SCHEMA_VERSION is bumped to 13",
+        &14,
+        "CURRENT_SCHEMA_VERSION is bumped to 14",
     )?;
     let directory = tempfile::tempdir().check("temp dir")?;
     let connection = open_read_write(&directory.path().join("project.db")).check("open")?;

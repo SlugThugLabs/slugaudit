@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS project (
 CREATE TABLE IF NOT EXISTS revisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     revision_id TEXT NOT NULL UNIQUE,
-    manifest_hash TEXT NOT NULL,
     parser_pack_version TEXT NOT NULL,
     created_at_unix INTEGER NOT NULL,
     is_current INTEGER NOT NULL DEFAULT 0 CHECK (is_current IN (0, 1))
@@ -172,7 +171,6 @@ CREATE TABLE IF NOT EXISTS evidence (
 );
 
 CREATE INDEX IF NOT EXISTS idx_evidence_kind ON evidence (kind);
-CREATE INDEX IF NOT EXISTS idx_evidence_file ON evidence (file_id);
 CREATE INDEX IF NOT EXISTS idx_evidence_item_name
     ON evidence (json_extract(payload, '$.name'), file_id)
     WHERE kind IN ('Structure', 'Symbol');

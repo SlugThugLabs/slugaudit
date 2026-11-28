@@ -69,7 +69,6 @@ fn a_publish_revision_database_failure_is_the_database_variant() -> TestResult {
         &mut connection,
         &RevisionInputs {
             expected_current: None,
-            manifest_hash: "manifest",
             parser_pack_version: "1.0",
             upserts: &[],
             deletions: &[],
@@ -130,7 +129,6 @@ fn an_invalid_parser_run_is_rejected_by_the_revision_publish() -> TestResult {
         &mut connection,
         &RevisionInputs {
             expected_current: None,
-            manifest_hash: "manifest",
             parser_pack_version: "1.0",
             upserts: &[record],
             deletions: &[],
@@ -189,7 +187,6 @@ fn publish_revision_fails_closed_when_deadline_is_spent() -> TestResult {
         &mut connection,
         &RevisionInputs {
             expected_current: None,
-            manifest_hash: "manifest",
             parser_pack_version: "1.0",
             upserts: &[],
             deletions: &[],
@@ -220,7 +217,6 @@ fn stale_baseline_leaves_unrepresentable_paths_unchanged() -> TestResult {
         &mut connection,
         &RevisionInputs {
             expected_current: None,
-            manifest_hash: "m1",
             parser_pack_version: "1.0",
             upserts: &[],
             deletions: &[],
@@ -241,7 +237,6 @@ fn stale_baseline_leaves_unrepresentable_paths_unchanged() -> TestResult {
         &mut connection,
         &RevisionInputs {
             expected_current: None,
-            manifest_hash: "m2",
             parser_pack_version: "1.0",
             upserts: &[],
             deletions: &[],

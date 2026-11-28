@@ -11,8 +11,8 @@ use super::publish::{PublishError, PublishReport};
 use super::publish_diff::{self, filter_skipped_records, non_deleted_paths};
 use super::race_hook::{self, RacePoint};
 use super::revision::{self, RevisionError, SkippedRecord};
-use super::revision_edges::{EdgeChangeScope, StagedFileEdgeMeta, is_cargo_toml_path};
-use super::revision_rust_meta::any_path_has_stored_rust_path_attr;
+use super::revision_edge_invalidation::{EdgeChangeScope, is_cargo_toml_path};
+use super::revision_path_state::{StagedFileEdgeMeta, collect_prior_rust_path_state};
 #[cfg(test)]
 use super::sample;
 use super::sample_batch::{self, ChunkOutcome, Pass2ChunkContext};
@@ -381,7 +381,6 @@ fn stage_and_commit_attempt(
         connection,
         CommitInputs {
             expected_current,
-            manifest_hash: &diff.manifest_hash,
             parser_pack_version,
             deletions: &deletions,
             skipped_to_write: &skipped_to_write,
@@ -405,7 +404,6 @@ fn stage_and_commit_attempt(
 
 struct CommitInputs<'a> {
     expected_current: Option<&'a str>,
-    manifest_hash: &'a str,
     parser_pack_version: &'a str,
     deletions: &'a [String],
     skipped_to_write: &'a [SkippedRecord],
@@ -423,15 +421,19 @@ fn commit_staged_attempt(
     let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     revision::assert_baseline(&tx, inputs.expected_current)?;
     let (revision_db_id, revision_id) =
-        revision::insert_revision_row(&tx, inputs.manifest_hash, inputs.parser_pack_version)?;
+        revision::insert_revision_row(&tx, inputs.parser_pack_version)?;
     let removed_or_skipped = inputs.deletions.iter().map(String::as_str).chain(
         inputs
             .skipped_to_write
             .iter()
             .map(|s| s.relative_path.as_str()),
     );
-    let deleted_or_skipped_had_path_attr =
-        any_path_has_stored_rust_path_attr(&tx, removed_or_skipped)?;
+    let prior_rust_paths = collect_prior_rust_path_state(
+        &tx,
+        removed_or_skipped,
+        &inputs.staged.staged_metas,
+        Some(inputs.deadline),
+    )?;
     revision::apply_deletions(&tx, inputs.deletions, Some(inputs.deadline))?;
 
     let edge_inputs = match inputs.staged.staging.as_ref() {
@@ -440,7 +442,7 @@ fn commit_staged_attempt(
             staging,
             &inputs.staged.staged_metas,
             revision_db_id,
-            inputs.edge_scope.any_rust_or_manifest_added_or_deleted(),
+            &prior_rust_paths.changed_staged_seqs,
             Some(inputs.deadline),
         )?,
         None => Vec::new(),
@@ -458,8 +460,8 @@ fn commit_staged_attempt(
         &tx,
         &edge_inputs,
         inputs.discovered_paths,
-        inputs.edge_scope,
-        deleted_or_skipped_had_path_attr,
+        &inputs.edge_scope,
+        &prior_rust_paths.invalidation,
         revision_db_id,
         Some(inputs.deadline),
     )?;

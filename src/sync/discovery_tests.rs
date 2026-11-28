@@ -62,12 +62,14 @@ fn excludes_the_activation_directory() -> TestResult {
 }
 
 #[test]
-fn indexes_a_planning_directory_that_only_shares_the_activation_prefix() -> TestResult {
+fn excludes_planning_and_target_directories() -> TestResult {
     let directory = tempfile::tempdir().check("temp dir")?;
     let root = directory.path();
     write(root, ".planning/slugaudit/project.db", b"sqlite-bytes")?;
-    write(root, ".planning/slugaudit-notes/x.md", b"# notes")?;
-    write(root, ".planning/slugauditx", b"x")?;
+    write(root, ".planning/README.md", b"# readme")?;
+    write(root, "target/debug/out", b"bin")?;
+    write(root, "planning/notes.md", b"# notes")?;
+    write(root, "slugaudit/x.md", b"x")?;
 
     let (files, _skipped) = discover_and_hash(root).check("discover_and_hash")?;
     let paths: Vec<&str> = files
@@ -76,8 +78,8 @@ fn indexes_a_planning_directory_that_only_shares_the_activation_prefix() -> Test
         .collect();
     ensure_eq(
         &paths,
-        &vec![".planning/slugaudit-notes/x.md", ".planning/slugauditx"],
-        "paths == vec![\".planning/slugaudit-notes/x.md\", \".planning/slugauditx\"]",
+        &vec!["planning/notes.md", "slugaudit/x.md"],
+        "paths == vec![\"planning/notes.md\", \"slugaudit/x.md\"]",
     )?;
     Ok(())
 }

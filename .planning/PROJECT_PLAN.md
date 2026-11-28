@@ -7,8 +7,8 @@ owner approves targets before work begins and before anything is committed.
 ## Goal [approved]
 
 Make the tool accurate and fast for Rust: every answer matches the code on
-disk at the moment of the call, safely, on repos up to Photoshop size (~40k
-files) on a normal laptop. Nothing else gets built until that is true.
+disk at the moment of the call, safely, on a normal laptop. Nothing else gets
+built until that is true.
 
 ## What the Product Is [built]
 

@@ -5,6 +5,7 @@ mod agents;
 mod cli;
 mod config_atomic;
 mod config_file;
+mod config_probe;
 mod error;
 mod exec;
 mod guidance;
@@ -72,7 +73,7 @@ pub fn run_disconnect(agent_name: Option<&str>) -> Result<(), ConnectError> {
 /// "not installed", which would register a possibly temporary `current`.
 pub(crate) fn prefer_slugthug_binary(current: &Path) -> Result<PathBuf, std::io::Error> {
     if let Some(slugaudit) = slugaudit_dir() {
-        let candidate = slugaudit.join("slugaudit");
+        let candidate = slugaudit.join(crate::install::INSTALLED_BINARY_NAME);
         if candidate.try_exists()? {
             return Ok(candidate);
         }
@@ -151,7 +152,7 @@ pub(super) fn disconnect_one_to(
         out,
         format_args!("Disconnecting SlugAudit from {}...\n", agent.display_name),
     )?;
-    if agent.manual_steps && matches!(agent.is_connected(home), Ok(true)) {
+    if agent.manual_steps && agent.is_connected(home)? {
         crate::cli::write_to(
             out,
             format_args!(

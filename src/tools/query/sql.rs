@@ -19,7 +19,7 @@ pub(super) const ABORT_WALL_CLOCK: u8 = 2;
 /// SQLite's own parser decides: `Connection::prepare` compiles the first
 /// statement and, when input remains after it, prepares that remainder and
 /// fails with `Error::MultipleStatement` only if the remainder holds a real
-/// statement (rusqlite 0.37.0 `src/lib.rs:770-775`). Whitespace, comments and
+/// statement (rusqlite 0.43.0). Whitespace, comments and
 /// bare `;` after the first statement are therefore accepted, and a `;`
 /// inside a literal, quoted identifier or comment never counts. No SQL is
 /// lexed for the statement body. `expanded_sql` (no parameters are bound) is the statement text
@@ -43,6 +43,10 @@ pub(super) fn single_statement_body(
         ));
     }
     let statement = tx.prepare(sql).map_err(|error| match error {
+        rusqlite::Error::Empty => error_codes::invalid_params_with_code(
+            "sql must contain a statement, not only comments",
+            ErrorCode::InvalidInput,
+        ),
         rusqlite::Error::MultipleStatement => ErrorData::invalid_params(
             "sql contains more than one statement; \
              only a single read-only statement is supported",
@@ -54,11 +58,7 @@ pub(super) fn single_statement_body(
     // subquery: SQLite renames the second `id` of a subquery to `id:1`, so
     // checking only the wrapped result would miss the duplicate and hand back
     // a renamed key the caller never asked for.
-    let column_names: Vec<String> = statement
-        .column_names()
-        .into_iter()
-        .map(str::to_owned)
-        .collect();
+    let column_names: Vec<String> = statement.column_names().map(str::to_owned).collect();
     ensure_unique_column_names(&column_names)?;
     if !statement.readonly() {
         return Err(ErrorData::invalid_params(
@@ -67,9 +67,9 @@ pub(super) fn single_statement_body(
         ));
     }
     let text = statement.expanded_sql().ok_or_else(|| {
-        error_codes::invalid_params_with_code(
-            "sql must contain a statement, not only comments",
-            ErrorCode::InvalidInput,
+        crate::tools::context::internal_error(
+            "reading expanded SQL",
+            "SQLite returned no expanded SQL text",
         )
     })?;
     Ok(text.trim_end().trim_end_matches(';').to_owned())

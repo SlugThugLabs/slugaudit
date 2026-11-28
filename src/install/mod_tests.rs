@@ -429,5 +429,33 @@ fn an_install_directory_that_cannot_be_resolved_is_an_error() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn run_install_with_path_confirm_does_not_duplicate_existing_bashrc_line() -> TestResult {
+    let _guard = TEST_ENV_LOCK.lock().check("env lock")?;
+    let temp = tempfile::tempdir().check("temp dir")?;
+    let empty_bin = tempfile::tempdir().check("empty path")?;
+    let bashrc = temp.path().join(".bashrc");
+    let bin_dir = temp.path().join(".slugthug/slugaudit");
+    let line = format!("export PATH=\"{}:$PATH\"\n", bin_dir.display());
+    std::fs::write(&bashrc, &line).check("seed bashrc")?;
+
+    temp_env::with_vars(
+        [
+            ("HOME", Some(temp.path().as_os_str())),
+            ("SLUGTHUG_HOME", None::<&std::ffi::OsStr>),
+            ("SHELL", Some(std::ffi::OsStr::new("/bin/bash"))),
+            ("PATH", Some(empty_bin.path().as_os_str())),
+        ],
+        || run_install_with(|_| true).check("install with confirmed PATH succeeds"),
+    )?;
+
+    ensure_eq(
+        &std::fs::read_to_string(&bashrc).check("read bashrc")?,
+        &line,
+        "confirmed install keeps existing PATH config entry without duplicating it",
+    )?;
+    Ok(())
+}
+
 #[path = "home_tests.rs"]
 mod home_tests;

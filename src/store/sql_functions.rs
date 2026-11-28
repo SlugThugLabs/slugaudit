@@ -61,6 +61,15 @@ fn register_with_cap(connection: &Connection, max_input_bytes: usize) -> Result<
         }
         Ok(Some(slice_lines(text, start, end).to_owned()))
     })?;
+    connection.create_scalar_function("slugaudit_path_match", 2, flags, move |context| {
+        let Some(path) = text_arg(context, 0, "slugaudit_path_match", max_input_bytes)? else {
+            return Ok(false);
+        };
+        let Some(pattern) = text_arg(context, 1, "slugaudit_path_match", max_input_bytes)? else {
+            return Ok(false);
+        };
+        Ok(crate::util::search_path_matches(path, pattern))
+    })?;
     #[cfg(test)]
     register_golden_nan(connection)?;
     Ok(())
@@ -106,9 +115,31 @@ fn text_arg<'a>(
             })
         }
         other => Err(user_error(format!(
-            "{function}: the first argument must be TEXT, got {}",
+            "{function}: {} argument must be TEXT, got {}",
+            ordinal_arg(index),
             other.data_type()
         ))),
+    }
+}
+
+fn ordinal_arg(index: usize) -> std::borrow::Cow<'static, str> {
+    match index {
+        0 => "the first".into(),
+        1 => "the second".into(),
+        2 => "the third".into(),
+        _ => match index.checked_add(1) {
+            Some(pos) => {
+                let suffix = match (pos.checked_rem(100), pos.checked_rem(10)) {
+                    (Some(11..=13), _) => "th",
+                    (_, Some(1)) => "st",
+                    (_, Some(2)) => "nd",
+                    (_, Some(3)) => "rd",
+                    _ => "th",
+                };
+                format!("the {pos}{suffix}").into()
+            }
+            None => "the".into(),
+        },
     }
 }
 

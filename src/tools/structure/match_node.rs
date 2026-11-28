@@ -104,11 +104,11 @@ pub(super) fn capture_at<'tree>(
     query_match: &QueryMatch<'_, 'tree>,
     index: usize,
 ) -> Result<QueryCapture<'tree>, ErrorData> {
-    query_match.captures.get(index).copied().ok_or_else(|| {
+    query_match.captures().get(index).copied().ok_or_else(|| {
         ErrorData::internal_error(
             format!(
                 "tree-sitter reported capture index {index} but the match has {} captures",
-                query_match.captures.len()
+                query_match.captures().len()
             ),
             None,
         )

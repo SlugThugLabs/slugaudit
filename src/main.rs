@@ -7,11 +7,13 @@
 //! formatter.
 
 #![forbid(unsafe_code)]
+#![deny(clippy::print_stderr)]
 #![cfg_attr(not(test), deny(clippy::indexing_slicing))]
 
 use rmcp::{ServiceExt, service::ServerInitializeError, transport::stdio};
 use slugaudit_mcp_rust::cli::{self, Command};
 use slugaudit_mcp_rust::connect;
+use slugaudit_mcp_rust::grammar_cli;
 use slugaudit_mcp_rust::install;
 use slugaudit_mcp_rust::menu;
 use slugaudit_mcp_rust::model::EnvConfigError;
@@ -154,6 +156,7 @@ fn run_command(command: Command) -> CommandOutcome {
         Command::Connect { agent } => reported(connect::run_connect(agent.as_deref())),
         Command::Disconnect { agent } => reported(connect::run_disconnect(agent.as_deref())),
         Command::Install => reported(install::run_install()),
+        Command::Grammar(action) => reported(grammar_cli::run_grammar(action)),
         Command::Update => reported(update::run_update()),
         Command::Help => reported(cli::out(format_args!("{}", cli::usage()))),
         Command::CommandHelp(topic) => {

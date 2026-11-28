@@ -173,7 +173,6 @@ CREATE TABLE IF NOT EXISTS findings (
     title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
     description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 10000),
     created_at_unix INTEGER NOT NULL,
-    evidence_revision TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'current' CHECK (status IN ('current', 'stale')),
     session_id TEXT NOT NULL DEFAULT ''
 );

@@ -4,7 +4,7 @@
 //!
 //! [`with_pool`] spawns at most `min(files.len(), available_parallelism,
 //! MAX_CONCURRENT_BLOCKING_OPS)` OS threads once for an entire pass and keeps
-//! them alive across bounded chunks (`BatchRunner::next_chunk`) so a 40k-file
+//! them alive across bounded chunks (`BatchRunner::next_chunk`) so a multi-chunk
 //! Pass 2 never spawns and tears down threads per 256-file chunk. [`run`]
 //! processes an entire slice as one chunk on the same implementation.
 

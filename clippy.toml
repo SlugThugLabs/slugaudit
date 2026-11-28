@@ -3,6 +3,11 @@
 # names.
 doc-valid-idents = ["SlugAudit", "SQLite", "CocoaPods", "OpenHands", "AsciiDoc", ".."]
 
+allow-unwrap-in-tests = false
+allow-expect-in-tests = false
+allow-panic-in-tests = false
+allow-indexing-slicing-in-tests = false
+
 # Owner rule: a missing value or a failed step is handled where it happens,
 # never papered over with a fallback. An `Option` default is an explicit
 # `match`/`let ... else`; an error is returned or, where continuing is

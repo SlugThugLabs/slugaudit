@@ -78,8 +78,8 @@ fn on_creates_the_directory_the_database_and_the_gitignore_entry_and_a_call_work
     let answer = report(&path, &sync::SourceSyncManager::new()).check("a call after on works")?;
     ensure_eq(
         &answer.file_count,
-        &3,
-        "lib.rs, .gitignore and .planning/README.md are indexed",
+        &2,
+        "lib.rs and .gitignore are indexed (.planning/ is excluded)",
     )?;
     Ok(())
 }
@@ -144,8 +144,8 @@ fn a_deleted_project_db_is_rebuilt_by_the_next_call() -> TestResult {
     ensure(database.is_file(), "project.db is back")?;
     ensure_eq(
         &answer.file_count,
-        &3,
-        "lib.rs, .gitignore and .planning/README.md are indexed again",
+        &2,
+        "lib.rs and .gitignore are indexed again (.planning/ is excluded)",
     )?;
     ensure(answer.database_discard.is_none(), format!("{answer:?}"))?;
     Ok(())
@@ -162,8 +162,8 @@ fn a_garbage_project_db_is_rebuilt_by_the_next_call() -> TestResult {
 
     ensure_eq(
         &answer.file_count,
-        &3,
-        "lib.rs, .gitignore and .planning/README.md are indexed again",
+        &2,
+        "lib.rs and .gitignore are indexed again (.planning/ is excluded)",
     )?;
     answer
         .database_discard

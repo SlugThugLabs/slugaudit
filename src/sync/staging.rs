@@ -129,6 +129,8 @@ impl StagingDb {
         file: &FileRecord,
     ) -> Result<(), RevisionError> {
         validate_record(file)?;
+        let byte_len = i64::try_from(file.byte_len)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
         staging_tx
             .prepare_cached(
                 "INSERT INTO staged_files (\
@@ -145,7 +147,7 @@ impl StagingDb {
                 file.content,
                 file.identity.content_hash,
                 file.identity.hash_algorithm,
-                file.byte_len,
+                byte_len,
                 file.modified_unix_seconds,
                 file.language,
                 file.language_detected,

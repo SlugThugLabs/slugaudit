@@ -1,8 +1,8 @@
-//! Host filesystem and `PATH` probing for client installation and connection
-//! status, plus `#`-comment-aware scanning for YAML, TOML, and shell-rc files.
+//! Host filesystem and `PATH` probing for client installation, connection
+//! status, and disconnect candidate scanning.
 
 use super::agents::AGENTS;
-use super::registry_types::{AgentDef, ConfigPath, ConfigShape, Strategy};
+use super::registry_types::{AgentDef, ConfigPath, Strategy};
 use std::path::Path;
 
 impl AgentDef {
@@ -44,7 +44,7 @@ impl AgentDef {
     /// # Errors
     ///
     /// A config that cannot be examined (unreadable, oversized, not a regular
-    /// file, or malformed JSON for a JSON client) is returned as a
+    /// file, or malformed JSON/TOML) is returned as a
     /// [`ProbeFailure`] with its source, never read as "not connected".
     pub fn is_connected(&self, home: Option<&Path>) -> Result<bool, ProbeFailure> {
         let Some(home) = home else { return Ok(false) };
@@ -55,80 +55,9 @@ impl AgentDef {
         let Some(path) = self.config.resolve(home) else {
             return Ok(false);
         };
-        let is_toml = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
-        let result = if matches!(
-            self.shape,
-            ConfigShape::GooseExtensions | ConfigShape::Unknown
-        ) {
-            super::config_file::readable_config(&path).map(|text| {
-                text.is_some_and(|content| line_oriented_has_slugaudit(&content, is_toml))
-            })
-        } else {
-            super::config_file::has_slugaudit(&path, self.shape.sections())
-        };
-        result.map_err(|source| ProbeFailure::for_agent(self.id, "connected", &path, source))
+        super::config_probe::config_has_slugaudit_entry(&path, self.shape)
+            .map_err(|source| ProbeFailure::for_agent(self.id, "connected", &path, source))
     }
-}
-
-/// Strips `#` comments from one TOML, YAML, or shell-rc line while preserving
-/// `#` characters inside single- or double-quoted strings. In TOML any unquoted
-/// `#` begins a comment; in YAML and POSIX shell `#` begins a comment at line
-/// start or after whitespace.
-fn strip_hash_comment(line: &str, any_unquoted_hash: bool) -> &str {
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut escaped = false;
-    let mut after_ws_or_bol = true;
-    for (idx, ch) in line.char_indices() {
-        if in_single {
-            if ch == '\'' {
-                in_single = false;
-                after_ws_or_bol = false;
-            }
-            continue;
-        }
-        if in_double {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_double = false;
-                after_ws_or_bol = false;
-            }
-            continue;
-        }
-        match ch {
-            '\'' => {
-                in_single = true;
-                after_ws_or_bol = false;
-            }
-            '"' => {
-                in_double = true;
-                after_ws_or_bol = false;
-            }
-            '#' if any_unquoted_hash || after_ws_or_bol => {
-                return match line.get(..idx) {
-                    Some(prefix) => prefix,
-                    None => line,
-                };
-            }
-            other => {
-                after_ws_or_bol = other.is_whitespace();
-            }
-        }
-    }
-    line
-}
-
-/// True when any non-comment portion of a YAML, TOML, or rc config mentions `slugaudit`.
-fn line_oriented_has_slugaudit(text: &str, is_toml: bool) -> bool {
-    text.lines()
-        .map(|line| strip_hash_comment(line, is_toml))
-        .any(|code| code.contains("slugaudit"))
 }
 
 /// A client whose install or connection state could not be determined: the

@@ -214,6 +214,120 @@ fn production_code_drops_cfg_test_items() -> TestResult {
 }
 
 #[test]
+fn production_code_drops_cfg_test_struct_field_and_keeps_following_code() -> TestResult {
+    let source = concat!(
+        "struct Holder {\n",
+        "    #[cfg(test)]\n",
+        "    hooks: TestHooks,\n",
+        "    real_field: i32,\n",
+        "}\n",
+        "#[cfg(test)]\n",
+        "enum TestOnly {\n",
+        "    Spoof,\n",
+        "}\n",
+    );
+    let code = scan::production_code(source).check("strip cfg(test) struct field")?;
+    ensure(
+        !code.contains("hooks"),
+        format!("cfg(test) struct field must be dropped: {code}"),
+    )?;
+    ensure(
+        code.contains("real_field: i32"),
+        format!("real struct field after cfg(test) field must be kept: {code}"),
+    )?;
+    ensure(
+        !code.contains("TestOnly") && !code.contains("Spoof"),
+        format!("subsequent cfg(test) enum must be dropped: {code}"),
+    )?;
+    Ok(())
+}
+
+#[test]
+fn production_code_does_not_stop_cfg_test_fn_early_on_multiline_param_comma() -> TestResult {
+    let source = concat!(
+        "#[cfg(test)]\n",
+        "fn helper(\n",
+        "    first: i32,\n",
+        "    second: Thing,\n",
+        ") {\n",
+        "    let _ = first;\n",
+        "    emit(Thing::Alpha);\n",
+        "}\n",
+        "fn real() {\n",
+        "    emit(Thing::Beta);\n",
+        "}\n",
+    );
+    let code = scan::production_code(source).check("strip multiline cfg(test) fn")?;
+    ensure(
+        !code.contains("helper") && !code.contains("second:") && !code.contains("Thing::Alpha"),
+        format!("entire cfg(test) fn must be dropped: {code}"),
+    )?;
+    ensure(
+        code.contains("fn real"),
+        format!("production fn after cfg(test) fn must be kept: {code}"),
+    )?;
+    ensure_eq(
+        &variants::producer_variants(&code, "Thing"),
+        &vec!["Beta".to_owned()],
+        "only production producer survives",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn production_code_drops_final_cfg_test_struct_field_without_trailing_comma() -> TestResult {
+    let literal_source = concat!(
+        "let item = Holder {\n",
+        "    real_field: Thing::Alpha,\n",
+        "    #[cfg(test)]\n",
+        "    test_field: Thing::Beta\n",
+        "};\n",
+        "fn after() {\n",
+        "    emit(Thing::Gamma);\n",
+        "}\n",
+    );
+    let literal_code =
+        scan::production_code(literal_source).check("strip final cfg(test) literal field")?;
+    ensure(
+        literal_code.contains("real_field: Thing::Alpha") && literal_code.contains("};"),
+        format!("enclosing literal structure must stay intact: {literal_code}"),
+    )?;
+    ensure(
+        !literal_code.contains("test_field") && !literal_code.contains("Thing::Beta"),
+        format!("final cfg(test) literal field must be dropped: {literal_code}"),
+    )?;
+    ensure_eq(
+        &variants::producer_variants(&literal_code, "Thing"),
+        &vec!["Alpha".to_owned(), "Gamma".to_owned()],
+        "real field and following production code stay producers",
+    )?;
+
+    let struct_source = concat!(
+        "struct Def {\n",
+        "    kept_field: u8,\n",
+        "    #[cfg(test)]\n",
+        "    dropped_field: u8\n",
+        "}\n",
+        "fn kept_fn() {}\n",
+    );
+    let struct_code =
+        scan::production_code(struct_source).check("strip final cfg(test) struct field")?;
+    ensure(
+        struct_code.contains("kept_field: u8") && struct_code.contains('}'),
+        format!("enclosing struct definition must stay intact: {struct_code}"),
+    )?;
+    ensure(
+        !struct_code.contains("dropped_field"),
+        format!("final cfg(test) struct field must be dropped: {struct_code}"),
+    )?;
+    ensure(
+        struct_code.contains("fn kept_fn"),
+        format!("production fn after struct must be kept: {struct_code}"),
+    )?;
+    Ok(())
+}
+
+#[test]
 fn production_code_strips_line_comments_block_comments_and_string_literals() -> TestResult {
     let source = concat!(
         "// pair with `kind: Thing::Alpha` in the writer\n",

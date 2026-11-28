@@ -102,6 +102,7 @@ pub(super) fn list(
             let limits = crate::tools::limits_for_root(&root)?;
             spec.page_bytes = PageSize::resolve(request.page_bytes, &limits)?.bytes;
             spec.ceiling = limits.max_query_response_bytes;
+            spec.store_limits = Some(crate::store::ResultStoreLimits::from(&limits));
             Some(root)
         }
         PageRequest::Cursor(_) => {

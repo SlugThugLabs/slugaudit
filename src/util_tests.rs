@@ -555,3 +555,23 @@ fn a_length_counter_past_the_maximum_fails_the_write_with_its_cause() -> TestRes
     )?;
     Ok(())
 }
+
+#[test]
+fn search_path_matches_treats_question_mark_as_one_unicode_scalar_value() -> TestResult {
+    use crate::util::search_path_matches;
+    for (candidate, pattern, expected) in [
+        ("café", "caf?", true),
+        ("café", "caf??", false),
+        ("src/café/🦀.rs", "src/caf?/?.rs", true),
+        ("src/café/ab.rs", "src/caf?/?.rs", false),
+        ("hello🦀", "*🦀", true),
+        ("é", "?*", true),
+    ] {
+        ensure_eq(
+            &search_path_matches(candidate, pattern),
+            &expected,
+            format!("search_path_matches({candidate:?}, {pattern:?})"),
+        )?;
+    }
+    Ok(())
+}

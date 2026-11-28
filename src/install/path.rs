@@ -13,6 +13,10 @@ use std::path::{Path, PathBuf};
 /// a crash cannot truncate the user's rc file, and its permissions and any
 /// symlink to an existing dotfiles target are preserved.
 pub(super) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
+    add_to_path_to(bin_dir, &mut std::io::stderr().lock())
+}
+
+fn add_to_path_to(bin_dir: &Path, err: &mut impl std::io::Write) -> Result<(), InstallError> {
     let (config_path, line) = path_config(bin_dir)?;
     let existing =
         match crate::util::read_file_capped(&config_path, crate::util::MAX_FOREIGN_TEXT_BYTES) {
@@ -21,6 +25,13 @@ pub(super) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
             Err(error) => return Err(InstallError::Io(error)),
         };
     if existing.lines().any(|l| l.trim() == line) {
+        crate::cli::write_to(
+            err,
+            format_args!(
+                "SlugAudit is already in your PATH config ({}); open a new shell or reload it to pick it up\n",
+                config_path.display()
+            ),
+        )?;
         return Ok(());
     }
     let mut addition = String::new();
@@ -30,10 +41,13 @@ pub(super) fn add_to_path(bin_dir: &Path) -> Result<(), InstallError> {
     addition.push_str(&line);
     addition.push('\n');
     append_durably(&config_path, &addition).map_err(InstallError::Io)?;
-    crate::cli::err(format_args!(
-        "Added SlugAudit to your PATH in {}\n",
-        config_path.display()
-    ))?;
+    crate::cli::write_to(
+        err,
+        format_args!(
+            "Added SlugAudit to your PATH in {}\n",
+            config_path.display()
+        ),
+    )?;
     Ok(())
 }
 

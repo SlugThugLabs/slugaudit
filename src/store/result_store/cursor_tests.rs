@@ -55,7 +55,7 @@ fn result_store_every_malformed_cursor_is_unknown() -> TestResult {
     );
     let cases = [
         String::new(),
-        "v2.".to_owned() + &good[3..],
+        "v2.".to_owned() + good.get(3..).check("cursor suffix")?,
         format!("v1.{nonce}.{result}"),
         format!("{good}.0"),
         format!("v1.{nonce}.{result}.01"),

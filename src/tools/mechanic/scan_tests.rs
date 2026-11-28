@@ -68,7 +68,15 @@ fn a_registered_scan_past_its_budget_is_a_partial_result_naming_how_far_it_got()
         }),
         "partial completeness reports TimeBudget and 0/3 files scanned",
     )?;
-    ensure(response.page.complete, "response.page.complete")?;
+    ensure(
+        !response.page.complete,
+        "partial single-page scan must report page.complete == false",
+    )?;
+    ensure_eq(
+        &response.page.limited_by,
+        &PageLimit::TimeBudget,
+        "response.page.limited_by == PageLimit::TimeBudget",
+    )?;
     Ok(())
 }
 
@@ -293,7 +301,7 @@ fn leads_marks_completeness_partial_when_custom_mechanic_exceeds_query_cursor_ma
         &after.page.completeness,
         &Some(Completeness::Partial {
             limited_by: PageLimit::QueryMatchLimit,
-            resume_after_file: Some("a_small.rs".to_owned()),
+            resume_after_file: None,
             files_scanned: 1,
             files_total: 2,
         }),

@@ -7,7 +7,7 @@ use rusqlite::{Transaction, params_from_iter};
 
 fn file_filter(glob: Option<&str>) -> String {
     let filter = if glob.is_some() {
-        " AND path GLOB ?2"
+        " AND slugaudit_path_match(path, ?2)"
     } else {
         ""
     };

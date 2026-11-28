@@ -182,11 +182,12 @@ fn audit_limits() -> ResourceLimits {
 
 /// Budgets scaled from detected host memory.
 pub(crate) fn adaptive_limits(ram: SystemMemoryInfo) -> ResourceLimits {
-    let import_budget = (ram.available_bytes / 2).max(4 * 1024 * 1024 * 1024);
     // SQLite cannot store a value larger than `SQLITE_MAX_LENGTH`;
     // clamping here keeps a per-file skip from becoming a failed
     // publish at the insert.
-    let max_file = (ram.total_bytes / 10).clamp(256 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
+    let max_file = (ram.total_bytes / 10).clamp(32 * 1024 * 1024, SQLITE_MAX_VALUE_BYTES);
+    let import_floor = (4_u64 * 1024 * 1024 * 1024).min((ram.total_bytes / 2).max(max_file));
+    let import_budget = (ram.available_bytes / 2).max(import_floor);
     ResourceLimits {
         max_file_bytes: max_file,
         max_parse_bytes: DEFAULT_MAX_PARSE_BYTES,

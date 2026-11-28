@@ -102,12 +102,18 @@ impl GateState {
         })
     }
 
-    fn check_eligibility(&self, language: &str) -> Result<SlotEligibility, LockPoisoned> {
+    pub(super) fn is_cached_for(gate: &Self, language: &str) -> bool {
         #[cfg(test)]
-        let cached = self.grammar_cached(language);
+        return gate.grammar_cached(language);
         #[cfg(not(test))]
-        let cached = tree_sitter_language_pack::has_parser(language);
-        if cached {
+        {
+            let _ = gate;
+            tree_sitter_language_pack::has_parser(language)
+        }
+    }
+
+    fn check_eligibility(&self, language: &str) -> Result<SlotEligibility, LockPoisoned> {
+        if Self::is_cached_for(self, language) {
             Ok(SlotEligibility::Cached)
         } else if self.cooling_down()? {
             Ok(SlotEligibility::Blocked)
@@ -183,6 +189,15 @@ pub(crate) fn with_fetch_slot<T>(
     work: impl FnOnce() -> Result<T, LockPoisoned>,
 ) -> Result<FetchSlot<T>, LockPoisoned> {
     with_current_gate(|gate| gate.with_fetch_slot(language, work))
+}
+
+/// True when `language`'s grammar is already available locally (bundled or cached).
+///
+/// # Errors
+///
+/// Returns [`LockPoisoned`] when the gate's state was poisoned.
+pub(crate) fn is_grammar_installed(language: &str) -> Result<bool, LockPoisoned> {
+    with_current_gate(|gate| Ok(GateState::is_cached_for(gate, language)))
 }
 
 /// True when a stored `LoadFailed` row should be re-parsed now.
@@ -280,7 +295,7 @@ pub(crate) mod test_controls {
 
     thread_local! {
         static TEST_GATE: RefCell<Arc<GateState>> =
-            RefCell::new(Arc::new(GateState::new_isolated()));
+            RefCell::new(Arc::new(GateState::new()));
     }
 
     pub(super) fn with_test_gate<T>(
@@ -298,6 +313,31 @@ pub(crate) mod test_controls {
     /// Makes `with_fetch_slot` treat every grammar as already cached (or not).
     pub(crate) fn set_grammar_cached(cached: bool) {
         current_gate().hooks.set_cached(cached);
+    }
+
+    /// Resets this thread's test gate to a fresh host-backed [`GateState`].
+    pub(crate) fn reset_gate() {
+        install_gate(Arc::new(GateState::new()));
+    }
+
+    /// RAII test guard resetting this thread's test gate on creation and drop.
+    #[derive(Default)]
+    pub(crate) struct GateResetGuard;
+
+    impl GateResetGuard {
+        /// Resets this thread's test gate to a fresh host-backed [`GateState`]
+        /// and returns a guard that resets it again on drop.
+        #[must_use]
+        pub(crate) fn new() -> Self {
+            reset_gate();
+            Self
+        }
+    }
+
+    impl Drop for GateResetGuard {
+        fn drop(&mut self) {
+            reset_gate();
+        }
     }
 
     /// Captures this thread's gate so spawned `file_pool` workers share it.

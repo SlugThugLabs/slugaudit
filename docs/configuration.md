@@ -36,10 +36,10 @@ If host memory cannot be detected, `adaptive` cannot be sized: set `SLUGAUDIT_PR
 
 | Limit | `lean` | `audit` | `adaptive` |
 |---|---|---|---|
-| `max_file_bytes` (largest file stored) | 32 MiB | 256 MiB | RAM / 10, at least 256 MiB, at most 1,000,000,000 |
+| `max_file_bytes` (largest file stored) | 32 MiB | 256 MiB | RAM / 10, clamped between 32 MiB and 1,000,000,000 (`>= 2.56 GiB` hosts get at least 256 MiB) |
 | `max_parse_bytes` (largest file parsed) | 2 MiB | 2 MiB | 2 MiB |
 | `max_parse_wall_clock_ms` (per-file parse time) | 5,000 ms | 5,000 ms | 5,000 ms |
-| `max_total_import_bytes` (sampled bytes in one sync) | 2 GiB | 32 GiB | available RAM / 2, at least 4 GiB |
+| `max_total_import_bytes` (sampled bytes in one sync) | 2 GiB | 32 GiB | available RAM / 2, at least 4 GiB on `>= 8 GiB` hosts (scaled to `max(max_file_bytes, RAM / 2)` on smaller hosts) |
 | `max_query_response_bytes` (page ceiling) | 32 MiB | 256 MiB | same as `max_file_bytes` |
 | `default_page_bytes` | 64 KiB | 64 KiB | 64 KiB |
 | `max_query_sql_bytes` | 50,000 | 200,000 | 200,000 |
@@ -106,7 +106,7 @@ Validation rules for `config.json` and `SLUGAUDIT_*`:
 |---|---|
 | `RUST_LOG` | Tracing filter syntax (for example `info` or `slugaudit_mcp_rust=debug`). Default: `warn,slugaudit_mcp_rust=info,rmcp=error`. Invalid syntax stops startup. |
 | `SLUGAUDIT_LOG_FORMAT` | `text` (default) or `json` (case-insensitive). Any other value stops startup. Logs write to `stderr` only (`stdout` is reserved for JSON-RPC). |
-| `SLUGTHUG_HOME` | Base directory for the installed binary and `config.json` (`$SLUGTHUG_HOME/slugaudit/`). Default: `~/.slugthug`. |
+| `SLUGTHUG_HOME` | Base directory for the installed binary and `config.json` (`$SLUGTHUG_HOME/slugaudit/`). Must be an absolute path (relative values are ignored and fall back to `~/.slugthug`). Default: `~/.slugthug`. |
 | `SLUGTHUG_CONFIG_HOME` | Home directory used by `connect` / `disconnect` when locating client config files. Default: `$HOME`. |
 
 ## Per-call parameters

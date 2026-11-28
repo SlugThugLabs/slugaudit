@@ -26,6 +26,10 @@ pub(super) enum ModItemDisposition {
 }
 
 impl InlineModStack {
+    pub(super) fn segments(&self) -> &[String] {
+        &self.segments
+    }
+
     pub(super) fn pop(&mut self) {
         self.segments.pop();
         self.has_path_flags.pop();
@@ -38,12 +42,20 @@ impl InlineModStack {
         outer_attrs: &[Node<'_>],
         source: &str,
     ) -> ModItemDisposition {
-        let path_attr = outer_attrs
+        let mut collected_attrs: Vec<String> = Vec::new();
+        for attr in outer_attrs
             .iter()
             .copied()
             .chain(named_children(node).filter(|child| child.kind() == "attribute_item"))
-            .filter_map(|attr| parse_attribute_node(attr, source))
-            .last();
+        {
+            if let Some(path) = parse_attribute_node(attr, source)
+                && !collected_attrs.contains(&path)
+            {
+                collected_attrs.push(path);
+            }
+        }
+        let mut attrs_iter = collected_attrs.into_iter();
+        let path_attr = attrs_iter.next();
 
         if named_children(node).any(|child| child.kind() == "declaration_list") {
             let has_path = path_attr.is_some();
@@ -59,6 +71,7 @@ impl InlineModStack {
         let Some(name) = mod_name else {
             return ModItemDisposition::External(None);
         };
+        let extra_path_attrs: Vec<String> = attrs_iter.collect();
         let implicit_path = if path_attr.is_none() && self.has_path_flags.iter().any(|&flag| flag) {
             Some(strip_raw_ident(name))
         } else {
@@ -66,6 +79,7 @@ impl InlineModStack {
         };
         ModItemDisposition::External(Some(RustModPathPayload {
             path_attr: path_attr.or(implicit_path),
+            extra_path_attrs,
             inline_dir: self.segments.join("/"),
             inline_depth: self.segments.len(),
             inline_segments: self.segments.clone(),

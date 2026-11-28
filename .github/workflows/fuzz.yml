@@ -104,7 +104,7 @@ jobs:
       # LeakSanitizer can only match `fuzz/lsan-suppressions.txt` against
       # *symbolized* frames; without a symbolizer the file is silently
       # ineffective and `structure_query` dies on the first malformed query,
-      # because tree-sitter 0.26.13 leaks 8 bytes on that error path (see the
+      # because tree-sitter 0.27.2 leaks 8 bytes on that error path (see the
       # suppression file and the target's header for the minimized reproducer,
       # which puts the allocation entirely inside the dependency).
       - name: Provide a symbolizer for LeakSanitizer suppressions

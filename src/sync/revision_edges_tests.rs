@@ -1,245 +1,12 @@
-// slugaudit-line-exception: approved-by=split-judge; reason=transactional integration tests and EdgeTestHarness covering incremental dependency_edges resolution and blast-radius invalidation
-use super::*;
-use crate::model::{
-    EvidenceItem, EvidenceKind, EvidenceOrigin, ExtractionCompleteness, ImportPayload,
-    ParseOutcome, ParserAvailability, ParserRun, RustModPathPayload, SourceIdentity,
-    SpanAvailability, StructurePayload,
+pub(super) use super::edge_test_harness::{EdgeTestHarness, StoredEdge};
+pub(super) use super::revision_test_fixtures::{
+    file_record, import_evidence, import_evidence_in_inline_mod, lib_record, mod_evidence,
+    rust_record, rust_run,
 };
-use crate::store::open_read_write;
-use crate::sync::revision::{RevisionInputs, publish_revision};
-use rusqlite::Connection;
+
+use super::revision_test_fixtures::unparsed_record;
+use crate::sync::FileRecord;
 use slugaudit_test_check::{Check, TestResult, ensure_eq};
-
-fn file_record(
-    path: &str,
-    hash: &str,
-    content: &str,
-    language: Option<&str>,
-    run: ParserRun,
-    evidence: Vec<EvidenceItem>,
-) -> FileRecord {
-    FileRecord {
-        relative_path: path.to_owned(),
-        is_binary: false,
-        content: Some(content.to_owned()),
-        identity: SourceIdentity {
-            relative_path: path.to_owned(),
-            content_hash: hash.to_owned(),
-            hash_algorithm: "blake3".to_owned(),
-        },
-        byte_len: content.len() as u64,
-        modified_unix_seconds: None,
-        language: language.map(str::to_owned),
-        language_detected: language.is_some(),
-        run,
-        evidence,
-    }
-}
-
-fn rust_record(path: &str, hash: &str, evidence: Vec<EvidenceItem>) -> FileRecord {
-    file_record(
-        path,
-        hash,
-        "",
-        Some("rust"),
-        ParserRun {
-            availability: ParserAvailability::Available,
-            outcome: ParseOutcome::Succeeded,
-            completeness: ExtractionCompleteness::Full,
-        },
-        evidence,
-    )
-}
-
-fn lib_record() -> FileRecord {
-    rust_record("src/lib.rs", "hl1", vec![])
-}
-
-fn import_evidence(index: usize, source: &str) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("import:{index}"),
-        kind: EvidenceKind::Import,
-        origin: EvidenceOrigin::PackStructure,
-        span: SpanAvailability::PackOmitted,
-        payload: EvidencePayload::Import(ImportPayload {
-            source: source.to_owned(),
-            items: Vec::new(),
-            alias: None,
-            is_wildcard: source.contains('*'),
-        }),
-    }
-}
-
-fn mod_evidence(index: usize, name: &str, path_attr: Option<&str>) -> EvidenceItem {
-    EvidenceItem {
-        key: format!("structure:{index}"),
-        kind: EvidenceKind::Structure,
-        origin: EvidenceOrigin::PackStructure,
-        span: SpanAvailability::PackOmitted,
-        payload: EvidencePayload::Structure(StructurePayload {
-            kind: "Module".to_owned(),
-            name: Some(name.to_owned()),
-            visibility: None,
-            decorators: Vec::new(),
-            signature: None,
-            doc_comment: None,
-            rust_mod_path: Some(RustModPathPayload {
-                path_attr: path_attr.map(str::to_owned),
-                inline_dir: String::new(),
-                inline_depth: 0,
-                inline_segments: Vec::new(),
-            }),
-        }),
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct StoredEdge {
-    from: String,
-    to: Option<String>,
-    kind: String,
-    syntax_unmodeled: bool,
-}
-
-impl StoredEdge {
-    fn resolved(from: &str, to: &str) -> Self {
-        Self {
-            from: from.to_owned(),
-            to: Some(to.to_owned()),
-            kind: "Resolved".to_owned(),
-            syntax_unmodeled: false,
-        }
-    }
-
-    fn unresolved(from: &str) -> Self {
-        Self {
-            from: from.to_owned(),
-            to: None,
-            kind: "Unresolved".to_owned(),
-            syntax_unmodeled: false,
-        }
-    }
-
-    fn external(from: &str) -> Self {
-        Self {
-            from: from.to_owned(),
-            to: None,
-            kind: "External".to_owned(),
-            syntax_unmodeled: false,
-        }
-    }
-
-    fn unmodeled(from: &str) -> Self {
-        Self {
-            from: from.to_owned(),
-            to: None,
-            kind: "Unresolved".to_owned(),
-            syntax_unmodeled: true,
-        }
-    }
-}
-
-struct EdgeTestHarness {
-    _db_dir: tempfile::TempDir,
-    conn: Connection,
-    rev: Option<String>,
-    step: usize,
-    live_paths: HashSet<String>,
-}
-
-impl EdgeTestHarness {
-    fn new() -> TestResult<Self> {
-        let db_dir = tempfile::tempdir().check("create temporary db directory")?;
-        let conn = open_read_write(&db_dir.path().join("project.db")).check("open database")?;
-        Ok(Self {
-            _db_dir: db_dir,
-            conn,
-            rev: None,
-            step: 0,
-            live_paths: HashSet::new(),
-        })
-    }
-
-    fn publish(&mut self, upserts: &[FileRecord], re_resolve: bool) -> TestResult {
-        self.publish_with_deletions(upserts, &[], re_resolve)
-    }
-
-    fn publish_with_deletions(
-        &mut self,
-        upserts: &[FileRecord],
-        deletions: &[String],
-        re_resolve: bool,
-    ) -> TestResult {
-        self.step = self.step.checked_add(1).check("step counter fits")?;
-        for path in deletions {
-            self.live_paths.remove(path);
-        }
-        for file in upserts {
-            self.live_paths.insert(file.relative_path.clone());
-        }
-        let manifest = format!("m{}", self.step);
-        let unrepresentable = HashSet::new();
-        let next = publish_revision(
-            &mut self.conn,
-            &RevisionInputs {
-                expected_current: self.rev.as_deref(),
-                manifest_hash: &manifest,
-                parser_pack_version: "1.0.0",
-                upserts,
-                deletions,
-                skipped: &[],
-                discovered_paths: &self.live_paths,
-                re_resolve_unresolved: re_resolve,
-                unrepresentable_paths: &unrepresentable,
-                deadline: None,
-            },
-        )
-        .check("publish revision")?;
-        self.rev = Some(next);
-        Ok(())
-    }
-
-    fn edge_row_ids_for(&self, from_path: &str) -> TestResult<Vec<i64>> {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT e.id FROM dependency_edges e \
-                 JOIN files f ON f.id = e.from_file_id \
-                 WHERE f.path = ?1 ORDER BY e.id",
-            )
-            .check("prepare edge row id query")?;
-        stmt.query_map([from_path], |row| row.get(0))
-            .check("query edge row ids")?
-            .collect::<Result<_, _>>()
-            .check("collect edge row ids")
-    }
-
-    fn assert_edges(&self, expected: &[StoredEdge], context: &str) -> TestResult {
-        let mut stmt = self
-            .conn
-            .prepare(
-                "SELECT f.path, t.path, e.resolution_kind, e.syntax_unmodeled \
-                 FROM dependency_edges e \
-                 JOIN files f ON f.id = e.from_file_id \
-                 LEFT JOIN files t ON t.id = e.to_file_id \
-                 ORDER BY f.path, COALESCE(t.path, ''), e.resolution_kind",
-            )
-            .check("prepare edge query")?;
-        let actual: Vec<StoredEdge> = stmt
-            .query_map([], |row| {
-                Ok(StoredEdge {
-                    from: row.get(0)?,
-                    to: row.get(1)?,
-                    kind: row.get(2)?,
-                    syntax_unmodeled: row.get(3)?,
-                })
-            })
-            .check("run edge query")?
-            .collect::<Result<_, _>>()
-            .check("collect stored edges")?;
-        ensure_eq(&actual.as_slice(), &expected, context)
-    }
-}
 
 fn foo_tests_super() -> FileRecord {
     rust_record(
@@ -372,13 +139,13 @@ fn editing_rust_file_with_unchanged_path_attr_does_not_reresolve_dependents() ->
     // Edit foo.rs body (new hash) while keeping the exact same #[path = "foo_tests.rs"] mod tests;
     h.publish(&[foo_with_path("hf2")], false)?;
 
-    ensure_eq(
-        &h.edge_row_ids_for("src/foo_tests.rs")?,
+    h.assert_edge_row_ids_unchanged(
+        "src/foo_tests.rs",
         &foo_tests_ids_before,
         "unchanged #[path] attribute on foo.rs does not rewrite child foo_tests.rs edges",
     )?;
-    ensure_eq(
-        &h.edge_row_ids_for("src/other.rs")?,
+    h.assert_edge_row_ids_unchanged(
+        "src/other.rs",
         &other_ids_before,
         "unchanged #[path] attribute on foo.rs does not trigger full-repo super::* re-resolution",
     )
@@ -398,28 +165,17 @@ fn adding_or_deleting_non_rust_file_does_not_reresolve_rust_dependents() -> Test
     h.publish(&[lib_record(), caller], false)?;
     let caller_ids_before = h.edge_row_ids_for("src/caller.rs")?;
 
-    let notes = file_record(
-        "NOTES.md",
-        "hn1",
-        "# notes\n",
-        Some("prose"),
-        ParserRun {
-            availability: ParserAvailability::Unavailable,
-            outcome: ParseOutcome::NotAttempted,
-            completeness: ExtractionCompleteness::ContentOnly,
-        },
-        Vec::new(),
-    );
+    let notes = unparsed_record("NOTES.md", "hn1", "# notes\n", Some("prose"));
     h.publish(&[notes], true)?;
-    ensure_eq(
-        &h.edge_row_ids_for("src/caller.rs")?,
+    h.assert_edge_row_ids_unchanged(
+        "src/caller.rs",
         &caller_ids_before,
         "adding NOTES.md does not re-resolve Rust crates or low-confidence edges",
     )?;
 
     h.publish_with_deletions(&[], &["NOTES.md".to_owned()], true)?;
-    ensure_eq(
-        &h.edge_row_ids_for("src/caller.rs")?,
+    h.assert_edge_row_ids_unchanged(
+        "src/caller.rs",
         &caller_ids_before,
         "deleting NOTES.md does not re-resolve Rust crates or low-confidence edges",
     )
@@ -502,66 +258,139 @@ fn external_mod_declarations_emit_edges_and_reresolve_when_target_added() -> Tes
     )
 }
 
-fn toml_record(path: &str, hash: &str, content: &str) -> FileRecord {
-    file_record(
-        path,
-        hash,
-        content,
-        None,
-        ParserRun {
-            availability: ParserAvailability::Unavailable,
-            outcome: ParseOutcome::NotAttempted,
-            completeness: ExtractionCompleteness::Unavailable,
-        },
-        Vec::new(),
+#[test]
+fn adding_nested_rust_module_without_parent_mod_updates_external_import() -> TestResult {
+    let mut h = EdgeTestHarness::new()?;
+    let lib = rust_record(
+        "src/lib.rs",
+        "hl1",
+        vec![import_evidence(0, "use foo::bar;")],
+    );
+    h.publish(&[lib], false)?;
+    h.assert_edges(&[StoredEdge::external("src/lib.rs")], "initially External")?;
+    h.publish(&[rust_record("src/foo/bar.rs", "hb1", vec![])], true)?;
+    h.assert_edges(
+        &[StoredEdge::resolved("src/lib.rs", "src/foo/bar.rs")],
+        "adding src/foo/bar.rs without src/foo.rs re-resolves use foo::bar; to Resolved",
     )
 }
 
 #[test]
-fn workspace_cargo_toml_resolves_cross_crate_imports_and_updates_on_edit() -> TestResult {
+fn deleting_workspace_crate_lib_root_downgrades_high_submodule_edge_to_external() -> TestResult {
     let mut h = EdgeTestHarness::new()?;
-    let alpha_toml = toml_record(
-        "crates/alpha/Cargo.toml",
+    let a_toml = unparsed_record(
+        "crates/a/Cargo.toml",
         "ht1",
-        "[package]\nname = \"my-alpha\"\nversion = \"0.1.0\"\n",
+        "[package]\nname = \"crate-a\"\n",
+        None,
     );
-    let alpha_lib = rust_record("crates/alpha/src/lib.rs", "ha1", vec![]);
-    let beta_lib = rust_record(
-        "crates/beta/src/lib.rs",
-        "hb1",
-        vec![import_evidence(0, "use my_alpha::Widget;")],
+    let a_lib = rust_record("crates/a/src/lib.rs", "hal1", vec![]);
+    let a_foo = rust_record("crates/a/src/foo.rs", "haf1", vec![]);
+    let b_lib = rust_record(
+        "crates/b/src/lib.rs",
+        "hbl1",
+        vec![import_evidence(0, "use crate_a::foo;")],
     );
-    h.publish(&[alpha_toml, alpha_lib, beta_lib], false)?;
+    h.publish(&[a_toml, a_lib, a_foo, b_lib], false)?;
     h.assert_edges(
         &[StoredEdge::resolved(
-            "crates/beta/src/lib.rs",
-            "crates/alpha/src/lib.rs",
+            "crates/b/src/lib.rs",
+            "crates/a/src/foo.rs",
         )],
-        "hyphenated workspace package my-alpha resolves use my_alpha::Widget",
+        "cross-crate High edge points to crates/a/src/foo.rs",
+    )?;
+    h.publish_with_deletions(&[], &["crates/a/src/lib.rs".to_owned()], true)?;
+    h.assert_edges(
+        &[StoredEdge::external("crates/b/src/lib.rs")],
+        "deleting crates/a/src/lib.rs downgrades crates/b edge from foo.rs to External",
+    )
+}
+
+#[test]
+fn inline_mod_super_import_reresolves_when_submodule_added() -> TestResult {
+    let mut h = EdgeTestHarness::new()?;
+    let foo = rust_record(
+        "src/foo.rs",
+        "hf1",
+        vec![import_evidence_in_inline_mod(
+            "import:0",
+            "use super::sub::Item;",
+            &["tests"],
+        )],
+    );
+    h.publish(&[lib_record(), foo], false)?;
+    h.assert_edges(
+        &[StoredEdge::resolved("src/foo.rs", "src/foo.rs")],
+        "while src/foo/sub.rs is absent, inline mod super::sub::Item resolves to src/foo.rs",
     )?;
 
-    let renamed_toml = toml_record(
-        "crates/alpha/Cargo.toml",
-        "ht2",
-        "[package]\nname = \"renamed-alpha\"\nversion = \"0.1.0\"\n",
-    );
-    h.publish(&[renamed_toml], false)?;
+    h.publish(&[rust_record("src/foo/sub.rs", "hs1", vec![])], true)?;
     h.assert_edges(
-        &[StoredEdge::external("crates/beta/src/lib.rs")],
-        "editing Cargo.toml in place downgrades missing workspace crate to External",
+        &[StoredEdge::resolved("src/foo.rs", "src/foo/sub.rs")],
+        "adding src/foo/sub.rs upgrades inline mod super::sub::Item to src/foo/sub.rs",
+    )
+}
+
+#[test]
+fn local_module_shadowing_workspace_crate_reresolves_from_high_to_low() -> TestResult {
+    let mut h = EdgeTestHarness::new()?;
+    let a_toml = unparsed_record(
+        "crates/a/Cargo.toml",
+        "hat1",
+        "[package]\nname = \"pkg-a\"\nversion = \"0.1.0\"\n",
+        None,
+    );
+    let b_toml = unparsed_record(
+        "crates/b/Cargo.toml",
+        "hbt1",
+        "[package]\nname = \"pkg-b\"\nversion = \"0.1.0\"\n\n[dependencies]\npkg-a = { path = \"../a\" }\n",
+        None,
+    );
+    let a_lib = rust_record("crates/a/src/lib.rs", "hal1", vec![]);
+    let a_bar = rust_record("crates/a/src/bar.rs", "hab1", vec![]);
+    let b_lib = rust_record(
+        "crates/b/src/lib.rs",
+        "hbl1",
+        vec![import_evidence(0, "use pkg_a::bar;")],
+    );
+    h.publish(&[a_toml, b_toml, a_lib, a_bar, b_lib], false)?;
+    let edge_info = |harness: &EdgeTestHarness,
+                     path: &str|
+     -> TestResult<(Option<String>, String, Option<String>)> {
+        harness
+            .connection()
+            .query_row(
+                "SELECT t.path, e.resolution_kind, e.confidence \
+                 FROM dependency_edges e \
+                 JOIN files f ON f.id = e.from_file_id \
+                 LEFT JOIN files t ON t.id = e.to_file_id \
+                 WHERE f.path = ?1",
+                [path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .check("query dependency edge")
+    };
+    ensure_eq(
+        &edge_info(&h, "crates/b/src/lib.rs")?,
+        &(
+            Some("crates/a/src/bar.rs".to_owned()),
+            "Resolved".to_owned(),
+            Some("High".to_owned()),
+        ),
+        "initially resolves to crates/a/src/bar.rs with High confidence",
     )?;
 
-    let restored_toml = toml_record(
-        "crates/alpha/Cargo.toml",
-        "ht3",
-        "[package]\nname = \"my-alpha\"\nversion = \"0.1.0\"\n",
-    );
-    h.publish(&[restored_toml], false)?;
-    h.assert_edges(
-        &[StoredEdge::resolved(
-            "crates/beta/src/lib.rs",
-            "crates/alpha/src/lib.rs",
-        )],
-        "editing Cargo.toml back upgrades External cross-crate edge to Resolved",
+    h.publish(
+        &[rust_record("crates/b/src/pkg_a.rs", "hbpa1", vec![])],
+        true,
+    )?;
+    ensure_eq(
+        &edge_info(&h, "crates/b/src/lib.rs")?,
+        &(
+            Some("crates/b/src/pkg_a.rs".to_owned()),
+            "Resolved".to_owned(),
+            Some("Low".to_owned()),
+        ),
+        "adding crates/b/src/pkg_a.rs shadows pkg_a and re-resolves with Low confidence",
     )
 }

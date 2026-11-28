@@ -28,7 +28,7 @@ pub(super) fn readable_config(path: &Path) -> std::io::Result<Option<String>> {
 }
 
 /// True when the JSON/JSONC config at `path` carries a `slugaudit` entry under
-/// any of `keys`; an absent file has none.
+/// any of `keys`; an absent or whitespace-only file has none.
 ///
 /// # Errors
 ///
@@ -42,13 +42,13 @@ pub fn has_slugaudit(path: &Path, keys: &[&str]) -> std::io::Result<bool> {
     let normalized;
     let json_text = if is_jsonc_path(path) {
         normalized = strip_jsonc_comments_and_trailing_commas(&contents);
-        if normalized.trim().is_empty() {
-            return Ok(false);
-        }
         &normalized
     } else {
         &contents
     };
+    if json_text.trim().is_empty() {
+        return Ok(false);
+    }
     let value: serde_json::Value = serde_json::from_str(json_text)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     Ok(keys

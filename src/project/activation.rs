@@ -192,7 +192,6 @@ pub fn disable(root: &ProjectRoot) -> Result<DisableReport, ActivationError> {
     } else {
         std::fs::remove_file(&activation)?;
     }
-    super::findings_session::end_process_session(root)?;
     report.removed.push(activation);
     let planning = root.as_path().join(PLANNING_DIR);
     match std::fs::remove_dir(&planning) {

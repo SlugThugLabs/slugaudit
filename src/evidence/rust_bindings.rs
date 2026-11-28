@@ -1,10 +1,12 @@
 // slugaudit-line-exception: approved-by=split-judge; reason=Rust GenericWalker binding, parameter, closure-parameter, field, enum-variant, static, and destructuring-pattern extraction
 //! Rust-specific `GenericWalker` `Symbol` emitter for destructuring patterns,
-//! `let` / `if let` / `for` bindings, function and closure parameters, struct
-//! and union fields, enum variants, and `static_item` declarations.
+//! `let` / `if let` / `for` / `match` arm bindings, function and closure
+//! parameters, struct and union fields, enum variants, and `static_item`
+//! declarations.
 
-use super::bindings::{BindingFields, push_binding};
-use super::rust_doc::rust_visibility;
+use super::bindings::{BindingFields, push_binding_span};
+use super::rust_items::declaration_span;
+use super::rust_visibility::rust_visibility;
 use super::{Extraction, WalkInput, named_children, node_text, reverse_from};
 use crate::model::PositionOverflow;
 use tree_sitter::Node;
@@ -29,7 +31,7 @@ pub(super) fn emit_rust_binding_node(
             let ty = slice_field(node, "type", input.source, out);
             emit_pattern_bindings(node, pattern, ty.as_deref(), input, out, counter)
         }
-        "let_condition" | "for_expression" => {
+        "let_condition" | "for_expression" | "match_arm" => {
             let Some(pattern) = node.child_by_field_name("pattern") else {
                 return Ok(true);
             };
@@ -57,7 +59,12 @@ pub(super) fn emit_rust_binding_node(
                 type_annotation: ty.as_deref(),
                 doc: outer_doc,
             };
-            push_binding(node, &fields, input.lines, out, counter)
+            Ok(push_binding_span(
+                declaration_span(node, input.lines, "binding")?,
+                &fields,
+                out,
+                counter,
+            ))
         }
         "enum_variant" => {
             let Some(name) = slice_field(node, "name", input.source, out) else {
@@ -72,7 +79,12 @@ pub(super) fn emit_rust_binding_node(
                 type_annotation: None,
                 doc: outer_doc,
             };
-            push_binding(node, &fields, input.lines, out, counter)
+            Ok(push_binding_span(
+                declaration_span(node, input.lines, "binding")?,
+                &fields,
+                out,
+                counter,
+            ))
         }
         _ => Ok(true),
     }
@@ -86,7 +98,12 @@ fn emit_closure_parameters(
 ) -> Result<bool, PositionOverflow> {
     for child in named_children(params_node) {
         match child.kind() {
-            "line_comment" | "block_comment" | "attribute_item" => {}
+            "line_comment"
+            | "block_comment"
+            | "line_outer_doc_comment"
+            | "block_outer_doc_comment"
+            | "attribute_item"
+            | "attributes" => {}
             "parameter" => {
                 if let Some(pattern) = child.child_by_field_name("pattern") {
                     let ty = slice_field(child, "type", input.source, out);
@@ -115,6 +132,7 @@ fn emit_pattern_bindings(
 ) -> Result<bool, PositionOverflow> {
     let mut names = Vec::new();
     collect_rust_pattern_names(pattern, input.source, &mut names, out);
+    let span = declaration_span(span_node, input.lines, "binding")?;
     for name in &names {
         let fields = BindingFields {
             name,
@@ -124,7 +142,7 @@ fn emit_pattern_bindings(
             type_annotation,
             doc: None,
         };
-        if !push_binding(span_node, &fields, input.lines, out, counter)? {
+        if !push_binding_span(span.clone(), &fields, out, counter) {
             return Ok(false);
         }
     }
@@ -151,9 +169,16 @@ pub(super) fn slice_field(
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PatternIdent {
+    BindingOrPath,
+    ShorthandField,
+}
+
 /// Collects every bound variable identifier inside a Rust `pattern` subtree in
 /// source order, excluding struct/enum constructor paths, explicit field labels
-/// before `:` in `field_pattern`, `self`, range bounds, and const/macro patterns.
+/// before `:` in `field_pattern`, `match_pattern` `if` guards, `self`, range
+/// bounds, wildcards, and unit-variant / const patterns.
 fn collect_rust_pattern_names(
     pattern: Node<'_>,
     source: &str,
@@ -171,27 +196,24 @@ fn collect_rust_pattern_names(
             continue;
         };
         match node.kind() {
-            "identifier" | "shorthand_field_identifier" => {
-                push_unique_name(node, source, names, out);
+            "identifier" => {
+                push_unique_name(node, PatternIdent::BindingOrPath, source, names, out);
+            }
+            "shorthand_field_identifier" => {
+                push_unique_name(node, PatternIdent::ShorthandField, source, names, out);
             }
             "field_pattern" => {
                 if let Some(subpattern) = node.child_by_field_name("pattern") {
                     pending.push((subpattern, next_depth));
                 } else if let Some(shorthand) = node.child_by_field_name("name") {
-                    push_unique_name(shorthand, source, names, out);
+                    push_unique_name(shorthand, PatternIdent::ShorthandField, source, names, out);
                 }
             }
             "tuple_struct_pattern" => {
-                let ctor_range = node
-                    .child_by_field_name("type")
-                    .map(|ctor| (ctor.start_byte(), ctor.end_byte()));
-                let first = pending.len();
-                for child in named_children(node) {
-                    if Some((child.start_byte(), child.end_byte())) != ctor_range {
-                        pending.push((child, next_depth));
-                    }
-                }
-                reverse_from(&mut pending, first);
+                push_children_excluding_field(node, "type", next_depth, &mut pending);
+            }
+            "match_pattern" => {
+                push_children_excluding_field(node, "condition", next_depth, &mut pending);
             }
             "struct_pattern" => {
                 let first = pending.len();
@@ -205,6 +227,7 @@ fn collect_rust_pattern_names(
             "scoped_identifier"
             | "scoped_type_identifier"
             | "type_identifier"
+            | "generic_pattern"
             | "range_pattern"
             | "remaining_field_pattern"
             | "macro_invocation"
@@ -217,10 +240,46 @@ fn collect_rust_pattern_names(
     }
 }
 
-fn push_unique_name(node: Node<'_>, source: &str, names: &mut Vec<String>, out: &mut Extraction) {
+fn push_children_excluding_field<'tree>(
+    node: Node<'tree>,
+    excluded_field: &str,
+    next_depth: u32,
+    pending: &mut Vec<(Node<'tree>, u32)>,
+) {
+    let excluded_range = node
+        .child_by_field_name(excluded_field)
+        .map(|excluded| (excluded.start_byte(), excluded.end_byte()));
+    let first = pending.len();
+    for child in named_children(node) {
+        if Some((child.start_byte(), child.end_byte())) != excluded_range {
+            pending.push((child, next_depth));
+        }
+    }
+    reverse_from(pending, first);
+}
+
+fn is_const_or_variant_name(text: &str) -> bool {
+    let bare = match text.strip_prefix("r#") {
+        Some(rest) => rest,
+        None => text,
+    };
+    bare.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn push_unique_name(
+    node: Node<'_>,
+    ident_kind: PatternIdent,
+    source: &str,
+    names: &mut Vec<String>,
+    out: &mut Extraction,
+) {
     match node_text(source, node.start_byte(), node.end_byte()) {
         Ok(text) => {
-            if !text.is_empty() && !names.iter().any(|existing| existing == text) {
+            let skip = text.is_empty()
+                || text == "_"
+                || (ident_kind == PatternIdent::BindingOrPath && is_const_or_variant_name(text))
+                || names.iter().any(|existing| existing == text);
+            if !skip {
                 names.push(text.to_owned());
             }
         }

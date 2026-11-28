@@ -6,10 +6,10 @@ use tree_sitter_language_pack::{detect_language_from_path, has_language};
 ///
 /// `tree-sitter-language-pack` exposes no runtime `VERSION` constant, so
 /// this string is manually duplicated from the exact pin
-/// (`tree-sitter-language-pack = "=1.18.0"`) in `Cargo.toml`. Bumping the
+/// (`tree-sitter-language-pack = "=1.28.0"`) in `Cargo.toml`. Bumping the
 /// dependency requires updating both together; the unit test in this module
 /// fails if they drift apart.
-pub const PACK_VERSION: &str = "1.18.0";
+pub const PACK_VERSION: &str = "1.28.0";
 
 /// The stored language of a prose file (Markdown, reStructuredText, AsciiDoc,
 /// Org, plain text). It is not a grammar name: no grammar is loaded or run for
@@ -25,7 +25,7 @@ pub const PROSE_LANGUAGE: &str = "prose";
 /// results are best-effort.
 pub const TESTED_LANGUAGES: &[&str] = &["rust"];
 
-/// The language pack's name aliases (`tree-sitter-language-pack` 1.18.0,
+/// The language pack's name aliases (`tree-sitter-language-pack` 1.28.0,
 /// `registry.rs` `LANGUAGE_ALIASES`). The pack resolves them when loading a
 /// grammar, so `shell` compiles, but `files.language` holds only the canonical
 /// name the pack's extension table returns (`bash`). Shared with `tools` so

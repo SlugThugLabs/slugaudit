@@ -29,8 +29,19 @@ pub(crate) fn with_verified_read<T>(
     synced: &SyncedProject,
     f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
 ) -> Result<T, ErrorData> {
+    with_verified_read_setup(synced, |_| Ok(()), f)
+}
+
+/// Like [`with_verified_read`], but runs `setup` on `&mut Connection` before
+/// starting the deferred read-only transaction.
+pub(crate) fn with_verified_read_setup<T>(
+    synced: &SyncedProject,
+    setup: impl FnOnce(&mut rusqlite::Connection) -> Result<(), ErrorData>,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T, ErrorData>,
+) -> Result<T, ErrorData> {
     let mut connection = store::open_existing(&synced.database_path)
         .map_err(|error| internal_error("opening the project database", error))?;
+    setup(&mut connection)?;
     let tx = start_read_transaction(&mut connection)?;
     verify_revision_matches(&tx, synced)?;
     let result = f(&tx)?;

@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Chunk size for bounded hashing: one fixed buffer per worker thread, so
-/// hashing a multi-gigabyte file or a 40k-file repository never churns heap
-/// allocations proportional to file count or size.
+/// hashing a large file never churns heap allocations proportional to file size.
 pub(crate) const HASH_CHUNK_BYTES: usize = 64 * 1024;
 
 thread_local! {
@@ -59,24 +58,6 @@ pub enum HashError {
 pub fn hash_bytes(relative_path: &str, bytes: &[u8]) -> SourceIdentity {
     let digest = blake3::hash(bytes);
     SourceIdentity::new(relative_path.to_owned(), digest.to_string())
-}
-
-/// Computes a single deterministic BLAKE3 hash over `(path, content_hash)`
-/// pairs sorted by path.
-pub fn aggregate_manifest_hash<'a>(
-    entries: impl IntoIterator<Item = (&'a str, &'a str)>,
-) -> String {
-    let mut hasher = blake3::Hasher::new();
-    let mut sorted: Vec<(&str, &str)> = entries.into_iter().collect();
-    sorted.sort_by(|a, b| a.0.cmp(b.0));
-
-    for (path, hash) in sorted {
-        hasher.update(path.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(hash.as_bytes());
-        hasher.update(b"\n");
-    }
-    hasher.finalize().to_string()
 }
 
 /// Runs `f` with this thread's reusable 64 KiB chunk buffer, falling back to a
@@ -186,13 +167,20 @@ pub(super) fn sniff_and_hash_file(
     absolute_path: &Path,
     max_bytes: u64,
 ) -> Result<(FileKind, SourceIdentity), HashError> {
-    let (file, _metadata) =
+    let (file, metadata) =
         crate::util::open_regular_file_nonblocking(absolute_path).map_err(|source| {
             HashError::Read {
                 path: absolute_path.to_path_buf(),
                 source,
             }
         })?;
+    if metadata.len() > max_bytes {
+        return Err(HashError::TooLarge {
+            path: absolute_path.to_path_buf(),
+            observed: metadata.len(),
+            limit: max_bytes,
+        });
+    }
     // KEEP saturating: at a cap of u64::MAX no read can exceed it, so reading up to u64::MAX bytes loses nothing
     let reader = file.take(max_bytes.saturating_add(1));
     sniff_and_hash_reader(reader, relative_path, absolute_path, max_bytes)

@@ -71,7 +71,7 @@ pub struct FindingRequest {
 pub struct FindingResponse {
     /// Row id of the stored finding in this session's findings.
     pub id: i64,
-    /// Revision id the finding was recorded against (`evidence_revision`).
+    /// Revision id the finding was recorded against.
     pub revision_id: String,
     /// Content hash of the indexed file the finding was attached to.
     pub source_hash: String,

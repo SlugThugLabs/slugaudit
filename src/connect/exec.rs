@@ -191,8 +191,10 @@ fn try_json_disconnect(agent: &AgentDef, home: Option<&Path>) -> Result<bool, Co
 ///
 /// # Errors
 ///
-/// Fails when the config file entry cannot be read or rewritten, or when the
-/// client's remove command fails and no fallback JSON entry rescued it.
+/// Fails when the config file entry cannot be read or rewritten, when the
+/// client's remove command fails and no fallback JSON entry rescued it, or when
+/// a CLI-only client's config still contains `slugaudit` while its CLI is
+/// absent from `PATH`.
 pub fn disconnect_agent(
     agent: &AgentDef,
     home: Option<&Path>,
@@ -218,7 +220,19 @@ pub fn disconnect_agent(
         (CliDisconnect::Removed, _) | (CliDisconnect::NotApplicable, true) => {
             Ok(DisconnectOutcome::Disconnected)
         }
-        (CliDisconnect::NotApplicable, false) => Ok(DisconnectOutcome::NothingToDo),
+        (CliDisconnect::NotApplicable, false) => {
+            if agent.strategy == Strategy::CliDirect
+                && let Some(cli) = agent.cli
+                && agent.is_connected(home)?
+            {
+                return Err(ConnectError::DisconnectCliMissing {
+                    agent: agent.display_name.to_owned(),
+                    cli: cli.to_owned(),
+                    path: guidance::target(agent, home),
+                });
+            }
+            Ok(DisconnectOutcome::NothingToDo)
+        }
     }
 }
 

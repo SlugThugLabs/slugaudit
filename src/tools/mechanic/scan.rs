@@ -26,9 +26,9 @@ pub(in crate::tools) struct Hit<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::tools) struct Stop {
     pub(in crate::tools) limited_by: PageLimit,
-    pub(in crate::tools) resume_after_file: Option<String>,
     pub(in crate::tools) files_scanned: u64,
     pub(in crate::tools) files_total: u64,
+    pub(in crate::tools) covered_languages: HashSet<String>,
 }
 
 /// How a scan ended.
@@ -50,14 +50,20 @@ pub(in crate::tools) fn scan(
     let groups = group_by_language(custom, selected);
     let languages: Vec<&str> = groups.iter().map(|(lang, _)| *lang).collect();
     let mut scanned = 0_u64;
+    let mut covered_languages = HashSet::new();
     for (language, entries) in &groups {
         let runner = LanguageScan { entries, deadline };
-        if let Some(halted) = runner.run(tx, language, glob, &mut scanned, on_hit)? {
+        let before = scanned;
+        let stopped = runner.run(tx, language, glob, &mut scanned, on_hit)?;
+        if scanned > before {
+            covered_languages.insert((*language).to_owned());
+        }
+        if let Some(limited_by) = stopped {
             return Ok(ScanEnd::Stopped(Stop {
-                limited_by: halted.limited_by,
-                resume_after_file: halted.after,
+                limited_by,
                 files_scanned: scanned,
                 files_total: count_files(tx, &languages, glob)?,
+                covered_languages,
             }));
         }
     }
@@ -81,11 +87,6 @@ fn group_by_language<'a>(
         }
     }
     groups
-}
-
-struct Halted {
-    limited_by: PageLimit,
-    after: Option<String>,
 }
 
 enum FileScan {
@@ -112,18 +113,12 @@ impl LanguageScan<'_> {
         glob: Option<&str>,
         scanned: &mut u64,
         on_hit: &mut dyn FnMut(Hit<'_>) -> Result<(), ErrorData>,
-    ) -> Result<Option<Halted>, ErrorData> {
+    ) -> Result<Option<PageLimit>, ErrorData> {
         let mut parser = parser_for(language, "setting a mechanic grammar")?;
-        let mut last_done: Option<String> = None;
         for_each_file(tx, language, glob, |path, content| {
             let held = match self.scan_file(&mut parser, &content)? {
                 FileScan::Complete(held) => held,
-                FileScan::Halted(limited_by) => {
-                    return Ok(Some(Halted {
-                        limited_by,
-                        after: last_done.take(),
-                    }));
-                }
+                FileScan::Halted(limited_by) => return Ok(Some(limited_by)),
             };
             for hit in &held {
                 on_hit(Hit {
@@ -136,7 +131,6 @@ impl LanguageScan<'_> {
             *scanned = scanned
                 .checked_add(1)
                 .ok_or_else(|| internal_error("counting scanned files", "the count overflowed"))?;
-            last_done = Some(path);
             Ok(None)
         })
     }
@@ -212,7 +206,7 @@ fn hold_capture(
     held: &mut Vec<Held>,
 ) -> Result<(), ErrorData> {
     let capture = found
-        .captures
+        .captures()
         .get(capture_index)
         .ok_or_else(|| internal_error("reading a hit", "a capture index is out of range"))?;
     let node = capture.node;

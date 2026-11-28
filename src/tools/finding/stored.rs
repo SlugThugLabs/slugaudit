@@ -111,14 +111,17 @@ pub(super) fn cut_finding_row(
 }
 
 fn clip_description(entry: &mut FindingReadEntry, budget: usize) -> Result<(), ErrorData> {
+    entry.detail_clipped = false;
+    if serialized_len(entry)? <= budget {
+        return Ok(());
+    }
     let chars: Vec<char> = entry.description.chars().collect();
-    let original = entry.description.clone();
+    if chars.is_empty() {
+        return Ok(());
+    }
     entry.detail_clipped = true;
     let mut low = 0usize;
     let mut over = chars.len();
-    if serialized_len(entry)? <= budget {
-        low = over;
-    }
     let mut fits_prefix = |len: usize| -> Result<bool, ErrorData> {
         entry.description = chars.iter().take(len).collect();
         Ok(serialized_len(entry)? <= budget)
@@ -131,10 +134,8 @@ fn clip_description(entry: &mut FindingReadEntry, budget: usize) -> Result<(), E
             over = mid;
         }
     }
-    let fits_low = fits_prefix(low)?;
-    if low == chars.len() || (low == 0 && !fits_low) {
-        entry.description = original;
-        entry.detail_clipped = false;
+    if !fits_prefix(low)? {
+        entry.description.clear();
     }
     Ok(())
 }
