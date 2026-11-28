@@ -124,7 +124,7 @@ jobs:
       # OS, so the Linux job's run covers the macOS job too.
       - name: Check dependency advisories, bans, sources, and licenses
         if: runner.os == 'Linux'
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
         with:
           command: check advisories bans sources licenses
 
@@ -135,7 +135,7 @@ jobs:
       # plus `NCSA` for development-only `libfuzzer-sys`.
       - name: Check fuzz workspace dependencies
         if: runner.os == 'Linux'
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
         with:
           manifest-path: fuzz/Cargo.toml
           arguments: --config fuzz/deny.toml
